@@ -1,0 +1,23 @@
+{
+  "week_ending": "2025-12-03",
+  "range": {
+    "from": "2025-12-03",
+    "to": "2025-12-03"
+  },
+  "stats": {
+    "days_count": 1,
+    "greetings": 2,
+    "goodbyes": 2,
+    "topics": {},
+    "moods": {
+      "good": 3
+    }
+  },
+  "traits": {
+    "supportive": 0.48,
+    "coach": 0.48,
+    "market_analyst": 0.48,
+    "curious": 0.48
+  },
+  "sample_important_messages": []
+}

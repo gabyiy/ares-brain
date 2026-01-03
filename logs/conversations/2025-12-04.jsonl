@@ -1,0 +1,102 @@
+{"ts": "2025-12-04T17:15:28", "role": "user", "modality": "voice", "text": "hello ares"}
+{"ts": "2025-12-04T17:15:28", "role": "ares", "modality": "voice", "text": "Hello Gabi, I am here. I feel happy today. How are you today?"}
+{"ts": "2025-12-04T17:15:33", "role": "user", "modality": "voice", "text": "hello goodbye"}
+{"ts": "2025-12-04T17:15:33", "role": "ares", "modality": "voice", "text": "Goodbye Gabi."}
+{"ts": "2025-12-04T17:15:34", "role": "user", "modality": "voice", "text": "are you how hey how are you goodbye goodbye goodbye"}
+{"ts": "2025-12-04T17:16:42", "role": "user", "modality": "text", "text": "You: hello ares"}
+{"ts": "2025-12-04T17:16:42", "role": "ares", "modality": "text", "text": "Hello Gabi, I am here. I feel happy today. How are you today?"}
+{"ts": "2025-12-04T17:16:42", "role": "user", "modality": "text", "text": "You: how are you"}
+{"ts": "2025-12-04T17:16:42", "role": "ares", "modality": "text", "text": "I feel happy today. And how are you today, Gabi?"}
+{"ts": "2025-12-04T17:16:42", "role": "user", "modality": "text", "text": "You: goodbye"}
+{"ts": "2025-12-04T17:16:42", "role": "ares", "modality": "text", "text": "Goodbye Gabi."}
+{"ts": "2025-12-04T17:34:14", "role": "user", "modality": "voice", "text": "hello ares"}
+{"ts": "2025-12-04T17:34:14", "role": "ares", "modality": "voice", "text": "Hello Gabi, I am here."}
+{"ts": "2025-12-04T17:34:16", "role": "user", "modality": "voice", "text": "hello bye bye"}
+{"ts": "2025-12-04T17:34:21", "role": "user", "modality": "voice", "text": "how are you"}
+{"ts": "2025-12-04T17:34:21", "role": "ares", "modality": "voice", "text": "I feel good and ready to help you. And how are you today, Gabi?"}
+{"ts": "2025-12-04T17:34:26", "role": "user", "modality": "voice", "text": "are you weather tomorrow you how are you goodbye tomorrow"}
+{"ts": "2025-12-04T17:34:26", "role": "ares", "modality": "voice", "text": "Goodbye Gabi."}
+{"ts": "2025-12-04T17:34:28", "role": "user", "modality": "voice", "text": "goodbye goodbye"}
+{"ts": "2025-12-04T17:35:06", "role": "user", "modality": "voice", "text": "weather"}
+{"ts": "2025-12-04T17:35:11", "role": "user", "modality": "voice", "text": "bye"}
+{"ts": "2025-12-04T17:35:40", "role": "user", "modality": "voice", "text": "bye"}
+{"ts": "2025-12-04T17:35:45", "role": "user", "modality": "voice", "text": "you"}
+{"ts": "2025-12-04T17:36:19", "role": "user", "modality": "voice", "text": "you"}
+{"ts": "2025-12-04T17:36:30", "role": "user", "modality": "voice", "text": "you"}
+{"ts": "2025-12-04T17:36:33", "role": "user", "modality": "voice", "text": "bye"}
+{"ts": "2025-12-04T17:37:03", "role": "user", "modality": "voice", "text": "bye"}
+{"ts": "2025-12-04T17:37:10", "role": "user", "modality": "voice", "text": "hello"}
+{"ts": "2025-12-04T17:37:11", "role": "user", "modality": "voice", "text": "hi ares are you"}
+{"ts": "2025-12-04T17:37:11", "role": "ares", "modality": "voice", "text": "Hello Gabi, I am here."}
+{"ts": "2025-12-04T17:37:13", "role": "user", "modality": "voice", "text": "hello bye bye"}
+{"ts": "2025-12-04T17:37:18", "role": "user", "modality": "voice", "text": "hi"}
+{"ts": "2025-12-04T17:37:20", "role": "user", "modality": "voice", "text": "are"}
+{"ts": "2025-12-04T17:40:11", "role": "user", "modality": "voice", "text": "hello"}
+{"ts": "2025-12-04T17:40:27", "role": "user", "modality": "voice", "text": "hello ares"}
+{"ts": "2025-12-04T17:40:27", "role": "ares", "modality": "speech", "text": "Hello Gabi, I am here."}
+{"ts": "2025-12-04T17:40:29", "role": "user", "modality": "voice", "text": "hello bye bye"}
+{"ts": "2025-12-04T17:40:34", "role": "user", "modality": "voice", "text": "how are you"}
+{"ts": "2025-12-04T17:40:34", "role": "ares", "modality": "speech", "text": "I feel good and ready to help you. And how are you today, Gabi?"}
+{"ts": "2025-12-04T17:40:39", "role": "user", "modality": "voice", "text": "are you weather tomorrow you are you goodbye tomorrow"}
+{"ts": "2025-12-04T17:40:39", "role": "ares", "modality": "speech", "text": "I will soon learn to check tomorrow's weather for you."}
+{"ts": "2025-12-04T17:40:42", "role": "user", "modality": "voice", "text": "are you"}
+{"ts": "2025-12-04T17:40:42", "role": "user", "modality": "voice", "text": "tomorrow weather are you"}
+{"ts": "2025-12-04T17:44:17", "role": "user", "modality": "voice", "text": "hello ares"}
+{"ts": "2025-12-04T17:44:17", "role": "ares", "modality": "voice", "text": "Hello Gabi, I am here."}
+{"ts": "2025-12-04T17:44:19", "role": "user", "modality": "voice", "text": "hello bye bye"}
+{"ts": "2025-12-04T17:44:24", "role": "user", "modality": "voice", "text": "are you"}
+{"ts": "2025-12-04T17:44:28", "role": "user", "modality": "voice", "text": "how are you"}
+{"ts": "2025-12-04T17:44:28", "role": "ares", "modality": "voice", "text": "I feel good and ready to help you. And how are you today, Gabi?"}
+{"ts": "2025-12-04T17:44:33", "role": "user", "modality": "voice", "text": "are you weather tomorrow you are you goodbye bye"}
+{"ts": "2025-12-04T17:44:33", "role": "ares", "modality": "voice", "text": "Goodbye Gabi."}
+{"ts": "2025-12-04T17:44:35", "role": "user", "modality": "voice", "text": "goodbye goodbye"}
+{"ts": "2025-12-04T17:49:12", "role": "user", "modality": "voice", "text": "hello ares"}
+{"ts": "2025-12-04T17:49:12", "role": "ares", "modality": "voice", "text": "Hello Gabi, I am here."}
+{"ts": "2025-12-04T17:49:14", "role": "user", "modality": "voice", "text": "hello bye bye"}
+{"ts": "2025-12-04T17:49:18", "role": "user", "modality": "voice", "text": "how are you"}
+{"ts": "2025-12-04T17:49:18", "role": "ares", "modality": "voice", "text": "I feel good and ready to help you. And how are you today, Gabi?"}
+{"ts": "2025-12-04T17:49:22", "role": "user", "modality": "voice", "text": "are you"}
+{"ts": "2025-12-04T17:49:22", "role": "user", "modality": "voice", "text": "weather tomorrow you"}
+{"ts": "2025-12-04T17:49:22", "role": "ares", "modality": "voice", "text": "I will soon learn to check tomorrow's weather for you."}
+{"ts": "2025-12-04T17:49:25", "role": "user", "modality": "voice", "text": "you goodbye tomorrow"}
+{"ts": "2025-12-04T17:49:26", "role": "user", "modality": "voice", "text": "tomorrow weather you"}
+{"ts": "2025-12-04T17:49:40", "role": "user", "modality": "voice", "text": "bye"}
+{"ts": "2025-12-04T17:49:40", "role": "ares", "modality": "voice", "text": "Goodbye Gabi."}
+{"ts": "2025-12-04T17:49:42", "role": "user", "modality": "voice", "text": "goodbye bye"}
+{"ts": "2025-12-04T17:53:35", "role": "user", "modality": "voice", "text": "hello ares"}
+{"ts": "2025-12-04T17:53:35", "role": "ares", "modality": "voice", "text": "Hello Gabi, I am here."}
+{"ts": "2025-12-04T17:53:37", "role": "user", "modality": "voice", "text": "hello bye bye"}
+{"ts": "2025-12-04T17:53:41", "role": "user", "modality": "voice", "text": "how are you"}
+{"ts": "2025-12-04T17:53:41", "role": "ares", "modality": "voice", "text": "I feel good and ready to help you. And how are you today, Gabi?"}
+{"ts": "2025-12-04T17:53:45", "role": "user", "modality": "voice", "text": "are you"}
+{"ts": "2025-12-04T17:53:46", "role": "user", "modality": "voice", "text": "are you are you goodbye tomorrow"}
+{"ts": "2025-12-04T17:53:54", "role": "user", "modality": "voice", "text": "bye"}
+{"ts": "2025-12-04T17:53:54", "role": "ares", "modality": "voice", "text": "Goodbye Gabi."}
+{"ts": "2025-12-04T17:53:56", "role": "user", "modality": "voice", "text": "goodbye goodbye"}
+{"ts": "2025-12-04T17:59:19", "role": "user", "modality": "voice", "text": "hello ares"}
+{"ts": "2025-12-04T17:59:19", "role": "ares", "modality": "voice", "text": "Hello Gabi, I am here."}
+{"ts": "2025-12-04T17:59:21", "role": "user", "modality": "voice", "text": "hello bye"}
+{"ts": "2025-12-04T17:59:25", "role": "user", "modality": "voice", "text": "how are you"}
+{"ts": "2025-12-04T17:59:25", "role": "ares", "modality": "voice", "text": "I feel good and ready to help you. And how are you today, Gabi?"}
+{"ts": "2025-12-04T17:59:29", "role": "user", "modality": "voice", "text": "are you"}
+{"ts": "2025-12-04T17:59:30", "role": "user", "modality": "voice", "text": "you are you hey tomorrow"}
+{"ts": "2025-12-04T18:00:04", "role": "user", "modality": "voice", "text": "hey"}
+{"ts": "2025-12-04T18:00:30", "role": "user", "modality": "voice", "text": "hi"}
+{"ts": "2025-12-04T18:00:50", "role": "user", "modality": "voice", "text": "how"}
+{"ts": "2025-12-04T18:01:04", "role": "user", "modality": "voice", "text": "hi"}
+{"ts": "2025-12-04T18:18:30", "role": "user", "modality": "voice", "text": "hi ares"}
+{"ts": "2025-12-04T18:18:30", "role": "ares", "modality": "voice", "text": "Hello Gabi, I am here."}
+{"ts": "2025-12-04T18:18:40", "role": "user", "modality": "voice", "text": "how are you"}
+{"ts": "2025-12-04T18:18:40", "role": "ares", "modality": "voice", "text": "I feel good and ready to help you. And how are you today, Gabi?"}
+{"ts": "2025-12-04T18:18:44", "role": "user", "modality": "voice", "text": "are you weather tomorrow you how are you goodbye bye"}
+{"ts": "2025-12-04T18:18:44", "role": "ares", "modality": "voice", "text": "I feel good and ready to help you. And how are you today, Gabi?"}
+{"ts": "2025-12-04T18:18:49", "role": "user", "modality": "voice", "text": "are you weather tomorrow you how are you goodbye tomorrow"}
+{"ts": "2025-12-04T18:18:49", "role": "ares", "modality": "voice", "text": "I feel good and ready to help you. And how are you today, Gabi?"}
+{"ts": "2025-12-04T18:18:54", "role": "user", "modality": "voice", "text": "are you weather hello you how are you goodbye bye"}
+{"ts": "2025-12-04T18:18:54", "role": "ares", "modality": "voice", "text": "I feel good and ready to help you. And how are you today, Gabi?"}
+{"ts": "2025-12-04T18:22:32", "role": "user", "modality": "voice", "text": "hi ares"}
+{"ts": "2025-12-04T18:22:32", "role": "ares", "modality": "voice", "text": "Hello Gabi, I am here."}
+{"ts": "2025-12-04T18:22:44", "role": "user", "modality": "voice", "text": "how are you"}
+{"ts": "2025-12-04T18:22:44", "role": "ares", "modality": "voice", "text": "I feel good and ready to help you. And how are you today, Gabi?"}
+{"ts": "2025-12-04T18:22:54", "role": "user", "modality": "voice", "text": "bye"}
+{"ts": "2025-12-04T18:22:54", "role": "ares", "modality": "voice", "text": "Goodbye Gabi."}

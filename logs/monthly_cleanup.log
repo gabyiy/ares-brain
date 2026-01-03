@@ -1,0 +1,5 @@
+/home/gabi/ARES_BRAIN/scripts/monthly_cleanup.py:22: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  cutoff = datetime.utcnow().date() - timedelta(days=days_keep)
+[MonthlyCleanup] Starting monthly maintenance...
+[MonthlyCleanup] Archived 0 old conversation files older than 90 days.
+[MonthlyCleanup] Done.

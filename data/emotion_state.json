@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "mood": "happy",
+  "energy": 1.0,
+  "confidence": 1.0,
+  "attachment": 0.6,
+  "loneliness": 3.8782712293243914e-36,
+  "stress": 3.8782712293243914e-36,
+  "motivation": 0.8099996654527329,
+  "trust_gabi": 0.6,
+  "playfulness": 0.4,
+  "protection": 0.4,
+  "trait_curiosity": 0.8,
+  "trait_warmth": 0.616,
+  "trait_resilience": 0.616,
+  "trait_discipline": 0.5,
+  "trait_playful": 0.508,
+  "last_update": 1767389401.9593987,
+  "stability": 1.0,
+  "warmth": 1.0,
+  "affection": 1.0
+}

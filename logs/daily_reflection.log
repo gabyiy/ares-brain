@@ -1,0 +1,210 @@
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-11-26
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=0.20, energy=0.06, confidence=0.16, stability=0.32, affection=0.01.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-11-29
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=1.00, energy=1.00, confidence=1.00, stability=1.00, affection=1.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-11-30
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=0.00, energy=0.00, confidence=0.00, stability=0.00, affection=0.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-03
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=1.00, energy=1.00, confidence=1.00, stability=1.00, affection=1.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-04
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=1.00, energy=1.00, confidence=1.00, stability=1.00, affection=1.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-05
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=0.00, energy=0.00, confidence=0.00, stability=0.00, affection=0.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-09
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=1.00, energy=1.00, confidence=1.00, stability=1.00, affection=1.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-10
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=0.00, energy=0.00, confidence=0.00, stability=0.00, affection=0.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-15
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=1.00, energy=1.00, confidence=1.00, stability=1.00, affection=1.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-17
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=0.00, energy=0.00, confidence=0.00, stability=0.00, affection=0.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-19
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=1.00, energy=1.00, confidence=1.00, stability=1.00, affection=1.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-20
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=0.00, energy=0.00, confidence=0.00, stability=0.00, affection=0.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-21
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=1.00, energy=1.00, confidence=1.00, stability=1.00, affection=1.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-22
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=0.00, energy=0.00, confidence=0.00, stability=0.00, affection=0.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-23
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=1.00, energy=1.00, confidence=1.00, stability=1.00, affection=1.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-24
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=0.00, energy=0.00, confidence=0.00, stability=0.00, affection=0.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-25
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=1.00, energy=1.00, confidence=1.00, stability=1.00, affection=1.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-30
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=0.00, energy=0.00, confidence=0.00, stability=0.00, affection=0.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2025-12-31
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=1.00, energy=1.00, confidence=1.00, stability=1.00, affection=1.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2026-01-01
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=0.00, energy=0.00, confidence=0.00, stability=0.00, affection=0.00.
+/home/gabi/ARES_BRAIN/scripts/daily_reflection.py:104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().strftime("%Y-%m-%d")
+[DailyReflection] Running for 2026-01-02
+[DailyReflection] Summary:
+  Today I had no conversations with Gabi.
+[DailyReflection] Sentiment score: 0.00
+[DailyReflection] Saved daily reflection to long-term memory.
+[DailyReflection] Applying mood event: normal_day (intensity=0.4)
+[DailyReflection] New emotional description:
+My current mood is influenced by warmth=1.00, energy=1.00, confidence=1.00, stability=1.00, affection=1.00.

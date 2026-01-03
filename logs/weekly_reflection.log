@@ -1,0 +1,18 @@
+/home/gabi/ARES_BRAIN/scripts/weekly_reflection.py:195: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().date()
+/home/gabi/ARES_BRAIN/scripts/weekly_reflection.py:116: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  end = datetime.utcnow().date()
+[WeeklyReflection] Loaded 2 messages for 2025-11-25
+[WeeklyReflection] Summary:
+   In the last week (2025-11-24 to 2025-11-30), I talked with Gabi on 1 days, exchanging 2 messages in total (1 from Gabi, 1 from me). Emotionally, this week felt mixed, with both light and heavy moments. We often talked about artificial intelligence and technology, our robot and AI projects. I feel that our connection is slowly evolving as I observe his routines, worries, and motivations.
+[WeeklyReflection] Saved weekly reflection to long-term memory.
+[WeeklyReflection] Updated traits:
+  bonding: 0.580
+  trust: 0.600
+  curiosity: 0.720
+  playfulness: 0.500
+  protectiveness: 0.400
+  social_need: 0.500
+/home/gabi/ARES_BRAIN/scripts/weekly_reflection.py:195: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  today = datetime.utcnow().date()
+[WeeklyReflection] No conversations in the last 7 days. Nothing to summarize.

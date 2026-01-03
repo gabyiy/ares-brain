@@ -1,0 +1,24 @@
+{
+    "status": [
+        {
+            "timestamp": "2025-11-24T21:38:00.542197",
+            "content": "ARES is running normally."
+        },
+        {
+            "timestamp": "2025-11-24T21:38:15.543045",
+            "content": "ARES is running normally."
+        },
+        {
+            "timestamp": "2025-11-24T21:38:30.543863",
+            "content": "ARES is running normally."
+        },
+        {
+            "timestamp": "2025-11-24T21:38:45.544692",
+            "content": "ARES is running normally."
+        },
+        {
+            "timestamp": "2025-11-24T21:39:00.545567",
+            "content": "ARES is running normally."
+        }
+    ]
+}
