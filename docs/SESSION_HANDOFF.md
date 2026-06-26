@@ -67,3 +67,78 @@ git push
 
 Next instruction for ChatGPT:
 Continue from Weather provider using the existing HTTP client and cache pattern.
+## Session Update - Text Interface Completed
+
+### Current architecture
+
+core/
+    intent_router.py
+
+interfaces/
+    text_repl.py
+
+network/
+    http_client.py
+    cache.py
+    providers/
+        wikipedia.py
+
+### Completed
+
+- Removed legacy text_chat.py.
+- Removed old text routing system.
+- Introduced clean IntentRouter architecture.
+- Added interfaces/text_repl.py as the primary text interface.
+- Added bash alias:
+
+    ares
+
+which launches:
+
+    python -m interfaces.text_repl
+
+- Wake command:
+
+    hello ares
+
+- Exit command:
+
+    goodbye ares
+
+- Wikipedia summary command:
+
+    wiki <topic>
+
+- Wikipedia search command:
+
+    search wikipedia <query>
+
+### Repository status
+
+GitHub is synchronized.
+
+Main branch is clean.
+
+Text interface is now the official interface for ARES.
+
+### Next task
+
+Implement Open-Meteo weather provider.
+
+Create:
+
+network/providers/weather.py
+
+Add support inside IntentRouter for commands like:
+
+weather Madrid
+
+weather Barcelona
+
+weather tomorrow Madrid
+
+After weather, implement:
+
+- football provider
+- stocks provider
+- Brave Search provider
