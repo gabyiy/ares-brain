@@ -32,11 +32,9 @@ def main():
             continue
 
         try:
-            answer = router.handle(user)
+            print("ARES:", router.handle(user))
         except Exception as e:
-            answer = f"Error: {e}"
-
-        print("ARES:", answer)
+            print("ARES: Error:", e)
 
 
 if __name__ == "__main__":
