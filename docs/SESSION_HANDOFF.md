@@ -1,75 +1,23 @@
 # ARES Session Handoff
 
-Repo:
+Last Updated: 2026-06-26
+
+---
+
+# Project
+
+ARES (Autonomous Reasoning & Exploration System)
+
+Repository:
 https://github.com/gabyiy/ares-brain
 
-Local path:
-~/ares-brain
+Goal:
 
-Python:
-Use virtual environment:
-source .venv/bin/activate
+Build a modular, offline-first AI assistant capable of reasoning, memory, voice conversation, vision and internet information retrieval while running on Raspberry Pi today and Jetson Orin in the future.
 
-Current status:
-- GitHub repo working and pushed.
-- README updated with project purpose and roadmap.
-- Python .venv created.
-- requirements.txt added.
-- Central rate-limited HTTP client added:
-  network/http_client.py
-- TTL cache added:
-  network/cache.py
-- Wikipedia provider added and tested:
-  network/providers/wikipedia.py
-  network/providers/_test_wikipedia.py
+---
 
-Important rule:
-Run provider tests from repo root with module mode:
-python -m network.providers._test_wikipedia
-
-Do NOT run provider files directly.
-
-Current milestone:
-Network provider layer.
-
-Wikipedia status:
-PASSED.
-- Summary works through Wikipedia REST API.
-- Search works through MediaWiki API.
-- Uses RateLimitedHttpClient.
-- Uses TTLCache.
-
-Next task:
-Add Weather provider using Open-Meteo.
-
-Planned provider order:
-1. Wikipedia - DONE
-2. Weather - Open-Meteo
-3. Geocoding - Nominatim or Open-Meteo geocoding
-4. Stocks - Stooq
-5. Crypto - CoinGecko
-6. News - GDELT / RSS
-7. Football - free football API / TheSportsDB / football-data.org
-8. Time / timezone - WorldTimeAPI
-
-Development rule:
-One feature at a time.
-Create file -> test -> commit -> push.
-No direct requests outside network/http_client.py.
-No hardcoded secrets.
-No leaked tokens.
-
-Standard git workflow:
-git status
-git add -A
-git commit -m "Clear commit message"
-git push
-
-Next instruction for ChatGPT:
-Continue from Weather provider using the existing HTTP client and cache pattern.
-## Session Update - Text Interface Completed
-
-### Current architecture
+# Current Architecture
 
 core/
     intent_router.py
@@ -80,65 +28,227 @@ interfaces/
 network/
     http_client.py
     cache.py
-    providers/
-        wikipedia.py
 
-### Completed
+network/providers/
+    wikipedia.py
+    weather.py
 
-- Removed legacy text_chat.py.
-- Removed old text routing system.
-- Introduced clean IntentRouter architecture.
-- Added interfaces/text_repl.py as the primary text interface.
-- Added bash alias:
+docs/
+    SESSION_HANDOFF.md
 
-    ares
+---
 
-which launches:
+# Working Features
 
-    python -m interfaces.text_repl
+✓ Clean modular text interface
 
-- Wake command:
+✓ Wake mode
 
-    hello ares
+hello ares
 
-- Exit command:
+✓ Sleep mode
 
-    goodbye ares
+goodbye ares
 
-- Wikipedia summary command:
+✓ Wikipedia summary
 
-    wiki <topic>
+wiki Raspberry Pi
 
-- Wikipedia search command:
+✓ Wikipedia search
 
-    search wikipedia <query>
+search wikipedia Apollo program
 
-### Repository status
+✓ Live weather
 
-GitHub is synchronized.
+weather madrid
 
-Main branch is clean.
+Weather uses:
 
-Text interface is now the official interface for ARES.
+- Open-Meteo Geocoding API
+- Open-Meteo Weather API
 
-### Next task
+Current weather returns:
 
-Implement Open-Meteo weather provider.
+- City
+- Country
+- Temperature
+- Humidity
+- Wind speed
 
-Create:
+---
 
-network/providers/weather.py
+# Infrastructure
 
-Add support inside IntentRouter for commands like:
+HTTP Client
 
-weather Madrid
+- Timeout protection
+- Rate limiting
 
-weather Barcelona
+Cache
 
-weather tomorrow Madrid
+- TTL cache
+- Prevent duplicate requests
 
-After weather, implement:
+Intent Router
 
-- football provider
-- stocks provider
-- Brave Search provider
+Responsible only for:
+
+- Wake state
+- Sleep state
+- Intent detection
+- Provider routing
+
+Providers contain all external API logic.
+
+---
+
+# Commands
+
+hello ares
+
+goodbye ares
+
+wiki <topic>
+
+search wikipedia <topic>
+
+weather <city>
+
+---
+
+# Bash Shortcut
+
+ARES starts using:
+
+ares
+
+Alias configured inside:
+
+~/.bashrc
+
+---
+
+# Repository Status
+
+Repository cleaned.
+
+Old text_chat.py removed.
+
+Legacy text system removed.
+
+Clean text interface implemented.
+
+Wikipedia provider completed.
+
+Weather provider completed.
+
+GitHub synchronized.
+
+Working tree clean.
+
+---
+
+# Next Milestones
+
+1. Football provider
+
+Commands:
+
+football Barcelona
+
+football Real Madrid
+
+league Premier League
+
+2. Stock provider
+
+Examples:
+
+stock Rheinmetall
+
+stock NVIDIA
+
+stock Tesla
+
+3. News provider
+
+news AI
+
+news Europe
+
+news defense
+
+4. Currency provider
+
+usd eur
+
+btc eur
+
+5. Voice interface
+
+6. Memory integration
+
+7. Camera integration
+
+8. Local LLM
+
+---
+
+# Long-Term Vision
+
+ARES will become:
+
+- Personal AI assistant
+- Voice companion
+- Robot brain
+- Home automation controller
+- Vision system
+- Long-term memory
+- Planner
+- Research assistant
+
+Future hardware:
+
+Raspberry Pi 5
+
+↓
+
+Jetson Orin
+
+↓
+
+Mobile robot
+
+---
+
+# Development Rules
+
+Always keep the architecture modular.
+
+IntentRouter never performs API calls.
+
+Every external service must be implemented as its own Provider.
+
+Reuse the shared HTTP client.
+
+Reuse the shared cache.
+
+Keep features independent.
+
+---
+
+# End of Session
+
+Current milestone:
+
+✓ Modular Text Interface
+
+✓ Wikipedia Provider
+
+✓ Weather Provider
+
+ARES is now capable of answering live internet questions through modular providers.
+
+Next development session begins with:
+
+Football Provider.
