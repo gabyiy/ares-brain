@@ -6,11 +6,27 @@ Last Updated: 2026-06-26
 
 https://github.com/gabyiy/ares-brain
 
-## Current Stable Version
+## Current Version
 
 ARES v0.4
 
-## Current Architecture
+## Completed
+
+- New modular text interface.
+- Old text_chat.py removed.
+- IntentRouter created.
+- Wikipedia provider working.
+- Weather provider working.
+- News provider working.
+- Google RSS news implemented.
+- News output now shows:
+  - Headline
+  - Source
+  - Date
+- Bash shortcut:
+  ares
+
+## Architecture
 
 core/
     intent_router.py
@@ -26,71 +42,20 @@ network/
         weather.py
         news.py
 
-docs/
-    SESSION_HANDOFF.md
+## Next Milestone
 
-## Working Features
+Natural language understanding.
 
-- Wake command: hello ares
-- Sleep command: goodbye ares
-- Wikipedia summary: wiki Raspberry Pi
-- Wikipedia search: search wikipedia Apollo program
-- Weather: weather Madrid
-- News search: news defense
-- Natural news query extraction:
-  - what are the latest news on rheinmetal my friend
-  - I saw that rheinmetal is not doing well what are the news
-
-## Providers
-
-WikipediaProvider:
-- Summary lookup
-- Search results
-
-WeatherProvider:
-- Uses Open-Meteo
-- No API key
-- City geocoding
-- Current temperature
-- Humidity
-- Wind speed
-
-NewsProvider:
-- Uses Google News RSS
-- No API key
-- Returns headline, source, and date
-- Cleaner output than raw URLs
-- Replaced GDELT because GDELT was flaky and noisy
-
-## Current Commands
+Examples:
 
 hello ares
+weather madrid
+wiki Raspberry Pi
+news defense
+what are the latest news on rheinmetall
+I heard NVIDIA is doing well
+what happened with bitcoin today
 
-goodbye ares
+Goal:
+ARES should automatically detect the topic and call the correct provider without requiring commands like 'news' or 'weather'.
 
-wiki <topic>
-
-search wikipedia <topic>
-
-weather <city>
-
-news <topic>
-
-Natural language examples:
-
-what are the latest news on rheinmetal my friend
-
-I saw that rheinmetal is not doing well what are the news
-
-## Important Development Rules
-
-All code changes must use the delete-and-recreate method.
-
-Do not manually edit files with nano unless absolutely necessary.
-
-Preferred pattern:
-
-rm -f path/to/file.py
-mkdir -p path/to/folder
-cat > path/to/file.py << 'EOF'
-complete file here
