@@ -2,6 +2,7 @@ from network.http_client import RateLimitedHttpClient
 from network.cache import TTLCache
 from network.providers.wikipedia import WikipediaProvider
 from network.providers.weather import WeatherProvider
+from network.providers.news import NewsProvider
 
 
 class IntentRouter:
@@ -10,6 +11,73 @@ class IntentRouter:
         self.cache = TTLCache()
         self.wiki = WikipediaProvider(self.http, self.cache)
         self.weather = WeatherProvider(self.http, self.cache)
+        self.news = NewsProvider(self.http, self.cache)
+
+    def _extract_news_query(self, text: str) -> str:
+        low = text.lower()
+
+        known_topics = {
+            "rheinmetal": "rheinmetall",
+            "rheinmetall": "rheinmetall",
+            "rhm": "rheinmetall",
+            "nvidia": "nvidia",
+            "nvda": "nvidia",
+            "tesla": "tesla",
+            "apple": "apple",
+            "microsoft": "microsoft",
+            "openai": "openai",
+            "google": "google",
+            "meta": "meta",
+            "palantir": "palantir",
+            "lockheed": "lockheed martin",
+            "leonardo": "leonardo defense",
+            "thales": "thales defense",
+            "safran": "safran defense",
+            "defense": "defense",
+            "ai": "artificial intelligence",
+            "bitcoin": "bitcoin",
+            "btc": "bitcoin",
+        }
+
+        for word, topic in known_topics.items():
+            if word in low:
+                return topic
+
+        filler = [
+            "what", "are", "is", "the", "latest", "news", "on", "about",
+            "i", "saw", "that", "not", "doing", "well", "bad", "good",
+            "tell", "me", "get", "give", "show", "please", "my", "friend",
+            "happening", "happened", "with", "today", "now", "ares"
+        ]
+
+        words = []
+        for word in low.replace("?", " ").replace(",", " ").split():
+            if word not in filler and len(word) > 2:
+                words.append(word)
+
+        return " ".join(words).strip()
+
+    def _is_news_intent(self, low: str) -> bool:
+        triggers = ["news", "latest", "happening", "happened", "doing well", "not doing well"]
+        return any(t in low for t in triggers)
+
+    def _format_news(self, query: str, results: list) -> str:
+        lines = [f"Latest news about {query}:"]
+
+        for i, r in enumerate(results, 1):
+            title = r.get("title") or "No title"
+            source = r.get("domain") or "unknown source"
+            date = r.get("date") or ""
+
+            item = f"{i}. {title}\n   Source: {source}"
+            if date:
+                item += f"\n   Date: {date}"
+
+            lines.append(item)
+
+        lines.append("")
+        lines.append("Say 'news <topic>' to search another topic.")
+        return "\n\n".join(lines)
 
     def handle(self, text: str) -> str:
         q = (text or "").strip()
@@ -36,6 +104,21 @@ class IntentRouter:
                 f"Humidity: {data.get('humidity')}%\n"
                 f"Wind: {data.get('wind')} km/h"
             )
+
+        if low.startswith("news ") or self._is_news_intent(low):
+            if low.startswith("news "):
+                query = q[len("news "):].strip()
+            else:
+                query = self._extract_news_query(q)
+
+            if not query:
+                return "Tell me what news topic to search."
+
+            results = self.news.search(query, limit=5)
+            if not results:
+                return f"I found no recent news for {query}."
+
+            return self._format_news(query, results)
 
         if low.startswith("wiki "):
             title = q[5:].strip()
