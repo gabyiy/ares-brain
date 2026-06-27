@@ -13,6 +13,57 @@ class IntentRouter:
         self.weather = WeatherProvider(self.http, self.cache)
         self.news = NewsProvider(self.http, self.cache)
 
+    def _extract_weather_city(self, text: str) -> str:
+        low = text.lower()
+
+        cities = [
+            "madrid", "barcelona", "valencia", "sevilla", "malaga",
+            "zaragoza", "bilbao", "london", "paris", "berlin",
+            "bucharest", "rome", "lisbon", "new york", "tokyo"
+        ]
+
+        for city in cities:
+            if city in low:
+                return city.title()
+
+        filler = [
+            "weather", "temperature", "rain", "wind", "forecast",
+            "today", "tomorrow", "next", "week", "now", "right",
+            "how", "is", "the", "in", "for", "will", "it", "be",
+            "outside", "like", "ares", "please", "tell", "me"
+        ]
+
+        words = []
+        for word in low.replace("?", " ").replace(",", " ").split():
+            if word not in filler and len(word) > 2:
+                words.append(word)
+
+        if words:
+            return " ".join(words).title()
+
+        return "Madrid"
+
+    def _extract_weather_mode(self, text: str) -> str:
+        low = text.lower()
+
+        if "tomorrow" in low:
+            return "tomorrow"
+
+        if "next week" in low or "week" in low or "7 day" in low or "seven day" in low:
+            return "week"
+
+        if "now" in low or "right now" in low:
+            return "now"
+
+        return "today"
+
+    def _is_weather_intent(self, low: str) -> bool:
+        triggers = [
+            "weather", "temperature", "rain", "wind",
+            "hot", "cold", "forecast", "outside"
+        ]
+        return any(t in low for t in triggers)
+
     def _extract_news_query(self, text: str) -> str:
         low = text.lower()
 
@@ -75,8 +126,6 @@ class IntentRouter:
 
             lines.append(item)
 
-        lines.append("")
-        lines.append("Say 'news <topic>' to search another topic.")
         return "\n\n".join(lines)
 
     def handle(self, text: str) -> str:
@@ -89,21 +138,13 @@ class IntentRouter:
         if low in ("hello ares", "hi ares", "hey ares"):
             return "Hello Gabi, I am here."
 
-        if low in ("goodbye", "goodbye ares", "exit", "quit"):
+        if low in ("goodbye", "goodbye ares", "goodby", "goodby ares", "exit", "quit"):
             return "Goodbye Gabi."
 
-        if low.startswith("weather "):
-            city = q[len("weather "):].strip()
-            if not city:
-                return "Tell me the city."
-
-            data = self.weather.current(city)
-            return (
-                f"Weather in {data.get('city')}, {data.get('country')}:\n"
-                f"Temperature: {data.get('temperature')}°C\n"
-                f"Humidity: {data.get('humidity')}%\n"
-                f"Wind: {data.get('wind')} km/h"
-            )
+        if self._is_weather_intent(low):
+            city = self._extract_weather_city(q)
+            mode = self._extract_weather_mode(q)
+            return self.weather.format_forecast(city, mode)
 
         if low.startswith("news ") or self._is_news_intent(low):
             if low.startswith("news "):
@@ -122,18 +163,13 @@ class IntentRouter:
 
         if low.startswith("wiki "):
             title = q[5:].strip()
-            if not title:
-                return "Tell me what Wikipedia page to search."
-
             data = self.wiki.summary(title)
             return f"{data.get('title')}: {data.get('extract')}\n{data.get('url')}"
 
         if low.startswith("search wikipedia "):
             query = q[len("search wikipedia "):].strip()
-            if not query:
-                return "Tell me what to search on Wikipedia."
-
             results = self.wiki.search(query, limit=3)
+
             if not results:
                 return "I found no Wikipedia results."
 
