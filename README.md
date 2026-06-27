@@ -1,6 +1,13 @@
 # ARES
 
-> **A modular AI assistant designed to evolve into a fully autonomous personal companion and robotic brain.**
+![Python](https://img.shields.io/badge/Python-3.13-blue)
+![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205-red)
+![OS](https://img.shields.io/badge/OS-Debian-green)
+![Status](https://img.shields.io/badge/Status-In%20Development-orange)
+![Version](https://img.shields.io/badge/Version-v0.5-blueviolet)
+![License](https://img.shields.io/badge/License-MIT-success)
+
+> Building a modular AI brain that will eventually become a fully autonomous robotic companion.
 
 ---
 
@@ -8,62 +15,35 @@
 
 ARES is a long-term AI engineering project.
 
-The objective is to build a local-first intelligent assistant that starts as a terminal application on a Raspberry Pi and gradually evolves into an autonomous robot capable of understanding, remembering, reasoning, searching knowledge, interacting naturally with people and controlling the physical world.
+It begins as a local AI assistant running on a Raspberry Pi and will gradually evolve into an autonomous companion capable of reasoning, remembering, speaking, seeing, controlling hardware and eventually operating inside a humanoid robot.
 
-Every milestone is designed to keep ARES stable while continuously adding new capabilities.
-
----
-
-# Current Status
-
-**Version:** ARES v0.5
-
-**Repository:**
-https://github.com/gabyiy/ares-brain
-
-**Platform**
-
-- Raspberry Pi 5
-- Python 3
-- Debian Linux
+The project is developed in stable milestones, ensuring every new feature builds on a solid foundation.
 
 ---
 
-# Current Milestone
+# Current Mission
 
-## 🚧 Phase 2 — Intelligence
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-### Completed
+Phase 2 — Intelligence
 
-- Intent Router
-- Natural language detection
-- Wikipedia Provider
-- Weather Provider
-- News Provider
-- Google RSS integration
-- HTTP client
-- Cache system
-- Modular architecture
-- Session handoff system
+Current Version: **ARES v0.5**
 
-### In Progress
+Building:
 
-- Knowledge Provider
-- Better topic extraction
-- Automatic provider selection
+• Better Natural Language Understanding
 
-### Next Goals
+• Knowledge Engine
 
-- Stock Market Provider
-- Cryptocurrency Provider
-- Company Information Provider
-- Better reasoning
-- Better summaries
-- Multiple provider responses
+• Automatic Provider Selection
 
-Goal:
+• Future Stock Provider
 
-ARES should automatically understand the user's question and decide which provider should answer without requiring commands like **weather**, **news** or **wiki**.
+Progress
+
+████░░░░░░ 40%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ---
 
@@ -71,7 +51,7 @@ ARES should automatically understand the user's question and decide which provid
 
 ## Natural Language
 
-Examples
+ARES already understands commands like:
 
 hello ares
 
@@ -81,168 +61,265 @@ weather tomorrow
 
 weather next week
 
-what are the latest news on rheinmetall
+news defense
 
-I heard NVIDIA is doing well
-
-what happened with bitcoin today
+what are the latest news about rheinmetall
 
 goodbye ares
+
+without requiring strict command syntax.
+
+---
+
+## Providers
+
+✅ Wikipedia
+
+✅ Weather
+
+✅ Google RSS News
+
+More providers will be added over time.
 
 ---
 
 ## Weather
 
-- Current weather
-- Tomorrow
-- 7-day forecast
+Supports
+
+• Current weather
+
+• Tomorrow
+
+• 7-Day Forecast
 
 Displays
 
-- Weather
-- High / Low
-- Rain probability
-- Wind
-- Day
+• Weather
+
+• High / Low
+
+• Rain chance
+
+• Wind
+
+• Day
 
 ---
 
 ## News
 
-Google RSS provider
+ARES automatically extracts topics from natural language.
 
 Displays
 
-- Headline
-- Source
-- Date
+• Headline
 
-Automatically extracts the topic from normal language.
+• Source
 
----
+• Date
 
-## Wikipedia
-
-Returns concise summaries for general knowledge questions.
+without showing RSS links.
 
 ---
 
 # Architecture
 
 core/
+
     intent_router.py
 
 interfaces/
+
     text_repl.py
 
 network/
+
     http_client.py
+
     cache.py
 
     providers/
+
         wikipedia.py
+
         weather.py
+
         news.py
 
 docs/
+
     SESSION_HANDOFF.md
 
 ---
 
-# Development Roadmap
+# Roadmap
 
 ## ✅ Phase 1 — Foundation
 
-- Project structure
-- Intent Router
-- HTTP Client
-- Cache
-- Wikipedia Provider
-- Weather Provider
-- News Provider
-- GitHub repository
-- Automatic documentation
+• Project Structure
+
+• Intent Router
+
+• HTTP Client
+
+• Cache
+
+• Wikipedia
+
+• Weather
+
+• News
+
+• GitHub
+
+• Documentation
+
+---
 
 ## 🚧 Phase 2 — Intelligence
 
-- Knowledge Provider
-- Automatic Provider Selection
-- Better Natural Language Understanding
-- Stock Market Provider
-- Cryptocurrency Provider
-- Company Information
-- Better Search
-- Reasoning Engine
+• Knowledge Provider
+
+• Automatic Provider Selection
+
+• Better Natural Language Understanding
+
+• Stock Market Provider
+
+• Cryptocurrency Provider
+
+• Company Information
+
+• Better Search
+
+• Reasoning
+
+---
 
 ## ⬜ Phase 3 — Memory
 
-- Conversation history
-- Long-term memory
-- User profile
-- Preferences
-- Daily summaries
-- Context awareness
+• Conversation History
+
+• Long-Term Memory
+
+• User Preferences
+
+• Daily Summaries
+
+• Context Awareness
+
+---
 
 ## ⬜ Phase 4 — Voice
 
-- Wake word
-- Speech-to-text
-- Text-to-speech
-- Continuous conversations
+• Wake Word
+
+• Speech Recognition
+
+• Text-to-Speech
+
+• Continuous Conversation
+
+---
 
 ## ⬜ Phase 5 — Personal Assistant
 
-- Calendar
-- Notes
-- Reminders
-- Email
-- Daily Briefings
-- Stock alerts
-- News alerts
+• Calendar
+
+• Notes
+
+• Email
+
+• Reminders
+
+• Daily Briefings
+
+• News Alerts
+
+• Stock Alerts
+
+---
 
 ## ⬜ Phase 6 — Home Automation
 
-- Telegram
-- Smart plugs
-- PC control
-- Lights
-- Sensors
-- Cameras
+• Telegram
+
+• Smart Plugs
+
+• PC Control
+
+• Home Assistant
+
+• Sensors
+
+• Cameras
+
+---
 
 ## ⬜ Phase 7 — Vision
 
-- Camera
-- OCR
-- Face Recognition
-- Object Detection
-- Scene Understanding
+• Camera
+
+• OCR
+
+• Face Recognition
+
+• Object Detection
+
+• Scene Understanding
+
+---
 
 ## ⬜ Phase 8 — Robotics
 
-- ROS2
-- Jetson Orin
-- LiDAR
-- Navigation
-- Docking Station
-- Robotic Arm
+• ROS2
+
+• Jetson Orin
+
+• LiDAR
+
+• Navigation
+
+• Docking Station
+
+• Robotic Arm
+
+• Autonomous Movement
+
+---
 
 ## ⬜ Phase 9 — Companion AI
 
-- Personality
-- Initiative
-- Learning
-- Planning
-- Emotional memory
+• Personality
+
+• Initiative
+
+• Planning
+
+• Learning
+
+• Emotional Memory
+
+---
 
 ## ⬜ Phase 10 — ARES 2.0
 
-- Full robotic assistant
-- Voice
-- Vision
-- Memory
-- Reasoning
-- Home control
-- Autonomous operation
+• Full Robotic Assistant
+
+• Voice
+
+• Vision
+
+• Memory
+
+• Reasoning
+
+• Internet Knowledge
+
+• Home Control
+
+• Autonomous Operation
 
 ---
 
@@ -262,42 +339,75 @@ Robotics          ░░░░░░░░░░ 0%
 
 ---
 
+# Future Technologies
+
+ARES will eventually integrate
+
+• Whisper
+
+• Piper TTS
+
+• Ollama
+
+• Llama Models
+
+• ROS2
+
+• Jetson Orin
+
+• Telegram
+
+• Home Assistant
+
+• Vision AI
+
+• Smart Home Devices
+
+---
+
 # Development Workflow
 
-- Never manually edit generated documentation.
-- Always recreate files from scratch.
-- Always test before committing.
-- Always update README.md.
-- Always update docs/SESSION_HANDOFF.md.
-- Commit every stable milestone.
-- Push every stable milestone.
+This project follows strict engineering rules.
+
+• Never manually edit generated documentation.
+
+• Always recreate documentation files.
+
+• Test every milestone.
+
+• Update README.md.
+
+• Update docs/SESSION_HANDOFF.md.
+
+• Commit every stable milestone.
+
+• Push every stable milestone to GitHub.
 
 ---
 
-# Long-Term Vision
+# Long-Term Goal
 
-ARES is not meant to remain a chatbot.
+ARES is not intended to remain a chatbot.
 
-The final objective is to create a local AI companion capable of:
+The final objective is to build a true AI companion capable of
 
-- Understanding natural language
-- Remembering conversations
-- Learning user preferences
-- Searching the internet intelligently
-- Monitoring news and markets
-- Assisting with everyday tasks
-- Controlling smart devices
-- Seeing through cameras
-- Speaking naturally
-- Moving inside a robotic body
+• Understanding
 
-Each phase brings ARES one step closer to becoming a true AI companion.
+• Remembering
 
----
+• Reasoning
 
-# License
+• Speaking
 
-MIT
+• Seeing
+
+• Learning
+
+• Controlling hardware
+
+• Helping in everyday life
+
+• Operating inside a humanoid robot
 
 ---
 
@@ -308,3 +418,4 @@ Gabriel
 ARES Project
 
 2026
+
