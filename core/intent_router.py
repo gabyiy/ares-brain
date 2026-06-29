@@ -1,10 +1,12 @@
 from network.http_client import RateLimitedHttpClient
 from network.cache import TTLCache
 from network.providers.weather import WeatherProvider
+from network.providers.news import NewsProvider
 
 from core.intents.greeting import GreetingIntent
 from core.intents.goodbye import GoodbyeIntent
 from core.intents.weather import WeatherIntent
+from core.intents.news import NewsIntent
 
 
 class IntentRouter:
@@ -13,11 +15,13 @@ class IntentRouter:
         self.cache = TTLCache()
 
         self.weather_provider = WeatherProvider(self.http, self.cache)
+        self.news_provider = NewsProvider(self.http, self.cache)
 
         self.intents = [
             GreetingIntent(),
             GoodbyeIntent(),
             WeatherIntent(self.weather_provider),
+            NewsIntent(self.news_provider),
         ]
 
     def handle(self, text: str) -> str:
