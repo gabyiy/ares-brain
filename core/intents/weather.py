@@ -38,7 +38,7 @@ class WeatherIntent:
     def mode(self, text: str) -> str:
         low = text.lower()
 
-        if "tomorrow" in low:
+        if "tomorrow" in low or "tomorow" in low or "tommorow" in low:
             return "tomorrow"
 
         if "next week" in low or "week" in low:
