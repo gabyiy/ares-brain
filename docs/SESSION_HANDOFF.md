@@ -1,67 +1,81 @@
-# ARES Session Handoff
+ARES Session Handoff
 
-Last Updated: 2026-06-27
+Last Updated: 2026-06-29
 
-Repository:
-https://github.com/gabyiy/ares-brain
+Current Version
 
-Current Version:
-ARES v0.6 modular intent system
+ARES v0.7
 
-## Current Status
+---
 
-ARES was restructured from one large intent_router.py into modular intent files.
+Current Status
 
-Working modules:
+The project has been fully reorganized into a modular architecture.
 
-core/intents/greeting.py
-core/intents/goodbye.py
-core/intents/weather.py
-core/intents/news.py
-core/intents/knowledge.py
+The original monolithic "intent_router.py" has been split into separate intent modules.
 
-Router:
+Current working intents:
 
-core/intent_router.py
+- Greeting
+- Goodbye
+- Weather
+- News
+- Knowledge
+- Stocks
 
-Providers:
+Current providers:
 
-network/providers/weather.py
-network/providers/news.py
-network/providers/wikipedia.py
+- Weather Provider
+- News Provider
+- Wikipedia Provider
+- Knowledge Provider
+- Alpha Vantage Stock Provider
 
-## Working Features
+The stock provider now uses Alpha Vantage instead of Yahoo Finance due to Yahoo's authentication restrictions.
 
-hello ares
-goodbye ares
-weather madrid tomorrow
-weather madrid next week
-news defense
-what happened with bitcoin today
-I heard NVIDIA is doing well
+All modules compile successfully.
 
-## Architecture Rule
+Git repository is clean.
 
-Intent files decide what the user wants.
+---
 
-Providers fetch the data.
+Current Architecture
 
-IntentRouter only dispatches requests.
+Intent Router
+        │
+        ├── GreetingIntent
+        ├── GoodbyeIntent
+        ├── WeatherIntent
+        ├── NewsIntent
+        ├── KnowledgeIntent
+        └── StockIntent
 
-## Next Step
+Each intent owns its own logic and communicates with its corresponding provider.
 
-Add modular StockIntent.
+---
 
-Then add:
+Immediate Next Milestone
 
-- Stocks provider next
-- Crypto
-- Company information
-- Better reasoning
-- Memory
+Company Information Provider
 
-## Git Status
+ARES should understand:
 
-Latest milestone:
-Modular NewsIntent working and pushed.
+- Tell me about Nvidia
+- What does Apple do?
+- Explain Rheinmetall
+- Who owns Tesla?
 
+---
+
+Future Roadmap
+
+1. Company Provider
+2. Cryptocurrency Provider
+3. Better reasoning
+4. Conversation memory
+5. Long-term memory
+6. Voice interface
+7. Vision
+8. Robotics
+9. Jetson Orin migration
+10. Autonomous ARES
