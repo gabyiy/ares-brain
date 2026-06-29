@@ -1,61 +1,66 @@
 # ARES Session Handoff
 
-Last Updated: 2026-06-26
+Last Updated: 2026-06-27
 
-## Repository
-
+Repository:
 https://github.com/gabyiy/ares-brain
 
-## Current Version
+Current Version:
+ARES v0.6 modular intent system
 
-ARES v0.4
+## Current Status
 
-## Completed
+ARES was restructured from one large intent_router.py into modular intent files.
 
-- New modular text interface.
-- Old text_chat.py removed.
-- IntentRouter created.
-- Wikipedia provider working.
-- Weather provider working.
-- News provider working.
-- Google RSS news implemented.
-- News output now shows:
-  - Headline
-  - Source
-  - Date
-- Bash shortcut:
-  ares
+Working modules:
 
-## Architecture
+core/intents/greeting.py
+core/intents/goodbye.py
+core/intents/weather.py
+core/intents/news.py
 
-core/
-    intent_router.py
+Router:
 
-interfaces/
-    text_repl.py
+core/intent_router.py
 
-network/
-    http_client.py
-    cache.py
-    providers/
-        wikipedia.py
-        weather.py
-        news.py
+Providers:
 
-## Next Milestone
+network/providers/weather.py
+network/providers/news.py
+network/providers/wikipedia.py
 
-Natural language understanding.
-
-Examples:
+## Working Features
 
 hello ares
-weather madrid
-wiki Raspberry Pi
+goodbye ares
+weather madrid tomorrow
+weather madrid next week
 news defense
-what are the latest news on rheinmetall
-I heard NVIDIA is doing well
 what happened with bitcoin today
+I heard NVIDIA is doing well
 
-Goal:
-ARES should automatically detect the topic and call the correct provider without requiring commands like 'news' or 'weather'.
+## Architecture Rule
+
+Intent files decide what the user wants.
+
+Providers fetch the data.
+
+IntentRouter only dispatches requests.
+
+## Next Step
+
+Add modular KnowledgeIntent.
+
+Then add:
+
+- Stocks
+- Crypto
+- Company information
+- Better reasoning
+- Memory
+
+## Git Status
+
+Latest milestone:
+Modular NewsIntent working and pushed.
 
