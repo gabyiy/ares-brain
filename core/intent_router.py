@@ -4,12 +4,14 @@ from network.providers.weather import WeatherProvider
 from network.providers.news import NewsProvider
 from network.providers.wikipedia import WikipediaProvider
 from network.providers.knowledge import KnowledgeProvider
+from network.providers.stocks import StockProvider
 
 from core.intents.greeting import GreetingIntent
 from core.intents.goodbye import GoodbyeIntent
 from core.intents.weather import WeatherIntent
 from core.intents.news import NewsIntent
 from core.intents.knowledge import KnowledgeIntent
+from core.intents.stocks import StockIntent
 
 
 class IntentRouter:
@@ -21,6 +23,7 @@ class IntentRouter:
         self.news_provider = NewsProvider(self.http, self.cache)
         self.wikipedia_provider = WikipediaProvider(self.http, self.cache)
         self.knowledge_provider = KnowledgeProvider(self.wikipedia_provider)
+        self.stock_provider = StockProvider(self.http, self.cache)
 
         self.intents = [
             GreetingIntent(),
@@ -28,6 +31,7 @@ class IntentRouter:
             WeatherIntent(self.weather_provider),
             NewsIntent(self.news_provider),
             KnowledgeIntent(self.knowledge_provider),
+            StockIntent(self.stock_provider),
         ]
 
     def handle(self, text: str) -> str:
