@@ -1,0 +1,21 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="360" fill="#0b0f19"/>
+  <circle cx="1050" cy="80" r="180" fill="#1f6feb" opacity="0.18"/>
+  <circle cx="150" cy="300" r="160" fill="#7c3aed" opacity="0.16"/>
+
+  <text x="80" y="130" font-family="Arial, Helvetica, sans-serif" font-size="72" font-weight="700" fill="#ffffff">
+    ARES
+  </text>
+
+  <text x="80" y="190" font-family="Arial, Helvetica, sans-serif" font-size="30" fill="#c9d1d9">
+    Autonomous Reasoning & Exploration System
+  </text>
+
+  <text x="80" y="245" font-family="Arial, Helvetica, sans-serif" font-size="24" fill="#8b949e">
+    Modular AI assistant • Raspberry Pi • Knowledge • Weather • News • Future Robot Brain
+  </text>
+
+  <text x="80" y="305" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#58a6ff">
+    Phase 2 — Intelligence Engine
+  </text>
+</svg>
