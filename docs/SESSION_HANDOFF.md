@@ -18,6 +18,7 @@ core/intents/greeting.py
 core/intents/goodbye.py
 core/intents/weather.py
 core/intents/news.py
+core/intents/knowledge.py
 
 Router:
 
@@ -49,11 +50,11 @@ IntentRouter only dispatches requests.
 
 ## Next Step
 
-Add modular KnowledgeIntent.
+Add modular StockIntent.
 
 Then add:
 
-- Stocks
+- Stocks provider next
 - Crypto
 - Company information
 - Better reasoning

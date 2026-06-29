@@ -59,6 +59,7 @@ core/intents/
     goodbye.py
     weather.py
     news.py
+    knowledge.py
 
 network/
     http_client.py
@@ -105,7 +106,7 @@ This avoids giant files and keeps ARES scalable.
 
 - Modular intent system
 - Natural language detection
-- Knowledge intent
+- Knowledge intent ✅
 - Stock provider
 - Crypto provider
 - Company information
@@ -167,9 +168,9 @@ This avoids giant files and keeps ARES scalable.
 
 # Next Milestone
 
-ARES v0.7
+ARES v0.8
 
-Add modular KnowledgeIntent.
+Add modular StockIntent.
 
 Target examples:
 
