@@ -39,7 +39,9 @@ New Phase 3 skill modules:
 - `skills.SkillPlugin`
 - `skills.builtin.TimeDateSkill`
 
-The skill layer is standalone. It is not wired into the existing intent router yet, and voice work has not started.
+The skill layer is minimally wired into the text REPL through `IntentRouter`.
+Normal intents still run first; SkillManager is only a fallback when no intent matches.
+Voice work has not started.
 
 Current working intents:
 
@@ -79,6 +81,7 @@ Text REPL memory:
 - `interfaces.text_repl` creates one shared event bus and passes it to `IntentRouter` and `MemoryStore`.
 - Each text response records a short-term `conversation_turn` memory.
 - Sleeping-mode responses also emit `user_message_received` and `response_generated`.
+- The text REPL now also registers the built-in skill plugin.
 
 Previous v0.7 modules compiled successfully.
 
@@ -110,11 +113,18 @@ Skill Manager
         └── Built-in skills
             └── TimeDateSkill
 
+Text REPL
+        │
+        ├── IntentRouter
+        ├── SkillManager fallback
+        ├── EventBus
+        └── MemoryStore v1
+
 ---
 
 Immediate Next Milestone
 
-Skill integration planning, then Company Information Provider
+Company Information Provider
 
 ARES should understand:
 
@@ -125,7 +135,6 @@ ARES should understand:
 
 Next technical choices:
 
-- Decide whether SkillManager should sit beside IntentRouter or become a fallback after intents.
 - Keep voice out of scope until text skill execution is stable.
 - Connect selected daily reflection scripts and future providers to MemoryStore v1.
 
@@ -151,6 +160,7 @@ Verification Notes
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
+- Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
 - `git diff --check` passed after the Phase 2 foundation and wiring changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.

@@ -16,8 +16,9 @@ from events import get_global_bus
 
 
 class IntentRouter:
-    def __init__(self, event_bus=None):
+    def __init__(self, event_bus=None, skill_manager=None):
         self.events = event_bus or get_global_bus()
+        self.skill_manager = skill_manager
 
         self.http = RateLimitedHttpClient(min_delay=1.5, timeout=10)
         self.cache = TTLCache()
@@ -61,6 +62,10 @@ class IntentRouter:
                 self._publish_response(response=response, text=q, intent=intent_name)
                 return response
 
+        skill_response = self._handle_skill(q)
+        if skill_response:
+            return skill_response
+
         self.events.publish("intent.unmatched", {"text": q}, source="intent_router")
         response = "I'm not sure how to answer that yet."
         self._publish_response(response=response, text=q)
@@ -77,3 +82,20 @@ class IntentRouter:
             "text": text,
         }
         self._publish_many(("response_generated", "intent.response"), payload)
+
+    def _handle_skill(self, text: str):
+        if not self.skill_manager:
+            return None
+
+        response = self.skill_manager.handle(text)
+        if not response:
+            return None
+
+        skill_name = getattr(response, "skill", "skill")
+        response_text = getattr(response, "text", str(response))
+        self._publish_many(
+            ("intent_detected", "intent.matched"),
+            {"intent": skill_name, "kind": "skill", "text": text},
+        )
+        self._publish_response(response=response_text, text=text, intent=skill_name)
+        return response_text

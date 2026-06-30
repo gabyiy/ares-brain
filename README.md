@@ -146,7 +146,10 @@ Phase 3 Skill Modules
 - `skills.SkillPlugin` groups skills into a plugin bundle.
 - `skills.builtin.TimeDateSkill` is the first example skill.
 
-Voice has not started. The skill layer is standalone and does not replace the existing intent router yet.
+The text REPL registers the built-in skill plugin and passes `SkillManager` to `IntentRouter`.
+Intent routing still runs first; skills are used only as a fallback when no normal intent matches.
+
+Voice has not started.
 
 Phase 4
 
