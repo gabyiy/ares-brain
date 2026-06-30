@@ -10,13 +10,15 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v0.7 — Modular Intelligence Engine
+ARES v0.8 - Phase 2 Foundation
 
 ---
 
 Current Architecture
 
 ARES
+│
+├── Event Bus
 │
 ├── Intent Router
 │
@@ -37,6 +39,7 @@ ARES
 │
 ├── HTTP Client
 ├── Cache
+├── Memory v1 Interface
 └── Text Interface
 
 ---
@@ -57,6 +60,8 @@ Completed
 - Alpha Vantage Stock Provider
 - HTTP Client
 - Cache System
+- Event Bus foundation
+- Memory v1 interface
 - Session handoff documentation
 - Modular project structure
 - Git version control
@@ -92,10 +97,19 @@ Phase 1 ✅
 
 Phase 2 (Current)
 
+- Event bus foundation
+- Memory v1 interface
 - Company information
 - Cryptocurrency
 - Better stock analysis
 - Better natural language understanding
+
+Phase 2 Foundation Modules
+
+- `events.EventBus` provides in-process publish/subscribe events for ARES modules.
+- `IntentRouter` publishes input and routing lifecycle events.
+- `memory.MemoryStore` provides the v1 interface for short-term and long-term memories.
+- Memory v1 stores data in the existing `data/memories_short.json` and `data/memories_long.json` files.
 
 Phase 3
 
