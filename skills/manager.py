@@ -1,5 +1,6 @@
 from typing import Optional
 
+from core.ConversationContext import ConversationContextManager
 from events import get_global_bus
 from skills.base import Skill, SkillContext, SkillResponse
 from skills.plugin import SkillPlugin
@@ -15,6 +16,7 @@ class SkillManager:
         profile_store=None,
         notes_store=None,
         tasks_store=None,
+        conversation_context=None,
     ):
         self.registry = registry or SkillRegistry()
         self.event_bus = event_bus or get_global_bus()
@@ -22,6 +24,7 @@ class SkillManager:
         self.profile_store = profile_store
         self.notes_store = notes_store
         self.tasks_store = tasks_store
+        self.conversation_context = conversation_context or ConversationContextManager()
 
     def register(self, skill: Skill) -> Skill:
         registered = self.registry.register(skill)
@@ -73,6 +76,12 @@ class SkillManager:
         if isinstance(response, str):
             response = SkillResponse(text=response, skill=skill.name)
 
+        self.conversation_context.record_turn(
+            user_message=text,
+            assistant_response=response.text,
+            detected_skill=skill.name,
+        )
+
         self.event_bus.publish(
             "skill.response_generated",
             {"skill": skill.name, "response": response.text},
@@ -87,4 +96,5 @@ class SkillManager:
             profile_store=self.profile_store,
             notes_store=self.notes_store,
             tasks_store=self.tasks_store,
+            conversation_context=self.conversation_context,
         )
