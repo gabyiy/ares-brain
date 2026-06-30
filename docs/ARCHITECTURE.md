@@ -14,13 +14,15 @@ Current System Flow
 8. The REPL creates `SkillManager`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
 9. User input is sent to `IntentRouter`.
 10. `IntentRouter` publishes input lifecycle events.
-11. Priority skills are selected by `ToolSelector` before normal intents only when a skill opts in.
-12. Normal intents run next.
-13. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
-14. Responses are published as events.
-15. `SkillManager` records handled skill turns in `ConversationContextManager`.
-16. The REPL stores each conversation turn in `MemoryStore`.
-17. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
+11. When a skill path is checked, `SkillManager` parses user text into `core.Intent` with `core.IntentParser`.
+12. `ToolSelector` scores the structured intent against registered skill `intent_names`.
+13. Priority skills are selected before normal intents only when a skill opts in.
+14. Normal intents run next.
+15. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
+16. Responses are published as events.
+17. `SkillManager` records handled skill turns in `ConversationContextManager`.
+18. The REPL stores each conversation turn in `MemoryStore`.
+19. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
 
 Event Bus
 
@@ -55,6 +57,41 @@ Current event examples:
 - `skill.detected`
 - `skill.response_generated`
 
+Intent
+
+`core.Intent` is the structured representation of local user intent before skill selection.
+
+Current fields:
+
+- `intent_name`
+- `confidence`
+- `extracted_entities`
+- `raw_text`
+
+The object is intentionally small so deterministic parsers, tests, and future local tools can share one contract.
+
+IntentParser
+
+`core.IntentParser` converts natural language into a structured `Intent` before `ToolSelector` runs.
+
+Current recognized intents:
+
+- `calculate`
+- `note`
+- `task`
+- `memory_recall`
+- `time_date`
+- `unknown`
+
+Current entity extraction examples:
+
+- `remember buy milk tomorrow` becomes a `task` intent with `action`, `text`, and `due`.
+- `calculate 15*8` becomes a `calculate` intent with an arithmetic `expression`.
+- `show my notes` becomes a `note` intent with a list action.
+- `what did I tell you about my job` becomes a `memory_recall` intent with a recall topic.
+
+The parser is deterministic and offline. It does not use AI, GPT, embeddings, external APIs, or a broad regex-only dispatcher.
+
 Intent Router
 
 `core.intent_router.IntentRouter` remains the main text routing path.
@@ -66,6 +103,8 @@ Current order:
 3. Normal intent modules.
 4. Non-priority skill fallback path.
 5. Unknown response.
+
+Both skill paths pass through `SkillManager`, which parses text into `Intent` before selection.
 
 Current intent modules:
 
@@ -192,12 +231,14 @@ ToolSelector
 
 Current scoring rules:
 
+- Matching structured intent name gets priority over trigger scoring.
 - Exact trigger match gets the strongest confidence.
 - Contained trigger phrase gets high confidence.
 - Trigger token overlap gets partial confidence.
 - Skills can add `selection_keywords` without changing selector code.
 - Skills can add `selection_priority` for explicit tie-breaking.
 - Selection can be filtered with `run_before_intents`.
+- Trigger and `can_handle` fallback paths are only used when the structured intent is `unknown`.
 
 Current supported runtime skills:
 
@@ -208,6 +249,7 @@ Current supported runtime skills:
 - `TasksSkill`
 
 Future local skills should define clear triggers and optional `selection_keywords` so they can use the same selector without a giant if/else chain.
+New deterministic skills should also define `intent_names` when they have a parser-recognized intent.
 
 SkillManager
 
@@ -217,6 +259,7 @@ Current responsibilities:
 
 - Register individual skills.
 - Register skill plugins.
+- Parse user text into `Intent` with `IntentParser`.
 - Select the best matching local skill through `ToolSelector`.
 - Execute a skill with `SkillContext`.
 - Record each handled skill interaction in `ConversationContextManager`.
@@ -231,6 +274,8 @@ Skill context currently carries:
 - `tasks_store`
 - `conversation_context`
 - `metadata`
+
+For handled skills, `metadata` includes the parsed `intent` and extracted `entities`.
 
 Built-In Skills
 
@@ -256,6 +301,8 @@ Current built-in skills:
 
 `TasksSkill` stores and manages offline reminders/tasks through `TasksStore`. It supports `add task...`, `remind me to...`, `list tasks`, `show tasks`, `mark task <id> done`, `delete task <id>`, and `clear completed tasks`. It stores optional due text but does not schedule or notify.
 
+`TasksSkill` can also consume parser-derived entities, so text such as `remember buy milk tomorrow` is stored as task text `buy milk` with due text `tomorrow`.
+
 No real scheduling, notifications, voice, weather, stocks, calendar, external API, or GPT integration has been added as part of the tasks milestone.
 
 Conversation context is not a persistent memory store. It only tracks recent handled skill turns in RAM so local skills and interfaces can inspect short-term context without GPT or embeddings.
@@ -273,6 +320,7 @@ Current responsibilities:
 - Scan each user message for profile facts.
 - Route note commands to `NotesSkill` and persist notes in `NotesStore`.
 - Route task commands to `TasksSkill` and persist tasks in `TasksStore`.
+- Route parser-recognized local intents through `SkillManager` and `ToolSelector`.
 - Share one in-memory conversation context with `SkillManager` for handled skill turns.
 - Print the final ARES response.
 
@@ -302,6 +350,7 @@ LLM Integration
 LLM integration is not active.
 
 Future LLM calls should be added only behind clear interfaces. They should not replace deterministic skills for answers already known from memory, such as user profile recall.
+They should also not replace deterministic parser routes for local skills that already have structured intent coverage.
 
 Raspberry Pi Deployment
 

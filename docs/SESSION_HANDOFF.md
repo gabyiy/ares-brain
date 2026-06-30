@@ -4,7 +4,7 @@ Last Updated: 2026-06-30
 
 Current Version
 
-ARES v1.6
+ARES v1.7
 
 ---
 
@@ -71,6 +71,8 @@ New test coverage:
 - TasksStore
 - TasksSkill
 - ConversationContextManager
+- IntentParser
+- ToolSelector structured intent routing
 - Text REPL profile recall flow
 
 Pytest is configured to collect only `tests/`, because legacy interactive scripts under `scripts/` also use `test_*.py` names.
@@ -153,6 +155,33 @@ Conversation context behavior:
 - `interfaces.text_repl` passes the shared global in-memory context to `SkillManager`.
 - Does not save conversation context to disk.
 - Does not use embeddings, GPT, external APIs, or voice.
+
+Phase 8 structured IntentParser has been added.
+
+New intent parser modules:
+
+- `core.Intent`
+- `core.IntentParser`
+
+Intent behavior:
+
+- `Intent` stores `intent_name`, `confidence`, `extracted_entities`, and `raw_text`.
+- `IntentParser` recognizes `calculate`, `note`, `task`, `memory_recall`, `time_date`, and `unknown`.
+- Useful entities are extracted for local tools, including task action/text/due, note actions, calculator expressions, and memory recall topics.
+- Example: `remember buy milk tomorrow` becomes a `task` intent with text `buy milk` and due text `tomorrow`.
+- Example: `calculate 15*8` becomes a `calculate` intent with expression `15*8`.
+- Example: `show my notes` becomes a `note` intent.
+- Example: `what did I tell you about my job` becomes a `memory_recall` intent with topic `my job`.
+- The parser is deterministic and offline. It does not use AI, GPT, embeddings, voice, or external APIs.
+
+Selection behavior:
+
+- `SkillManager` parses user text into an `Intent` before calling `ToolSelector`.
+- Skills can declare `intent_names` for structured matching.
+- `ToolSelector` scores structured intent matches before legacy trigger scoring.
+- Trigger and `can_handle` fallback paths remain available for unknown intents and compatibility.
+- `SkillContext.metadata` carries the parsed `intent` and extracted `entities`.
+- `TasksSkill` consumes parser-derived task entities so `remember buy milk tomorrow` can route through the REPL as an offline task.
 
 GitHub Actions CI has been added.
 
@@ -290,6 +319,7 @@ MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing s
 
 The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `NotesSkill`, `TasksSkill`, and `TimeDateSkill`.
 The REPL priority skill path currently covers profile memory recall, calculator arithmetic, note commands, and task commands.
+`SkillManager` parses text into `core.Intent` before `ToolSelector` selects a local skill.
 `SkillManager` records handled skill turns in `ConversationContextManager`.
 
 Skill Manager
@@ -359,6 +389,7 @@ Verification Notes
 - Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
+- Intent parser tests cover intent detection, confidence values, entity extraction, unknown intent, ToolSelector integration, SkillManager integration, and the REPL task path.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
@@ -376,6 +407,7 @@ Latest Commits
 - Persistent TasksSkill with storage and routing tests
 - In-memory ConversationContextManager with SkillManager and REPL tests
 - GitHub Actions CI for local verification commands
+- `f2e7a6b` Add structured intent parser
 
 Next Planned Step
 

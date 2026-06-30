@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.6 - In-Memory Conversation Context
+ARES v1.7 - Structured Intent Parser
 
 ---
 
 Current Architecture
 
-The active runtime includes `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 ARES
 │
@@ -84,6 +84,7 @@ Completed
 - Persistent local tasks store
 - Built-in tasks skill
 - In-memory conversation context manager
+- Structured intent parser and `Intent` object
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -107,12 +108,14 @@ ARES currently understands questions such as:
 - what is my favorite tank
 - when is my birthday
 - what is 2 + 3 * 4
+- calculate 15*8
 - calculate (2 + 3) * 4
 - save note calibrate rover sensors
 - list my notes
 - search notes rover
 - delete note <id>
 - add task buy milk
+- remember buy milk tomorrow
 - remind me to call mom
 - list tasks
 - mark task <id> done
@@ -127,6 +130,7 @@ Implemented Features
 - Separate persistent user profile memory
 - Skill registry, skill manager, and skill plugin foundation
 - Tool selector for best local skill selection
+- Structured intent parser for deterministic local intent/entity extraction
 - Built-in time/date skill
 - Built-in memory recall skill for saved profile facts
 - Built-in calculator skill for safe local arithmetic
@@ -186,6 +190,9 @@ Latest Architecture Status
 - CalculatorSkill runs as a priority local skill for arithmetic before generic knowledge lookup.
 - NotesSkill runs as a priority local skill for note commands.
 - TasksSkill runs as a priority local skill for task/reminder commands.
+- SkillManager parses user text into a structured `Intent` before ToolSelector runs.
+- ToolSelector first scores matching `intent_names`, then falls back to legacy triggers only for unknown intents.
+- SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
 - SkillManager uses ToolSelector confidence scoring instead of first-match-only selection.
 - SkillManager records handled skill turns into the in-memory conversation context.
 - Conversation history, user profile facts, notes, and tasks are stored separately.
@@ -316,21 +323,29 @@ Phase 7 In-Memory Conversation Context
 - No conversation context is saved to disk.
 - No embeddings, GPT, external APIs, or voice integration has been added.
 
-Phase 8
+Phase 8 Structured Intent Parser
+
+- `core.Intent` stores `intent_name`, `confidence`, `extracted_entities`, and `raw_text`.
+- `core.IntentParser` converts local natural language into structured intents before ToolSelector runs.
+- Recognized intents include `calculate`, `note`, `task`, `memory_recall`, `time_date`, and `unknown`.
+- Useful entities are extracted for local tools, such as task text and due text.
+- SkillManager consumes structured intents without using AI, GPT, embeddings, or external APIs.
+
+Phase 9
 
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 9
+Phase 10
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 10
+Phase 11
 
 - Robotics
 - ROS2

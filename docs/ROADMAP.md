@@ -95,9 +95,21 @@ Phase 7: In-Memory Conversation Context
 - REPL uses shared in-memory context for skill turns
 - No disk persistence, embeddings, GPT, external APIs, or voice integration
 
+Phase 8: Structured Intent Parser
+
+- `core.Intent`
+- `core.IntentParser`
+- Deterministic local intent parsing before ToolSelector runs
+- Recognized intents: `calculate`, `note`, `task`, `memory_recall`, `time_date`, and `unknown`
+- Entity extraction for local tools, including task text, due text, note actions, calculator expressions, and memory recall topics
+- `SkillManager` consumes `Intent` objects before calling `ToolSelector`
+- Skills declare `intent_names` for structured matching
+- Automated parser, ToolSelector, SkillManager, and REPL path tests
+- No AI, GPT, embeddings, voice, or external API integration
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, persistent local notes, offline tasks, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, persistent local notes, offline tasks, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -106,7 +118,7 @@ The current active interface is:
 The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
-- Tool-selected local skills for time/date, memory recall, calculator arithmetic, notes, and tasks
+- `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, notes, and tasks
 - In-memory conversation context for recent handled skill turns
 
 The current memory paths are:
@@ -123,7 +135,7 @@ Next Priorities
 2. Define how roadmap items map to intents, skills, providers, or interfaces.
 3. Add a company information provider only after the architecture decision is documented.
 4. Add cryptocurrency support only after company information is stable and tested.
-5. Improve natural language understanding only with tests that preserve current behavior.
+5. Improve local natural language parsing only with structured parser rules and tests that preserve current behavior.
 6. Add the next local skill only after its contract is documented and approved.
 
 What Must Not Be Started Yet
@@ -135,6 +147,7 @@ What Must Not Be Started Yet
 - No calendar integration.
 - No Raspberry Pi deployment work.
 - No new skills before the roadmap and architecture decision is approved.
+- No AI parser or regex-only parser rewrite.
 - No robotics or movement integration.
 - No vision integration.
 - No broad refactors of the router, memory, or skill system.
