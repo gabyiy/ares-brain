@@ -12,10 +12,13 @@ from core.intents.weather import WeatherIntent
 from core.intents.news import NewsIntent
 from core.intents.knowledge import KnowledgeIntent
 from core.intents.stocks import StockIntent
+from events import get_global_bus
 
 
 class IntentRouter:
-    def __init__(self):
+    def __init__(self, event_bus=None):
+        self.events = event_bus or get_global_bus()
+
         self.http = RateLimitedHttpClient(min_delay=1.5, timeout=10)
         self.cache = TTLCache()
 
@@ -36,12 +39,27 @@ class IntentRouter:
 
     def handle(self, text: str) -> str:
         q = (text or "").strip()
+        self.events.publish("input.received", {"text": q}, source="intent_router")
 
         if not q:
+            self.events.publish("intent.empty", {}, source="intent_router")
             return "I did not hear anything."
 
         for intent in self.intents:
             if intent.matches(q):
-                return intent.handle(q)
+                intent_name = intent.__class__.__name__
+                self.events.publish(
+                    "intent.matched",
+                    {"intent": intent_name, "text": q},
+                    source="intent_router",
+                )
+                response = intent.handle(q)
+                self.events.publish(
+                    "intent.response",
+                    {"intent": intent_name, "response": response},
+                    source="intent_router",
+                )
+                return response
 
+        self.events.publish("intent.unmatched", {"text": q}, source="intent_router")
         return "I'm not sure how to answer that yet."
