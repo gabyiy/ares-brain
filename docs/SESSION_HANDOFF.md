@@ -169,8 +169,11 @@ Intent behavior:
 - `IntentParser` recognizes `calculate`, `note`, `task`, `memory_recall`, `time_date`, and `unknown`.
 - Useful entities are extracted for local tools, including task action/text/due, note actions, calculator expressions, and memory recall topics.
 - Example: `remember buy milk tomorrow` becomes a `task` intent with text `buy milk` and due text `tomorrow`.
+- Example: `remember to buy milk` becomes a `task` intent with text `buy milk`.
+- Example: `remember this idea: build ARES memory` becomes a `note` intent with note text `idea: build ARES memory`.
 - Example: `calculate 15*8` becomes a `calculate` intent with expression `15*8`.
 - Example: `show my notes` becomes a `note` intent.
+- Example: `what is my birthday` becomes a `memory_recall` intent for the birthday profile fact.
 - Example: `what did I tell you about my job` becomes a `memory_recall` intent with topic `my job`.
 - The parser is deterministic and offline. It does not use AI, GPT, embeddings, voice, or external APIs.
 
@@ -389,7 +392,7 @@ Verification Notes
 - Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
-- Intent parser tests cover intent detection, confidence values, entity extraction, unknown intent, ToolSelector integration, SkillManager integration, and the REPL task path.
+- Intent parser tests cover intent detection, confidence values, entity extraction, ambiguous local phrasing, unknown intent, ToolSelector integration, SkillManager integration, and the REPL task path.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
@@ -408,6 +411,7 @@ Latest Commits
 - In-memory ConversationContextManager with SkillManager and REPL tests
 - GitHub Actions CI for local verification commands
 - `f2e7a6b` Add structured intent parser
+- `34a7b57` Harden intent parser phrase handling
 
 Next Planned Step
 

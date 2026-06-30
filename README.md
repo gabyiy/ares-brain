@@ -138,7 +138,7 @@ Implemented Features
 - Built-in tasks skill for offline reminders/tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for core Phase 2-7 modules
+- Pytest automated coverage for core Phase 2-8 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -193,6 +193,7 @@ Latest Architecture Status
 - SkillManager parses user text into a structured `Intent` before ToolSelector runs.
 - ToolSelector first scores matching `intent_names`, then falls back to legacy triggers only for unknown intents.
 - SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
+- IntentParser tests cover ambiguous local phrases such as `remember to buy milk`, note reminders, birthday recall, task actions, note actions, calculator requests, and unknown text.
 - SkillManager uses ToolSelector confidence scoring instead of first-match-only selection.
 - SkillManager records handled skill turns into the in-memory conversation context.
 - Conversation history, user profile facts, notes, and tasks are stored separately.
@@ -329,6 +330,7 @@ Phase 8 Structured Intent Parser
 - `core.IntentParser` converts local natural language into structured intents before ToolSelector runs.
 - Recognized intents include `calculate`, `note`, `task`, `memory_recall`, `time_date`, and `unknown`.
 - Useful entities are extracted for local tools, such as task text and due text.
+- Parser hardening covers common user phrasing without adding GPT, new skills, or storage format changes.
 - SkillManager consumes structured intents without using AI, GPT, embeddings, or external APIs.
 
 Phase 9

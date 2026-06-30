@@ -105,6 +105,7 @@ Phase 8: Structured Intent Parser
 - `SkillManager` consumes `Intent` objects before calling `ToolSelector`
 - Skills declare `intent_names` for structured matching
 - Automated parser, ToolSelector, SkillManager, and REPL path tests
+- Hardened parser coverage for ambiguous local phrases such as `remember to buy milk`, note reminders, birthday recall, task actions, note actions, calculator requests, and unknown text
 - No AI, GPT, embeddings, voice, or external API integration
 
 Current State

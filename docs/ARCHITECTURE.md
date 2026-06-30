@@ -86,8 +86,11 @@ Current recognized intents:
 Current entity extraction examples:
 
 - `remember buy milk tomorrow` becomes a `task` intent with `action`, `text`, and `due`.
+- `remember to buy milk` becomes a `task` intent with task text `buy milk`.
+- `remember this idea: build ARES memory` becomes a `note` intent with note text.
 - `calculate 15*8` becomes a `calculate` intent with an arithmetic `expression`.
 - `show my notes` becomes a `note` intent with a list action.
+- `what is my birthday` becomes a `memory_recall` intent for the birthday profile fact.
 - `what did I tell you about my job` becomes a `memory_recall` intent with a recall topic.
 
 The parser is deterministic and offline. It does not use AI, GPT, embeddings, external APIs, or a broad regex-only dispatcher.
