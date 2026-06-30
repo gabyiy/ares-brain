@@ -7,6 +7,7 @@ from memory import UserProfileStore
 from skills import Skill, SkillContext, SkillManager, SkillRegistry, SkillResponse, ToolSelector
 from skills.builtin.calculator import CalculatorSkill
 from skills.builtin.memory_recall import MemoryRecallSkill
+from skills.builtin.notes import NotesSkill
 from skills.builtin.time_date import TimeDateSkill
 import skills.builtin.time_date as time_date_module
 
@@ -23,16 +24,6 @@ class EchoSkill(Skill):
 class PriorityEchoSkill(EchoSkill):
     name = "priority_echo"
     run_before_intents = True
-
-
-class NotesLikeSkill(Skill):
-    name = "notes"
-    description = "Future notes-style skill."
-    triggers = ("note", "remember note", "write down")
-    selection_keywords = ("save note", "take note")
-
-    def handle(self, text: str, context: SkillContext) -> SkillResponse:
-        return SkillResponse(text="notes placeholder", skill=self.name)
 
 
 def test_skill_registry_and_manager_handle_registered_skill():
@@ -69,13 +60,28 @@ def test_tool_selector_scores_current_and_future_local_skills():
         TimeDateSkill(),
         MemoryRecallSkill(),
         CalculatorSkill(),
-        NotesLikeSkill(),
+        NotesSkill(),
     ]
 
     assert selector.select("what time is it", skills).skill.name == "time_date"
     assert selector.select("what is my favorite tank", skills).skill.name == "memory_recall"
     assert selector.select("calculate 2 plus 2", skills).skill.name == "calculator"
-    assert selector.select("please take note buy batteries", skills).skill.name == "notes"
+    assert selector.select("take a note buy batteries", skills).skill.name == "notes"
+
+
+def test_tool_selector_distinguishes_priority_local_tools():
+    selector = ToolSelector()
+    skills = [
+        TimeDateSkill(),
+        MemoryRecallSkill(),
+        CalculatorSkill(),
+        NotesSkill(),
+    ]
+
+    assert selector.select("what is my name", skills, run_before_intents=True).skill.name == "memory_recall"
+    assert selector.select("what is 2 + 2", skills, run_before_intents=True).skill.name == "calculator"
+    assert selector.select("remember this 2 + 2", skills, run_before_intents=True).skill.name == "notes"
+    assert selector.select("search notes 2 + 2", skills, run_before_intents=True).skill.name == "notes"
 
 
 def test_skill_manager_publishes_selection_confidence_and_reason():

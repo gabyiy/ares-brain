@@ -8,6 +8,7 @@ class SkillContext:
     event_bus: Any = None
     memory_store: Any = None
     profile_store: Any = None
+    notes_store: Any = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def publish(self, event_name: str, payload: Dict[str, Any]):

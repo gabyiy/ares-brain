@@ -3,13 +3,14 @@ import io
 import memory.v1 as memory_v1
 from events import get_global_bus
 from interfaces import text_repl
-from memory import MemoryStore, UserProfileStore
+from memory import MemoryStore, NotesStore, UserProfileStore
 
 
 def test_text_repl_records_turns_and_recalls_profile(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(memory_v1, "SHORT_MEMORY_FILE", tmp_path / "short.json")
     monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
     monkeypatch.setenv("ARES_USER_PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setenv("ARES_NOTES_PATH", str(tmp_path / "notes.json"))
     monkeypatch.setattr(
         "sys.stdin",
         io.StringIO(
@@ -55,6 +56,7 @@ def test_text_repl_routes_calculator_skill_before_generic_knowledge(monkeypatch,
     monkeypatch.setattr(memory_v1, "SHORT_MEMORY_FILE", tmp_path / "short.json")
     monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
     monkeypatch.setenv("ARES_USER_PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setenv("ARES_NOTES_PATH", str(tmp_path / "notes.json"))
     monkeypatch.setattr("sys.stdin", io.StringIO("hello\nwhat is 2 + 3 * 4\nquit\n"))
 
     event_bus = get_global_bus()
@@ -73,3 +75,35 @@ def test_text_repl_routes_calculator_skill_before_generic_knowledge(monkeypatch,
     assert "Result: 14" in output
     assert detected
     assert "response_generated" in events
+
+
+def test_text_repl_routes_notes_skill_and_persists_note(monkeypatch, tmp_path, capsys):
+    notes_path = tmp_path / "notes.json"
+    monkeypatch.setattr(memory_v1, "SHORT_MEMORY_FILE", tmp_path / "short.json")
+    monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
+    monkeypatch.setenv("ARES_USER_PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setenv("ARES_NOTES_PATH", str(notes_path))
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO("hello\nsave note calibrate rover sensors\nlist my notes\nquit\n"),
+    )
+
+    event_bus = get_global_bus()
+    event_bus.clear_history()
+
+    text_repl.main()
+
+    output = capsys.readouterr().out
+    notes = NotesStore(path=notes_path, event_bus=event_bus).list()
+    detected = [
+        event.payload
+        for event in event_bus.history("skill.detected")
+        if event.payload.get("skill") == "notes"
+    ]
+
+    assert len(notes) == 1
+    assert notes[0].text == "calibrate rover sensors"
+    assert "Saved note" in output
+    assert "Your notes:" in output
+    assert "calibrate rover sensors" in output
+    assert detected
