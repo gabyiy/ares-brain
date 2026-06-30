@@ -74,6 +74,7 @@ Completed
 - Built-in time/date skill
 - Persistent user profile facts
 - Memory recall skill
+- Automated pytest suite
 - Session handoff documentation
 - Modular project structure
 - Git version control
@@ -97,6 +98,50 @@ ARES currently understands questions such as:
 - when is my birthday
 
 Each request is automatically routed to its correct intent.
+
+Implemented Features
+
+- Modular text intent routing
+- Event bus for runtime lifecycle events
+- Short-term and long-term memory v1 storage
+- Separate persistent user profile memory
+- Skill registry, skill manager, and skill plugin foundation
+- Built-in time/date skill
+- Built-in memory recall skill for saved profile facts
+- Text REPL with conversation turn storage
+- Pytest automated coverage for core Phase 2-4 modules
+
+Run Tests
+
+Install dependencies:
+
+```powershell
+py -m pip install -r requirements.txt
+```
+
+Run automated tests:
+
+```powershell
+py -m pytest
+py -m compileall core interfaces events memory skills scripts
+py scripts\verify_phase2_events_memory.py
+```
+
+Run Text REPL
+
+```powershell
+py interfaces\text_repl.py
+```
+
+Say `hello` or `hello ares` to wake ARES, then type a supported request.
+
+Latest Architecture Status
+
+- Intent router remains the main text command path.
+- Priority skills can run before generic intents when needed, such as memory recall.
+- Normal skills run as fallback when no regular intent matches, such as time/date.
+- Conversation history and user profile facts are stored separately.
+- Voice has not started.
 
 ---
 

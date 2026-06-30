@@ -55,6 +55,20 @@ User profile facts are stored separately from conversation history.
 The default profile path is `data/user_profile.json`, which is ignored by git to avoid committing personal facts.
 The profile path can be overridden with `ARES_USER_PROFILE_PATH` for tests.
 
+Automated tests have been added.
+
+New test coverage:
+
+- Event bus
+- MemoryStore v1
+- UserProfileStore
+- MemoryRecallSkill
+- SkillRegistry and SkillManager
+- TimeDateSkill
+- Text REPL profile recall flow
+
+Pytest is configured to collect only `tests/`, because legacy interactive scripts under `scripts/` also use `test_*.py` names.
+
 Current working intents:
 
 - Greeting
@@ -185,10 +199,27 @@ Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
+- Automated tests run with `py -m pytest`.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
 - Long-term profile recall was verified through the text REPL with name, location, birthday, favorite tank, and owned item facts.
-- `git diff --check` passed after the Phase 2 foundation and wiring changes.
+- Current verification passed:
+  - `py -m pytest`
+  - `py -m compileall core interfaces events memory skills scripts`
+  - `py scripts\verify_phase2_events_memory.py`
+- `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
+
+Latest Commits
+
+- `0faffc1` Add long-term profile memory recall
+- `97fcbeb` Add automated pytest suite
+- Documentation update for tests and current architecture status
+
+Next Planned Step
+
+- Create a roadmap/architecture document.
+- Do not add roadmap implementation yet.
+- Do not start voice yet.
