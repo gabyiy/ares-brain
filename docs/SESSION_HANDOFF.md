@@ -4,7 +4,7 @@ Last Updated: 2026-06-30
 
 Current Version
 
-ARES v0.8.1
+ARES v0.9
 
 ---
 
@@ -26,6 +26,20 @@ Current Phase 2 wiring:
 - Text REPL uses a shared event bus.
 - Intent Router publishes the public Phase 2 events.
 - Text REPL stores basic conversation turns through MemoryStore v1.
+
+Phase 3 planning/foundation has started.
+
+New Phase 3 skill modules:
+
+- `skills.Skill`
+- `skills.SkillContext`
+- `skills.SkillResponse`
+- `skills.SkillRegistry`
+- `skills.SkillManager`
+- `skills.SkillPlugin`
+- `skills.builtin.TimeDateSkill`
+
+The skill layer is standalone. It is not wired into the existing intent router yet, and voice work has not started.
 
 Current working intents:
 
@@ -89,11 +103,18 @@ Each intent owns its own logic and communicates with its corresponding provider.
 
 MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing scripts keep working.
 
+Skill Manager
+        │
+        ├── SkillRegistry
+        ├── SkillPlugin
+        └── Built-in skills
+            └── TimeDateSkill
+
 ---
 
 Immediate Next Milestone
 
-Company Information Provider
+Skill integration planning, then Company Information Provider
 
 ARES should understand:
 
@@ -102,7 +123,11 @@ ARES should understand:
 - Explain Rheinmetall
 - Who owns Tesla?
 
-After that, connect selected daily reflection scripts and future providers to MemoryStore v1.
+Next technical choices:
+
+- Decide whether SkillManager should sit beside IntentRouter or become a fallback after intents.
+- Keep voice out of scope until text skill execution is stable.
+- Connect selected daily reflection scripts and future providers to MemoryStore v1.
 
 ---
 
@@ -111,18 +136,21 @@ Future Roadmap
 1. Company Provider
 2. Cryptocurrency Provider
 3. Better reasoning
-4. Memory v1 integration with conversations
-5. Long-term memory retrieval
-6. Voice interface
-7. Vision
-8. Robotics
-9. Jetson Orin migration
-10. Autonomous ARES
+4. Skill manager integration with text flow
+5. Memory v1 integration with conversations
+6. Long-term memory retrieval
+7. Voice interface
+8. Vision
+9. Robotics
+10. Jetson Orin migration
+11. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
+- Phase 3 skill package compiles with `py -m compileall skills`.
+- `SkillManager` was manually checked with the built-in time/date skill.
 - `git diff --check` passed after the Phase 2 foundation and wiring changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.

@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v0.8.1 - Phase 2 Event/Memory Wiring
+ARES v0.9 - Phase 3 Skill Foundation
 
 ---
 
@@ -40,6 +40,9 @@ ARES
 ├── HTTP Client
 ├── Cache
 ├── Memory v1 Interface
+├── Skill Manager
+├── Skill Registry
+├── Skill Plugins
 └── Text Interface
 
 ---
@@ -64,6 +67,10 @@ Completed
 - Memory v1 interface
 - Text REPL event bus wiring
 - Basic conversation turn memory
+- Skill base interface
+- Skill registry
+- Skill manager
+- Built-in time/date skill
 - Session handoff documentation
 - Modular project structure
 - Git version control
@@ -97,7 +104,7 @@ Phase 1 ✅
 - Knowledge
 - Stocks
 
-Phase 2 (Current)
+Phase 2 (Foundation Complete, Provider Work Pending)
 
 - Event bus foundation
 - Memory v1 interface
@@ -119,12 +126,27 @@ Verification
 
 - Run `python scripts/verify_phase2_events_memory.py` to verify router events and memory turn storage.
 
-Phase 3
+Phase 3 Planning/Foundation (Current)
 
+- Plugin/skill architecture
+- Skill registration system
+- Skill manager
+- Base `Skill` interface
+- Example time/date skill
 - Long-term memory
 - User profile
 - Conversation memory
 - Personal reminders
+
+Phase 3 Skill Modules
+
+- `skills.Skill` defines the base interface for future capabilities.
+- `skills.SkillRegistry` registers and looks up skills.
+- `skills.SkillManager` detects and executes registered skills.
+- `skills.SkillPlugin` groups skills into a plugin bundle.
+- `skills.builtin.TimeDateSkill` is the first example skill.
+
+Voice has not started. The skill layer is standalone and does not replace the existing intent router yet.
 
 Phase 4
 
