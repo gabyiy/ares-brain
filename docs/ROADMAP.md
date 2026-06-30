@@ -54,7 +54,7 @@ Phase 4B: Tool Selection Foundation
 - Priority selection before generic intents
 - Fallback selection after normal intents
 - Tests for current TimeDate/MemoryRecall skills
-- Tests for current Calculator selection and future Notes-style skill selection
+- Tests for current Calculator and Notes skill selection
 
 Phase 4C: Local Calculator Skill
 
@@ -65,9 +65,18 @@ Phase 4C: Local Calculator Skill
 - REPL routing through `ToolSelector` and `SkillManager`
 - Automated calculator and REPL path tests
 
+Phase 5: Local Notes Skill
+
+- Persistent `NotesStore`
+- Notes stored in `data/notes.json`
+- Notes kept separate from conversation memory and user profile memory
+- Built-in `NotesSkill`
+- Add, list, search, delete-one, and confirmed delete-all commands
+- Automated store, skill, selector, and REPL path tests
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, deterministic skills, event publishing, conversation memory, user profile memory, and local calculator arithmetic.
+ARES is currently a text-first assistant with deterministic routing, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, and persistent local notes.
 
 The current active interface is:
 
@@ -76,12 +85,13 @@ The current active interface is:
 The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
-- Tool-selected local skills for time/date, memory recall, and calculator arithmetic
+- Tool-selected local skills for time/date, memory recall, calculator arithmetic, and notes
 
 The current memory paths are:
 
 - `MemoryStore` for conversation-style memory
 - `UserProfileStore` for persistent user facts
+- `NotesStore` for persistent local notes
 
 Next Priorities
 
@@ -90,7 +100,7 @@ Next Priorities
 3. Add a company information provider only after the architecture decision is documented.
 4. Add cryptocurrency support only after company information is stable and tested.
 5. Improve natural language understanding only with tests that preserve current behavior.
-6. Add NotesSkill only after its contract is documented and approved.
+6. Add the next local skill only after its contract is documented and approved.
 
 What Must Not Be Started Yet
 
@@ -98,7 +108,6 @@ What Must Not Be Started Yet
 - No GPT or LLM integration.
 - No Raspberry Pi deployment work.
 - No new skills before the roadmap and architecture decision is approved.
-- No NotesSkill runtime implementation yet.
 - No robotics or movement integration.
 - No vision integration.
 - No broad refactors of the router, memory, or skill system.

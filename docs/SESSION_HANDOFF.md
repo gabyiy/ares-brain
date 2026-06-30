@@ -4,7 +4,7 @@ Last Updated: 2026-06-30
 
 Current Version
 
-ARES v1.2
+ARES v1.3
 
 ---
 
@@ -66,6 +66,8 @@ New test coverage:
 - SkillRegistry and SkillManager
 - TimeDateSkill
 - CalculatorSkill
+- NotesStore
+- NotesSkill
 - Text REPL profile recall flow
 
 Pytest is configured to collect only `tests/`, because legacy interactive scripts under `scripts/` also use `test_*.py` names.
@@ -81,8 +83,7 @@ Selection behavior:
 
 - Scores local skills instead of relying on first registered match only.
 - Supports exact trigger matches, contained trigger phrases, token overlap, optional `selection_keywords`, optional `selection_priority`, and `run_before_intents` filtering.
-- Currently routes `TimeDateSkill`, `MemoryRecallSkill`, and `CalculatorSkill`.
-- Test-only dummy notes skills verify the future `NotesSkill` extension path without adding that runtime skill.
+- Currently routes `TimeDateSkill`, `MemoryRecallSkill`, `CalculatorSkill`, and `NotesSkill`.
 
 Phase 4 CalculatorSkill has been added as the first real local tool.
 
@@ -96,6 +97,23 @@ Calculator behavior:
 - Uses AST parsing with explicit operator handling; it does not use `eval()`.
 - Rejects unsupported or unsafe input with a clear response.
 - Runs as a priority skill so arithmetic questions are handled before generic knowledge lookup.
+
+Phase 5 NotesSkill has been added as the first persistent local note system.
+
+New notes modules:
+
+- `memory.NotesStore`
+- `memory.NoteRecord`
+- `skills.builtin.NotesSkill`
+
+Notes behavior:
+
+- Stores notes in `data/notes.json`, which is ignored by git.
+- Keeps notes separate from conversation memory and user profile memory.
+- Supports `remember this...`, `save note...`, `take a note...`, `list my notes`, `show my notes`, `delete note <id>`, `delete all notes`, and `search notes <keyword>`.
+- Requires explicit confirmation with `confirm delete all notes` before clearing all notes.
+- Publishes `notes.recorded`, `notes.deleted`, and `notes.cleared`.
+- Uses `ARES_NOTES_PATH` for test isolation.
 
 Strict engineering rules have been added in `docs/ENGINEERING_RULES.md`.
 
@@ -158,9 +176,16 @@ User Profile:
 - Detects `I own...`
 - Publishes `profile.fact_saved`
 
+Notes Store:
+
+- Stores note records with unique id, timestamp, and text.
+- Lists, searches, deletes one note, and clears all notes through explicit skill confirmation.
+- Uses `data/notes.json` by default.
+- Does not write to `MemoryStore` or `UserProfileStore`.
+
 Text REPL memory:
 
-- `interfaces.text_repl` creates one shared event bus and passes it to `IntentRouter` and `MemoryStore`.
+- `interfaces.text_repl` creates one shared event bus and passes it to `IntentRouter`, `MemoryStore`, `UserProfileStore`, `NotesStore`, and `SkillManager`.
 - Each text response records a short-term `conversation_turn` memory.
 - Each text input is also scanned for user profile facts.
 - Sleeping-mode responses also emit `user_message_received` and `response_generated`.
@@ -189,8 +214,8 @@ Each intent owns its own logic and communicates with its corresponding provider.
 
 MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing scripts keep working.
 
-The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, and `TimeDateSkill`.
-The REPL priority skill path currently covers profile memory recall and calculator arithmetic.
+The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `NotesSkill`, and `TimeDateSkill`.
+The REPL priority skill path currently covers profile memory recall, calculator arithmetic, and note commands.
 
 Skill Manager
         │
@@ -219,7 +244,7 @@ Next scoped local tool or provider decision.
 Next technical choices:
 
 - Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
-- Decide whether the next approved runtime capability is NotesSkill, company information, or another documented provider.
+- Decide whether the next approved runtime capability is company information or another documented provider.
 - Keep voice, GPT, external weather/stocks/calendar APIs, and Raspberry Pi deployment out of scope until explicitly approved.
 - Connect selected daily reflection scripts and future providers to MemoryStore v1 only after the memory contract is documented.
 
@@ -232,13 +257,12 @@ Future Roadmap
 3. Better reasoning
 4. Memory v1 integration with conversations
 5. Long-term memory retrieval
-6. NotesSkill after roadmap approval
-7. Company profile provider
-8. Voice interface
-9. Vision
-10. Robotics
-11. Jetson Orin migration
-12. Autonomous ARES
+6. Company profile provider
+7. Voice interface
+8. Vision
+9. Robotics
+10. Jetson Orin migration
+11. Autonomous ARES
 
 Verification Notes
 
@@ -253,8 +277,9 @@ Verification Notes
   - `py -m pytest`
   - `py -m compileall core interfaces events memory skills scripts`
   - `py scripts\verify_phase2_events_memory.py`
-- Tool selection tests cover current TimeDate/MemoryRecall/Calculator selection and future Notes-style skill selection.
+- Tool selection tests cover current TimeDate/MemoryRecall/Calculator/Notes selection.
 - Calculator tests cover simple arithmetic, precedence, parentheses, decimals, bounded powers, unsafe input rejection, and the REPL routing path.
+- Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
@@ -268,9 +293,10 @@ Latest Commits
 - Documentation update for master architecture and roadmap docs
 - Tool selection foundation with scoring and tests
 - CalculatorSkill with safe arithmetic tests
+- Persistent NotesSkill with storage and routing tests
 
 Next Planned Step
 
 - Review and approve the next local tool or provider scope.
-- Do not add notes, weather, stocks, GPT, or voice work yet.
+- Do not add weather, stocks, calendar, GPT, voice, or vision work yet.
 - Do not start voice yet.

@@ -8,15 +8,16 @@ Current System Flow
 2. The REPL creates one shared `EventBus`.
 3. The REPL creates `MemoryStore` for conversation turns.
 4. The REPL creates `UserProfileStore` for persistent user facts.
-5. The REPL creates `SkillManager`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
-6. User input is sent to `IntentRouter`.
-7. `IntentRouter` publishes input lifecycle events.
-8. Priority skills are selected by `ToolSelector` before normal intents only when a skill opts in.
-9. Normal intents run next.
-10. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
-11. Responses are published as events.
-12. The REPL stores each conversation turn in `MemoryStore`.
-13. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
+5. The REPL creates `NotesStore` for persistent local notes.
+6. The REPL creates `SkillManager`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
+7. User input is sent to `IntentRouter`.
+8. `IntentRouter` publishes input lifecycle events.
+9. Priority skills are selected by `ToolSelector` before normal intents only when a skill opts in.
+10. Normal intents run next.
+11. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
+12. Responses are published as events.
+13. The REPL stores each conversation turn in `MemoryStore`.
+14. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
 
 Event Bus
 
@@ -39,6 +40,9 @@ Current event examples:
 - `memory.promoted`
 - `memory.cleared`
 - `profile.fact_saved`
+- `notes.recorded`
+- `notes.deleted`
+- `notes.cleared`
 - `skill.registered`
 - `skill.plugin_registered`
 - `skill.detected`
@@ -106,6 +110,24 @@ Current storage:
 
 The profile file is ignored by git because it can contain personal facts. Tests can override the path with `ARES_USER_PROFILE_PATH`.
 
+NotesStore
+
+`memory.NotesStore` stores user-created notes separately from conversation history and user profile facts.
+
+Current responsibilities:
+
+- Add notes with a unique id, timestamp, and text.
+- List all notes.
+- Search notes by keyword.
+- Delete one note by id.
+- Clear all notes only through an explicit confirmation flow in `NotesSkill`.
+
+Current storage:
+
+- `data/notes.json`
+
+The notes file is ignored by git because it can contain personal notes. Tests can override the path with `ARES_NOTES_PATH`.
+
 SkillRegistry
 
 `skills.SkillRegistry` owns skill registration and lookup.
@@ -136,8 +158,9 @@ Current supported runtime skills:
 - `TimeDateSkill`
 - `MemoryRecallSkill`
 - `CalculatorSkill`
+- `NotesSkill`
 
-Future local skills such as `NotesSkill` should define clear triggers and optional `selection_keywords` so they can use the same selector without a giant if/else chain.
+Future local skills should define clear triggers and optional `selection_keywords` so they can use the same selector without a giant if/else chain.
 
 SkillManager
 
@@ -156,6 +179,7 @@ Skill context currently carries:
 - `event_bus`
 - `memory_store`
 - `profile_store`
+- `notes_store`
 - `metadata`
 
 Built-In Skills
@@ -169,6 +193,7 @@ Current built-in skills:
 - `TimeDateSkill`
 - `MemoryRecallSkill`
 - `CalculatorSkill`
+- `NotesSkill`
 
 `TimeDateSkill` answers local time and date questions.
 
@@ -176,7 +201,9 @@ Current built-in skills:
 
 `CalculatorSkill` answers local arithmetic questions without using an LLM. It supports addition, subtraction, multiplication, division, parentheses, decimals, and bounded powers through AST parsing and explicit operator handling, not `eval()`. It rejects unsupported or unsafe input with a clear response.
 
-No notes, voice, weather, stocks, calendar, external API, or GPT integration has been added as part of the calculator milestone.
+`NotesSkill` stores, lists, searches, and deletes local notes through `NotesStore`. It supports `remember this...`, `save note...`, `take a note...`, `list my notes`, `show my notes`, `delete note <id>`, `delete all notes`, and `search notes <keyword>`. `delete all notes` requires explicit confirmation with `confirm delete all notes`.
+
+No voice, weather, stocks, calendar, external API, or GPT integration has been added as part of the notes milestone.
 
 REPL Flow
 
@@ -186,9 +213,10 @@ Current responsibilities:
 
 - Wake on `hello`, `hello ares`, `hi ares`, or `hey ares`.
 - Exit on `goodbye`, `goodbye ares`, `exit`, or `quit`.
-- Share one event bus across router, memory, profile, and skills.
+- Share one event bus across router, memory, profile, notes, and skills.
 - Store each user/ARES turn as a conversation memory.
 - Scan each user message for profile facts.
+- Route note commands to `NotesSkill` and persist notes in `NotesStore`.
 - Print the final ARES response.
 
 Future Integration Points
@@ -201,6 +229,7 @@ Voice should connect at the interface layer, beside the text REPL. It should reu
 - `IntentRouter`
 - `MemoryStore`
 - `UserProfileStore`
+- `NotesStore`
 - `SkillManager`
 
 Voice must not bypass the existing routing, memory, or verification rules.

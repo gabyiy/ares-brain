@@ -10,11 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.2 - Local Calculator Skill
+ARES v1.3 - Local Notes Skill
 
 ---
 
 Current Architecture
+
+The active runtime includes `memory.NotesStore` for persistent local notes, separate from conversation memory and user profile memory.
 
 ARES
 │
@@ -77,6 +79,8 @@ Completed
 - Memory recall skill
 - Tool selection confidence/scoring foundation
 - Built-in calculator skill
+- Persistent local notes store
+- Built-in notes skill
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -101,6 +105,10 @@ ARES currently understands questions such as:
 - when is my birthday
 - what is 2 + 3 * 4
 - calculate (2 + 3) * 4
+- save note calibrate rover sensors
+- list my notes
+- search notes rover
+- delete note <id>
 
 Each request is automatically routed to its correct intent.
 
@@ -115,8 +123,9 @@ Implemented Features
 - Built-in time/date skill
 - Built-in memory recall skill for saved profile facts
 - Built-in calculator skill for safe local arithmetic
+- Built-in notes skill for persistent local notes
 - Text REPL with conversation turn storage
-- Pytest automated coverage for core Phase 2-4 modules
+- Pytest automated coverage for core Phase 2-5 modules
 
 Run Tests
 
@@ -148,8 +157,9 @@ Latest Architecture Status
 - Priority skills can run before generic intents when needed, such as memory recall.
 - Normal skills run as fallback when no regular intent matches, such as time/date.
 - CalculatorSkill runs as a priority local skill for arithmetic before generic knowledge lookup.
+- NotesSkill runs as a priority local skill for note commands.
 - SkillManager uses ToolSelector confidence scoring instead of first-match-only selection.
-- Conversation history and user profile facts are stored separately.
+- Conversation history, user profile facts, and notes are stored separately.
 - Voice has not started.
 
 Engineering Rules
@@ -237,9 +247,8 @@ Phase 4 Long-Term Memory Recall (Current)
 Phase 4 Tool Selection Foundation
 
 - `skills.ToolSelector` scores local skills using trigger match strength, optional selection keywords, skill priority, and priority-intent filtering.
-- Current supported skills are `TimeDateSkill`, `MemoryRecallSkill`, and `CalculatorSkill`.
-- Future `NotesSkill` can participate by defining triggers and optional `selection_keywords`.
-- No notes, voice, external API, weather, stocks, calendar, or GPT integration has been added.
+- Current supported skills are `TimeDateSkill`, `MemoryRecallSkill`, `CalculatorSkill`, and `NotesSkill`.
+- No voice, external API, weather, stocks, calendar, or GPT integration has been added.
 
 Phase 4 Calculator Skill
 
@@ -248,21 +257,29 @@ Phase 4 Calculator Skill
 - Uses Python AST parsing and explicit operator handling, not `eval()`.
 - Rejects unsafe or unsupported input with a clear local response.
 
-Phase 5
+Phase 5 Local Notes Skill
+
+- `memory.NotesStore` persists user-created notes in `data/notes.json`.
+- Notes are separate from conversation memory and user profile memory.
+- `skills.builtin.NotesSkill` supports adding, listing, searching, deleting one note, and confirmed delete-all.
+- Each note contains a unique id, timestamp, and text.
+- `data/notes.json` is ignored by git because it can contain personal notes.
+
+Phase 6
 
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 6
+Phase 7
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 7
+Phase 8
 
 - Robotics
 - ROS2
