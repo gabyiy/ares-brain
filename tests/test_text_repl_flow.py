@@ -49,3 +49,27 @@ def test_text_repl_records_turns_and_recalls_profile(monkeypatch, tmp_path, caps
     assert "user_message_received" in events
     assert "response_generated" in events
     assert "profile.fact_saved" in events
+
+
+def test_text_repl_routes_calculator_skill_before_generic_knowledge(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(memory_v1, "SHORT_MEMORY_FILE", tmp_path / "short.json")
+    monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
+    monkeypatch.setenv("ARES_USER_PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setattr("sys.stdin", io.StringIO("hello\nwhat is 2 + 3 * 4\nquit\n"))
+
+    event_bus = get_global_bus()
+    event_bus.clear_history()
+
+    text_repl.main()
+
+    output = capsys.readouterr().out
+    events = [event.name for event in event_bus.history()]
+    detected = [
+        event.payload
+        for event in event_bus.history("skill.detected")
+        if event.payload.get("skill") == "calculator"
+    ]
+
+    assert "Result: 14" in output
+    assert detected
+    assert "response_generated" in events

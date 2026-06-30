@@ -5,6 +5,7 @@ import pytest
 from events import EventBus
 from memory import UserProfileStore
 from skills import Skill, SkillContext, SkillManager, SkillRegistry, SkillResponse, ToolSelector
+from skills.builtin.calculator import CalculatorSkill
 from skills.builtin.memory_recall import MemoryRecallSkill
 from skills.builtin.time_date import TimeDateSkill
 import skills.builtin.time_date as time_date_module
@@ -22,16 +23,6 @@ class EchoSkill(Skill):
 class PriorityEchoSkill(EchoSkill):
     name = "priority_echo"
     run_before_intents = True
-
-
-class CalculatorLikeSkill(Skill):
-    name = "calculator"
-    description = "Future calculator-style skill."
-    triggers = ("calculate", "math", "plus", "minus")
-    selection_keywords = ("add", "subtract", "multiply", "divide")
-
-    def handle(self, text: str, context: SkillContext) -> SkillResponse:
-        return SkillResponse(text="calculator placeholder", skill=self.name)
 
 
 class NotesLikeSkill(Skill):
@@ -77,7 +68,7 @@ def test_tool_selector_scores_current_and_future_local_skills():
     skills = [
         TimeDateSkill(),
         MemoryRecallSkill(),
-        CalculatorLikeSkill(),
+        CalculatorSkill(),
         NotesLikeSkill(),
     ]
 

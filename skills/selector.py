@@ -16,9 +16,9 @@ class ToolSelector:
     """
     Score local skills for a user text request.
 
-    The selector is intentionally generic: future skills such as CalculatorSkill
-    or NotesSkill can participate by defining triggers and optional selection
-    attributes on the Skill class.
+    The selector is intentionally generic: local skills such as CalculatorSkill
+    and future skills such as NotesSkill can participate by defining triggers
+    and optional selection attributes on the Skill class.
     """
 
     def __init__(self, min_confidence: float = 0.25):
@@ -87,6 +87,9 @@ class ToolSelector:
                 best_reason = reason
 
         if best_score <= 0.0:
+            if skill.can_handle(text):
+                score = min(1.0, 0.6 + self._priority(skill))
+                return score, "skill can_handle match"
             return 0.0, best_reason
 
         score = min(1.0, best_score + self._priority(skill))
