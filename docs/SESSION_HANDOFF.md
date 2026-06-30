@@ -4,7 +4,7 @@ Last Updated: 2026-06-30
 
 Current Version
 
-ARES v1.0
+ARES v1.1
 
 ---
 
@@ -68,6 +68,20 @@ New test coverage:
 - Text REPL profile recall flow
 
 Pytest is configured to collect only `tests/`, because legacy interactive scripts under `scripts/` also use `test_*.py` names.
+
+Phase 4 Tool Selection foundation has been added.
+
+New tool selection module:
+
+- `skills.ToolSelector`
+- `skills.ToolSelection`
+
+Selection behavior:
+
+- Scores local skills instead of relying on first registered match only.
+- Supports exact trigger matches, contained trigger phrases, token overlap, optional `selection_keywords`, optional `selection_priority`, and `run_before_intents` filtering.
+- Currently routes `TimeDateSkill` and `MemoryRecallSkill`.
+- Test-only dummy calculator and notes skills verify the future `CalculatorSkill` and `NotesSkill` extension path without adding those runtime skills.
 
 Strict engineering rules have been added in `docs/ENGINEERING_RULES.md`.
 
@@ -164,6 +178,7 @@ MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing s
 Skill Manager
         │
         ├── SkillRegistry
+        ├── ToolSelector
         ├── SkillPlugin
         └── Built-in skills
             ├── MemoryRecallSkill
@@ -204,15 +219,16 @@ Future Roadmap
 1. Company Provider
 2. Cryptocurrency Provider
 3. Better reasoning
-4. Skill manager integration with text flow
-5. Memory v1 integration with conversations
-6. Long-term memory retrieval
-7. Company profile provider
-8. Voice interface
-9. Vision
-10. Robotics
-11. Jetson Orin migration
-12. Autonomous ARES
+4. Memory v1 integration with conversations
+5. Long-term memory retrieval
+6. CalculatorSkill after roadmap approval
+7. NotesSkill after roadmap approval
+8. Company profile provider
+9. Voice interface
+10. Vision
+11. Robotics
+12. Jetson Orin migration
+13. Autonomous ARES
 
 Verification Notes
 
@@ -227,6 +243,7 @@ Verification Notes
   - `py -m pytest`
   - `py -m compileall core interfaces events memory skills scripts`
   - `py scripts\verify_phase2_events_memory.py`
+- Tool selection tests cover current TimeDate/MemoryRecall selection and future Calculator/Notes-style skill selection.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
@@ -238,6 +255,7 @@ Latest Commits
 - Documentation update for tests and current architecture status
 - Documentation update for strict engineering rules
 - Documentation update for master architecture and roadmap docs
+- Tool selection foundation with scoring and tests
 
 Next Planned Step
 

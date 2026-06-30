@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.0 - Long-Term Memory Recall
+ARES v1.1 - Tool Selection Foundation
 
 ---
 
@@ -43,6 +43,7 @@ ARES
 ├── User Profile Store
 ├── Skill Manager
 ├── Skill Registry
+├── Tool Selector
 ├── Skill Plugins
 └── Text Interface
 
@@ -74,6 +75,7 @@ Completed
 - Built-in time/date skill
 - Persistent user profile facts
 - Memory recall skill
+- Tool selection confidence/scoring foundation
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -106,6 +108,7 @@ Implemented Features
 - Short-term and long-term memory v1 storage
 - Separate persistent user profile memory
 - Skill registry, skill manager, and skill plugin foundation
+- Tool selector for best local skill selection
 - Built-in time/date skill
 - Built-in memory recall skill for saved profile facts
 - Text REPL with conversation turn storage
@@ -140,6 +143,7 @@ Latest Architecture Status
 - Intent router remains the main text command path.
 - Priority skills can run before generic intents when needed, such as memory recall.
 - Normal skills run as fallback when no regular intent matches, such as time/date.
+- SkillManager uses ToolSelector confidence scoring instead of first-match-only selection.
 - Conversation history and user profile facts are stored separately.
 - Voice has not started.
 
@@ -224,6 +228,13 @@ Phase 4 Long-Term Memory Recall (Current)
 - Supported fact patterns include `My name is...`, `I live in...`, `My birthday is...`, `My favorite ... is...`, and `I own...`.
 - `skills.builtin.MemoryRecallSkill` answers personal profile questions from stored facts without using an LLM.
 - Memory recall is a priority skill, so it runs before generic knowledge lookup for profile questions.
+
+Phase 4 Tool Selection Foundation
+
+- `skills.ToolSelector` scores local skills using trigger match strength, optional selection keywords, skill priority, and priority-intent filtering.
+- Current supported skills are `TimeDateSkill` and `MemoryRecallSkill`.
+- Future `CalculatorSkill` and `NotesSkill` can participate by defining triggers and optional `selection_keywords`.
+- No calculator, notes, voice, external API, weather, stocks, calendar, or GPT integration has been added.
 
 Phase 5
 

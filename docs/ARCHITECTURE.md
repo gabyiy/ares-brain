@@ -11,9 +11,9 @@ Current System Flow
 5. The REPL creates `SkillManager`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
 6. User input is sent to `IntentRouter`.
 7. `IntentRouter` publishes input lifecycle events.
-8. Priority skills run before normal intents only when a skill opts in.
+8. Priority skills are selected by `ToolSelector` before normal intents only when a skill opts in.
 9. Normal intents run next.
-10. Non-priority skills run as a fallback when no normal intent matches.
+10. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
 11. Responses are published as events.
 12. The REPL stores each conversation turn in `MemoryStore`.
 13. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
@@ -118,6 +118,26 @@ Current responsibilities:
 - Find matching skills for text input.
 - Filter priority skills with `run_before_intents`.
 
+ToolSelector
+
+`skills.ToolSelector` chooses the best local skill for a user text request.
+
+Current scoring rules:
+
+- Exact trigger match gets the strongest confidence.
+- Contained trigger phrase gets high confidence.
+- Trigger token overlap gets partial confidence.
+- Skills can add `selection_keywords` without changing selector code.
+- Skills can add `selection_priority` for explicit tie-breaking.
+- Selection can be filtered with `run_before_intents`.
+
+Current supported runtime skills:
+
+- `TimeDateSkill`
+- `MemoryRecallSkill`
+
+Future local skills such as `CalculatorSkill` and `NotesSkill` should define clear triggers and optional `selection_keywords` so they can use the same selector without a giant if/else chain.
+
 SkillManager
 
 `skills.SkillManager` owns skill detection and execution.
@@ -126,7 +146,7 @@ Current responsibilities:
 
 - Register individual skills.
 - Register skill plugins.
-- Detect matching skills.
+- Select the best matching local skill through `ToolSelector`.
 - Execute a skill with `SkillContext`.
 - Publish skill lifecycle events.
 
@@ -151,6 +171,8 @@ Current built-in skills:
 `TimeDateSkill` answers local time and date questions.
 
 `MemoryRecallSkill` answers profile questions from `UserProfileStore` without using an LLM. It is a priority skill so questions such as `What is my name?` are answered before the generic knowledge intent.
+
+No calculator, notes, voice, weather, stocks, calendar, external API, or GPT integration has been added as part of the tool selection foundation.
 
 REPL Flow
 
