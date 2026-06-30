@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v0.8 - Phase 2 Foundation
+ARES v0.8.1 - Phase 2 Event/Memory Wiring
 
 ---
 
@@ -62,6 +62,8 @@ Completed
 - Cache System
 - Event Bus foundation
 - Memory v1 interface
+- Text REPL event bus wiring
+- Basic conversation turn memory
 - Session handoff documentation
 - Modular project structure
 - Git version control
@@ -99,6 +101,7 @@ Phase 2 (Current)
 
 - Event bus foundation
 - Memory v1 interface
+- Text REPL event/memory integration
 - Company information
 - Cryptocurrency
 - Better stock analysis
@@ -107,9 +110,14 @@ Phase 2 (Current)
 Phase 2 Foundation Modules
 
 - `events.EventBus` provides in-process publish/subscribe events for ARES modules.
-- `IntentRouter` publishes input and routing lifecycle events.
+- `IntentRouter` publishes `user_message_received`, `intent_detected`, and `response_generated`.
+- The text REPL uses a shared event bus and records basic conversation turns.
 - `memory.MemoryStore` provides the v1 interface for short-term and long-term memories.
 - Memory v1 stores data in the existing `data/memories_short.json` and `data/memories_long.json` files.
+
+Verification
+
+- Run `python scripts/verify_phase2_events_memory.py` to verify router events and memory turn storage.
 
 Phase 3
 
