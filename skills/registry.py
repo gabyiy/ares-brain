@@ -32,7 +32,7 @@ class SkillRegistry:
     def all(self) -> List[Skill]:
         return list(self._skills.values())
 
-    def matching(self, text: str, run_before_intents: Optional[bool] = None) -> List[Skill]:
+    def matching(self, text, run_before_intents: Optional[bool] = None) -> List[Skill]:
         selections = self.selector.matching(
             text,
             self.all(),
@@ -40,11 +40,11 @@ class SkillRegistry:
         )
         return [selection.skill for selection in selections]
 
-    def first_match(self, text: str, run_before_intents: Optional[bool] = None) -> Optional[Skill]:
+    def first_match(self, text, run_before_intents: Optional[bool] = None) -> Optional[Skill]:
         selection = self.select(text, run_before_intents=run_before_intents)
         return selection.skill if selection else None
 
-    def select(self, text: str, run_before_intents: Optional[bool] = None):
+    def select(self, text, run_before_intents: Optional[bool] = None):
         return self.selector.select(
             text,
             self.all(),

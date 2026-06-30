@@ -12,6 +12,7 @@ class TimeDateSkill(Skill):
     name = "time_date"
     description = "Answers simple local time and date questions."
     version = "0.1"
+    intent_names = ("time_date",)
     triggers = (
         "time",
         "date",

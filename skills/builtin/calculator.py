@@ -14,6 +14,7 @@ class CalculatorSkill(Skill):
     name = "calculator"
     description = "Safely calculates local arithmetic expressions."
     version = "0.1"
+    intent_names = ("calculate",)
     run_before_intents = True
     triggers = (
         "calculate",

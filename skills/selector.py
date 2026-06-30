@@ -2,6 +2,8 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
 
+from core.Intent import Intent
+from core.IntentParser import IntentParser
 from skills.base import Skill
 
 
@@ -23,20 +25,22 @@ class ToolSelector:
 
     def __init__(self, min_confidence: float = 0.25):
         self.min_confidence = float(min_confidence)
+        self.intent_parser = IntentParser()
 
     def select(
         self,
-        text: str,
+        text,
         skills: Iterable[Skill],
         run_before_intents: Optional[bool] = None,
     ) -> Optional[ToolSelection]:
+        intent = self._coerce_intent(text)
         candidates = []
         for index, skill in enumerate(skills):
             if run_before_intents is not None:
                 if bool(getattr(skill, "run_before_intents", False)) != run_before_intents:
                     continue
 
-            confidence, reason = self.score(text, skill)
+            confidence, reason = self.score(intent, skill)
             if confidence >= self.min_confidence:
                 candidates.append((confidence, self._priority(skill), -index, reason, skill))
 
@@ -48,17 +52,18 @@ class ToolSelector:
 
     def matching(
         self,
-        text: str,
+        text,
         skills: Iterable[Skill],
         run_before_intents: Optional[bool] = None,
     ) -> List[ToolSelection]:
+        intent = self._coerce_intent(text)
         matches = []
         for skill in skills:
             if run_before_intents is not None:
                 if bool(getattr(skill, "run_before_intents", False)) != run_before_intents:
                     continue
 
-            confidence, reason = self.score(text, skill)
+            confidence, reason = self.score(intent, skill)
             if confidence >= self.min_confidence:
                 matches.append(ToolSelection(skill=skill, confidence=confidence, reason=reason))
 
@@ -68,8 +73,13 @@ class ToolSelector:
             reverse=True,
         )
 
-    def score(self, text: str, skill: Skill):
-        normalized_text = self._normalize(text)
+    def score(self, text, skill: Skill):
+        intent = self._coerce_intent(text)
+        intent_score, intent_reason = self._score_intent(intent, skill)
+        if intent_score > 0.0:
+            return intent_score, intent_reason
+
+        normalized_text = self._normalize(intent.raw_text)
         if not normalized_text:
             return 0.0, "empty input"
 
@@ -87,7 +97,7 @@ class ToolSelector:
                 best_reason = reason
 
         if best_score <= 0.0:
-            if skill.can_handle(text):
+            if intent.intent_name == "unknown" and skill.can_handle(intent.raw_text):
                 score = min(1.0, 0.6 + self._priority(skill))
                 return score, "skill can_handle match"
             return 0.0, best_reason
@@ -119,11 +129,41 @@ class ToolSelector:
         triggers.extend(getattr(skill, "selection_keywords", ()) or ())
         return triggers
 
+    def _score_intent(self, intent: Intent, skill: Skill):
+        if intent.intent_name == "unknown":
+            return 0.0, "unknown structured intent"
+
+        normalized_intent_name = self._normalize_intent_name(intent.intent_name)
+        if normalized_intent_name in self._skill_intents(skill):
+            score = min(1.0, intent.confidence + self._priority(skill))
+            return score, f"structured intent match: {intent.intent_name}"
+
+        return 0.0, f"structured intent did not match: {intent.intent_name}"
+
+    def _skill_intents(self, skill: Skill):
+        names = set(getattr(skill, "intent_names", ()) or ())
+        if not names:
+            names.add(getattr(skill, "name", "") or "")
+        intents = set()
+        for name in names:
+            normalized = self._normalize_intent_name(name)
+            if normalized:
+                intents.add(normalized)
+        return intents
+
     def _priority(self, skill: Skill) -> float:
         return float(getattr(skill, "selection_priority", 0.0) or 0.0)
 
     def _normalize(self, value: str) -> str:
         return " ".join(self._tokens(value))
 
+    def _normalize_intent_name(self, value: str) -> str:
+        return "_".join(self._tokens(value))
+
     def _tokens(self, value: str):
         return re.findall(r"[a-z0-9]+", (value or "").lower())
+
+    def _coerce_intent(self, value) -> Intent:
+        if isinstance(value, Intent):
+            return value
+        return self.intent_parser.parse(str(value or ""))

@@ -7,6 +7,7 @@ class TasksSkill(Skill):
     name = "tasks"
     description = "Manages offline reminders and tasks."
     version = "0.1"
+    intent_names = ("task",)
     run_before_intents = True
     triggers = (
         "add task",
@@ -37,7 +38,7 @@ class TasksSkill(Skill):
                 error="missing_tasks_store",
             )
 
-        parsed = self._parse(text)
+        parsed = self._parse_from_context(text, context)
         action = parsed["action"]
 
         if action == "add":
@@ -103,6 +104,18 @@ class TasksSkill(Skill):
                 return {"action": "add", "text": task_text, "due": due}
 
         return {"action": None}
+
+    def _parse_from_context(self, text: str, context: SkillContext):
+        intent = context.metadata.get("intent") if context.metadata else None
+        if getattr(intent, "intent_name", None) == "task":
+            entities = dict(getattr(intent, "extracted_entities", {}) or {})
+            return {
+                "action": entities.get("action"),
+                "text": entities.get("text", ""),
+                "due": entities.get("due"),
+                "task_id": entities.get("task_id", ""),
+            }
+        return self._parse(text)
 
     def _split_due_text(self, text: str):
         clean_text = self._clean_task_text(text)

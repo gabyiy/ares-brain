@@ -7,6 +7,7 @@ class MemoryRecallSkill(Skill):
     name = "memory_recall"
     description = "Answers personal profile questions from stored user facts."
     version = "0.1"
+    intent_names = ("memory_recall",)
     run_before_intents = True
     triggers = (
         "what is my name",

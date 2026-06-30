@@ -30,6 +30,7 @@ class Skill(ABC):
     description = ""
     version = "0.1"
     triggers: Tuple[str, ...] = ()
+    intent_names: Tuple[str, ...] = ()
     run_before_intents = False
     selection_keywords: Tuple[str, ...] = ()
     selection_priority = 0.0
@@ -40,6 +41,7 @@ class Skill(ABC):
             "description": self.description,
             "version": self.version,
             "triggers": list(self.triggers),
+            "intent_names": list(self.intent_names),
             "run_before_intents": self.run_before_intents,
             "selection_keywords": list(self.selection_keywords),
             "selection_priority": self.selection_priority,

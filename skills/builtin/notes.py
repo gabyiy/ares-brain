@@ -7,6 +7,7 @@ class NotesSkill(Skill):
     name = "notes"
     description = "Stores, lists, searches, and deletes local notes."
     version = "0.1"
+    intent_names = ("note",)
     run_before_intents = True
     triggers = (
         "remember this",

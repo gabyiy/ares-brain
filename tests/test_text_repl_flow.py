@@ -121,7 +121,7 @@ def test_text_repl_routes_tasks_skill_and_persists_task(monkeypatch, tmp_path, c
     monkeypatch.setenv("ARES_TASKS_PATH", str(tasks_path))
     monkeypatch.setattr(
         "sys.stdin",
-        io.StringIO("hello\nremind me to call mom\nlist tasks\nquit\n"),
+        io.StringIO("hello\nremember buy milk tomorrow\nlist tasks\nquit\n"),
     )
 
     event_bus = get_global_bus()
@@ -138,9 +138,11 @@ def test_text_repl_routes_tasks_skill_and_persists_task(monkeypatch, tmp_path, c
     ]
 
     assert len(tasks) == 1
-    assert tasks[0].text == "call mom"
+    assert tasks[0].text == "buy milk"
+    assert tasks[0].due == "tomorrow"
     assert tasks[0].completed is False
     assert "Saved task" in output
     assert "Your tasks:" in output
-    assert "call mom" in output
+    assert "buy milk" in output
+    assert "due tomorrow" in output
     assert detected
