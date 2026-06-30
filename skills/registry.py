@@ -1,0 +1,38 @@
+from typing import Dict, List, Optional
+
+from skills.base import Skill
+
+
+class SkillRegistry:
+    def __init__(self):
+        self._skills: Dict[str, Skill] = {}
+
+    def register(self, skill: Skill) -> Skill:
+        if not isinstance(skill, Skill):
+            raise TypeError("Registered object must implement Skill")
+
+        name = (skill.name or "").strip()
+        if not name:
+            raise ValueError("Skill name is required")
+
+        if name in self._skills:
+            raise ValueError(f"Skill already registered: {name}")
+
+        self._skills[name] = skill
+        return skill
+
+    def unregister(self, name: str) -> Optional[Skill]:
+        return self._skills.pop((name or "").strip(), None)
+
+    def get(self, name: str) -> Optional[Skill]:
+        return self._skills.get((name or "").strip())
+
+    def all(self) -> List[Skill]:
+        return list(self._skills.values())
+
+    def matching(self, text: str) -> List[Skill]:
+        return [skill for skill in self.all() if skill.can_handle(text)]
+
+    def first_match(self, text: str) -> Optional[Skill]:
+        matches = self.matching(text)
+        return matches[0] if matches else None
