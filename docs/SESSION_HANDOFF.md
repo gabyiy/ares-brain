@@ -79,6 +79,15 @@ Required rules going forward:
 - Keep the full verification suite passing before every push.
 - Update README and SESSION_HANDOFF after every meaningful change.
 
+Master planning documents have been added.
+
+New planning docs:
+
+- `docs/ARCHITECTURE.md`
+- `docs/ROADMAP.md`
+
+These documents explain the current system flow, event bus, intent router, memory stores, skill system, REPL flow, future integration points, completed phases, current state, next priorities, blocked work, and testing rules before each phase.
+
 Current working intents:
 
 - Greeting
@@ -228,9 +237,10 @@ Latest Commits
 - `97fcbeb` Add automated pytest suite
 - Documentation update for tests and current architecture status
 - Documentation update for strict engineering rules
+- Documentation update for master architecture and roadmap docs
 
 Next Planned Step
 
-- Create a roadmap/architecture document.
+- Review and approve roadmap/architecture documents.
 - Do not add roadmap implementation yet.
 - Do not start voice yet.

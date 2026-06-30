@@ -1,0 +1,122 @@
+ARES Roadmap
+
+This roadmap describes the current state and planned direction. It is a planning document only; it does not introduce new runtime behavior.
+
+Completed Phases
+
+Phase 1: Modular Text Intelligence
+
+- Modular intent router
+- Greeting intent
+- Goodbye intent
+- Weather intent and provider
+- News intent and provider
+- Knowledge intent and provider
+- Stock intent and Alpha Vantage provider
+- HTTP client
+- Cache system
+
+Phase 2: Event and Memory Foundation
+
+- Event bus
+- Router lifecycle events
+- Memory v1 interface
+- Conversation turn storage from the text REPL
+- Phase 2 verification script
+
+Phase 3: Skill Foundation
+
+- Base `Skill` interface
+- `SkillContext`
+- `SkillResponse`
+- `SkillRegistry`
+- `SkillManager`
+- `SkillPlugin`
+- Built-in skill plugin
+- Built-in `TimeDateSkill`
+- Text REPL skill fallback wiring
+
+Phase 4: Long-Term Profile Memory Recall
+
+- Persistent `UserProfileStore`
+- User facts stored separately from conversation history
+- Supported profile fact detection
+- Built-in `MemoryRecallSkill`
+- Priority skill routing for personal recall questions
+- Automated pytest suite
+- Strict engineering rules
+
+Current State
+
+ARES is currently a text-first assistant with deterministic routing, deterministic skills, event publishing, conversation memory, and user profile memory.
+
+The current active interface is:
+
+- `interfaces.text_repl`
+
+The current deterministic answer paths are:
+
+- Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
+- Skills for time/date and memory recall
+
+The current memory paths are:
+
+- `MemoryStore` for conversation-style memory
+- `UserProfileStore` for persistent user facts
+
+Next Priorities
+
+1. Create and approve detailed architecture decisions for the next implementation phase.
+2. Define how roadmap items map to intents, skills, providers, or interfaces.
+3. Add a company information provider only after the architecture decision is documented.
+4. Add cryptocurrency support only after company information is stable and tested.
+5. Improve natural language understanding only with tests that preserve current behavior.
+
+What Must Not Be Started Yet
+
+- No voice implementation.
+- No GPT or LLM integration.
+- No Raspberry Pi deployment work.
+- No new skills before the roadmap and architecture decision is approved.
+- No robotics or movement integration.
+- No vision integration.
+- No broad refactors of the router, memory, or skill system.
+
+Testing Rules Before Each Phase
+
+Before starting a new phase:
+
+1. Pull latest `main`.
+2. Confirm the working tree is clean.
+3. Run the full verification suite:
+
+```powershell
+py -m pytest
+py -m compileall core interfaces events memory skills scripts
+py scripts\verify_phase2_events_memory.py
+```
+
+4. Do not proceed if any check fails.
+5. Fix the root cause of failures before adding new work.
+6. Do not skip, xfail, or weaken tests without explicit approval.
+7. Update README and SESSION_HANDOFF for meaningful changes.
+8. Commit logical changes separately.
+9. Push only after all checks pass.
+
+Near-Term Planning Questions
+
+- Should company information be an intent, a skill, a provider, or a combination?
+- Which data provider should be used for company facts?
+- What should be cached, and for how long?
+- Which answers should remain deterministic and avoid LLM calls?
+- How should profile memory be used in future skills without leaking private facts?
+
+Exit Criteria For Next Implementation Phase
+
+The next implementation phase can begin only after:
+
+- `docs/ARCHITECTURE.md` is current.
+- `docs/ROADMAP.md` is current.
+- `docs/ENGINEERING_RULES.md` is followed.
+- The full verification suite passes.
+- The scope is limited to one logical capability.

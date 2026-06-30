@@ -150,6 +150,13 @@ Engineering Rules
 - Every meaningful change must keep `py -m pytest`, `py -m compileall core interfaces events memory skills scripts`, and `py scripts\verify_phase2_events_memory.py` passing.
 - README and session handoff documentation must be updated after every meaningful change.
 
+Project Documents
+
+- Architecture: `docs/ARCHITECTURE.md`
+- Roadmap: `docs/ROADMAP.md`
+- Engineering rules: `docs/ENGINEERING_RULES.md`
+- Session handoff: `docs/SESSION_HANDOFF.md`
+
 ---
 
 Roadmap
