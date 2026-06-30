@@ -9,15 +9,16 @@ Current System Flow
 3. The REPL creates `MemoryStore` for conversation turns.
 4. The REPL creates `UserProfileStore` for persistent user facts.
 5. The REPL creates `NotesStore` for persistent local notes.
-6. The REPL creates `SkillManager`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
-7. User input is sent to `IntentRouter`.
-8. `IntentRouter` publishes input lifecycle events.
-9. Priority skills are selected by `ToolSelector` before normal intents only when a skill opts in.
-10. Normal intents run next.
-11. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
-12. Responses are published as events.
-13. The REPL stores each conversation turn in `MemoryStore`.
-14. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
+6. The REPL creates `TasksStore` for persistent offline tasks.
+7. The REPL creates `SkillManager`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
+8. User input is sent to `IntentRouter`.
+9. `IntentRouter` publishes input lifecycle events.
+10. Priority skills are selected by `ToolSelector` before normal intents only when a skill opts in.
+11. Normal intents run next.
+12. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
+13. Responses are published as events.
+14. The REPL stores each conversation turn in `MemoryStore`.
+15. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
 
 Event Bus
 
@@ -43,6 +44,10 @@ Current event examples:
 - `notes.recorded`
 - `notes.deleted`
 - `notes.cleared`
+- `tasks.recorded`
+- `tasks.completed`
+- `tasks.deleted`
+- `tasks.completed_cleared`
 - `skill.registered`
 - `skill.plugin_registered`
 - `skill.detected`
@@ -128,6 +133,26 @@ Current storage:
 
 The notes file is ignored by git because it can contain personal notes. Tests can override the path with `ARES_NOTES_PATH`.
 
+TasksStore
+
+`memory.TasksStore` stores offline tasks and simple reminders separately from conversation history, user profile facts, and notes.
+
+Current responsibilities:
+
+- Add tasks with an id, text, created timestamp, optional due text, and completed flag.
+- List all tasks.
+- Mark one task completed by id.
+- Delete one task by id.
+- Clear completed tasks.
+
+Current storage:
+
+- `data/tasks.json`
+
+The tasks file is ignored by git because it can contain personal tasks. Tests can override the path with `ARES_TASKS_PATH`.
+
+Scheduling is not active. The current task system stores due text only; it does not schedule jobs, send notifications, call calendar APIs, or use an LLM.
+
 SkillRegistry
 
 `skills.SkillRegistry` owns skill registration and lookup.
@@ -159,6 +184,7 @@ Current supported runtime skills:
 - `MemoryRecallSkill`
 - `CalculatorSkill`
 - `NotesSkill`
+- `TasksSkill`
 
 Future local skills should define clear triggers and optional `selection_keywords` so they can use the same selector without a giant if/else chain.
 
@@ -180,6 +206,7 @@ Skill context currently carries:
 - `memory_store`
 - `profile_store`
 - `notes_store`
+- `tasks_store`
 - `metadata`
 
 Built-In Skills
@@ -194,6 +221,7 @@ Current built-in skills:
 - `MemoryRecallSkill`
 - `CalculatorSkill`
 - `NotesSkill`
+- `TasksSkill`
 
 `TimeDateSkill` answers local time and date questions.
 
@@ -203,7 +231,9 @@ Current built-in skills:
 
 `NotesSkill` stores, lists, searches, and deletes local notes through `NotesStore`. It supports `remember this...`, `save note...`, `take a note...`, `list my notes`, `show my notes`, `delete note <id>`, `delete all notes`, and `search notes <keyword>`. `delete all notes` requires explicit confirmation with `confirm delete all notes`.
 
-No voice, weather, stocks, calendar, external API, or GPT integration has been added as part of the notes milestone.
+`TasksSkill` stores and manages offline reminders/tasks through `TasksStore`. It supports `add task...`, `remind me to...`, `list tasks`, `show tasks`, `mark task <id> done`, `delete task <id>`, and `clear completed tasks`. It stores optional due text but does not schedule or notify.
+
+No real scheduling, notifications, voice, weather, stocks, calendar, external API, or GPT integration has been added as part of the tasks milestone.
 
 REPL Flow
 
@@ -213,10 +243,11 @@ Current responsibilities:
 
 - Wake on `hello`, `hello ares`, `hi ares`, or `hey ares`.
 - Exit on `goodbye`, `goodbye ares`, `exit`, or `quit`.
-- Share one event bus across router, memory, profile, notes, and skills.
+- Share one event bus across router, memory, profile, notes, tasks, and skills.
 - Store each user/ARES turn as a conversation memory.
 - Scan each user message for profile facts.
 - Route note commands to `NotesSkill` and persist notes in `NotesStore`.
+- Route task commands to `TasksSkill` and persist tasks in `TasksStore`.
 - Print the final ARES response.
 
 Future Integration Points
@@ -230,6 +261,7 @@ Voice should connect at the interface layer, beside the text REPL. It should reu
 - `MemoryStore`
 - `UserProfileStore`
 - `NotesStore`
+- `TasksStore`
 - `SkillManager`
 
 Voice must not bypass the existing routing, memory, or verification rules.

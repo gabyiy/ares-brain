@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.4 - GitHub Actions CI
+ARES v1.5 - Local Tasks Skill
 
 ---
 
 Current Architecture
 
-The active runtime includes `memory.NotesStore` for persistent local notes, separate from conversation memory and user profile memory.
+The active runtime includes `memory.NotesStore` for persistent local notes and `memory.TasksStore` for offline tasks, separate from conversation memory and user profile memory.
 
 ARES
 │
@@ -81,6 +81,8 @@ Completed
 - Built-in calculator skill
 - Persistent local notes store
 - Built-in notes skill
+- Persistent local tasks store
+- Built-in tasks skill
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -109,6 +111,10 @@ ARES currently understands questions such as:
 - list my notes
 - search notes rover
 - delete note <id>
+- add task buy milk
+- remind me to call mom
+- list tasks
+- mark task <id> done
 
 Each request is automatically routed to its correct intent.
 
@@ -124,8 +130,9 @@ Implemented Features
 - Built-in memory recall skill for saved profile facts
 - Built-in calculator skill for safe local arithmetic
 - Built-in notes skill for persistent local notes
+- Built-in tasks skill for offline reminders/tasks
 - Text REPL with conversation turn storage
-- Pytest automated coverage for core Phase 2-5 modules
+- Pytest automated coverage for core Phase 2-6 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -176,8 +183,9 @@ Latest Architecture Status
 - Normal skills run as fallback when no regular intent matches, such as time/date.
 - CalculatorSkill runs as a priority local skill for arithmetic before generic knowledge lookup.
 - NotesSkill runs as a priority local skill for note commands.
+- TasksSkill runs as a priority local skill for task/reminder commands.
 - SkillManager uses ToolSelector confidence scoring instead of first-match-only selection.
-- Conversation history, user profile facts, and notes are stored separately.
+- Conversation history, user profile facts, notes, and tasks are stored separately.
 - GitHub Actions CI now enforces the local verification suite on `main`.
 - Voice has not started.
 
@@ -268,8 +276,8 @@ Phase 4 Long-Term Memory Recall (Current)
 Phase 4 Tool Selection Foundation
 
 - `skills.ToolSelector` scores local skills using trigger match strength, optional selection keywords, skill priority, and priority-intent filtering.
-- Current supported skills are `TimeDateSkill`, `MemoryRecallSkill`, `CalculatorSkill`, and `NotesSkill`.
-- No voice, external API, weather, stocks, calendar, or GPT integration has been added.
+- Current supported skills are `TimeDateSkill`, `MemoryRecallSkill`, `CalculatorSkill`, `NotesSkill`, and `TasksSkill`.
+- No real scheduling, notifications, voice, external API, weather, stocks, calendar, or GPT integration has been added.
 
 Phase 4 Calculator Skill
 
@@ -286,21 +294,30 @@ Phase 5 Local Notes Skill
 - Each note contains a unique id, timestamp, and text.
 - `data/notes.json` is ignored by git because it can contain personal notes.
 
-Phase 6
+Phase 6 Local Tasks Skill
+
+- `memory.TasksStore` persists offline tasks in `data/tasks.json`.
+- Tasks are separate from conversation memory, user profile memory, and notes.
+- `skills.builtin.TasksSkill` supports adding, listing, marking done, deleting, and clearing completed tasks.
+- Each task contains an id, text, created timestamp, optional due text, and completed state.
+- No real scheduling, notifications, calendar integration, voice, or GPT integration has been added.
+- `data/tasks.json` is ignored by git because it can contain personal tasks.
+
+Phase 7
 
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 7
+Phase 8
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 8
+Phase 9
 
 - Robotics
 - ROS2

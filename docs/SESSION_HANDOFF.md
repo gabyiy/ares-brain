@@ -4,7 +4,7 @@ Last Updated: 2026-06-30
 
 Current Version
 
-ARES v1.4
+ARES v1.5
 
 ---
 
@@ -68,6 +68,8 @@ New test coverage:
 - CalculatorSkill
 - NotesStore
 - NotesSkill
+- TasksStore
+- TasksSkill
 - Text REPL profile recall flow
 
 Pytest is configured to collect only `tests/`, because legacy interactive scripts under `scripts/` also use `test_*.py` names.
@@ -83,7 +85,7 @@ Selection behavior:
 
 - Scores local skills instead of relying on first registered match only.
 - Supports exact trigger matches, contained trigger phrases, token overlap, optional `selection_keywords`, optional `selection_priority`, and `run_before_intents` filtering.
-- Currently routes `TimeDateSkill`, `MemoryRecallSkill`, `CalculatorSkill`, and `NotesSkill`.
+- Currently routes `TimeDateSkill`, `MemoryRecallSkill`, `CalculatorSkill`, `NotesSkill`, and `TasksSkill`.
 
 Phase 4 CalculatorSkill has been added as the first real local tool.
 
@@ -114,6 +116,24 @@ Notes behavior:
 - Requires explicit confirmation with `confirm delete all notes` before clearing all notes.
 - Publishes `notes.recorded`, `notes.deleted`, and `notes.cleared`.
 - Uses `ARES_NOTES_PATH` for test isolation.
+
+Phase 6 TasksSkill has been added as the first offline reminders/tasks system.
+
+New task modules:
+
+- `memory.TasksStore`
+- `memory.TaskRecord`
+- `skills.builtin.TasksSkill`
+
+Tasks behavior:
+
+- Stores tasks in `data/tasks.json`, which is ignored by git.
+- Keeps tasks separate from conversation memory, user profile memory, and notes.
+- Supports `add task...`, `remind me to...`, `list tasks`, `show tasks`, `mark task <id> done`, `delete task <id>`, and `clear completed tasks`.
+- Each task stores id, text, created timestamp, optional due text, and completed state.
+- Stores due text only; no real scheduling, notifications, calendar integration, voice, or GPT integration has been added.
+- Publishes `tasks.recorded`, `tasks.completed`, `tasks.deleted`, and `tasks.completed_cleared`.
+- Uses `ARES_TASKS_PATH` for test isolation.
 
 GitHub Actions CI has been added.
 
@@ -202,9 +222,17 @@ Notes Store:
 - Uses `data/notes.json` by default.
 - Does not write to `MemoryStore` or `UserProfileStore`.
 
+Tasks Store:
+
+- Stores task records with id, text, created timestamp, optional due text, and completed boolean.
+- Lists, marks done, deletes one task, and clears completed tasks.
+- Uses `data/tasks.json` by default.
+- Does not write to `MemoryStore`, `UserProfileStore`, or `NotesStore`.
+- Does not schedule tasks or send notifications.
+
 Text REPL memory:
 
-- `interfaces.text_repl` creates one shared event bus and passes it to `IntentRouter`, `MemoryStore`, `UserProfileStore`, `NotesStore`, and `SkillManager`.
+- `interfaces.text_repl` creates one shared event bus and passes it to `IntentRouter`, `MemoryStore`, `UserProfileStore`, `NotesStore`, `TasksStore`, and `SkillManager`.
 - Each text response records a short-term `conversation_turn` memory.
 - Each text input is also scanned for user profile facts.
 - Sleeping-mode responses also emit `user_message_received` and `response_generated`.
@@ -233,8 +261,8 @@ Each intent owns its own logic and communicates with its corresponding provider.
 
 MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing scripts keep working.
 
-The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `NotesSkill`, and `TimeDateSkill`.
-The REPL priority skill path currently covers profile memory recall, calculator arithmetic, and note commands.
+The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `NotesSkill`, `TasksSkill`, and `TimeDateSkill`.
+The REPL priority skill path currently covers profile memory recall, calculator arithmetic, note commands, and task commands.
 
 Skill Manager
         │
@@ -264,7 +292,7 @@ Next technical choices:
 
 - Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
 - Decide whether the next approved runtime capability is company information or another documented provider.
-- Keep voice, GPT, external weather/stocks/calendar APIs, and Raspberry Pi deployment out of scope until explicitly approved.
+- Keep voice, GPT, external weather/stocks/calendar APIs, real scheduling, notifications, and Raspberry Pi deployment out of scope until explicitly approved.
 - Connect selected daily reflection scripts and future providers to MemoryStore v1 only after the memory contract is documented.
 
 ---
@@ -298,9 +326,10 @@ Verification Notes
   - `py scripts\verify_phase2_events_memory.py`
 - GitHub Actions CI runs the same verification suite on Windows with Python 3.13 for `main` pushes and pull requests.
 - Latest checked GitHub Actions run on `main` completed successfully for commit `e37e5d4`.
-- Tool selection tests cover current TimeDate/MemoryRecall/Calculator/Notes selection.
+- Tool selection tests cover current TimeDate/MemoryRecall/Calculator/Notes/Tasks selection.
 - Calculator tests cover simple arithmetic, precedence, parentheses, decimals, bounded powers, unsafe input rejection, and the REPL routing path.
 - Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
+- Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
@@ -315,6 +344,7 @@ Latest Commits
 - Tool selection foundation with scoring and tests
 - CalculatorSkill with safe arithmetic tests
 - Persistent NotesSkill with storage and routing tests
+- Persistent TasksSkill with storage and routing tests
 - GitHub Actions CI for local verification commands
 
 Next Planned Step
@@ -322,5 +352,5 @@ Next Planned Step
 - Review and approve the next local tool or provider scope.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
-- Do not add weather, stocks, calendar, GPT, voice, or vision work yet.
+- Do not add weather, stocks, calendar, GPT, voice, vision, scheduling, or notifications yet.
 - Do not start voice yet.

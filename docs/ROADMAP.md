@@ -54,7 +54,7 @@ Phase 4B: Tool Selection Foundation
 - Priority selection before generic intents
 - Fallback selection after normal intents
 - Tests for current TimeDate/MemoryRecall skills
-- Tests for current Calculator and Notes skill selection
+- Tests for current Calculator, Notes, and Tasks skill selection
 
 Phase 4C: Local Calculator Skill
 
@@ -74,9 +74,20 @@ Phase 5: Local Notes Skill
 - Add, list, search, delete-one, and confirmed delete-all commands
 - Automated store, skill, selector, and REPL path tests
 
+Phase 6: Local Tasks Skill
+
+- Persistent `TasksStore`
+- Tasks stored in `data/tasks.json`
+- Tasks kept separate from conversation memory, user profile memory, and notes
+- Built-in `TasksSkill`
+- Add, list, mark done, delete-one, and clear-completed commands
+- Optional due text storage without real scheduling
+- No notifications or calendar integration
+- Automated store, skill, selector, and REPL path tests
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, and persistent local notes.
+ARES is currently a text-first assistant with deterministic routing, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, persistent local notes, and offline tasks.
 
 The current active interface is:
 
@@ -85,13 +96,14 @@ The current active interface is:
 The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
-- Tool-selected local skills for time/date, memory recall, calculator arithmetic, and notes
+- Tool-selected local skills for time/date, memory recall, calculator arithmetic, notes, and tasks
 
 The current memory paths are:
 
 - `MemoryStore` for conversation-style memory
 - `UserProfileStore` for persistent user facts
 - `NotesStore` for persistent local notes
+- `TasksStore` for persistent offline tasks
 
 Next Priorities
 
@@ -106,6 +118,8 @@ What Must Not Be Started Yet
 
 - No voice implementation.
 - No GPT or LLM integration.
+- No real task scheduling or notifications.
+- No calendar integration.
 - No Raspberry Pi deployment work.
 - No new skills before the roadmap and architecture decision is approved.
 - No robotics or movement integration.
