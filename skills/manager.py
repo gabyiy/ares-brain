@@ -39,20 +39,29 @@ class SkillManager:
     def detect(self, text: str, run_before_intents: Optional[bool] = None):
         return self.registry.first_match(text, run_before_intents=run_before_intents)
 
+    def select(self, text: str, run_before_intents: Optional[bool] = None):
+        return self.registry.select(text, run_before_intents=run_before_intents)
+
     def handle(
         self,
         text: str,
         context: Optional[SkillContext] = None,
         run_before_intents: Optional[bool] = None,
     ):
-        skill = self.detect(text, run_before_intents=run_before_intents)
-        if not skill:
+        selection = self.select(text, run_before_intents=run_before_intents)
+        if not selection:
             return None
+        skill = selection.skill
 
         context = context or self.create_context()
         self.event_bus.publish(
             "skill.detected",
-            {"skill": skill.name, "text": text},
+            {
+                "skill": skill.name,
+                "text": text,
+                "confidence": selection.confidence,
+                "reason": selection.reason,
+            },
             source="skill_manager",
         )
 

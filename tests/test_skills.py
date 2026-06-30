@@ -4,7 +4,7 @@ import pytest
 
 from events import EventBus
 from memory import UserProfileStore
-from skills import Skill, SkillContext, SkillManager, SkillRegistry, SkillResponse
+from skills import Skill, SkillContext, SkillManager, SkillRegistry, SkillResponse, ToolSelector
 from skills.builtin.memory_recall import MemoryRecallSkill
 from skills.builtin.time_date import TimeDateSkill
 import skills.builtin.time_date as time_date_module
@@ -22,6 +22,26 @@ class EchoSkill(Skill):
 class PriorityEchoSkill(EchoSkill):
     name = "priority_echo"
     run_before_intents = True
+
+
+class CalculatorLikeSkill(Skill):
+    name = "calculator"
+    description = "Future calculator-style skill."
+    triggers = ("calculate", "math", "plus", "minus")
+    selection_keywords = ("add", "subtract", "multiply", "divide")
+
+    def handle(self, text: str, context: SkillContext) -> SkillResponse:
+        return SkillResponse(text="calculator placeholder", skill=self.name)
+
+
+class NotesLikeSkill(Skill):
+    name = "notes"
+    description = "Future notes-style skill."
+    triggers = ("note", "remember note", "write down")
+    selection_keywords = ("save note", "take note")
+
+    def handle(self, text: str, context: SkillContext) -> SkillResponse:
+        return SkillResponse(text="notes placeholder", skill=self.name)
 
 
 def test_skill_registry_and_manager_handle_registered_skill():
@@ -50,6 +70,35 @@ def test_skill_registry_rejects_duplicates_and_filters_priority():
 
     assert registry.first_match("echo", run_before_intents=False).name == "echo"
     assert registry.first_match("echo", run_before_intents=True).name == "priority_echo"
+
+
+def test_tool_selector_scores_current_and_future_local_skills():
+    selector = ToolSelector()
+    skills = [
+        TimeDateSkill(),
+        MemoryRecallSkill(),
+        CalculatorLikeSkill(),
+        NotesLikeSkill(),
+    ]
+
+    assert selector.select("what time is it", skills).skill.name == "time_date"
+    assert selector.select("what is my favorite tank", skills).skill.name == "memory_recall"
+    assert selector.select("calculate 2 plus 2", skills).skill.name == "calculator"
+    assert selector.select("please take note buy batteries", skills).skill.name == "notes"
+
+
+def test_skill_manager_publishes_selection_confidence_and_reason():
+    bus = EventBus(raise_handler_errors=True)
+    manager = SkillManager(event_bus=bus)
+    manager.register(TimeDateSkill())
+
+    response = manager.handle("what time is it")
+    detected = bus.history("skill.detected")[-1]
+
+    assert response.skill == "time_date"
+    assert detected.payload["skill"] == "time_date"
+    assert detected.payload["confidence"] > 0
+    assert detected.payload["reason"]
 
 
 def test_time_date_skill_uses_local_datetime(monkeypatch):

@@ -1,11 +1,13 @@
 from typing import Dict, List, Optional
 
 from skills.base import Skill
+from skills.selector import ToolSelector
 
 
 class SkillRegistry:
-    def __init__(self):
+    def __init__(self, selector: Optional[ToolSelector] = None):
         self._skills: Dict[str, Skill] = {}
+        self.selector = selector or ToolSelector()
 
     def register(self, skill: Skill) -> Skill:
         if not isinstance(skill, Skill):
@@ -31,15 +33,20 @@ class SkillRegistry:
         return list(self._skills.values())
 
     def matching(self, text: str, run_before_intents: Optional[bool] = None) -> List[Skill]:
-        skills = [skill for skill in self.all() if skill.can_handle(text)]
-        if run_before_intents is not None:
-            skills = [
-                skill
-                for skill in skills
-                if bool(getattr(skill, "run_before_intents", False)) == run_before_intents
-            ]
-        return skills
+        selections = self.selector.matching(
+            text,
+            self.all(),
+            run_before_intents=run_before_intents,
+        )
+        return [selection.skill for selection in selections]
 
     def first_match(self, text: str, run_before_intents: Optional[bool] = None) -> Optional[Skill]:
-        matches = self.matching(text, run_before_intents=run_before_intents)
-        return matches[0] if matches else None
+        selection = self.select(text, run_before_intents=run_before_intents)
+        return selection.skill if selection else None
+
+    def select(self, text: str, run_before_intents: Optional[bool] = None):
+        return self.selector.select(
+            text,
+            self.all(),
+            run_before_intents=run_before_intents,
+        )

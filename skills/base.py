@@ -28,6 +28,8 @@ class Skill(ABC):
     version = "0.1"
     triggers: Tuple[str, ...] = ()
     run_before_intents = False
+    selection_keywords: Tuple[str, ...] = ()
+    selection_priority = 0.0
 
     def metadata(self) -> Dict[str, Any]:
         return {
@@ -36,6 +38,8 @@ class Skill(ABC):
             "version": self.version,
             "triggers": list(self.triggers),
             "run_before_intents": self.run_before_intents,
+            "selection_keywords": list(self.selection_keywords),
+            "selection_priority": self.selection_priority,
         }
 
     def can_handle(self, text: str) -> bool:
