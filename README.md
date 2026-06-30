@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.3 - Local Notes Skill
+ARES v1.4 - GitHub Actions CI
 
 ---
 
@@ -126,6 +126,7 @@ Implemented Features
 - Built-in notes skill for persistent local notes
 - Text REPL with conversation turn storage
 - Pytest automated coverage for core Phase 2-5 modules
+- GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
 
@@ -142,6 +143,12 @@ py -m pytest
 py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
+
+Continuous Integration
+
+- GitHub Actions runs on every push and pull request to `main`.
+- CI uses `windows-latest` with Python 3.13.
+- CI installs `requirements.txt` and runs the same verification commands used locally.
 
 Run Text REPL
 
@@ -160,6 +167,7 @@ Latest Architecture Status
 - NotesSkill runs as a priority local skill for note commands.
 - SkillManager uses ToolSelector confidence scoring instead of first-match-only selection.
 - Conversation history, user profile facts, and notes are stored separately.
+- GitHub Actions CI now enforces the local verification suite on `main`.
 - Voice has not started.
 
 Engineering Rules
@@ -167,6 +175,7 @@ Engineering Rules
 - Strict engineering rules are documented in `docs/ENGINEERING_RULES.md`.
 - No failing tests may be skipped, hidden, or weakened to pass.
 - Every meaningful change must keep `py -m pytest`, `py -m compileall core interfaces events memory skills scripts`, and `py scripts\verify_phase2_events_memory.py` passing.
+- GitHub Actions CI must stay green for pushes and pull requests to `main`.
 - README and session handoff documentation must be updated after every meaningful change.
 
 Project Documents

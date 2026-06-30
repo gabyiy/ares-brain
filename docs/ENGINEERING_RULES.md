@@ -18,10 +18,20 @@ py scripts\verify_phase2_events_memory.py
 7. Update `README.md` and `docs/SESSION_HANDOFF.md` after every meaningful change.
 8. Commit logical changes separately.
 9. Push only after all checks pass.
-10. If a test fails, explain:
+10. GitHub Actions CI must stay green for every push and pull request to `main`.
+11. If a test fails, explain:
     - Root cause
     - Fix
     - Risk
     - Full verification result
 
-No roadmap work, new features, or voice work should begin until these rules are satisfied for the current change.
+CI must run the same verification suite on `windows-latest` with Python 3.13:
+
+```powershell
+py -m pip install -r requirements.txt
+py -m pytest
+py -m compileall core interfaces events memory skills scripts
+py scripts\verify_phase2_events_memory.py
+```
+
+No roadmap work, new features, or voice work should begin until these rules are satisfied for the current change and CI is expected to remain green.

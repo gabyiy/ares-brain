@@ -1,0 +1,44 @@
+name: ARES CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    env:
+      PY_PYTHON: "3.13"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          py -m pip install -r requirements.txt
+
+      - name: Run pytest
+        shell: pwsh
+        run: |
+          py -m pytest
+
+      - name: Compile modules
+        shell: pwsh
+        run: |
+          py -m compileall core interfaces events memory skills scripts
+
+      - name: Verify Phase 2 events and memory
+        shell: pwsh
+        run: |
+          py scripts\verify_phase2_events_memory.py

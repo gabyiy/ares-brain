@@ -4,7 +4,7 @@ Last Updated: 2026-06-30
 
 Current Version
 
-ARES v1.3
+ARES v1.4
 
 ---
 
@@ -115,6 +115,20 @@ Notes behavior:
 - Publishes `notes.recorded`, `notes.deleted`, and `notes.cleared`.
 - Uses `ARES_NOTES_PATH` for test isolation.
 
+GitHub Actions CI has been added.
+
+CI behavior:
+
+- Workflow file: `.github/workflows/ci.yml`
+- Runs on push to `main`.
+- Runs on pull requests targeting `main`.
+- Uses `windows-latest`.
+- Sets up Python 3.13.
+- Installs dependencies with `py -m pip install -r requirements.txt`.
+- Runs `py -m pytest`.
+- Runs `py -m compileall core interfaces events memory skills scripts`.
+- Runs `py scripts\verify_phase2_events_memory.py`.
+
 Strict engineering rules have been added in `docs/ENGINEERING_RULES.md`.
 
 Required rules going forward:
@@ -123,6 +137,7 @@ Required rules going forward:
 - Never hide errors with broad try/except blocks.
 - Fix root causes rather than symptoms.
 - Keep the full verification suite passing before every push.
+- Keep GitHub Actions CI green for `main` pushes and pull requests.
 - Update README and SESSION_HANDOFF after every meaningful change.
 
 Master planning documents have been added.
@@ -277,6 +292,7 @@ Verification Notes
   - `py -m pytest`
   - `py -m compileall core interfaces events memory skills scripts`
   - `py scripts\verify_phase2_events_memory.py`
+- GitHub Actions CI runs the same verification suite on Windows with Python 3.13 for `main` pushes and pull requests.
 - Tool selection tests cover current TimeDate/MemoryRecall/Calculator/Notes selection.
 - Calculator tests cover simple arithmetic, precedence, parentheses, decimals, bounded powers, unsafe input rejection, and the REPL routing path.
 - Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
@@ -294,9 +310,11 @@ Latest Commits
 - Tool selection foundation with scoring and tests
 - CalculatorSkill with safe arithmetic tests
 - Persistent NotesSkill with storage and routing tests
+- GitHub Actions CI for local verification commands
 
 Next Planned Step
 
 - Review and approve the next local tool or provider scope.
+- Keep CI green before merging or pushing further changes.
 - Do not add weather, stocks, calendar, GPT, voice, or vision work yet.
 - Do not start voice yet.
