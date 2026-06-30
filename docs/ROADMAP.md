@@ -54,11 +54,20 @@ Phase 4B: Tool Selection Foundation
 - Priority selection before generic intents
 - Fallback selection after normal intents
 - Tests for current TimeDate/MemoryRecall skills
-- Tests for future Calculator/Notes-style skill selection without adding those runtime skills
+- Tests for current Calculator selection and future Notes-style skill selection
+
+Phase 4C: Local Calculator Skill
+
+- Built-in `CalculatorSkill`
+- Safe local arithmetic without `eval()`
+- Addition, subtraction, multiplication, division, parentheses, decimals, and bounded powers
+- Clear rejection for unsupported or unsafe input
+- REPL routing through `ToolSelector` and `SkillManager`
+- Automated calculator and REPL path tests
 
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, deterministic skills, event publishing, conversation memory, and user profile memory.
+ARES is currently a text-first assistant with deterministic routing, deterministic skills, event publishing, conversation memory, user profile memory, and local calculator arithmetic.
 
 The current active interface is:
 
@@ -67,7 +76,7 @@ The current active interface is:
 The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
-- Tool-selected local skills for time/date and memory recall
+- Tool-selected local skills for time/date, memory recall, and calculator arithmetic
 
 The current memory paths are:
 
@@ -81,7 +90,7 @@ Next Priorities
 3. Add a company information provider only after the architecture decision is documented.
 4. Add cryptocurrency support only after company information is stable and tested.
 5. Improve natural language understanding only with tests that preserve current behavior.
-6. Add CalculatorSkill and NotesSkill only after their contracts are documented and approved.
+6. Add NotesSkill only after its contract is documented and approved.
 
 What Must Not Be Started Yet
 
@@ -89,7 +98,7 @@ What Must Not Be Started Yet
 - No GPT or LLM integration.
 - No Raspberry Pi deployment work.
 - No new skills before the roadmap and architecture decision is approved.
-- No CalculatorSkill or NotesSkill runtime implementation yet.
+- No NotesSkill runtime implementation yet.
 - No robotics or movement integration.
 - No vision integration.
 - No broad refactors of the router, memory, or skill system.

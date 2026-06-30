@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.1 - Tool Selection Foundation
+ARES v1.2 - Local Calculator Skill
 
 ---
 
@@ -76,6 +76,7 @@ Completed
 - Persistent user profile facts
 - Memory recall skill
 - Tool selection confidence/scoring foundation
+- Built-in calculator skill
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -98,6 +99,8 @@ ARES currently understands questions such as:
 - where do I live
 - what is my favorite tank
 - when is my birthday
+- what is 2 + 3 * 4
+- calculate (2 + 3) * 4
 
 Each request is automatically routed to its correct intent.
 
@@ -111,6 +114,7 @@ Implemented Features
 - Tool selector for best local skill selection
 - Built-in time/date skill
 - Built-in memory recall skill for saved profile facts
+- Built-in calculator skill for safe local arithmetic
 - Text REPL with conversation turn storage
 - Pytest automated coverage for core Phase 2-4 modules
 
@@ -143,6 +147,7 @@ Latest Architecture Status
 - Intent router remains the main text command path.
 - Priority skills can run before generic intents when needed, such as memory recall.
 - Normal skills run as fallback when no regular intent matches, such as time/date.
+- CalculatorSkill runs as a priority local skill for arithmetic before generic knowledge lookup.
 - SkillManager uses ToolSelector confidence scoring instead of first-match-only selection.
 - Conversation history and user profile facts are stored separately.
 - Voice has not started.
@@ -232,9 +237,16 @@ Phase 4 Long-Term Memory Recall (Current)
 Phase 4 Tool Selection Foundation
 
 - `skills.ToolSelector` scores local skills using trigger match strength, optional selection keywords, skill priority, and priority-intent filtering.
-- Current supported skills are `TimeDateSkill` and `MemoryRecallSkill`.
-- Future `CalculatorSkill` and `NotesSkill` can participate by defining triggers and optional `selection_keywords`.
-- No calculator, notes, voice, external API, weather, stocks, calendar, or GPT integration has been added.
+- Current supported skills are `TimeDateSkill`, `MemoryRecallSkill`, and `CalculatorSkill`.
+- Future `NotesSkill` can participate by defining triggers and optional `selection_keywords`.
+- No notes, voice, external API, weather, stocks, calendar, or GPT integration has been added.
+
+Phase 4 Calculator Skill
+
+- `skills.builtin.CalculatorSkill` is the first real local tool behind the selector foundation.
+- Supports addition, subtraction, multiplication, division, parentheses, decimals, and bounded powers.
+- Uses Python AST parsing and explicit operator handling, not `eval()`.
+- Rejects unsafe or unsupported input with a clear local response.
 
 Phase 5
 

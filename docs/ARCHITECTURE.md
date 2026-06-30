@@ -135,8 +135,9 @@ Current supported runtime skills:
 
 - `TimeDateSkill`
 - `MemoryRecallSkill`
+- `CalculatorSkill`
 
-Future local skills such as `CalculatorSkill` and `NotesSkill` should define clear triggers and optional `selection_keywords` so they can use the same selector without a giant if/else chain.
+Future local skills such as `NotesSkill` should define clear triggers and optional `selection_keywords` so they can use the same selector without a giant if/else chain.
 
 SkillManager
 
@@ -167,12 +168,15 @@ Current built-in skills:
 
 - `TimeDateSkill`
 - `MemoryRecallSkill`
+- `CalculatorSkill`
 
 `TimeDateSkill` answers local time and date questions.
 
 `MemoryRecallSkill` answers profile questions from `UserProfileStore` without using an LLM. It is a priority skill so questions such as `What is my name?` are answered before the generic knowledge intent.
 
-No calculator, notes, voice, weather, stocks, calendar, external API, or GPT integration has been added as part of the tool selection foundation.
+`CalculatorSkill` answers local arithmetic questions without using an LLM. It supports addition, subtraction, multiplication, division, parentheses, decimals, and bounded powers through AST parsing and explicit operator handling, not `eval()`. It rejects unsupported or unsafe input with a clear response.
+
+No notes, voice, weather, stocks, calendar, external API, or GPT integration has been added as part of the calculator milestone.
 
 REPL Flow
 

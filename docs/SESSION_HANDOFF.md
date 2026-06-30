@@ -4,7 +4,7 @@ Last Updated: 2026-06-30
 
 Current Version
 
-ARES v1.1
+ARES v1.2
 
 ---
 
@@ -65,6 +65,7 @@ New test coverage:
 - MemoryRecallSkill
 - SkillRegistry and SkillManager
 - TimeDateSkill
+- CalculatorSkill
 - Text REPL profile recall flow
 
 Pytest is configured to collect only `tests/`, because legacy interactive scripts under `scripts/` also use `test_*.py` names.
@@ -80,8 +81,21 @@ Selection behavior:
 
 - Scores local skills instead of relying on first registered match only.
 - Supports exact trigger matches, contained trigger phrases, token overlap, optional `selection_keywords`, optional `selection_priority`, and `run_before_intents` filtering.
-- Currently routes `TimeDateSkill` and `MemoryRecallSkill`.
-- Test-only dummy calculator and notes skills verify the future `CalculatorSkill` and `NotesSkill` extension path without adding those runtime skills.
+- Currently routes `TimeDateSkill`, `MemoryRecallSkill`, and `CalculatorSkill`.
+- Test-only dummy notes skills verify the future `NotesSkill` extension path without adding that runtime skill.
+
+Phase 4 CalculatorSkill has been added as the first real local tool.
+
+New calculator module:
+
+- `skills.builtin.CalculatorSkill`
+
+Calculator behavior:
+
+- Supports addition, subtraction, multiplication, division, parentheses, decimals, and bounded powers.
+- Uses AST parsing with explicit operator handling; it does not use `eval()`.
+- Rejects unsupported or unsafe input with a clear response.
+- Runs as a priority skill so arithmetic questions are handled before generic knowledge lookup.
 
 Strict engineering rules have been added in `docs/ENGINEERING_RULES.md`.
 
@@ -175,6 +189,9 @@ Each intent owns its own logic and communicates with its corresponding provider.
 
 MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing scripts keep working.
 
+The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, and `TimeDateSkill`.
+The REPL priority skill path currently covers profile memory recall and calculator arithmetic.
+
 Skill Manager
         │
         ├── SkillRegistry
@@ -197,20 +214,14 @@ Text REPL
 
 Immediate Next Milestone
 
-Company Information Provider
-
-ARES should understand:
-
-- Tell me about Nvidia
-- What does Apple do?
-- Explain Rheinmetall
-- Who owns Tesla?
+Next scoped local tool or provider decision.
 
 Next technical choices:
 
 - Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
-- Keep voice out of scope until text skill execution is stable.
-- Connect selected daily reflection scripts and future providers to MemoryStore v1.
+- Decide whether the next approved runtime capability is NotesSkill, company information, or another documented provider.
+- Keep voice, GPT, external weather/stocks/calendar APIs, and Raspberry Pi deployment out of scope until explicitly approved.
+- Connect selected daily reflection scripts and future providers to MemoryStore v1 only after the memory contract is documented.
 
 ---
 
@@ -221,14 +232,13 @@ Future Roadmap
 3. Better reasoning
 4. Memory v1 integration with conversations
 5. Long-term memory retrieval
-6. CalculatorSkill after roadmap approval
-7. NotesSkill after roadmap approval
-8. Company profile provider
-9. Voice interface
-10. Vision
-11. Robotics
-12. Jetson Orin migration
-13. Autonomous ARES
+6. NotesSkill after roadmap approval
+7. Company profile provider
+8. Voice interface
+9. Vision
+10. Robotics
+11. Jetson Orin migration
+12. Autonomous ARES
 
 Verification Notes
 
@@ -243,7 +253,8 @@ Verification Notes
   - `py -m pytest`
   - `py -m compileall core interfaces events memory skills scripts`
   - `py scripts\verify_phase2_events_memory.py`
-- Tool selection tests cover current TimeDate/MemoryRecall selection and future Calculator/Notes-style skill selection.
+- Tool selection tests cover current TimeDate/MemoryRecall/Calculator selection and future Notes-style skill selection.
+- Calculator tests cover simple arithmetic, precedence, parentheses, decimals, bounded powers, unsafe input rejection, and the REPL routing path.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
@@ -256,9 +267,10 @@ Latest Commits
 - Documentation update for strict engineering rules
 - Documentation update for master architecture and roadmap docs
 - Tool selection foundation with scoring and tests
+- CalculatorSkill with safe arithmetic tests
 
 Next Planned Step
 
-- Review and approve roadmap/architecture documents.
-- Do not add roadmap implementation yet.
+- Review and approve the next local tool or provider scope.
+- Do not add notes, weather, stocks, GPT, or voice work yet.
 - Do not start voice yet.
