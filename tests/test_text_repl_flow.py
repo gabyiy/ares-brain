@@ -3,7 +3,7 @@ import io
 import memory.v1 as memory_v1
 from events import get_global_bus
 from interfaces import text_repl
-from memory import MemoryStore, NotesStore, UserProfileStore
+from memory import MemoryStore, NotesStore, TasksStore, UserProfileStore
 
 
 def test_text_repl_records_turns_and_recalls_profile(monkeypatch, tmp_path, capsys):
@@ -11,6 +11,7 @@ def test_text_repl_records_turns_and_recalls_profile(monkeypatch, tmp_path, caps
     monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
     monkeypatch.setenv("ARES_USER_PROFILE_PATH", str(tmp_path / "profile.json"))
     monkeypatch.setenv("ARES_NOTES_PATH", str(tmp_path / "notes.json"))
+    monkeypatch.setenv("ARES_TASKS_PATH", str(tmp_path / "tasks.json"))
     monkeypatch.setattr(
         "sys.stdin",
         io.StringIO(
@@ -57,6 +58,7 @@ def test_text_repl_routes_calculator_skill_before_generic_knowledge(monkeypatch,
     monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
     monkeypatch.setenv("ARES_USER_PROFILE_PATH", str(tmp_path / "profile.json"))
     monkeypatch.setenv("ARES_NOTES_PATH", str(tmp_path / "notes.json"))
+    monkeypatch.setenv("ARES_TASKS_PATH", str(tmp_path / "tasks.json"))
     monkeypatch.setattr("sys.stdin", io.StringIO("hello\nwhat is 2 + 3 * 4\nquit\n"))
 
     event_bus = get_global_bus()
@@ -83,6 +85,7 @@ def test_text_repl_routes_notes_skill_and_persists_note(monkeypatch, tmp_path, c
     monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
     monkeypatch.setenv("ARES_USER_PROFILE_PATH", str(tmp_path / "profile.json"))
     monkeypatch.setenv("ARES_NOTES_PATH", str(notes_path))
+    monkeypatch.setenv("ARES_TASKS_PATH", str(tmp_path / "tasks.json"))
     monkeypatch.setattr(
         "sys.stdin",
         io.StringIO("hello\nsave note calibrate rover sensors\nlist my notes\nquit\n"),
@@ -106,4 +109,38 @@ def test_text_repl_routes_notes_skill_and_persists_note(monkeypatch, tmp_path, c
     assert "Saved note" in output
     assert "Your notes:" in output
     assert "calibrate rover sensors" in output
+    assert detected
+
+
+def test_text_repl_routes_tasks_skill_and_persists_task(monkeypatch, tmp_path, capsys):
+    tasks_path = tmp_path / "tasks.json"
+    monkeypatch.setattr(memory_v1, "SHORT_MEMORY_FILE", tmp_path / "short.json")
+    monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
+    monkeypatch.setenv("ARES_USER_PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setenv("ARES_NOTES_PATH", str(tmp_path / "notes.json"))
+    monkeypatch.setenv("ARES_TASKS_PATH", str(tasks_path))
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO("hello\nremind me to call mom\nlist tasks\nquit\n"),
+    )
+
+    event_bus = get_global_bus()
+    event_bus.clear_history()
+
+    text_repl.main()
+
+    output = capsys.readouterr().out
+    tasks = TasksStore(path=tasks_path, event_bus=event_bus).list()
+    detected = [
+        event.payload
+        for event in event_bus.history("skill.detected")
+        if event.payload.get("skill") == "tasks"
+    ]
+
+    assert len(tasks) == 1
+    assert tasks[0].text == "call mom"
+    assert tasks[0].completed is False
+    assert "Saved task" in output
+    assert "Your tasks:" in output
+    assert "call mom" in output
     assert detected

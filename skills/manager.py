@@ -14,12 +14,14 @@ class SkillManager:
         memory_store=None,
         profile_store=None,
         notes_store=None,
+        tasks_store=None,
     ):
         self.registry = registry or SkillRegistry()
         self.event_bus = event_bus or get_global_bus()
         self.memory_store = memory_store
         self.profile_store = profile_store
         self.notes_store = notes_store
+        self.tasks_store = tasks_store
 
     def register(self, skill: Skill) -> Skill:
         registered = self.registry.register(skill)
@@ -84,4 +86,5 @@ class SkillManager:
             memory_store=self.memory_store,
             profile_store=self.profile_store,
             notes_store=self.notes_store,
+            tasks_store=self.tasks_store,
         )

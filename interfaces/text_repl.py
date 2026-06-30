@@ -7,7 +7,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from core.intent_router import IntentRouter
 from events import get_global_bus
-from memory import MemoryStore, NotesStore, UserProfileStore
+from memory import MemoryStore, NotesStore, TasksStore, UserProfileStore
 from skills import SkillManager
 from skills.builtin import create_builtin_plugin
 
@@ -43,11 +43,13 @@ def main():
     memory_store = MemoryStore(event_bus=event_bus)
     profile_store = UserProfileStore(event_bus=event_bus)
     notes_store = NotesStore(event_bus=event_bus)
+    tasks_store = TasksStore(event_bus=event_bus)
     skill_manager = SkillManager(
         event_bus=event_bus,
         memory_store=memory_store,
         profile_store=profile_store,
         notes_store=notes_store,
+        tasks_store=tasks_store,
     )
     skill_manager.register_plugin(create_builtin_plugin())
     router = IntentRouter(event_bus=event_bus, skill_manager=skill_manager)

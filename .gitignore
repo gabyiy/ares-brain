@@ -9,3 +9,4 @@ __pycache__/
 .env
 data/user_profile.json
 data/notes.json
+data/tasks.json

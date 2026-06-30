@@ -8,6 +8,7 @@ from skills import Skill, SkillContext, SkillManager, SkillRegistry, SkillRespon
 from skills.builtin.calculator import CalculatorSkill
 from skills.builtin.memory_recall import MemoryRecallSkill
 from skills.builtin.notes import NotesSkill
+from skills.builtin.tasks import TasksSkill
 from skills.builtin.time_date import TimeDateSkill
 import skills.builtin.time_date as time_date_module
 
@@ -54,19 +55,21 @@ def test_skill_registry_rejects_duplicates_and_filters_priority():
     assert registry.first_match("echo", run_before_intents=True).name == "priority_echo"
 
 
-def test_tool_selector_scores_current_and_future_local_skills():
+def test_tool_selector_scores_current_local_skills():
     selector = ToolSelector()
     skills = [
         TimeDateSkill(),
         MemoryRecallSkill(),
         CalculatorSkill(),
         NotesSkill(),
+        TasksSkill(),
     ]
 
     assert selector.select("what time is it", skills).skill.name == "time_date"
     assert selector.select("what is my favorite tank", skills).skill.name == "memory_recall"
     assert selector.select("calculate 2 plus 2", skills).skill.name == "calculator"
     assert selector.select("take a note buy batteries", skills).skill.name == "notes"
+    assert selector.select("add task buy milk", skills).skill.name == "tasks"
 
 
 def test_tool_selector_distinguishes_priority_local_tools():
@@ -76,12 +79,15 @@ def test_tool_selector_distinguishes_priority_local_tools():
         MemoryRecallSkill(),
         CalculatorSkill(),
         NotesSkill(),
+        TasksSkill(),
     ]
 
     assert selector.select("what is my name", skills, run_before_intents=True).skill.name == "memory_recall"
     assert selector.select("what is 2 + 2", skills, run_before_intents=True).skill.name == "calculator"
     assert selector.select("remember this 2 + 2", skills, run_before_intents=True).skill.name == "notes"
     assert selector.select("search notes 2 + 2", skills, run_before_intents=True).skill.name == "notes"
+    assert selector.select("remind me to call mom", skills, run_before_intents=True).skill.name == "tasks"
+    assert selector.select("list tasks", skills, run_before_intents=True).skill.name == "tasks"
 
 
 def test_skill_manager_publishes_selection_confidence_and_reason():
