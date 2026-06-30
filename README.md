@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.5 - Local Tasks Skill
+ARES v1.6 - In-Memory Conversation Context
 
 ---
 
 Current Architecture
 
-The active runtime includes `memory.NotesStore` for persistent local notes and `memory.TasksStore` for offline tasks, separate from conversation memory and user profile memory.
+The active runtime includes `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 ARES
 │
@@ -83,6 +83,7 @@ Completed
 - Built-in notes skill
 - Persistent local tasks store
 - Built-in tasks skill
+- In-memory conversation context manager
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -131,8 +132,9 @@ Implemented Features
 - Built-in calculator skill for safe local arithmetic
 - Built-in notes skill for persistent local notes
 - Built-in tasks skill for offline reminders/tasks
+- In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for core Phase 2-6 modules
+- Pytest automated coverage for core Phase 2-7 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -185,7 +187,9 @@ Latest Architecture Status
 - NotesSkill runs as a priority local skill for note commands.
 - TasksSkill runs as a priority local skill for task/reminder commands.
 - SkillManager uses ToolSelector confidence scoring instead of first-match-only selection.
+- SkillManager records handled skill turns into the in-memory conversation context.
 - Conversation history, user profile facts, notes, and tasks are stored separately.
+- ConversationContextManager keeps only the last 20 skill turns in RAM and does not write to disk.
 - GitHub Actions CI now enforces the local verification suite on `main`.
 - Voice has not started.
 
@@ -303,21 +307,30 @@ Phase 6 Local Tasks Skill
 - No real scheduling, notifications, calendar integration, voice, or GPT integration has been added.
 - `data/tasks.json` is ignored by git because it can contain personal tasks.
 
-Phase 7
+Phase 7 In-Memory Conversation Context
+
+- `core.ConversationContextManager` keeps the last 20 handled skill turns in RAM.
+- Each turn stores timestamp, user message, assistant response, and detected skill.
+- APIs include `last_message()`, `last_user_message()`, `last_assistant_message()`, `last_skill()`, `history(limit)`, and `clear()`.
+- `SkillManager` records handled skill interactions automatically.
+- No conversation context is saved to disk.
+- No embeddings, GPT, external APIs, or voice integration has been added.
+
+Phase 8
 
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 8
+Phase 9
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 9
+Phase 10
 
 - Robotics
 - ROS2

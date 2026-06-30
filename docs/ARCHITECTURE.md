@@ -10,15 +10,17 @@ Current System Flow
 4. The REPL creates `UserProfileStore` for persistent user facts.
 5. The REPL creates `NotesStore` for persistent local notes.
 6. The REPL creates `TasksStore` for persistent offline tasks.
-7. The REPL creates `SkillManager`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
-8. User input is sent to `IntentRouter`.
-9. `IntentRouter` publishes input lifecycle events.
-10. Priority skills are selected by `ToolSelector` before normal intents only when a skill opts in.
-11. Normal intents run next.
-12. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
-13. Responses are published as events.
-14. The REPL stores each conversation turn in `MemoryStore`.
-15. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
+7. The REPL creates the shared in-memory `ConversationContextManager`.
+8. The REPL creates `SkillManager`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
+9. User input is sent to `IntentRouter`.
+10. `IntentRouter` publishes input lifecycle events.
+11. Priority skills are selected by `ToolSelector` before normal intents only when a skill opts in.
+12. Normal intents run next.
+13. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
+14. Responses are published as events.
+15. `SkillManager` records handled skill turns in `ConversationContextManager`.
+16. The REPL stores each conversation turn in `MemoryStore`.
+17. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
 
 Event Bus
 
@@ -153,6 +155,25 @@ The tasks file is ignored by git because it can contain personal tasks. Tests ca
 
 Scheduling is not active. The current task system stores due text only; it does not schedule jobs, send notifications, call calendar APIs, or use an LLM.
 
+ConversationContextManager
+
+`core.ConversationContextManager` stores short-term conversational context in RAM only.
+
+Current responsibilities:
+
+- Keep the last 20 handled skill turns.
+- Store timestamp, user message, assistant response, and detected skill for each turn.
+- Return the latest turn through `last_message()`.
+- Return latest user text, assistant text, and skill through `last_user_message()`, `last_assistant_message()`, and `last_skill()`.
+- Return ordered recent history with `history(limit)`.
+- Clear in-memory state with `clear()`.
+
+Current storage:
+
+- RAM only
+
+Conversation context is not saved to disk. It does not use embeddings, GPT, external APIs, or voice.
+
 SkillRegistry
 
 `skills.SkillRegistry` owns skill registration and lookup.
@@ -198,6 +219,7 @@ Current responsibilities:
 - Register skill plugins.
 - Select the best matching local skill through `ToolSelector`.
 - Execute a skill with `SkillContext`.
+- Record each handled skill interaction in `ConversationContextManager`.
 - Publish skill lifecycle events.
 
 Skill context currently carries:
@@ -207,6 +229,7 @@ Skill context currently carries:
 - `profile_store`
 - `notes_store`
 - `tasks_store`
+- `conversation_context`
 - `metadata`
 
 Built-In Skills
@@ -235,6 +258,8 @@ Current built-in skills:
 
 No real scheduling, notifications, voice, weather, stocks, calendar, external API, or GPT integration has been added as part of the tasks milestone.
 
+Conversation context is not a persistent memory store. It only tracks recent handled skill turns in RAM so local skills and interfaces can inspect short-term context without GPT or embeddings.
+
 REPL Flow
 
 `interfaces.text_repl` is the active user interface.
@@ -243,11 +268,12 @@ Current responsibilities:
 
 - Wake on `hello`, `hello ares`, `hi ares`, or `hey ares`.
 - Exit on `goodbye`, `goodbye ares`, `exit`, or `quit`.
-- Share one event bus across router, memory, profile, notes, tasks, and skills.
+- Share one event bus across router, memory, profile, notes, tasks, conversation context, and skills.
 - Store each user/ARES turn as a conversation memory.
 - Scan each user message for profile facts.
 - Route note commands to `NotesSkill` and persist notes in `NotesStore`.
 - Route task commands to `TasksSkill` and persist tasks in `TasksStore`.
+- Share one in-memory conversation context with `SkillManager` for handled skill turns.
 - Print the final ARES response.
 
 Future Integration Points
@@ -262,6 +288,7 @@ Voice should connect at the interface layer, beside the text REPL. It should reu
 - `UserProfileStore`
 - `NotesStore`
 - `TasksStore`
+- `ConversationContextManager`
 - `SkillManager`
 
 Voice must not bypass the existing routing, memory, or verification rules.

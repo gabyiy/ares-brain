@@ -4,7 +4,7 @@ Last Updated: 2026-06-30
 
 Current Version
 
-ARES v1.5
+ARES v1.6
 
 ---
 
@@ -70,6 +70,7 @@ New test coverage:
 - NotesSkill
 - TasksStore
 - TasksSkill
+- ConversationContextManager
 - Text REPL profile recall flow
 
 Pytest is configured to collect only `tests/`, because legacy interactive scripts under `scripts/` also use `test_*.py` names.
@@ -134,6 +135,24 @@ Tasks behavior:
 - Stores due text only; no real scheduling, notifications, calendar integration, voice, or GPT integration has been added.
 - Publishes `tasks.recorded`, `tasks.completed`, `tasks.deleted`, and `tasks.completed_cleared`.
 - Uses `ARES_TASKS_PATH` for test isolation.
+
+Phase 7 ConversationContextManager has been added for short-term in-memory context.
+
+New conversation context module:
+
+- `core.ConversationContextManager`
+- `core.ConversationTurn`
+- `core.get_global_conversation_context`
+
+Conversation context behavior:
+
+- Keeps the last 20 handled skill turns in RAM.
+- Each turn stores timestamp, user message, assistant response, and detected skill.
+- Supports `last_message()`, `last_user_message()`, `last_assistant_message()`, `last_skill()`, `history(limit)`, and `clear()`.
+- `SkillManager` records handled skill interactions automatically.
+- `interfaces.text_repl` passes the shared global in-memory context to `SkillManager`.
+- Does not save conversation context to disk.
+- Does not use embeddings, GPT, external APIs, or voice.
 
 GitHub Actions CI has been added.
 
@@ -230,9 +249,17 @@ Tasks Store:
 - Does not write to `MemoryStore`, `UserProfileStore`, or `NotesStore`.
 - Does not schedule tasks or send notifications.
 
+Conversation Context:
+
+- Stores recent handled skill turns in RAM only.
+- Default limit is 20 turns.
+- Is separate from `MemoryStore`, `UserProfileStore`, `NotesStore`, and `TasksStore`.
+- Is shared by the text REPL through `core.get_global_conversation_context()`.
+- Does not write any conversation context file.
+
 Text REPL memory:
 
-- `interfaces.text_repl` creates one shared event bus and passes it to `IntentRouter`, `MemoryStore`, `UserProfileStore`, `NotesStore`, `TasksStore`, and `SkillManager`.
+- `interfaces.text_repl` creates one shared event bus and passes it to `IntentRouter`, `MemoryStore`, `UserProfileStore`, `NotesStore`, `TasksStore`, `ConversationContextManager`, and `SkillManager`.
 - Each text response records a short-term `conversation_turn` memory.
 - Each text input is also scanned for user profile facts.
 - Sleeping-mode responses also emit `user_message_received` and `response_generated`.
@@ -263,6 +290,7 @@ MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing s
 
 The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `NotesSkill`, `TasksSkill`, and `TimeDateSkill`.
 The REPL priority skill path currently covers profile memory recall, calculator arithmetic, note commands, and task commands.
+`SkillManager` records handled skill turns in `ConversationContextManager`.
 
 Skill Manager
         │
@@ -292,7 +320,7 @@ Next technical choices:
 
 - Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
 - Decide whether the next approved runtime capability is company information or another documented provider.
-- Keep voice, GPT, external weather/stocks/calendar APIs, real scheduling, notifications, and Raspberry Pi deployment out of scope until explicitly approved.
+- Keep voice, GPT, embeddings, external weather/stocks/calendar APIs, real scheduling, notifications, and Raspberry Pi deployment out of scope until explicitly approved.
 - Connect selected daily reflection scripts and future providers to MemoryStore v1 only after the memory contract is documented.
 
 ---
@@ -330,6 +358,7 @@ Verification Notes
 - Calculator tests cover simple arithmetic, precedence, parentheses, decimals, bounded powers, unsafe input rejection, and the REPL routing path.
 - Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
+- Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
@@ -345,6 +374,7 @@ Latest Commits
 - CalculatorSkill with safe arithmetic tests
 - Persistent NotesSkill with storage and routing tests
 - Persistent TasksSkill with storage and routing tests
+- In-memory ConversationContextManager with SkillManager and REPL tests
 - GitHub Actions CI for local verification commands
 
 Next Planned Step
@@ -352,5 +382,5 @@ Next Planned Step
 - Review and approve the next local tool or provider scope.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
-- Do not add weather, stocks, calendar, GPT, voice, vision, scheduling, or notifications yet.
+- Do not add weather, stocks, calendar, GPT, embeddings, voice, vision, scheduling, or notifications yet.
 - Do not start voice yet.

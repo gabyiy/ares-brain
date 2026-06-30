@@ -85,9 +85,19 @@ Phase 6: Local Tasks Skill
 - No notifications or calendar integration
 - Automated store, skill, selector, and REPL path tests
 
+Phase 7: In-Memory Conversation Context
+
+- `ConversationContextManager`
+- Last 20 handled skill turns kept in RAM
+- Turn fields: timestamp, user message, assistant response, detected skill
+- Retrieval APIs for last message, last user message, last assistant message, last skill, history, and clear
+- `SkillManager` records handled skill interactions automatically
+- REPL uses shared in-memory context for skill turns
+- No disk persistence, embeddings, GPT, external APIs, or voice integration
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, persistent local notes, and offline tasks.
+ARES is currently a text-first assistant with deterministic routing, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, persistent local notes, offline tasks, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -97,6 +107,7 @@ The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
 - Tool-selected local skills for time/date, memory recall, calculator arithmetic, notes, and tasks
+- In-memory conversation context for recent handled skill turns
 
 The current memory paths are:
 
@@ -104,6 +115,7 @@ The current memory paths are:
 - `UserProfileStore` for persistent user facts
 - `NotesStore` for persistent local notes
 - `TasksStore` for persistent offline tasks
+- `ConversationContextManager` for RAM-only short-term skill context
 
 Next Priorities
 
@@ -118,6 +130,7 @@ What Must Not Be Started Yet
 
 - No voice implementation.
 - No GPT or LLM integration.
+- No embeddings.
 - No real task scheduling or notifications.
 - No calendar integration.
 - No Raspberry Pi deployment work.
