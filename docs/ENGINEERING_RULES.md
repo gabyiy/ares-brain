@@ -19,7 +19,9 @@ py scripts\verify_phase2_events_memory.py
 8. Commit logical changes separately.
 9. Push only after all checks pass.
 10. GitHub Actions CI must stay green for every push and pull request to `main`.
-11. If a test fails, explain:
+11. The `main` branch should be protected with required CI checks.
+12. Future work should use the workflow: feature branch -> local tests -> pull request -> CI -> merge.
+13. If a test fails, explain:
     - Root cause
     - Fix
     - Risk
@@ -33,5 +35,7 @@ py -m pytest
 py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
+
+Branch protection should require the GitHub Actions CI workflow to pass before merging into `main`.
 
 No roadmap work, new features, or voice work should begin until these rules are satisfied for the current change and CI is expected to remain green.

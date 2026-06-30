@@ -128,6 +128,9 @@ CI behavior:
 - Runs `py -m pytest`.
 - Runs `py -m compileall core interfaces events memory skills scripts`.
 - Runs `py scripts\verify_phase2_events_memory.py`.
+- Latest checked `main` CI run for `e37e5d4` completed successfully.
+- `main` should be protected with required CI checks before merge.
+- Future work should use: feature branch -> local tests -> pull request -> CI -> merge.
 
 Strict engineering rules have been added in `docs/ENGINEERING_RULES.md`.
 
@@ -138,6 +141,7 @@ Required rules going forward:
 - Fix root causes rather than symptoms.
 - Keep the full verification suite passing before every push.
 - Keep GitHub Actions CI green for `main` pushes and pull requests.
+- Protect `main` with required CI checks and use pull requests for future changes.
 - Update README and SESSION_HANDOFF after every meaningful change.
 
 Master planning documents have been added.
@@ -293,6 +297,7 @@ Verification Notes
   - `py -m compileall core interfaces events memory skills scripts`
   - `py scripts\verify_phase2_events_memory.py`
 - GitHub Actions CI runs the same verification suite on Windows with Python 3.13 for `main` pushes and pull requests.
+- Latest checked GitHub Actions run on `main` completed successfully for commit `e37e5d4`.
 - Tool selection tests cover current TimeDate/MemoryRecall/Calculator/Notes selection.
 - Calculator tests cover simple arithmetic, precedence, parentheses, decimals, bounded powers, unsafe input rejection, and the REPL routing path.
 - Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
@@ -316,5 +321,6 @@ Next Planned Step
 
 - Review and approve the next local tool or provider scope.
 - Keep CI green before merging or pushing further changes.
+- Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not add weather, stocks, calendar, GPT, voice, or vision work yet.
 - Do not start voice yet.

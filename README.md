@@ -149,6 +149,17 @@ Continuous Integration
 - GitHub Actions runs on every push and pull request to `main`.
 - CI uses `windows-latest` with Python 3.13.
 - CI installs `requirements.txt` and runs the same verification commands used locally.
+- The latest `main` CI run must stay green before additional changes are merged.
+- The `main` branch should be protected so changes flow through pull requests and required CI checks.
+
+Recommended workflow:
+
+1. Create a feature branch from latest `main`.
+2. Make one scoped change.
+3. Run the local verification suite.
+4. Open a pull request into `main`.
+5. Wait for GitHub Actions CI to pass.
+6. Merge only after local tests and CI are green.
 
 Run Text REPL
 
@@ -176,6 +187,7 @@ Engineering Rules
 - No failing tests may be skipped, hidden, or weakened to pass.
 - Every meaningful change must keep `py -m pytest`, `py -m compileall core interfaces events memory skills scripts`, and `py scripts\verify_phase2_events_memory.py` passing.
 - GitHub Actions CI must stay green for pushes and pull requests to `main`.
+- `main` should be protected and merged through the feature branch -> tests -> PR -> CI -> merge workflow.
 - README and session handoff documentation must be updated after every meaningful change.
 
 Project Documents
