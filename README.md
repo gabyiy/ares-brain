@@ -143,6 +143,13 @@ Latest Architecture Status
 - Conversation history and user profile facts are stored separately.
 - Voice has not started.
 
+Engineering Rules
+
+- Strict engineering rules are documented in `docs/ENGINEERING_RULES.md`.
+- No failing tests may be skipped, hidden, or weakened to pass.
+- Every meaningful change must keep `py -m pytest`, `py -m compileall core interfaces events memory skills scripts`, and `py scripts\verify_phase2_events_memory.py` passing.
+- README and session handoff documentation must be updated after every meaningful change.
+
 ---
 
 Roadmap

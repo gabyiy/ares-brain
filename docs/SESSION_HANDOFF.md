@@ -69,6 +69,16 @@ New test coverage:
 
 Pytest is configured to collect only `tests/`, because legacy interactive scripts under `scripts/` also use `test_*.py` names.
 
+Strict engineering rules have been added in `docs/ENGINEERING_RULES.md`.
+
+Required rules going forward:
+
+- Never skip, xfail, or weaken failing tests without explicit approval.
+- Never hide errors with broad try/except blocks.
+- Fix root causes rather than symptoms.
+- Keep the full verification suite passing before every push.
+- Update README and SESSION_HANDOFF after every meaningful change.
+
 Current working intents:
 
 - Greeting
@@ -217,6 +227,7 @@ Latest Commits
 - `0faffc1` Add long-term profile memory recall
 - `97fcbeb` Add automated pytest suite
 - Documentation update for tests and current architecture status
+- Documentation update for strict engineering rules
 
 Next Planned Step
 
