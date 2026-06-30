@@ -1,5 +1,10 @@
 import tempfile
 from pathlib import Path
+import sys
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 from core.intent_router import IntentRouter
 from events import EventBus
