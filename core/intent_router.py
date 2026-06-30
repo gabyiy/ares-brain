@@ -39,27 +39,41 @@ class IntentRouter:
 
     def handle(self, text: str) -> str:
         q = (text or "").strip()
-        self.events.publish("input.received", {"text": q}, source="intent_router")
+        self._publish_many(
+            ("user_message_received", "input.received"),
+            {"text": q},
+        )
 
         if not q:
+            response = "I did not hear anything."
             self.events.publish("intent.empty", {}, source="intent_router")
-            return "I did not hear anything."
+            self._publish_response(response=response, text=q)
+            return response
 
         for intent in self.intents:
             if intent.matches(q):
                 intent_name = intent.__class__.__name__
-                self.events.publish(
-                    "intent.matched",
+                self._publish_many(
+                    ("intent_detected", "intent.matched"),
                     {"intent": intent_name, "text": q},
-                    source="intent_router",
                 )
                 response = intent.handle(q)
-                self.events.publish(
-                    "intent.response",
-                    {"intent": intent_name, "response": response},
-                    source="intent_router",
-                )
+                self._publish_response(response=response, text=q, intent=intent_name)
                 return response
 
         self.events.publish("intent.unmatched", {"text": q}, source="intent_router")
-        return "I'm not sure how to answer that yet."
+        response = "I'm not sure how to answer that yet."
+        self._publish_response(response=response, text=q)
+        return response
+
+    def _publish_many(self, event_names, payload):
+        for event_name in event_names:
+            self.events.publish(event_name, dict(payload), source="intent_router")
+
+    def _publish_response(self, response: str, text: str, intent=None):
+        payload = {
+            "intent": intent,
+            "response": response,
+            "text": text,
+        }
+        self._publish_many(("response_generated", "intent.response"), payload)
