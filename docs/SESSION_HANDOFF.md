@@ -4,7 +4,7 @@ Last Updated: 2026-06-30
 
 Current Version
 
-ARES v0.9
+ARES v1.0
 
 ---
 
@@ -43,6 +43,18 @@ The skill layer is minimally wired into the text REPL through `IntentRouter`.
 Normal intents still run first; SkillManager is only a fallback when no intent matches.
 Voice work has not started.
 
+Phase 4 long-term memory recall has started.
+
+New memory recall modules:
+
+- `memory.UserProfileStore`
+- `memory.detect_profile_facts`
+- `skills.builtin.MemoryRecallSkill`
+
+User profile facts are stored separately from conversation history.
+The default profile path is `data/user_profile.json`, which is ignored by git to avoid committing personal facts.
+The profile path can be overridden with `ARES_USER_PROFILE_PATH` for tests.
+
 Current working intents:
 
 - Greeting
@@ -76,10 +88,20 @@ Memory v1:
 - Supports `remember`, `recall`, `promote`, `clear`, and `stats`.
 - Publishes `memory.recorded`, `memory.promoted`, and `memory.cleared` events.
 
+User Profile:
+
+- Detects `My name is...`
+- Detects `I live in...`
+- Detects `My birthday is...`
+- Detects `My favorite ... is...`
+- Detects `I own...`
+- Publishes `profile.fact_saved`
+
 Text REPL memory:
 
 - `interfaces.text_repl` creates one shared event bus and passes it to `IntentRouter` and `MemoryStore`.
 - Each text response records a short-term `conversation_turn` memory.
+- Each text input is also scanned for user profile facts.
 - Sleeping-mode responses also emit `user_message_received` and `response_generated`.
 - The text REPL now also registers the built-in skill plugin.
 
@@ -111,14 +133,17 @@ Skill Manager
         ├── SkillRegistry
         ├── SkillPlugin
         └── Built-in skills
+            ├── MemoryRecallSkill
             └── TimeDateSkill
 
 Text REPL
         │
         ├── IntentRouter
         ├── SkillManager fallback
+        ├── Priority memory recall skill
         ├── EventBus
-        └── MemoryStore v1
+        ├── MemoryStore v1
+        └── UserProfileStore
 
 ---
 
@@ -135,6 +160,7 @@ ARES should understand:
 
 Next technical choices:
 
+- Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
 - Keep voice out of scope until text skill execution is stable.
 - Connect selected daily reflection scripts and future providers to MemoryStore v1.
 
@@ -148,11 +174,12 @@ Future Roadmap
 4. Skill manager integration with text flow
 5. Memory v1 integration with conversations
 6. Long-term memory retrieval
-7. Voice interface
-8. Vision
-9. Robotics
-10. Jetson Orin migration
-11. Autonomous ARES
+7. Company profile provider
+8. Voice interface
+9. Vision
+10. Robotics
+11. Jetson Orin migration
+12. Autonomous ARES
 
 Verification Notes
 
@@ -161,6 +188,7 @@ Verification Notes
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
+- Long-term profile recall was verified through the text REPL with name, location, birthday, favorite tank, and owned item facts.
 - `git diff --check` passed after the Phase 2 foundation and wiring changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.

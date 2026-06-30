@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from skills.base import Skill, SkillContext, SkillResponse
+from skills.builtin.memory_recall import MemoryRecallSkill
 from skills.plugin import SkillPlugin
 
 
@@ -43,5 +44,5 @@ def create_builtin_plugin() -> SkillPlugin:
         name="builtin",
         version="0.1",
         description="Built-in ARES skills.",
-        skills=[TimeDateSkill()],
+        skills=[MemoryRecallSkill(), TimeDateSkill()],
     )

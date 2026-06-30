@@ -12,10 +12,12 @@ class SkillManager:
         registry: Optional[SkillRegistry] = None,
         event_bus=None,
         memory_store=None,
+        profile_store=None,
     ):
         self.registry = registry or SkillRegistry()
         self.event_bus = event_bus or get_global_bus()
         self.memory_store = memory_store
+        self.profile_store = profile_store
 
     def register(self, skill: Skill) -> Skill:
         registered = self.registry.register(skill)
@@ -34,11 +36,16 @@ class SkillManager:
             source="skill_manager",
         )
 
-    def detect(self, text: str):
-        return self.registry.first_match(text)
+    def detect(self, text: str, run_before_intents: Optional[bool] = None):
+        return self.registry.first_match(text, run_before_intents=run_before_intents)
 
-    def handle(self, text: str, context: Optional[SkillContext] = None):
-        skill = self.detect(text)
+    def handle(
+        self,
+        text: str,
+        context: Optional[SkillContext] = None,
+        run_before_intents: Optional[bool] = None,
+    ):
+        skill = self.detect(text, run_before_intents=run_before_intents)
         if not skill:
             return None
 
@@ -61,4 +68,8 @@ class SkillManager:
         return response
 
     def create_context(self) -> SkillContext:
-        return SkillContext(event_bus=self.event_bus, memory_store=self.memory_store)
+        return SkillContext(
+            event_bus=self.event_bus,
+            memory_store=self.memory_store,
+            profile_store=self.profile_store,
+        )

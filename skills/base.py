@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, Tuple
 class SkillContext:
     event_bus: Any = None
     memory_store: Any = None
+    profile_store: Any = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def publish(self, event_name: str, payload: Dict[str, Any]):
@@ -26,6 +27,7 @@ class Skill(ABC):
     description = ""
     version = "0.1"
     triggers: Tuple[str, ...] = ()
+    run_before_intents = False
 
     def metadata(self) -> Dict[str, Any]:
         return {
@@ -33,6 +35,7 @@ class Skill(ABC):
             "description": self.description,
             "version": self.version,
             "triggers": list(self.triggers),
+            "run_before_intents": self.run_before_intents,
         }
 
     def can_handle(self, text: str) -> bool:

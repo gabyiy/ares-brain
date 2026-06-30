@@ -51,6 +51,10 @@ class IntentRouter:
             self._publish_response(response=response, text=q)
             return response
 
+        priority_skill_response = self._handle_skill(q, run_before_intents=True)
+        if priority_skill_response:
+            return priority_skill_response
+
         for intent in self.intents:
             if intent.matches(q):
                 intent_name = intent.__class__.__name__
@@ -62,7 +66,7 @@ class IntentRouter:
                 self._publish_response(response=response, text=q, intent=intent_name)
                 return response
 
-        skill_response = self._handle_skill(q)
+        skill_response = self._handle_skill(q, run_before_intents=False)
         if skill_response:
             return skill_response
 
@@ -83,11 +87,11 @@ class IntentRouter:
         }
         self._publish_many(("response_generated", "intent.response"), payload)
 
-    def _handle_skill(self, text: str):
+    def _handle_skill(self, text: str, run_before_intents=False):
         if not self.skill_manager:
             return None
 
-        response = self.skill_manager.handle(text)
+        response = self.skill_manager.handle(text, run_before_intents=run_before_intents)
         if not response:
             return None
 

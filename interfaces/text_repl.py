@@ -7,7 +7,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from core.intent_router import IntentRouter
 from events import get_global_bus
-from memory import MemoryStore
+from memory import MemoryStore, UserProfileStore
 from skills import SkillManager
 from skills.builtin import create_builtin_plugin
 
@@ -28,15 +28,25 @@ def record_conversation_turn(memory_store, user_message: str, response: str):
     )
 
 
-def print_and_record(memory_store, user_message: str, response: str):
+def store_user_facts(profile_store, user_message: str):
+    return profile_store.learn_from_text(user_message)
+
+
+def print_and_record(memory_store, profile_store, user_message: str, response: str):
     print("ARES:", response)
+    store_user_facts(profile_store, user_message)
     record_conversation_turn(memory_store, user_message, response)
 
 
 def main():
     event_bus = get_global_bus()
     memory_store = MemoryStore(event_bus=event_bus)
-    skill_manager = SkillManager(event_bus=event_bus, memory_store=memory_store)
+    profile_store = UserProfileStore(event_bus=event_bus)
+    skill_manager = SkillManager(
+        event_bus=event_bus,
+        memory_store=memory_store,
+        profile_store=profile_store,
+    )
     skill_manager.register_plugin(create_builtin_plugin())
     router = IntentRouter(event_bus=event_bus, skill_manager=skill_manager)
     awake = False
@@ -56,11 +66,11 @@ def main():
 
         if low in ("hello", "hello ares", "hi ares", "hey ares"):
             awake = True
-            print_and_record(memory_store, user, router.handle(user))
+            print_and_record(memory_store, profile_store, user, router.handle(user))
             continue
 
         if low in ("goodbye", "goodbye ares", "exit", "quit"):
-            print_and_record(memory_store, user, router.handle(user))
+            print_and_record(memory_store, profile_store, user, router.handle(user))
             break
 
         if not awake:
@@ -75,11 +85,11 @@ def main():
                 {"intent": None, "response": response, "text": user},
                 source="text_repl",
             )
-            print_and_record(memory_store, user, response)
+            print_and_record(memory_store, profile_store, user, response)
             continue
 
         try:
-            print_and_record(memory_store, user, router.handle(user))
+            print_and_record(memory_store, profile_store, user, router.handle(user))
         except Exception as e:
             response = f"Error: {e}"
             event_bus.publish(
@@ -87,7 +97,7 @@ def main():
                 {"intent": None, "response": response, "text": user, "error": True},
                 source="text_repl",
             )
-            print_and_record(memory_store, user, response)
+            print_and_record(memory_store, profile_store, user, response)
 
 
 if __name__ == "__main__":

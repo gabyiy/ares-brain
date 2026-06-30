@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v0.9 - Phase 3 Skill Foundation
+ARES v1.0 - Long-Term Memory Recall
 
 ---
 
@@ -40,6 +40,7 @@ ARES
 ├── HTTP Client
 ├── Cache
 ├── Memory v1 Interface
+├── User Profile Store
 ├── Skill Manager
 ├── Skill Registry
 ├── Skill Plugins
@@ -71,6 +72,8 @@ Completed
 - Skill registry
 - Skill manager
 - Built-in time/date skill
+- Persistent user profile facts
+- Memory recall skill
 - Session handoff documentation
 - Modular project structure
 - Git version control
@@ -88,6 +91,10 @@ ARES currently understands questions such as:
 - what is artificial intelligence
 - nvidia stock
 - apple stock
+- what is my name
+- where do I live
+- what is my favorite tank
+- when is my birthday
 
 Each request is automatically routed to its correct intent.
 
@@ -126,7 +133,7 @@ Verification
 
 - Run `python scripts/verify_phase2_events_memory.py` to verify router events and memory turn storage.
 
-Phase 3 Planning/Foundation (Current)
+Phase 3 Skill Foundation
 
 - Plugin/skill architecture
 - Skill registration system
@@ -151,21 +158,29 @@ Intent routing still runs first; skills are used only as a fallback when no norm
 
 Voice has not started.
 
-Phase 4
+Phase 4 Long-Term Memory Recall (Current)
+
+- User facts are stored separately from conversation history in `data/user_profile.json`.
+- `memory.UserProfileStore` detects and saves facts from text input.
+- Supported fact patterns include `My name is...`, `I live in...`, `My birthday is...`, `My favorite ... is...`, and `I own...`.
+- `skills.builtin.MemoryRecallSkill` answers personal profile questions from stored facts without using an LLM.
+- Memory recall is a priority skill, so it runs before generic knowledge lookup for profile questions.
+
+Phase 5
 
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 5
+Phase 6
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 6
+Phase 7
 
 - Robotics
 - ROS2

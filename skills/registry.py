@@ -30,9 +30,16 @@ class SkillRegistry:
     def all(self) -> List[Skill]:
         return list(self._skills.values())
 
-    def matching(self, text: str) -> List[Skill]:
-        return [skill for skill in self.all() if skill.can_handle(text)]
+    def matching(self, text: str, run_before_intents: Optional[bool] = None) -> List[Skill]:
+        skills = [skill for skill in self.all() if skill.can_handle(text)]
+        if run_before_intents is not None:
+            skills = [
+                skill
+                for skill in skills
+                if bool(getattr(skill, "run_before_intents", False)) == run_before_intents
+            ]
+        return skills
 
-    def first_match(self, text: str) -> Optional[Skill]:
-        matches = self.matching(text)
+    def first_match(self, text: str, run_before_intents: Optional[bool] = None) -> Optional[Skill]:
+        matches = self.matching(text, run_before_intents=run_before_intents)
         return matches[0] if matches else None

@@ -7,3 +7,4 @@ backups/
 __pycache__/
 *.pyc
 .env
+data/user_profile.json
