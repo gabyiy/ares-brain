@@ -1,3 +1,5 @@
+import pytest
+
 from core import IntentParser
 from events import EventBus
 from memory import TasksStore
@@ -8,6 +10,28 @@ from skills.builtin.memory_recall import MemoryRecallSkill
 from skills.builtin.notes import NotesSkill
 from skills.builtin.tasks import TasksSkill
 from skills.builtin.time_date import TimeDateSkill
+
+
+@pytest.mark.parametrize(
+    ("text", "intent_name"),
+    [
+        ("remember to buy milk", "task"),
+        ("remember this idea: build ARES memory", "note"),
+        ("what is 12 * 8", "calculate"),
+        ("calculate 2 + 2", "calculate"),
+        ("what time is it", "time_date"),
+        ("what is my birthday", "memory_recall"),
+        ("show my notes", "note"),
+        ("list tasks", "task"),
+        ("delete note 2", "note"),
+        ("mark task 3 done", "task"),
+        ("the rover is parked beside the desk", "unknown"),
+    ],
+)
+def test_intent_parser_handles_ambiguous_and_real_user_phrases(text, intent_name):
+    intent = IntentParser().parse(text)
+
+    assert intent.intent_name == intent_name
 
 
 def test_intent_parser_detects_supported_intents():
@@ -39,6 +63,26 @@ def test_intent_parser_extracts_task_entities():
         "due": "tomorrow",
     }
     assert intent.raw_text == "remember buy milk tomorrow"
+
+
+def test_intent_parser_cleans_remember_to_task_text():
+    intent = IntentParser().parse("remember to buy milk")
+
+    assert intent.intent_name == "task"
+    assert intent.extracted_entities == {
+        "action": "add",
+        "text": "buy milk",
+    }
+
+
+def test_intent_parser_keeps_remember_this_note_text():
+    intent = IntentParser().parse("remember this idea: build ARES memory")
+
+    assert intent.intent_name == "note"
+    assert intent.extracted_entities == {
+        "action": "add",
+        "text": "idea: build ARES memory",
+    }
 
 
 def test_intent_parser_extracts_useful_entities_for_other_intents():

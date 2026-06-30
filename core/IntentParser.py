@@ -102,7 +102,7 @@ class IntentParser:
 
         for phrase in ("add task", "remind me to", "remember"):
             if text.starts_with(phrase):
-                task_text, due = _split_due_text(text.after(phrase))
+                task_text, due = _split_due_text(_strip_leading_task_marker(text.after(phrase)))
                 return self._intent("task", 0.9, text.raw_text, action="add", text=task_text, due=due)
 
         return None
@@ -132,6 +132,9 @@ class IntentParser:
             return self._intent("memory_recall", 0.96, text.raw_text, action="profile_fact", key="location")
 
         if text.is_exact("when is my birthday"):
+            return self._intent("memory_recall", 0.96, text.raw_text, action="profile_fact", key="birthday")
+
+        if text.is_exact("what is my birthday"):
             return self._intent("memory_recall", 0.96, text.raw_text, action="profile_fact", key="birthday")
 
         if text.starts_with("what is my favorite"):
@@ -231,6 +234,16 @@ def _split_due_text(value: str):
             return task_text, suffix
 
     return text, None
+
+
+def _strip_leading_task_marker(value: str) -> str:
+    text = _clean_text(value)
+    lowered = text.lower()
+    if lowered == "to":
+        return ""
+    if lowered.startswith("to "):
+        return text[3:].strip()
+    return text
 
 
 _DUE_SUFFIXES = (
