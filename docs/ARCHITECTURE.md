@@ -177,6 +177,8 @@ Current supported chain examples:
 - Memory plus calculator.
 - Note plus memory.
 - Task/reminder plus memory.
+- Goal plus calculator.
+- Goal plus memory.
 
 ToolChain boundaries:
 
@@ -215,6 +217,7 @@ Current integration verification:
 - Live REPL tests verify multi-step plan creation.
 - Live REPL tests verify notes plus calculator execution through ExecutionPipeline.
 - Live REPL tests verify task plus memory execution through ExecutionPipeline.
+- Live REPL tests verify goal add, list, add milestone, pause, complete, and show commands.
 - Live REPL tests verify recoverable partial failure reporting and continued execution.
 - Live REPL tests verify `show execution` and `show last execution`.
 - A live-path spy verifies the active path uses `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill`.
@@ -561,5 +564,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 118 tests.
+- Pytest collection: 122 tests.
 - Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, and `skills.builtin.TasksSkill`.

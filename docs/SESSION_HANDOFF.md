@@ -300,7 +300,7 @@ Goals behavior:
 - Goal fields include id, title, description, created timestamp, active/completed/paused status, priority, and milestones.
 - Supports `add goal`, `list goals`, `show goal <id>`, `complete goal <id>`, `pause goal <id>`, `delete goal <id>`, and `add milestone to goal <id>`.
 - `IntentParser`, `ToolSelector`, `Planner`, `ToolChain`, `ExecutionPipeline`, `SkillManager`, and the text REPL route the local `goal` intent.
-- Tests cover GoalsStore persistence, GoalsSkill commands, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, SkillManager path, and REPL path.
+- Tests cover GoalsStore persistence, GoalsSkill commands, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and persistence after reload.
 - No GPT, autonomous background actions, notifications, external APIs, voice, weather, stocks, or calendar integration were added.
 
 GitHub Actions CI has been added.
@@ -505,7 +505,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 118 tests.
+- Current pytest collection: 122 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -520,7 +520,7 @@ Verification Notes
 - Calculator tests cover simple arithmetic, precedence, parentheses, decimals, bounded powers, unsafe input rejection, and the REPL routing path.
 - Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
-- Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, SkillManager path, and the REPL routing path.
+- Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ReminderScheduler tests cover tomorrow parsing, relative minutes/hours, clock time parsing, due task detection, upcoming task ordering, and invalid due text handling.
 - Planner tests cover single-step plans, two-step plans, mixed notes/calculator, mixed task/memory, goal steps, invalid plans, ordering, serialization, ToolSelector plan attachment, SkillManager execution, and REPL plan display.
 - ExecutionPipeline tests cover single-step execution, multi-step execution, notes plus calculator, task plus memory, unrecoverable failure, recoverable partial failure, execution ordering, execution logging, rollback hooks, SkillManager integration, REPL execution display, live REPL multi-step planning, live REPL pipeline execution, live REPL partial failure reporting, and live-path component usage.
@@ -533,6 +533,7 @@ Verification Notes
 
 Latest Commits
 
+- `bc5a4e7` Deepen goals live path integration tests
 - `4e5ec44` Add local long-term goal management
 - `5bad0d5` Add local tool chaining foundation
 - `b742116` Add REPL integration tests for execution pipeline

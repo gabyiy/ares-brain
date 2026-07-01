@@ -174,7 +174,7 @@ Phase 13: Long-Term Goal Management Foundation
 - Goal fields include id, title, description, created timestamp, active/completed/paused status, priority, and milestones
 - GoalsSkill supports add, list, show, complete, pause, delete, and add-milestone commands
 - `IntentParser`, `ToolSelector`, `Planner`, `ToolChain`, `ExecutionPipeline`, `SkillManager`, and the text REPL route the local `goal` intent
-- Tests cover store persistence, skill commands, selector routing, parser routing, planner steps, execution pipeline, SkillManager, and REPL path
+- Tests cover store persistence, skill commands, selector routing, parser routing, planner steps, execution pipeline, SkillManager, ToolChain goal chains, REPL lifecycle commands, and persistence after reload
 - No GPT, autonomous background actions, notifications, external APIs, voice, weather, stocks, or calendar integration
 
 Current State
@@ -192,7 +192,7 @@ The current deterministic answer paths are:
 - `Planner`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, and conversation memory plan execution
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 118 tests.
+The current pytest collection is 122 tests.
 
 The current memory paths are:
 
