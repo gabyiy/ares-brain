@@ -18,14 +18,16 @@ Current System Flow
 12. `ToolSelector` asks `core.Planner` to build a local execution plan before skill selection.
 13. `ToolSelector` scores the structured intent against registered skill `intent_names`.
 14. Priority skills are selected before normal intents only when a skill opts in.
-15. `SkillManager` delegates executable plans to `core.ExecutionPipeline`.
-16. `ExecutionPipeline` executes each `PlanStep` sequentially and records step results.
-17. Normal intents run next when no priority skill path handles the message.
-18. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
-19. Responses are published as events.
-20. `SkillManager` records handled skill turns in `ConversationContextManager`.
-21. The REPL stores each conversation turn in `MemoryStore`.
-22. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
+15. `SkillManager` validates executable plans through `core.ToolChain`.
+16. `ToolChain` enforces chain depth, loop prevention, and execution tracing.
+17. `ToolChain` delegates accepted plans to `core.ExecutionPipeline`.
+18. `ExecutionPipeline` executes each `PlanStep` sequentially and records step results.
+19. Normal intents run next when no priority skill path handles the message.
+20. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
+21. Responses are published as events.
+22. `SkillManager` records handled skill turns in `ConversationContextManager`.
+23. The REPL stores each conversation turn in `MemoryStore`.
+24. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
 
 Event Bus
 
@@ -66,6 +68,9 @@ Current event examples:
 - `execution.rollback_requested`
 - `execution.rollback_failed`
 - `execution.completed`
+- `tool_chain.started`
+- `tool_chain.rejected`
+- `tool_chain.completed`
 
 Intent
 
@@ -135,7 +140,41 @@ Planner boundaries:
 - Planner never executes skills.
 - Planner does not write memory, notes, or tasks.
 - Planner does not call GPT, voice, notifications, calendar APIs, or external APIs.
-- `ExecutionPipeline` is responsible for executing planner steps when a plan is executable.
+- `ToolChain` validates compatible planner steps before execution.
+
+ToolChain
+
+`core.ToolChain` validates and traces compatible local multi-step requests before execution.
+
+Current chain objects:
+
+- `ToolChainTraceStep`
+- `ToolChainResult`
+- `ToolChain`
+
+Current responsibilities:
+
+- Receive a `Plan`.
+- Enforce max chain depth 5.
+- Reject repeated step signatures to prevent loop-style chains.
+- Record an ordered execution trace.
+- Record bounded chain history for REPL inspection.
+- Publish tool chain lifecycle events.
+- Delegate accepted plans to `ExecutionPipeline`.
+
+Current supported chain examples:
+
+- Memory plus calculator.
+- Note plus memory.
+- Task/reminder plus memory.
+
+ToolChain boundaries:
+
+- ToolChain does not plan.
+- ToolChain does not execute skills directly.
+- ToolChain does not write memory, notes, or tasks directly.
+- ToolChain does not call GPT, voice, notifications, calendar APIs, weather, stocks, or external APIs.
+- ToolChain does not change storage formats.
 
 ExecutionPipeline
 
@@ -369,7 +408,8 @@ Current responsibilities:
 - Register skill plugins.
 - Parse user text into `Intent` with `IntentParser`.
 - Select the best matching local skill through `ToolSelector`.
-- Delegate executable local plans to `ExecutionPipeline`.
+- Validate executable local plans through `ToolChain`.
+- Delegate accepted local plans to `ExecutionPipeline`.
 - Execute a skill with `SkillContext`.
 - Record each handled skill interaction in `ConversationContextManager`.
 - Publish skill lifecycle events.
@@ -433,6 +473,8 @@ Current responsibilities:
 - Preserve unknown input safety when IntentParser returns `unknown`.
 - Show the last plan with `show plan` or `show steps`.
 - Show the last execution result with `show execution` or `show last execution`.
+- Show the last tool chain with `show chain`.
+- Show chain history with `show chain history`.
 - Share one in-memory conversation context with `SkillManager` for handled skill turns.
 - Print the final ARES response.
 
@@ -450,6 +492,7 @@ Voice should connect at the interface layer, beside the text REPL. It should reu
 - `TasksStore`
 - `ConversationContextManager`
 - `SkillManager`
+- `ToolChain`
 - `ExecutionPipeline`
 
 Voice must not bypass the existing routing, memory, or verification rules.
@@ -481,5 +524,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 98 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.TasksStore`, `memory.ReminderScheduler`, and `skills.builtin.TasksSkill`.
+- Pytest collection: 105 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.TasksStore`, `memory.ReminderScheduler`, and `skills.builtin.TasksSkill`.

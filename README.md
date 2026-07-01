@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.10 - Execution Pipeline Foundation
+ARES v1.11 - Tool Chaining Foundation
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` for local multi-step execution plans, `core.ExecutionPipeline` for sequential plan execution, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` for local multi-step execution plans, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 ARES
 │
@@ -86,6 +86,7 @@ Completed
 - In-memory conversation context manager
 - Structured intent parser and `Intent` object
 - Execution pipeline for planner steps
+- Tool chaining for bounded local multi-step requests
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -133,6 +134,7 @@ Implemented Features
 - Tool selector for best local skill selection
 - Structured intent parser for deterministic local intent/entity extraction
 - Multi-step planner for local notes, tasks, calculator, and conversation memory steps
+- Tool chaining with max depth, loop prevention, execution trace, and chain history
 - Execution pipeline for ordered plan step execution, execution results, logging, and rollback hooks
 - Built-in time/date skill
 - Built-in memory recall skill for saved profile facts
@@ -142,7 +144,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 98 tests across core Phase 2-11 modules
+- Pytest automated coverage for 105 tests across core Phase 2-12 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -161,7 +163,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `98 tests`.
+Current pytest collection: `105 tests`.
 
 Continuous Integration
 
@@ -186,7 +188,7 @@ Run Text REPL
 py interfaces\text_repl.py
 ```
 
-Say `hello` or `hello ares` to wake ARES, then type a supported request. Use `show plan` or `show steps` to display the last local execution plan. Use `show execution` or `show last execution` to display the latest execution result.
+Say `hello` or `hello ares` to wake ARES, then type a supported request. Use `show plan` or `show steps` to display the last local execution plan. Use `show execution` or `show last execution` to display the latest execution result. Use `show chain` or `show chain history` to inspect the latest tool chain.
 
 Latest Architecture Status
 
@@ -200,6 +202,8 @@ Latest Architecture Status
 - ToolSelector builds a `Plan` before selection so multi-step requests can be inspected before execution.
 - ToolSelector first scores matching `intent_names`, then falls back to legacy triggers only for unknown intents.
 - SkillManager delegates executable planner steps to ExecutionPipeline.
+- SkillManager validates executable planner steps through ToolChain before ExecutionPipeline runs.
+- ToolChain enforces max chain depth 5, prevents repeated-step loops, and records chain trace/history.
 - ExecutionPipeline executes plan steps sequentially and records `StepResult` and `ExecutionResult` details.
 - ExecutionPipeline emits execution events and standard logs for start, step completion, recoverable failure, unrecoverable failure, rollback, and completion.
 - Live REPL integration tests verify multi-step plan creation, notes plus calculator execution, task plus memory execution, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
@@ -212,6 +216,7 @@ Latest Architecture Status
 - Conversation history, user profile facts, notes, and tasks are stored separately.
 - `show plan` and `show steps` in the text REPL display the last execution plan.
 - `show execution` and `show last execution` in the text REPL display the last execution result.
+- `show chain` and `show chain history` in the text REPL display the latest local tool chain trace.
 - ReminderScheduler reads existing task due text and can identify due or upcoming tasks without changing `data/tasks.json`.
 - Supported due phrases include `today`, `tomorrow`, `next week`, `in 10 minutes`, `in 2 hours`, and `at 18:00`.
 - ConversationContextManager keeps only the last 20 skill turns in RAM and does not write to disk.
@@ -233,6 +238,40 @@ Project Documents
 - Roadmap: `docs/ROADMAP.md`
 - Engineering rules: `docs/ENGINEERING_RULES.md`
 - Session handoff: `docs/SESSION_HANDOFF.md`
+
+---
+
+TODO
+
+Completed:
+
+- Core brain
+- Event bus
+- Memory
+- User profile memory
+- Notes
+- Tasks/reminders
+- Calculator
+- Tool selector
+- Intent parser
+- Conversation context
+- Reminder scheduler
+- Planner
+- Execution pipeline
+- CI/tests
+- Tool chaining
+
+Next:
+
+1. Long-term goal management
+2. External tool adapter interface
+3. Weather skill
+4. Calendar skill
+5. Stock/market skill
+6. GPT fallback integration
+7. Voice input/output
+8. Raspberry Pi deployment
+9. Robot body / sensors
 
 ---
 
@@ -380,21 +419,32 @@ Phase 11 Execution Pipeline Foundation
 - The text REPL supports `show execution` and `show last execution`.
 - No new skills, GPT, voice, notifications, calendar integration, or external APIs were added.
 
-Phase 12
+Phase 12 Tool Chaining Foundation
+
+- `core.ToolChain` validates and traces compatible local multi-step requests.
+- Tool chains execute through the existing Planner and ExecutionPipeline.
+- Max chain depth is 5.
+- Repeated step signatures are rejected to prevent loops.
+- ToolChain records execution trace and bounded chain history.
+- Supported local examples include memory plus calculator, note plus memory, and task/reminder plus memory.
+- The text REPL supports `show chain` and `show chain history`.
+- No external APIs, GPT, voice, weather, stocks, calendar, notifications, or storage format changes were added.
+
+Phase 13
 
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 13
+Phase 14
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 14
+Phase 15
 
 - Robotics
 - ROS2

@@ -151,9 +151,22 @@ Phase 11: Execution Pipeline Foundation
 - Live REPL integration tests now verify multi-step plan creation, notes plus calculator execution, task plus memory execution, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
 - No new skills, GPT, voice, notifications, calendar integration, external APIs, or storage format changes
 
+Phase 12: Tool Chaining Foundation
+
+- `core.ToolChain`
+- `core.ToolChainResult`
+- `core.ToolChainTraceStep`
+- Max chain depth is 5
+- Repeated step signatures are rejected to prevent loop-style chains
+- ToolChain records ordered execution traces and bounded chain history
+- SkillManager validates executable plans through ToolChain before ExecutionPipeline runs
+- Text REPL supports `show chain` and `show chain history`
+- Tests cover memory plus calculator, note plus memory, task/reminder plus memory, ordering, max depth, loop prevention, and REPL chain display
+- No new external APIs, GPT, voice, weather, stocks, calendar, notifications, or storage format changes
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, local multi-step planning, sequential local plan execution, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, persistent local notes, offline tasks, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, local multi-step planning, bounded local tool chaining, sequential local plan execution, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, persistent local notes, offline tasks, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -163,10 +176,10 @@ The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, notes, and tasks
-- `Planner`, `ExecutionPipeline`, and `SkillManager` for local notes, tasks, calculator, and conversation memory plan execution
+- `Planner`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local notes, tasks, calculator, and conversation memory plan execution
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 98 tests.
+The current pytest collection is 105 tests.
 
 The current memory paths are:
 
@@ -179,12 +192,15 @@ The current memory paths are:
 
 Next Priorities
 
-1. Create and approve detailed architecture decisions for the next implementation phase.
-2. Define how roadmap items map to intents, skills, providers, or interfaces.
-3. Add a company information provider only after the architecture decision is documented.
-4. Add cryptocurrency support only after company information is stable and tested.
-5. Improve local natural language parsing only with structured parser rules and tests that preserve current behavior.
-6. Add the next local skill only after its contract is documented and approved.
+1. Long-term goal management.
+2. External tool adapter interface.
+3. Weather skill.
+4. Calendar skill.
+5. Stock/market skill.
+6. GPT fallback integration.
+7. Voice input/output.
+8. Raspberry Pi deployment.
+9. Robot body / sensors.
 
 What Must Not Be Started Yet
 

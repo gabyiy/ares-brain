@@ -4,7 +4,7 @@ Last Updated: 2026-07-01
 
 Current Version
 
-ARES v1.10 - Execution Pipeline Foundation
+ARES v1.11 - Tool Chaining Foundation
 
 ---
 
@@ -75,6 +75,7 @@ New test coverage:
 - IntentParser
 - Planner
 - ExecutionPipeline
+- ToolChain
 - ToolSelector structured intent routing
 - Text REPL profile recall flow
 
@@ -262,6 +263,26 @@ New integration coverage:
 - Live REPL `show execution` and `show last execution`.
 - Live-path spy coverage for `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill`.
 
+Tool Chaining foundation has been added.
+
+New chain modules:
+
+- `core.ToolChain`
+- `core.ToolChainResult`
+- `core.ToolChainTraceStep`
+
+ToolChain behavior:
+
+- Receives a `Plan`.
+- Enforces max chain depth 5.
+- Rejects repeated step signatures to prevent loop-style chains.
+- Records ordered execution trace.
+- Keeps bounded chain history for REPL inspection.
+- Delegates accepted plans to ExecutionPipeline.
+- Supports memory plus calculator, note plus memory, and task/reminder plus memory examples.
+- `interfaces.text_repl` supports `show chain` and `show chain history`.
+- No external APIs, GPT, voice, weather, stocks, calendar, notifications, or storage format changes were added.
+
 GitHub Actions CI has been added.
 
 CI behavior:
@@ -400,7 +421,7 @@ MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing s
 The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `NotesSkill`, `TasksSkill`, and `TimeDateSkill`.
 The REPL priority skill path currently covers profile memory recall, calculator arithmetic, note commands, and task commands.
 `SkillManager` parses text into `core.Intent` before `ToolSelector` selects a local skill.
-`ToolSelector` builds a `core.Plan` before selection, and `SkillManager` delegates executable plan steps to `core.ExecutionPipeline`.
+`ToolSelector` builds a `core.Plan` before selection, `SkillManager` validates executable plan steps through `core.ToolChain`, and accepted chains execute through `core.ExecutionPipeline`.
 `SkillManager` records handled skill turns in `ConversationContextManager`.
 
 Skill Manager
@@ -455,7 +476,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 98 tests.
+- Current pytest collection: 105 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -473,6 +494,7 @@ Verification Notes
 - ReminderScheduler tests cover tomorrow parsing, relative minutes/hours, clock time parsing, due task detection, upcoming task ordering, and invalid due text handling.
 - Planner tests cover single-step plans, two-step plans, mixed notes/calculator, mixed task/memory, invalid plans, ordering, serialization, ToolSelector plan attachment, SkillManager execution, and REPL plan display.
 - ExecutionPipeline tests cover single-step execution, multi-step execution, notes plus calculator, task plus memory, unrecoverable failure, recoverable partial failure, execution ordering, execution logging, rollback hooks, SkillManager integration, REPL execution display, live REPL multi-step planning, live REPL pipeline execution, live REPL partial failure reporting, and live-path component usage.
+- ToolChain tests cover memory plus calculator, note plus memory, task/reminder plus memory, ordering, max depth enforcement, repeated-step loop prevention, and REPL chain display/history.
 - Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
 - Intent parser tests cover intent detection, confidence values, entity extraction, ambiguous local phrasing, unknown intent, ToolSelector integration, SkillManager integration, live REPL parser use, and the REPL task path.
 - `git diff --check` passed after the automated test changes.
@@ -481,6 +503,7 @@ Verification Notes
 
 Latest Commits
 
+- `5bad0d5` Add local tool chaining foundation
 - `b742116` Add REPL integration tests for execution pipeline
 - `cee3841` Add execution pipeline for planner steps
 - `98d8ff0` Document multi-step planner foundation
