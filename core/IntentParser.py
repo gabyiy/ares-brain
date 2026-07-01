@@ -36,6 +36,7 @@ class IntentRule:
 class IntentParser:
     def __init__(self, rules: Optional[Iterable[IntentRule]] = None):
         self.rules = list(rules) if rules is not None else [
+            IntentRule("goal", self._parse_goal),
             IntentRule("note", self._parse_note),
             IntentRule("task", self._parse_task),
             IntentRule("calculate", self._parse_calculate),
@@ -59,6 +60,51 @@ class IntentParser:
                 return intent
 
         return self._unknown(parsed.raw_text)
+
+    def _parse_goal(self, text: ParsedText) -> Optional[Intent]:
+        if text.is_exact("list goals", "show goals"):
+            return self._intent("goal", 0.96, text.raw_text, action="list")
+
+        if text.starts_with("show goal"):
+            goal_id = _first_word(text.after("show goal"))
+            return self._intent("goal", 0.94, text.raw_text, action="show", goal_id=goal_id)
+
+        if text.starts_with("complete goal"):
+            goal_id = _first_word(text.after("complete goal"))
+            return self._intent("goal", 0.94, text.raw_text, action="complete", goal_id=goal_id)
+
+        if text.starts_with("pause goal"):
+            goal_id = _first_word(text.after("pause goal"))
+            return self._intent("goal", 0.94, text.raw_text, action="pause", goal_id=goal_id)
+
+        if text.starts_with("delete goal"):
+            goal_id = _first_word(text.after("delete goal"))
+            return self._intent("goal", 0.94, text.raw_text, action="delete", goal_id=goal_id)
+
+        if text.starts_with("add milestone to goal"):
+            goal_id, milestone = _split_first_word(text.after("add milestone to goal"))
+            return self._intent(
+                "goal",
+                0.94,
+                text.raw_text,
+                action="add_milestone",
+                goal_id=goal_id,
+                milestone=milestone,
+            )
+
+        if text.starts_with("add goal"):
+            title, description, priority = _split_goal_fields(text.after("add goal"))
+            return self._intent(
+                "goal",
+                0.94,
+                text.raw_text,
+                action="add",
+                title=title,
+                description=description,
+                priority=priority,
+            )
+
+        return None
 
     def _parse_note(self, text: ParsedText) -> Optional[Intent]:
         if text.is_exact("list my notes", "show my notes"):
@@ -202,6 +248,34 @@ def _clean_text(value: str) -> str:
 
 def _first_word(value: str) -> str:
     return _clean_text(value).split()[0] if _clean_text(value).split() else ""
+
+
+def _split_first_word(value: str):
+    clean = _clean_text(value)
+    if not clean:
+        return "", ""
+    parts = clean.split(maxsplit=1)
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], _clean_text(parts[1])
+
+
+def _split_goal_fields(value: str):
+    remaining = _clean_text(value)
+    priority = "normal"
+    description = ""
+
+    priority_match = re.search(r"\s+priority\s+([a-z0-9_-]+)\s*$", remaining, flags=re.IGNORECASE)
+    if priority_match:
+        priority = priority_match.group(1).strip()
+        remaining = _clean_text(remaining[: priority_match.start()])
+
+    description_match = re.search(r"\s+description\s+(.+)$", remaining, flags=re.IGNORECASE)
+    if description_match:
+        description = _clean_text(description_match.group(1))
+        remaining = _clean_text(remaining[: description_match.start()])
+
+    return remaining, description, priority
 
 
 def _looks_like_arithmetic(value: str) -> bool:

@@ -8,5 +8,6 @@ __pycache__/
 *.pyc
 .env
 data/user_profile.json
+data/goals.json
 data/notes.json
 data/tasks.json

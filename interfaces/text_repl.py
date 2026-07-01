@@ -8,7 +8,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from core import get_global_conversation_context
 from core.intent_router import IntentRouter
 from events import get_global_bus
-from memory import MemoryStore, NotesStore, TasksStore, UserProfileStore
+from memory import GoalsStore, MemoryStore, NotesStore, TasksStore, UserProfileStore
 from skills import SkillManager
 from skills.builtin import create_builtin_plugin
 
@@ -43,6 +43,7 @@ def main():
     event_bus = get_global_bus()
     memory_store = MemoryStore(event_bus=event_bus)
     profile_store = UserProfileStore(event_bus=event_bus)
+    goals_store = GoalsStore(event_bus=event_bus)
     notes_store = NotesStore(event_bus=event_bus)
     tasks_store = TasksStore(event_bus=event_bus)
     conversation_context = get_global_conversation_context()
@@ -50,6 +51,7 @@ def main():
         event_bus=event_bus,
         memory_store=memory_store,
         profile_store=profile_store,
+        goals_store=goals_store,
         notes_store=notes_store,
         tasks_store=tasks_store,
         conversation_context=conversation_context,

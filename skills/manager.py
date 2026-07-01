@@ -21,6 +21,7 @@ class SkillManager:
         profile_store=None,
         notes_store=None,
         tasks_store=None,
+        goals_store=None,
         conversation_context=None,
         intent_parser=None,
     ):
@@ -30,6 +31,7 @@ class SkillManager:
         self.profile_store = profile_store
         self.notes_store = notes_store
         self.tasks_store = tasks_store
+        self.goals_store = goals_store
         self.conversation_context = conversation_context or ConversationContextManager()
         self.intent_parser = intent_parser or IntentParser()
         self.last_plan = None
@@ -149,6 +151,7 @@ class SkillManager:
             profile_store=self.profile_store,
             notes_store=self.notes_store,
             tasks_store=self.tasks_store,
+            goals_store=self.goals_store,
             conversation_context=self.conversation_context,
         )
 
@@ -162,6 +165,7 @@ class SkillManager:
             profile_store=context.profile_store,
             notes_store=context.notes_store,
             tasks_store=context.tasks_store,
+            goals_store=context.goals_store,
             conversation_context=context.conversation_context,
             metadata=metadata,
         )

@@ -115,6 +115,9 @@ class Planner:
         )
 
     def _plan_intent(self, intent: Intent):
+        if intent.intent_name == "goal":
+            return self._goal_step(intent.raw_text, dict(intent.extracted_entities)), None
+
         if intent.intent_name == "note":
             return self._note_step(intent.raw_text, dict(intent.extracted_entities)), None
 
@@ -147,11 +150,99 @@ class Planner:
         if task_step:
             return task_step, None
 
+        goal_step = self._goal_step_from_text(clean_clause)
+        if goal_step:
+            return goal_step, None
+
         note_step = self._note_step_from_text(clean_clause)
         if note_step:
             return note_step, None
 
         return None, f"Skipped unsupported plan clause: {clean_clause}"
+
+    def _goal_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
+        action = entities.get("action") or "add"
+        clean_entities = dict(entities)
+
+        if action == "add":
+            title = entities.get("title") or _strip_goal_prefix(raw_text)
+            description = entities.get("description") or ""
+            priority = entities.get("priority") or "normal"
+            can_execute = bool(title)
+            clean_entities.update({"title": title, "description": description, "priority": priority})
+            command = f"add goal {title}" if title else raw_text
+            if description:
+                command = f"{command} description {description}"
+            if priority and priority != "normal":
+                command = f"{command} priority {priority}"
+            description_text = f"Add goal: {title}" if title else "Add goal."
+        elif action == "add_milestone":
+            goal_id = entities.get("goal_id") or ""
+            milestone = entities.get("milestone") or ""
+            can_execute = bool(goal_id and milestone)
+            clean_entities.update({"goal_id": goal_id, "milestone": milestone})
+            command = f"add milestone to goal {goal_id} {milestone}" if goal_id or milestone else raw_text
+            description_text = f"Add milestone to goal {goal_id}: {milestone}" if can_execute else "Add milestone."
+        elif action in {"show", "complete", "pause", "delete"}:
+            goal_id = entities.get("goal_id") or _first_word(_strip_prefix(raw_text, f"{action} goal"))
+            can_execute = bool(goal_id)
+            clean_entities["goal_id"] = goal_id
+            command = f"{action} goal {goal_id}" if goal_id else raw_text
+            description_text = f"{action.title()} goal: {goal_id}" if goal_id else "Run goal command."
+        elif action == "list":
+            can_execute = True
+            command = "list goals"
+            description_text = "List goals."
+        else:
+            can_execute = False
+            command = raw_text
+            description_text = "Run goal command."
+
+        return PlanStep(
+            order=0,
+            target="goals",
+            action=action,
+            input_text=command,
+            intent_name="goal",
+            entities=clean_entities,
+            can_execute=can_execute,
+            skip_reason="" if can_execute else "Missing goal details.",
+            description=description_text,
+        )
+
+    def _goal_step_from_text(self, text: str):
+        lowered = text.lower()
+        if lowered.startswith("add milestone to goal"):
+            goal_id, milestone = _split_first_word(_strip_prefix(text, "add milestone to goal"))
+            return self._goal_step(
+                text,
+                {"action": "add_milestone", "goal_id": goal_id, "milestone": milestone},
+            )
+
+        for action in ("show", "complete", "pause", "delete"):
+            prefix = f"{action} goal"
+            if lowered.startswith(prefix):
+                return self._goal_step(
+                    text,
+                    {"action": action, "goal_id": _first_word(_strip_prefix(text, prefix))},
+                )
+
+        if lowered in ("list goals", "show goals"):
+            return self._goal_step(text, {"action": "list"})
+
+        if lowered.startswith("add goal"):
+            title, description, priority = _split_goal_fields(_strip_prefix(text, "add goal"))
+            return self._goal_step(
+                text,
+                {
+                    "action": "add",
+                    "title": title,
+                    "description": description,
+                    "priority": priority,
+                },
+            )
+
+        return None
 
     def _note_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
         action = entities.get("action") or "add"
@@ -314,8 +405,48 @@ def _strip_task_prefix(text: str) -> str:
     return _clean_clause(text)
 
 
+def _strip_goal_prefix(text: str) -> str:
+    for prefix in ("add goal", "goal"):
+        if text.lower().startswith(prefix):
+            return _strip_prefix(text, prefix)
+    return _clean_clause(text)
+
+
 def _strip_prefix(text: str, prefix: str) -> str:
     return _clean_clause(text[len(prefix) :].lstrip(" :-"))
+
+
+def _first_word(text: str) -> str:
+    clean_text = _clean_clause(text)
+    return clean_text.split()[0] if clean_text.split() else ""
+
+
+def _split_first_word(text: str):
+    clean_text = _clean_clause(text)
+    if not clean_text:
+        return "", ""
+    parts = clean_text.split(maxsplit=1)
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], _clean_clause(parts[1])
+
+
+def _split_goal_fields(text: str):
+    remaining = _clean_clause(text)
+    priority = "normal"
+    description = ""
+
+    priority_match = re.search(r"\s+priority\s+([a-z0-9_-]+)\s*$", remaining, flags=re.IGNORECASE)
+    if priority_match:
+        priority = priority_match.group(1).strip()
+        remaining = _clean_clause(remaining[: priority_match.start()])
+
+    description_match = re.search(r"\s+description\s+(.+)$", remaining, flags=re.IGNORECASE)
+    if description_match:
+        description = _clean_clause(description_match.group(1))
+        remaining = _clean_clause(remaining[: description_match.start()])
+
+    return remaining, description, priority
 
 
 def _extract_expression(text: str) -> str:

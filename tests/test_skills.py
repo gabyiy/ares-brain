@@ -6,6 +6,7 @@ from events import EventBus
 from memory import UserProfileStore
 from skills import Skill, SkillContext, SkillManager, SkillRegistry, SkillResponse, ToolSelector
 from skills.builtin.calculator import CalculatorSkill
+from skills.builtin.goals import GoalsSkill
 from skills.builtin.memory_recall import MemoryRecallSkill
 from skills.builtin.notes import NotesSkill
 from skills.builtin.tasks import TasksSkill
@@ -61,6 +62,7 @@ def test_tool_selector_scores_current_local_skills():
         TimeDateSkill(),
         MemoryRecallSkill(),
         CalculatorSkill(),
+        GoalsSkill(),
         NotesSkill(),
         TasksSkill(),
     ]
@@ -68,6 +70,7 @@ def test_tool_selector_scores_current_local_skills():
     assert selector.select("what time is it", skills).skill.name == "time_date"
     assert selector.select("what is my favorite tank", skills).skill.name == "memory_recall"
     assert selector.select("calculate 2 plus 2", skills).skill.name == "calculator"
+    assert selector.select("add goal build a robot body", skills).skill.name == "goals"
     assert selector.select("take a note buy batteries", skills).skill.name == "notes"
     assert selector.select("add task buy milk", skills).skill.name == "tasks"
 
@@ -78,12 +81,14 @@ def test_tool_selector_distinguishes_priority_local_tools():
         TimeDateSkill(),
         MemoryRecallSkill(),
         CalculatorSkill(),
+        GoalsSkill(),
         NotesSkill(),
         TasksSkill(),
     ]
 
     assert selector.select("what is my name", skills, run_before_intents=True).skill.name == "memory_recall"
     assert selector.select("what is 2 + 2", skills, run_before_intents=True).skill.name == "calculator"
+    assert selector.select("list goals", skills, run_before_intents=True).skill.name == "goals"
     assert selector.select("remember this 2 + 2", skills, run_before_intents=True).skill.name == "notes"
     assert selector.select("search notes 2 + 2", skills, run_before_intents=True).skill.name == "notes"
     assert selector.select("remind me to call mom", skills, run_before_intents=True).skill.name == "tasks"
