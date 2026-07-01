@@ -194,6 +194,8 @@ Latest Architecture Status
 - ToolSelector first scores matching `intent_names`, then falls back to legacy triggers only for unknown intents.
 - SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
 - IntentParser tests cover ambiguous local phrases such as `remember to buy milk`, note reminders, birthday recall, task actions, note actions, calculator requests, and unknown text.
+- REPL integration tests confirm live text input reaches IntentParser before SkillManager selects local skills.
+- Unknown structured intents do not use loose token-overlap fallback, preventing generic text from being misrouted to memory recall.
 - SkillManager uses ToolSelector confidence scoring instead of first-match-only selection.
 - SkillManager records handled skill turns into the in-memory conversation context.
 - Conversation history, user profile facts, notes, and tasks are stored separately.

@@ -182,7 +182,9 @@ Selection behavior:
 - `SkillManager` parses user text into an `Intent` before calling `ToolSelector`.
 - Skills can declare `intent_names` for structured matching.
 - `ToolSelector` scores structured intent matches before legacy trigger scoring.
-- Trigger and `can_handle` fallback paths remain available for unknown intents and compatibility.
+- Exact and contained trigger fallback paths remain available for unknown intents and compatibility.
+- Loose token-overlap fallback is disabled for unknown structured intents so generic text does not get misrouted to local skills.
+- `can_handle` fallback remains available for unknown intents and compatibility.
 - `SkillContext.metadata` carries the parsed `intent` and extracted `entities`.
 - `TasksSkill` consumes parser-derived task entities so `remember buy milk tomorrow` can route through the REPL as an offline task.
 
@@ -392,7 +394,7 @@ Verification Notes
 - Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
-- Intent parser tests cover intent detection, confidence values, entity extraction, ambiguous local phrasing, unknown intent, ToolSelector integration, SkillManager integration, and the REPL task path.
+- Intent parser tests cover intent detection, confidence values, entity extraction, ambiguous local phrasing, unknown intent, ToolSelector integration, SkillManager integration, live REPL parser use, and the REPL task path.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
@@ -412,6 +414,7 @@ Latest Commits
 - GitHub Actions CI for local verification commands
 - `f2e7a6b` Add structured intent parser
 - `34a7b57` Harden intent parser phrase handling
+- `8ae29d7` Deepen intent parser runtime integration tests
 
 Next Planned Step
 

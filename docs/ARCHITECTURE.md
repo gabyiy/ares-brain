@@ -241,7 +241,9 @@ Current scoring rules:
 - Skills can add `selection_keywords` without changing selector code.
 - Skills can add `selection_priority` for explicit tie-breaking.
 - Selection can be filtered with `run_before_intents`.
-- Trigger and `can_handle` fallback paths are only used when the structured intent is `unknown`.
+- Exact and contained trigger fallback paths can still run when the structured intent is `unknown`.
+- Loose token-overlap fallback is disabled for `unknown` structured intents so generic text does not get misrouted to a local skill.
+- `can_handle` fallback remains available for unknown intents and compatibility.
 
 Current supported runtime skills:
 
@@ -324,6 +326,7 @@ Current responsibilities:
 - Route note commands to `NotesSkill` and persist notes in `NotesStore`.
 - Route task commands to `TasksSkill` and persist tasks in `TasksStore`.
 - Route parser-recognized local intents through `SkillManager` and `ToolSelector`.
+- Preserve unknown input safety when IntentParser returns `unknown`.
 - Share one in-memory conversation context with `SkillManager` for handled skill turns.
 - Print the final ARES response.
 

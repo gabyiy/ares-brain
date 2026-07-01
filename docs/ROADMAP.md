@@ -106,6 +106,8 @@ Phase 8: Structured Intent Parser
 - Skills declare `intent_names` for structured matching
 - Automated parser, ToolSelector, SkillManager, and REPL path tests
 - Hardened parser coverage for ambiguous local phrases such as `remember to buy milk`, note reminders, birthday recall, task actions, note actions, calculator requests, and unknown text
+- Live REPL integration tests confirm IntentParser output is used before local skill selection
+- Unknown structured intents preserve safe fallback behavior and avoid loose token-overlap skill routing
 - No AI, GPT, embeddings, voice, or external API integration
 
 Current State
