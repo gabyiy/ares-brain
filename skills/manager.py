@@ -5,6 +5,7 @@ from core.ExecutionPipeline import ExecutionPipeline
 from core.Intent import Intent
 from core.IntentParser import IntentParser
 from core.Planner import Plan
+from core.ToolChain import ToolChain
 from events import get_global_bus
 from skills.base import Skill, SkillContext, SkillResponse
 from skills.plugin import SkillPlugin
@@ -38,6 +39,10 @@ class SkillManager:
             event_bus=self.event_bus,
             memory_store=self.memory_store,
             context_builder=self._context_with_intent,
+        )
+        self.tool_chain = ToolChain(
+            execution_pipeline=self.execution_pipeline,
+            event_bus=self.event_bus,
         )
 
     def register(self, skill: Skill) -> Skill:
@@ -131,6 +136,12 @@ class SkillManager:
             return "No execution is available yet."
         return self.last_execution.format()
 
+    def format_last_chain(self) -> str:
+        return self.tool_chain.format_last()
+
+    def format_chain_history(self) -> str:
+        return self.tool_chain.format_history()
+
     def create_context(self) -> SkillContext:
         return SkillContext(
             event_bus=self.event_bus,
@@ -167,20 +178,24 @@ class SkillManager:
             plan.to_dict(),
             source="skill_manager",
         )
-        execution = self.execution_pipeline.execute(plan, context)
+        chain = self.tool_chain.execute(plan, context)
+        execution = chain.execution
         self.last_execution = execution
 
         response_skill = "planner"
-        if len(execution.step_results) == 1:
+        if execution and len(execution.step_results) == 1:
             response_skill = execution.step_results[0].returned_data.get("skill") or "planner"
+        elif not execution:
+            response_skill = "tool_chain"
 
         return SkillResponse(
-            text=execution.format_response_text(),
+            text=chain.format_response_text(),
             skill=response_skill,
             metadata={
                 "plan": plan.to_dict(),
-                "execution": execution.to_dict(),
-                "results": [result.to_dict() for result in execution.step_results],
+                "chain": chain.to_dict(),
+                "execution": execution.to_dict() if execution else None,
+                "results": [result.to_dict() for result in execution.step_results] if execution else [],
             },
         )
 

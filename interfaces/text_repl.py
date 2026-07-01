@@ -103,6 +103,14 @@ def main():
             print_and_record(memory_store, profile_store, user, skill_manager.format_last_execution())
             continue
 
+        if low == "show chain":
+            print_and_record(memory_store, profile_store, user, skill_manager.format_last_chain())
+            continue
+
+        if low == "show chain history":
+            print_and_record(memory_store, profile_store, user, skill_manager.format_chain_history())
+            continue
+
         try:
             print_and_record(memory_store, profile_store, user, router.handle(user))
         except Exception as e:

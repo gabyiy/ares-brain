@@ -7,6 +7,7 @@ from core.ExecutionPipeline import ExecutionPipeline, ExecutionResult, RollbackH
 from core.Intent import Intent
 from core.IntentParser import IntentParser
 from core.Planner import Plan, Planner, PlanStep
+from core.ToolChain import MAX_CHAIN_DEPTH, ToolChain, ToolChainResult, ToolChainTraceStep
 
 __all__ = [
     "ConversationContextManager",
@@ -20,5 +21,9 @@ __all__ = [
     "PlanStep",
     "RollbackHook",
     "StepResult",
+    "MAX_CHAIN_DEPTH",
+    "ToolChain",
+    "ToolChainResult",
+    "ToolChainTraceStep",
     "get_global_conversation_context",
 ]
