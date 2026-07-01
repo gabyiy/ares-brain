@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.9 - Multi-Step Task Planner Foundation
+ARES v1.9 - Planner and Reminder Scheduler Foundation
 
 ---
 
@@ -140,7 +140,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for core Phase 2-10 modules
+- Pytest automated coverage for 83 tests across core Phase 2-10 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -158,6 +158,8 @@ py -m pytest
 py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
+
+Current pytest collection: `83 tests`.
 
 Continuous Integration
 

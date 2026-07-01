@@ -1,10 +1,10 @@
 ARES Session Handoff
 
-Last Updated: 2026-06-30
+Last Updated: 2026-07-01
 
 Current Version
 
-ARES v1.7
+ARES v1.9 - Planner and Reminder Scheduler Foundation
 
 ---
 
@@ -419,6 +419,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
+- Current pytest collection: 83 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -443,22 +444,16 @@ Verification Notes
 
 Latest Commits
 
-- `0faffc1` Add long-term profile memory recall
-- `97fcbeb` Add automated pytest suite
-- Documentation update for tests and current architecture status
-- Documentation update for strict engineering rules
-- Documentation update for master architecture and roadmap docs
-- Tool selection foundation with scoring and tests
-- CalculatorSkill with safe arithmetic tests
-- Persistent NotesSkill with storage and routing tests
-- Persistent TasksSkill with storage and routing tests
-- `0ba1c90` Add reminder scheduler foundation
+- `98d8ff0` Document multi-step planner foundation
 - `aaca6b4` Add local multi-step planner foundation
-- In-memory ConversationContextManager with SkillManager and REPL tests
-- GitHub Actions CI for local verification commands
-- `f2e7a6b` Add structured intent parser
-- `34a7b57` Harden intent parser phrase handling
+- `5cf4a3e` Document reminder scheduler foundation
+- `0ba1c90` Add reminder scheduler foundation
+- `c7b665d` Document intent parser runtime integration
 - `8ae29d7` Deepen intent parser runtime integration tests
+- `85f2a6c` Update docs for parser hardening
+- `34a7b57` Harden intent parser phrase handling
+- `e3c8501` Update docs for intent parser
+- `f2e7a6b` Add structured intent parser
 
 Next Planned Step
 

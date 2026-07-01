@@ -85,17 +85,6 @@ Phase 6: Local Tasks Skill
 - No notifications or calendar integration
 - Automated store, skill, selector, and REPL path tests
 
-Phase 6B: ReminderScheduler Foundation
-
-- `memory.ReminderScheduler`
-- Passive due-time parsing for existing task due text
-- Supported phrases: `today`, `tomorrow`, `next week`, `in 10 minutes`, `in 2 hours`, and `at 18:00`
-- `parse_due_text(text)`
-- `due_tasks(now)`
-- `upcoming_tasks(now, limit)`
-- Invalid due text is ignored safely
-- No notifications, calendar integration, voice, GPT, external APIs, or storage format changes
-
 Phase 7: In-Memory Conversation Context
 
 - `ConversationContextManager`
@@ -121,7 +110,18 @@ Phase 8: Structured Intent Parser
 - Unknown structured intents preserve safe fallback behavior and avoid loose token-overlap skill routing
 - No AI, GPT, embeddings, voice, or external API integration
 
-Phase 9: Multi-Step Task Planner Foundation
+Phase 9: ReminderScheduler Foundation
+
+- `memory.ReminderScheduler`
+- Passive due-time parsing for existing task due text
+- Supported phrases: `today`, `tomorrow`, `next week`, `in 10 minutes`, `in 2 hours`, and `at 18:00`
+- `parse_due_text(text)`
+- `due_tasks(now)`
+- `upcoming_tasks(now, limit)`
+- Invalid due text is ignored safely
+- No notifications, calendar integration, voice, GPT, external APIs, or storage format changes
+
+Phase 10: Multi-Step Task Planner Foundation
 
 - `core.PlanStep`
 - `core.Plan`
@@ -149,6 +149,8 @@ The current deterministic answer paths are:
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, notes, and tasks
 - `Planner` plus `SkillManager` for multi-step local notes, tasks, calculator, and conversation memory requests
 - In-memory conversation context for recent handled skill turns
+
+The current pytest collection is 83 tests.
 
 The current memory paths are:
 

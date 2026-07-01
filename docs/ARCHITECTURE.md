@@ -428,3 +428,8 @@ py -m pytest
 py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
+
+Current verification snapshot:
+
+- Pytest collection: 83 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ConversationContextManager`, `memory.TasksStore`, `memory.ReminderScheduler`, and `skills.builtin.TasksSkill`.
