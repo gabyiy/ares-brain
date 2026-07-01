@@ -99,6 +99,10 @@ def main():
             print_and_record(memory_store, profile_store, user, skill_manager.format_last_plan())
             continue
 
+        if low in ("show execution", "show last execution"):
+            print_and_record(memory_store, profile_store, user, skill_manager.format_last_execution())
+            continue
+
         try:
             print_and_record(memory_store, profile_store, user, router.handle(user))
         except Exception as e:

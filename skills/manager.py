@@ -1,6 +1,7 @@
 from typing import Optional
 
 from core.ConversationContext import ConversationContextManager
+from core.ExecutionPipeline import ExecutionPipeline
 from core.Intent import Intent
 from core.IntentParser import IntentParser
 from core.Planner import Plan
@@ -31,6 +32,13 @@ class SkillManager:
         self.conversation_context = conversation_context or ConversationContextManager()
         self.intent_parser = intent_parser or IntentParser()
         self.last_plan = None
+        self.last_execution = None
+        self.execution_pipeline = ExecutionPipeline(
+            skill_resolver=self.registry.get,
+            event_bus=self.event_bus,
+            memory_store=self.memory_store,
+            context_builder=self._context_with_intent,
+        )
 
     def register(self, skill: Skill) -> Skill:
         registered = self.registry.register(skill)
@@ -74,6 +82,8 @@ class SkillManager:
         self.last_plan = plan
 
         if self._should_execute_plan(plan, selection):
+            if selection:
+                self._publish_skill_detected(selection, intent, plan)
             response = self._execute_plan(plan, context or self.create_context())
             self.conversation_context.record_turn(
                 user_message=intent.raw_text,
@@ -92,19 +102,7 @@ class SkillManager:
         skill = selection.skill
 
         context = self._context_with_intent(context or self.create_context(), intent)
-        self.event_bus.publish(
-            "skill.detected",
-            {
-                "skill": skill.name,
-                "text": intent.raw_text,
-                "intent": intent.intent_name,
-                "entities": dict(intent.extracted_entities),
-                "confidence": selection.confidence,
-                "reason": selection.reason,
-                "plan": plan.to_dict() if plan else None,
-            },
-            source="skill_manager",
-        )
+        self._publish_skill_detected(selection, intent, plan)
 
         response = skill.handle(intent.raw_text, context)
         if isinstance(response, str):
@@ -127,6 +125,11 @@ class SkillManager:
         if not self.last_plan:
             return "No plan is available yet."
         return self.last_plan.format()
+
+    def format_last_execution(self) -> str:
+        if not self.last_execution:
+            return "No execution is available yet."
+        return self.last_execution.format()
 
     def create_context(self) -> SkillContext:
         return SkillContext(
@@ -156,102 +159,42 @@ class SkillManager:
         if not isinstance(plan, Plan):
             return False
 
-        steps = plan.executable_steps()
-        if not steps:
-            return False
-
-        if selection is None:
-            return True
-
-        if len(steps) > 1:
-            return True
-
-        return steps[0].target != selection.skill.name
+        return bool(plan.executable_steps())
 
     def _execute_plan(self, plan: Plan, context: SkillContext) -> SkillResponse:
-        responses = []
-        results = []
-
         self.event_bus.publish(
             "planner.plan_created",
             plan.to_dict(),
             source="skill_manager",
         )
+        execution = self.execution_pipeline.execute(plan, context)
+        self.last_execution = execution
 
-        for step in plan.executable_steps():
-            if step.target == "conversation_memory":
-                response = self._execute_memory_step(step)
-            else:
-                response = self._execute_skill_step(step, context)
-
-            responses.append(response)
-            results.append(
-                {
-                    "step": step.to_dict(),
-                    "response": response.text,
-                    "skill": response.skill,
-                    "metadata": dict(response.metadata),
-                }
-            )
-
-        lines = ["Plan results:"]
-        for index, response in enumerate(responses, start=1):
-            lines.append(f"{index}. {response.text}")
+        response_skill = "planner"
+        if len(execution.step_results) == 1:
+            response_skill = execution.step_results[0].returned_data.get("skill") or "planner"
 
         return SkillResponse(
-            text="\n".join(lines),
-            skill="planner",
-            metadata={"plan": plan.to_dict(), "results": results},
+            text=execution.format_response_text(),
+            skill=response_skill,
+            metadata={
+                "plan": plan.to_dict(),
+                "execution": execution.to_dict(),
+                "results": [result.to_dict() for result in execution.step_results],
+            },
         )
 
-    def _execute_skill_step(self, step, context: SkillContext) -> SkillResponse:
-        skill = self.registry.get(step.target)
-        if not skill:
-            return SkillResponse(
-                text=f"Skipped {step.target}.{step.action}: skill is not available.",
-                skill="planner",
-                metadata={"missing_skill": step.target},
-            )
-
-        intent = Intent(
-            intent_name=step.intent_name,
-            confidence=1.0,
-            extracted_entities=dict(step.entities),
-            raw_text=step.input_text,
-        )
-        step_context = self._context_with_intent(context, intent)
-        response = skill.handle(step.input_text, step_context)
-        if isinstance(response, str):
-            return SkillResponse(text=response, skill=skill.name)
-        return response
-
-    def _execute_memory_step(self, step) -> SkillResponse:
-        if not self.memory_store:
-            return SkillResponse(
-                text="Memory storage is not available.",
-                skill="planner",
-                metadata={"error": "missing_memory_store"},
-            )
-
-        content = (step.entities.get("content") or step.input_text or "").strip()
-        if not content:
-            return SkillResponse(
-                text="Skipped memory step: missing memory content.",
-                skill="planner",
-                metadata={"error": "missing_memory_content"},
-            )
-
-        memory = self.memory_store.remember(
-            content=content,
-            category="conversation_memory",
-            importance=0.85,
-            tags=["conversation", "planner"],
-            long_term=True,
-            metadata={"plan_step": step.to_dict()},
-            source="skills.manager.planner",
-        )
-        return SkillResponse(
-            text=f"Stored memory: {content}",
-            skill="planner",
-            metadata={"memory_id": memory.id, "long_term": memory.long_term},
+    def _publish_skill_detected(self, selection, intent: Intent, plan) -> None:
+        self.event_bus.publish(
+            "skill.detected",
+            {
+                "skill": selection.skill.name,
+                "text": intent.raw_text,
+                "intent": intent.intent_name,
+                "entities": dict(intent.extracted_entities),
+                "confidence": selection.confidence,
+                "reason": selection.reason,
+                "plan": plan.to_dict() if plan else None,
+            },
+            source="skill_manager",
         )
