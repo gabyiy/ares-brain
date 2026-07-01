@@ -251,6 +251,17 @@ Execution behavior:
 - `interfaces.text_repl` supports `show execution` and `show last execution`.
 - No new skills, GPT, voice, notifications, calendar integration, external APIs, or storage format changes were added.
 
+Execution Pipeline verification hardening has been added.
+
+New integration coverage:
+
+- Live REPL multi-step plan creation.
+- Live REPL notes plus calculator execution through ExecutionPipeline.
+- Live REPL task plus memory execution through ExecutionPipeline.
+- Live REPL recoverable partial failure reporting and continued execution.
+- Live REPL `show execution` and `show last execution`.
+- Live-path spy coverage for `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill`.
+
 GitHub Actions CI has been added.
 
 CI behavior:
@@ -444,7 +455,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 92 tests.
+- Current pytest collection: 98 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -461,7 +472,7 @@ Verification Notes
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - ReminderScheduler tests cover tomorrow parsing, relative minutes/hours, clock time parsing, due task detection, upcoming task ordering, and invalid due text handling.
 - Planner tests cover single-step plans, two-step plans, mixed notes/calculator, mixed task/memory, invalid plans, ordering, serialization, ToolSelector plan attachment, SkillManager execution, and REPL plan display.
-- ExecutionPipeline tests cover single-step execution, multi-step execution, notes plus calculator, task plus memory, unrecoverable failure, recoverable partial failure, execution ordering, execution logging, rollback hooks, SkillManager integration, and REPL execution display.
+- ExecutionPipeline tests cover single-step execution, multi-step execution, notes plus calculator, task plus memory, unrecoverable failure, recoverable partial failure, execution ordering, execution logging, rollback hooks, SkillManager integration, REPL execution display, live REPL multi-step planning, live REPL pipeline execution, live REPL partial failure reporting, and live-path component usage.
 - Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
 - Intent parser tests cover intent detection, confidence values, entity extraction, ambiguous local phrasing, unknown intent, ToolSelector integration, SkillManager integration, live REPL parser use, and the REPL task path.
 - `git diff --check` passed after the automated test changes.
@@ -470,6 +481,7 @@ Verification Notes
 
 Latest Commits
 
+- `b742116` Add REPL integration tests for execution pipeline
 - `cee3841` Add execution pipeline for planner steps
 - `98d8ff0` Document multi-step planner foundation
 - `aaca6b4` Add local multi-step planner foundation

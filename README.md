@@ -142,7 +142,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 92 tests across core Phase 2-11 modules
+- Pytest automated coverage for 98 tests across core Phase 2-11 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -161,7 +161,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `92 tests`.
+Current pytest collection: `98 tests`.
 
 Continuous Integration
 
@@ -202,6 +202,7 @@ Latest Architecture Status
 - SkillManager delegates executable planner steps to ExecutionPipeline.
 - ExecutionPipeline executes plan steps sequentially and records `StepResult` and `ExecutionResult` details.
 - ExecutionPipeline emits execution events and standard logs for start, step completion, recoverable failure, unrecoverable failure, rollback, and completion.
+- Live REPL integration tests verify multi-step plan creation, notes plus calculator execution, task plus memory execution, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
 - SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
 - IntentParser tests cover ambiguous local phrases such as `remember to buy milk`, note reminders, birthday recall, task actions, note actions, calculator requests, and unknown text.
 - REPL integration tests confirm live text input reaches IntentParser before SkillManager selects local skills.

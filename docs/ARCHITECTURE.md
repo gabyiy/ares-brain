@@ -161,6 +161,15 @@ Current responsibilities:
 - Emit standard execution logs through the `ares.execution` logger.
 - Expose a no-op `RollbackHook` extension point for future reversible local actions.
 
+Current integration verification:
+
+- Live REPL tests verify multi-step plan creation.
+- Live REPL tests verify notes plus calculator execution through ExecutionPipeline.
+- Live REPL tests verify task plus memory execution through ExecutionPipeline.
+- Live REPL tests verify recoverable partial failure reporting and continued execution.
+- Live REPL tests verify `show execution` and `show last execution`.
+- A live-path spy verifies the active path uses `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill`.
+
 Execution boundaries:
 
 - ExecutionPipeline does not plan.
@@ -472,5 +481,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 92 tests.
+- Pytest collection: 98 tests.
 - Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.TasksStore`, `memory.ReminderScheduler`, and `skills.builtin.TasksSkill`.

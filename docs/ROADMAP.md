@@ -148,6 +148,7 @@ Phase 11: Execution Pipeline Foundation
 - ExecutionPipeline publishes execution events and emits standard logs.
 - Rollback hook interface exists as a no-op extension point.
 - Text REPL supports `show execution` and `show last execution`.
+- Live REPL integration tests now verify multi-step plan creation, notes plus calculator execution, task plus memory execution, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
 - No new skills, GPT, voice, notifications, calendar integration, external APIs, or storage format changes
 
 Current State
@@ -165,7 +166,7 @@ The current deterministic answer paths are:
 - `Planner`, `ExecutionPipeline`, and `SkillManager` for local notes, tasks, calculator, and conversation memory plan execution
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 92 tests.
+The current pytest collection is 98 tests.
 
 The current memory paths are:
 
