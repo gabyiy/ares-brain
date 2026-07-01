@@ -4,7 +4,7 @@ Last Updated: 2026-07-01
 
 Current Version
 
-ARES v1.11 - Tool Chaining Foundation
+ARES v1.12 - Long-Term Goal Management Foundation
 
 ---
 
@@ -70,6 +70,8 @@ New test coverage:
 - NotesSkill
 - TasksStore
 - TasksSkill
+- GoalsStore
+- GoalsSkill
 - ReminderScheduler
 - ConversationContextManager
 - IntentParser
@@ -92,7 +94,7 @@ Selection behavior:
 
 - Scores local skills instead of relying on first registered match only.
 - Supports exact trigger matches, contained trigger phrases, token overlap, optional `selection_keywords`, optional `selection_priority`, and `run_before_intents` filtering.
-- Currently routes `TimeDateSkill`, `MemoryRecallSkill`, `CalculatorSkill`, `NotesSkill`, and `TasksSkill`.
+- Currently routes `TimeDateSkill`, `MemoryRecallSkill`, `CalculatorSkill`, `GoalsSkill`, `NotesSkill`, and `TasksSkill`.
 
 Phase 4 CalculatorSkill has been added as the first real local tool.
 
@@ -283,6 +285,24 @@ ToolChain behavior:
 - `interfaces.text_repl` supports `show chain` and `show chain history`.
 - No external APIs, GPT, voice, weather, stocks, calendar, notifications, or storage format changes were added.
 
+Long-Term Goal Management foundation has been added.
+
+New goal modules:
+
+- `memory.GoalsStore`
+- `memory.GoalRecord`
+- `skills.builtin.GoalsSkill`
+
+Goals behavior:
+
+- Stores goals in `data/goals.json`, which is ignored by git.
+- Keeps goals separate from conversation memory, user profile memory, notes, and tasks.
+- Goal fields include id, title, description, created timestamp, active/completed/paused status, priority, and milestones.
+- Supports `add goal`, `list goals`, `show goal <id>`, `complete goal <id>`, `pause goal <id>`, `delete goal <id>`, and `add milestone to goal <id>`.
+- `IntentParser`, `ToolSelector`, `Planner`, `ToolChain`, `ExecutionPipeline`, `SkillManager`, and the text REPL route the local `goal` intent.
+- Tests cover GoalsStore persistence, GoalsSkill commands, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, SkillManager path, and REPL path.
+- No GPT, autonomous background actions, notifications, external APIs, voice, weather, stocks, or calendar integration were added.
+
 GitHub Actions CI has been added.
 
 CI behavior:
@@ -379,17 +399,25 @@ Tasks Store:
 - ReminderScheduler can read task due text for passive due/upcoming queries.
 - Does not send notifications or run background scheduling.
 
+Goals Store:
+
+- Stores goal records with id, title, description, created timestamp, status, priority, and milestones.
+- Lists, shows, completes, pauses, deletes one goal, and adds milestones.
+- Uses `data/goals.json` by default.
+- Does not write to `MemoryStore`, `UserProfileStore`, `NotesStore`, or `TasksStore`.
+- Does not run autonomous background actions, notifications, or external APIs.
+
 Conversation Context:
 
 - Stores recent handled skill turns in RAM only.
 - Default limit is 20 turns.
-- Is separate from `MemoryStore`, `UserProfileStore`, `NotesStore`, and `TasksStore`.
+- Is separate from `MemoryStore`, `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore`.
 - Is shared by the text REPL through `core.get_global_conversation_context()`.
 - Does not write any conversation context file.
 
 Text REPL memory:
 
-- `interfaces.text_repl` creates one shared event bus and passes it to `IntentRouter`, `MemoryStore`, `UserProfileStore`, `NotesStore`, `TasksStore`, `ConversationContextManager`, and `SkillManager`.
+- `interfaces.text_repl` creates one shared event bus and passes it to `IntentRouter`, `MemoryStore`, `UserProfileStore`, `GoalsStore`, `NotesStore`, `TasksStore`, `ConversationContextManager`, and `SkillManager`.
 - Each text response records a short-term `conversation_turn` memory.
 - Each text input is also scanned for user profile facts.
 - Sleeping-mode responses also emit `user_message_received` and `response_generated`.
@@ -418,8 +446,8 @@ Each intent owns its own logic and communicates with its corresponding provider.
 
 MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing scripts keep working.
 
-The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `NotesSkill`, `TasksSkill`, and `TimeDateSkill`.
-The REPL priority skill path currently covers profile memory recall, calculator arithmetic, note commands, and task commands.
+The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `GoalsSkill`, `NotesSkill`, `TasksSkill`, and `TimeDateSkill`.
+The REPL priority skill path currently covers profile memory recall, calculator arithmetic, goal commands, note commands, and task commands.
 `SkillManager` parses text into `core.Intent` before `ToolSelector` selects a local skill.
 `ToolSelector` builds a `core.Plan` before selection, `SkillManager` validates executable plan steps through `core.ToolChain`, and accepted chains execute through `core.ExecutionPipeline`.
 `SkillManager` records handled skill turns in `ConversationContextManager`.
@@ -446,12 +474,12 @@ Text REPL
 
 Immediate Next Milestone
 
-Next scoped local tool or provider decision.
+External tool adapter interface decision.
 
 Next technical choices:
 
 - Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
-- Decide whether the next approved runtime capability is company information or another documented provider.
+- Decide how future external tools will plug in without bypassing deterministic local skills.
 - Keep voice, GPT, embeddings, external weather/stocks/calendar APIs, real scheduling, notifications, and Raspberry Pi deployment out of scope until explicitly approved.
 - Connect selected daily reflection scripts and future providers to MemoryStore v1 only after the memory contract is documented.
 
@@ -459,24 +487,25 @@ Next technical choices:
 
 Future Roadmap
 
-1. Company Provider
-2. Cryptocurrency Provider
-3. Better reasoning
-4. Memory v1 integration with conversations
-5. Long-term memory retrieval
-6. Company profile provider
-7. Voice interface
-8. Vision
-9. Robotics
-10. Jetson Orin migration
-11. Autonomous ARES
+1. External tool adapter interface
+2. Weather skill
+3. Calendar skill
+4. Stock/market skill
+5. GPT fallback integration
+6. Voice interface
+7. Raspberry Pi deployment
+8. Robot body / sensors
+9. Vision
+10. Robotics
+11. Jetson Orin migration
+12. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 105 tests.
+- Current pytest collection: 118 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -487,22 +516,24 @@ Verification Notes
   - `py scripts\verify_phase2_events_memory.py`
 - GitHub Actions CI runs the same verification suite on Windows with Python 3.13 for `main` pushes and pull requests.
 - GitHub Actions should be checked after push for the latest `main` commit.
-- Tool selection tests cover current TimeDate/MemoryRecall/Calculator/Notes/Tasks selection.
+- Tool selection tests cover current TimeDate/MemoryRecall/Calculator/Goals/Notes/Tasks selection.
 - Calculator tests cover simple arithmetic, precedence, parentheses, decimals, bounded powers, unsafe input rejection, and the REPL routing path.
 - Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
+- Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, SkillManager path, and the REPL routing path.
 - ReminderScheduler tests cover tomorrow parsing, relative minutes/hours, clock time parsing, due task detection, upcoming task ordering, and invalid due text handling.
-- Planner tests cover single-step plans, two-step plans, mixed notes/calculator, mixed task/memory, invalid plans, ordering, serialization, ToolSelector plan attachment, SkillManager execution, and REPL plan display.
+- Planner tests cover single-step plans, two-step plans, mixed notes/calculator, mixed task/memory, goal steps, invalid plans, ordering, serialization, ToolSelector plan attachment, SkillManager execution, and REPL plan display.
 - ExecutionPipeline tests cover single-step execution, multi-step execution, notes plus calculator, task plus memory, unrecoverable failure, recoverable partial failure, execution ordering, execution logging, rollback hooks, SkillManager integration, REPL execution display, live REPL multi-step planning, live REPL pipeline execution, live REPL partial failure reporting, and live-path component usage.
 - ToolChain tests cover memory plus calculator, note plus memory, task/reminder plus memory, ordering, max depth enforcement, repeated-step loop prevention, and REPL chain display/history.
 - Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
-- Intent parser tests cover intent detection, confidence values, entity extraction, ambiguous local phrasing, unknown intent, ToolSelector integration, SkillManager integration, live REPL parser use, and the REPL task path.
+- Intent parser tests cover intent detection, confidence values, entity extraction, goal commands, ambiguous local phrasing, unknown intent, ToolSelector integration, SkillManager integration, live REPL parser use, and the REPL task path.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
 
 Latest Commits
 
+- `4e5ec44` Add local long-term goal management
 - `5bad0d5` Add local tool chaining foundation
 - `b742116` Add REPL integration tests for execution pipeline
 - `cee3841` Add execution pipeline for planner steps
@@ -519,7 +550,7 @@ Latest Commits
 
 Next Planned Step
 
-- Review and approve the next local tool or provider scope.
+- Design the external tool adapter interface.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not add weather, stocks, calendar, GPT, embeddings, voice, vision, scheduling, or notifications yet.

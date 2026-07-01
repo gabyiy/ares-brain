@@ -8,26 +8,27 @@ Current System Flow
 2. The REPL creates one shared `EventBus`.
 3. The REPL creates `MemoryStore` for conversation turns.
 4. The REPL creates `UserProfileStore` for persistent user facts.
-5. The REPL creates `NotesStore` for persistent local notes.
-6. The REPL creates `TasksStore` for persistent offline tasks.
-7. The REPL creates the shared in-memory `ConversationContextManager`.
-8. The REPL creates `SkillManager`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
-9. User input is sent to `IntentRouter`.
-10. `IntentRouter` publishes input lifecycle events.
-11. When a skill path is checked, `SkillManager` parses user text into `core.Intent` with `core.IntentParser`.
-12. `ToolSelector` asks `core.Planner` to build a local execution plan before skill selection.
-13. `ToolSelector` scores the structured intent against registered skill `intent_names`.
-14. Priority skills are selected before normal intents only when a skill opts in.
-15. `SkillManager` validates executable plans through `core.ToolChain`.
-16. `ToolChain` enforces chain depth, loop prevention, and execution tracing.
-17. `ToolChain` delegates accepted plans to `core.ExecutionPipeline`.
-18. `ExecutionPipeline` executes each `PlanStep` sequentially and records step results.
-19. Normal intents run next when no priority skill path handles the message.
-20. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
-21. Responses are published as events.
-22. `SkillManager` records handled skill turns in `ConversationContextManager`.
-23. The REPL stores each conversation turn in `MemoryStore`.
-24. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
+5. The REPL creates `GoalsStore` for persistent long-term goals.
+6. The REPL creates `NotesStore` for persistent local notes.
+7. The REPL creates `TasksStore` for persistent offline tasks.
+8. The REPL creates the shared in-memory `ConversationContextManager`.
+9. The REPL creates `SkillManager`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
+10. User input is sent to `IntentRouter`.
+11. `IntentRouter` publishes input lifecycle events.
+12. When a skill path is checked, `SkillManager` parses user text into `core.Intent` with `core.IntentParser`.
+13. `ToolSelector` asks `core.Planner` to build a local execution plan before skill selection.
+14. `ToolSelector` scores the structured intent against registered skill `intent_names`.
+15. Priority skills are selected before normal intents only when a skill opts in.
+16. `SkillManager` validates executable plans through `core.ToolChain`.
+17. `ToolChain` enforces chain depth, loop prevention, and execution tracing.
+18. `ToolChain` delegates accepted plans to `core.ExecutionPipeline`.
+19. `ExecutionPipeline` executes each `PlanStep` sequentially and records step results.
+20. Normal intents run next when no priority skill path handles the message.
+21. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
+22. Responses are published as events.
+23. `SkillManager` records handled skill turns in `ConversationContextManager`.
+24. The REPL stores each conversation turn in `MemoryStore`.
+25. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
 
 Event Bus
 
@@ -50,6 +51,11 @@ Current event examples:
 - `memory.promoted`
 - `memory.cleared`
 - `profile.fact_saved`
+- `goals.recorded`
+- `goals.completed`
+- `goals.paused`
+- `goals.deleted`
+- `goals.milestone_added`
 - `notes.recorded`
 - `notes.deleted`
 - `notes.cleared`
@@ -92,6 +98,7 @@ IntentParser
 Current recognized intents:
 
 - `calculate`
+- `goal`
 - `note`
 - `task`
 - `memory_recall`
@@ -104,6 +111,8 @@ Current entity extraction examples:
 - `remember to buy milk` becomes a `task` intent with task text `buy milk`.
 - `remember this idea: build ARES memory` becomes a `note` intent with note text.
 - `calculate 15*8` becomes a `calculate` intent with an arithmetic `expression`.
+- `add goal build ARES memory` becomes a `goal` intent with an add action and title.
+- `add milestone to goal <id> write tests` becomes a `goal` intent with goal id and milestone text.
 - `show my notes` becomes a `note` intent with a list action.
 - `what is my birthday` becomes a `memory_recall` intent for the birthday profile fact.
 - `what did I tell you about my job` becomes a `memory_recall` intent with a recall topic.
@@ -132,13 +141,14 @@ Current supported planner targets:
 
 - `notes`
 - `tasks`
+- `goals`
 - `calculator`
 - `conversation_memory`
 
 Planner boundaries:
 
 - Planner never executes skills.
-- Planner does not write memory, notes, or tasks.
+- Planner does not write memory, goals, notes, or tasks.
 - Planner does not call GPT, voice, notifications, calendar APIs, or external APIs.
 - `ToolChain` validates compatible planner steps before execution.
 
@@ -172,7 +182,7 @@ ToolChain boundaries:
 
 - ToolChain does not plan.
 - ToolChain does not execute skills directly.
-- ToolChain does not write memory, notes, or tasks directly.
+- ToolChain does not write memory, goals, notes, or tasks directly.
 - ToolChain does not call GPT, voice, notifications, calendar APIs, weather, stocks, or external APIs.
 - ToolChain does not change storage formats.
 
@@ -280,9 +290,29 @@ Current storage:
 
 The profile file is ignored by git because it can contain personal facts. Tests can override the path with `ARES_USER_PROFILE_PATH`.
 
+GoalsStore
+
+`memory.GoalsStore` stores long-term user goals separately from conversation history, user profile facts, notes, and tasks.
+
+Current responsibilities:
+
+- Add goals with id, title, description, created timestamp, status, priority, and milestones.
+- List all goals.
+- Show one goal by id.
+- Mark one goal completed by id.
+- Pause one goal by id.
+- Delete one goal by id.
+- Add milestones to one goal by id.
+
+Current storage:
+
+- `data/goals.json`
+
+The goals file is ignored by git because it can contain personal goals. Tests can override the path with `ARES_GOALS_PATH`.
+
 NotesStore
 
-`memory.NotesStore` stores user-created notes separately from conversation history and user profile facts.
+`memory.NotesStore` stores user-created notes separately from conversation history, user profile facts, goals, and tasks.
 
 Current responsibilities:
 
@@ -300,7 +330,7 @@ The notes file is ignored by git because it can contain personal notes. Tests ca
 
 TasksStore
 
-`memory.TasksStore` stores offline tasks and simple reminders separately from conversation history, user profile facts, and notes.
+`memory.TasksStore` stores offline tasks and simple reminders separately from conversation history, user profile facts, goals, and notes.
 
 Current responsibilities:
 
@@ -392,6 +422,7 @@ Current supported runtime skills:
 - `TimeDateSkill`
 - `MemoryRecallSkill`
 - `CalculatorSkill`
+- `GoalsSkill`
 - `NotesSkill`
 - `TasksSkill`
 
@@ -419,6 +450,7 @@ Skill context currently carries:
 - `event_bus`
 - `memory_store`
 - `profile_store`
+- `goals_store`
 - `notes_store`
 - `tasks_store`
 - `conversation_context`
@@ -437,6 +469,7 @@ Current built-in skills:
 - `TimeDateSkill`
 - `MemoryRecallSkill`
 - `CalculatorSkill`
+- `GoalsSkill`
 - `NotesSkill`
 - `TasksSkill`
 
@@ -445,6 +478,8 @@ Current built-in skills:
 `MemoryRecallSkill` answers profile questions from `UserProfileStore` without using an LLM. It is a priority skill so questions such as `What is my name?` are answered before the generic knowledge intent.
 
 `CalculatorSkill` answers local arithmetic questions without using an LLM. It supports addition, subtraction, multiplication, division, parentheses, decimals, and bounded powers through AST parsing and explicit operator handling, not `eval()`. It rejects unsupported or unsafe input with a clear response.
+
+`GoalsSkill` stores and manages long-term local goals through `GoalsStore`. It supports `add goal...`, `list goals`, `show goal <id>`, `complete goal <id>`, `pause goal <id>`, `delete goal <id>`, and `add milestone to goal <id> ...`. It does not run autonomous background actions or notifications.
 
 `NotesSkill` stores, lists, searches, and deletes local notes through `NotesStore`. It supports `remember this...`, `save note...`, `take a note...`, `list my notes`, `show my notes`, `delete note <id>`, `delete all notes`, and `search notes <keyword>`. `delete all notes` requires explicit confirmation with `confirm delete all notes`.
 
@@ -464,9 +499,10 @@ Current responsibilities:
 
 - Wake on `hello`, `hello ares`, `hi ares`, or `hey ares`.
 - Exit on `goodbye`, `goodbye ares`, `exit`, or `quit`.
-- Share one event bus across router, memory, profile, notes, tasks, conversation context, and skills.
+- Share one event bus across router, memory, profile, goals, notes, tasks, conversation context, and skills.
 - Store each user/ARES turn as a conversation memory.
 - Scan each user message for profile facts.
+- Route goal commands to `GoalsSkill` and persist goals in `GoalsStore`.
 - Route note commands to `NotesSkill` and persist notes in `NotesStore`.
 - Route task commands to `TasksSkill` and persist tasks in `TasksStore`.
 - Route parser-recognized local intents through `SkillManager` and `ToolSelector`.
@@ -488,6 +524,7 @@ Voice should connect at the interface layer, beside the text REPL. It should reu
 - `IntentRouter`
 - `MemoryStore`
 - `UserProfileStore`
+- `GoalsStore`
 - `NotesStore`
 - `TasksStore`
 - `ConversationContextManager`
@@ -524,5 +561,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 105 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.TasksStore`, `memory.ReminderScheduler`, and `skills.builtin.TasksSkill`.
+- Pytest collection: 118 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, and `skills.builtin.TasksSkill`.

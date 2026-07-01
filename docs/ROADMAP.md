@@ -100,7 +100,7 @@ Phase 8: Structured Intent Parser
 - `core.Intent`
 - `core.IntentParser`
 - Deterministic local intent parsing before ToolSelector runs
-- Recognized intents: `calculate`, `note`, `task`, `memory_recall`, `time_date`, and `unknown`
+- Recognized intents: `calculate`, `goal`, `note`, `task`, `memory_recall`, `time_date`, and `unknown`
 - Entity extraction for local tools, including task text, due text, note actions, calculator expressions, and memory recall topics
 - `SkillManager` consumes `Intent` objects before calling `ToolSelector`
 - Skills declare `intent_names` for structured matching
@@ -127,7 +127,7 @@ Phase 10: Multi-Step Task Planner Foundation
 - `core.Plan`
 - `core.Planner`
 - Planner receives an `Intent` and produces ordered executable steps.
-- Supported planner targets: notes, tasks, calculator, and conversation memory.
+- Supported planner targets: goals, notes, tasks, calculator, and conversation memory.
 - Planner skips impossible steps and returns errors cleanly.
 - Planner serializes plans for events, tests, and REPL display.
 - ToolSelector builds a plan before returning a skill selection.
@@ -164,9 +164,22 @@ Phase 12: Tool Chaining Foundation
 - Tests cover memory plus calculator, note plus memory, task/reminder plus memory, ordering, max depth, loop prevention, and REPL chain display
 - No new external APIs, GPT, voice, weather, stocks, calendar, notifications, or storage format changes
 
+Phase 13: Long-Term Goal Management Foundation
+
+- `memory.GoalsStore`
+- `memory.GoalRecord`
+- `skills.builtin.GoalsSkill`
+- Goals are stored in `data/goals.json`
+- Goals stay separate from conversation memory, user profile memory, notes, and tasks
+- Goal fields include id, title, description, created timestamp, active/completed/paused status, priority, and milestones
+- GoalsSkill supports add, list, show, complete, pause, delete, and add-milestone commands
+- `IntentParser`, `ToolSelector`, `Planner`, `ToolChain`, `ExecutionPipeline`, `SkillManager`, and the text REPL route the local `goal` intent
+- Tests cover store persistence, skill commands, selector routing, parser routing, planner steps, execution pipeline, SkillManager, and REPL path
+- No GPT, autonomous background actions, notifications, external APIs, voice, weather, stocks, or calendar integration
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, local multi-step planning, bounded local tool chaining, sequential local plan execution, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, persistent local notes, offline tasks, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, local multi-step planning, bounded local tool chaining, sequential local plan execution, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -175,16 +188,17 @@ The current active interface is:
 The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
-- `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, notes, and tasks
-- `Planner`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local notes, tasks, calculator, and conversation memory plan execution
+- `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, and tasks
+- `Planner`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, and conversation memory plan execution
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 105 tests.
+The current pytest collection is 118 tests.
 
 The current memory paths are:
 
 - `MemoryStore` for conversation-style memory
 - `UserProfileStore` for persistent user facts
+- `GoalsStore` for persistent long-term goals
 - `NotesStore` for persistent local notes
 - `TasksStore` for persistent offline tasks
 - `ReminderScheduler` for passive due/upcoming task queries
@@ -192,15 +206,14 @@ The current memory paths are:
 
 Next Priorities
 
-1. Long-term goal management.
-2. External tool adapter interface.
-3. Weather skill.
-4. Calendar skill.
-5. Stock/market skill.
-6. GPT fallback integration.
-7. Voice input/output.
-8. Raspberry Pi deployment.
-9. Robot body / sensors.
+1. External tool adapter interface.
+2. Weather skill.
+3. Calendar skill.
+4. Stock/market skill.
+5. GPT fallback integration.
+6. Voice input/output.
+7. Raspberry Pi deployment.
+8. Robot body / sensors.
 
 What Must Not Be Started Yet
 

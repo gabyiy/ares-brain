@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.11 - Tool Chaining Foundation
+ARES v1.12 - Long-Term Goal Management Foundation
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` for local multi-step execution plans, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` for local multi-step execution plans, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 ARES
 │
@@ -83,6 +83,8 @@ Completed
 - Built-in notes skill
 - Persistent local tasks store
 - Built-in tasks skill
+- Persistent local goals store
+- Built-in goals skill
 - In-memory conversation context manager
 - Structured intent parser and `Intent` object
 - Execution pipeline for planner steps
@@ -121,6 +123,12 @@ ARES currently understands questions such as:
 - remind me to call mom
 - list tasks
 - mark task <id> done
+- add goal build ARES memory
+- list goals
+- show goal <id>
+- complete goal <id>
+- pause goal <id>
+- add milestone to goal <id>
 
 Each request is automatically routed to its correct intent.
 
@@ -133,7 +141,7 @@ Implemented Features
 - Skill registry, skill manager, and skill plugin foundation
 - Tool selector for best local skill selection
 - Structured intent parser for deterministic local intent/entity extraction
-- Multi-step planner for local notes, tasks, calculator, and conversation memory steps
+- Multi-step planner for local goals, notes, tasks, calculator, and conversation memory steps
 - Tool chaining with max depth, loop prevention, execution trace, and chain history
 - Execution pipeline for ordered plan step execution, execution results, logging, and rollback hooks
 - Built-in time/date skill
@@ -141,10 +149,11 @@ Implemented Features
 - Built-in calculator skill for safe local arithmetic
 - Built-in notes skill for persistent local notes
 - Built-in tasks skill for offline reminders/tasks
+- Built-in goals skill for persistent long-term goal management
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 105 tests across core Phase 2-12 modules
+- Pytest automated coverage for 118 tests across core Phase 2-13 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -163,7 +172,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `105 tests`.
+Current pytest collection: `118 tests`.
 
 Continuous Integration
 
@@ -196,6 +205,7 @@ Latest Architecture Status
 - Priority skills can run before generic intents when needed, such as memory recall.
 - Normal skills run as fallback when no regular intent matches, such as time/date.
 - CalculatorSkill runs as a priority local skill for arithmetic before generic knowledge lookup.
+- GoalsSkill runs as a priority local skill for long-term goal commands.
 - NotesSkill runs as a priority local skill for note commands.
 - TasksSkill runs as a priority local skill for task/reminder commands.
 - SkillManager parses user text into a structured `Intent` before ToolSelector runs.
@@ -206,14 +216,14 @@ Latest Architecture Status
 - ToolChain enforces max chain depth 5, prevents repeated-step loops, and records chain trace/history.
 - ExecutionPipeline executes plan steps sequentially and records `StepResult` and `ExecutionResult` details.
 - ExecutionPipeline emits execution events and standard logs for start, step completion, recoverable failure, unrecoverable failure, rollback, and completion.
-- Live REPL integration tests verify multi-step plan creation, notes plus calculator execution, task plus memory execution, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
+- Live REPL integration tests verify multi-step plan creation, notes plus calculator execution, task plus memory execution, goal command routing, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
 - SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
-- IntentParser tests cover ambiguous local phrases such as `remember to buy milk`, note reminders, birthday recall, task actions, note actions, calculator requests, and unknown text.
+- IntentParser tests cover ambiguous local phrases such as `remember to buy milk`, note reminders, birthday recall, goal actions, task actions, note actions, calculator requests, and unknown text.
 - REPL integration tests confirm live text input reaches IntentParser before SkillManager selects local skills.
 - Unknown structured intents do not use loose token-overlap fallback, preventing generic text from being misrouted to memory recall.
 - SkillManager uses ToolSelector confidence scoring instead of first-match-only selection.
 - SkillManager records handled skill turns into the in-memory conversation context.
-- Conversation history, user profile facts, notes, and tasks are stored separately.
+- Conversation history, user profile facts, goals, notes, and tasks are stored separately.
 - `show plan` and `show steps` in the text REPL display the last execution plan.
 - `show execution` and `show last execution` in the text REPL display the last execution result.
 - `show chain` and `show chain history` in the text REPL display the latest local tool chain trace.
@@ -260,18 +270,18 @@ Completed:
 - Execution pipeline
 - CI/tests
 - Tool chaining
+- Long-term goal management
 
 Next:
 
-1. Long-term goal management
-2. External tool adapter interface
-3. Weather skill
-4. Calendar skill
-5. Stock/market skill
-6. GPT fallback integration
-7. Voice input/output
-8. Raspberry Pi deployment
-9. Robot body / sensors
+1. External tool adapter interface
+2. Weather skill
+3. Calendar skill
+4. Stock/market skill
+5. GPT fallback integration
+6. Voice input/output
+7. Raspberry Pi deployment
+8. Robot body / sensors
 
 ---
 
@@ -385,7 +395,7 @@ Phase 8 Structured Intent Parser
 
 - `core.Intent` stores `intent_name`, `confidence`, `extracted_entities`, and `raw_text`.
 - `core.IntentParser` converts local natural language into structured intents before ToolSelector runs.
-- Recognized intents include `calculate`, `note`, `task`, `memory_recall`, `time_date`, and `unknown`.
+- Recognized intents include `calculate`, `goal`, `note`, `task`, `memory_recall`, `time_date`, and `unknown`.
 - Useful entities are extracted for local tools, such as task text and due text.
 - Parser hardening covers common user phrasing without adding GPT, new skills, or storage format changes.
 - SkillManager consumes structured intents without using AI, GPT, embeddings, or external APIs.
@@ -404,7 +414,7 @@ Phase 10 Multi-Step Task Planner Foundation
 - `core.PlanStep` stores one ordered executable step.
 - `core.Plan` stores ordered steps plus planning errors.
 - `core.Planner` converts an `Intent` into a local execution plan without executing skills.
-- Supported planner targets are notes, tasks, calculator, and conversation memory.
+- Supported planner targets are goals, notes, tasks, calculator, and conversation memory.
 - ToolSelector attaches plans before SkillManager executes anything.
 - The text REPL supports `show plan` and `show steps`.
 - No new skills, GPT, voice, notifications, calendar integration, or external APIs were added.
@@ -430,21 +440,30 @@ Phase 12 Tool Chaining Foundation
 - The text REPL supports `show chain` and `show chain history`.
 - No external APIs, GPT, voice, weather, stocks, calendar, notifications, or storage format changes were added.
 
-Phase 13
+Phase 13 Long-Term Goal Management Foundation
+
+- `memory.GoalsStore` persists long-term goals in `data/goals.json`.
+- Goals are separate from conversation memory, user profile memory, notes, and tasks.
+- `skills.builtin.GoalsSkill` supports add, list, show, complete, pause, delete, and add-milestone commands.
+- Each goal contains id, title, description, created timestamp, status, priority, and milestones.
+- `IntentParser`, `ToolSelector`, `Planner`, `ToolChain`, `ExecutionPipeline`, `SkillManager`, and the text REPL all route the local `goal` intent.
+- No GPT, autonomous background actions, notifications, external APIs, voice, weather, stocks, or calendar integration were added.
+
+Phase 14
 
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 14
+Phase 15
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 15
+Phase 16
 
 - Robotics
 - ROS2
