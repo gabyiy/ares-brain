@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.7 - Structured Intent Parser
+ARES v1.8 - ReminderScheduler Foundation
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 ARES
 │
@@ -136,6 +136,7 @@ Implemented Features
 - Built-in calculator skill for safe local arithmetic
 - Built-in notes skill for persistent local notes
 - Built-in tasks skill for offline reminders/tasks
+- ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
 - Pytest automated coverage for core Phase 2-8 modules
@@ -199,6 +200,8 @@ Latest Architecture Status
 - SkillManager uses ToolSelector confidence scoring instead of first-match-only selection.
 - SkillManager records handled skill turns into the in-memory conversation context.
 - Conversation history, user profile facts, notes, and tasks are stored separately.
+- ReminderScheduler reads existing task due text and can identify due or upcoming tasks without changing `data/tasks.json`.
+- Supported due phrases include `today`, `tomorrow`, `next week`, `in 10 minutes`, `in 2 hours`, and `at 18:00`.
 - ConversationContextManager keeps only the last 20 skill turns in RAM and does not write to disk.
 - GitHub Actions CI now enforces the local verification suite on `main`.
 - Voice has not started.
@@ -314,7 +317,8 @@ Phase 6 Local Tasks Skill
 - Tasks are separate from conversation memory, user profile memory, and notes.
 - `skills.builtin.TasksSkill` supports adding, listing, marking done, deleting, and clearing completed tasks.
 - Each task contains an id, text, created timestamp, optional due text, and completed state.
-- No real scheduling, notifications, calendar integration, voice, or GPT integration has been added.
+- `memory.ReminderScheduler` can parse stored due text and return due/upcoming tasks.
+- No notifications, calendar integration, voice, or GPT integration has been added.
 - `data/tasks.json` is ignored by git because it can contain personal tasks.
 
 Phase 7 In-Memory Conversation Context
@@ -335,21 +339,30 @@ Phase 8 Structured Intent Parser
 - Parser hardening covers common user phrasing without adding GPT, new skills, or storage format changes.
 - SkillManager consumes structured intents without using AI, GPT, embeddings, or external APIs.
 
-Phase 9
+Phase 9 ReminderScheduler Foundation
+
+- `memory.ReminderScheduler` reads tasks from `TasksStore` and interprets raw due text locally.
+- `parse_due_text(text)` supports `today`, `tomorrow`, `next week`, `in 10 minutes`, `in 2 hours`, and `at 18:00`.
+- `due_tasks(now)` returns incomplete tasks whose parsed due time is due.
+- `upcoming_tasks(now, limit)` returns incomplete future tasks ordered by parsed due time.
+- Invalid due text is ignored safely.
+- No notifications, calendar integration, voice, GPT, or storage format changes were added.
+
+Phase 10
 
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 10
+Phase 11
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 11
+Phase 12
 
 - Robotics
 - ROS2

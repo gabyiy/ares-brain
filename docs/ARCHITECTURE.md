@@ -195,7 +195,26 @@ Current storage:
 
 The tasks file is ignored by git because it can contain personal tasks. Tests can override the path with `ARES_TASKS_PATH`.
 
-Scheduling is not active. The current task system stores due text only; it does not schedule jobs, send notifications, call calendar APIs, or use an LLM.
+ReminderScheduler
+
+`memory.ReminderScheduler` is the passive local due-time layer for tasks.
+
+Current responsibilities:
+
+- Parse stored task due text with `parse_due_text(text)`.
+- Support simple due phrases: `today`, `tomorrow`, `next week`, `in 10 minutes`, `in 2 hours`, and `at 18:00`.
+- Return incomplete due tasks with `due_tasks(now)`.
+- Return incomplete upcoming tasks ordered by parsed due time with `upcoming_tasks(now, limit)`.
+- Ignore invalid or unsupported due text safely.
+
+Current boundaries:
+
+- It reads from `TasksStore`.
+- It does not change `data/tasks.json`.
+- It does not schedule jobs.
+- It does not send notifications.
+- It does not call calendar APIs.
+- It does not use GPT or any external API.
 
 ConversationContextManager
 
@@ -304,11 +323,11 @@ Current built-in skills:
 
 `NotesSkill` stores, lists, searches, and deletes local notes through `NotesStore`. It supports `remember this...`, `save note...`, `take a note...`, `list my notes`, `show my notes`, `delete note <id>`, `delete all notes`, and `search notes <keyword>`. `delete all notes` requires explicit confirmation with `confirm delete all notes`.
 
-`TasksSkill` stores and manages offline reminders/tasks through `TasksStore`. It supports `add task...`, `remind me to...`, `list tasks`, `show tasks`, `mark task <id> done`, `delete task <id>`, and `clear completed tasks`. It stores optional due text but does not schedule or notify.
+`TasksSkill` stores and manages offline reminders/tasks through `TasksStore`. It supports `add task...`, `remind me to...`, `list tasks`, `show tasks`, `mark task <id> done`, `delete task <id>`, and `clear completed tasks`. It stores optional due text but does not notify.
 
 `TasksSkill` can also consume parser-derived entities, so text such as `remember buy milk tomorrow` is stored as task text `buy milk` with due text `tomorrow`.
 
-No real scheduling, notifications, voice, weather, stocks, calendar, external API, or GPT integration has been added as part of the tasks milestone.
+No notifications, voice, weather, stocks, calendar, external API, or GPT integration has been added as part of the tasks milestone.
 
 Conversation context is not a persistent memory store. It only tracks recent handled skill turns in RAM so local skills and interfaces can inspect short-term context without GPT or embeddings.
 

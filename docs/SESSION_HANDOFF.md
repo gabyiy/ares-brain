@@ -70,6 +70,7 @@ New test coverage:
 - NotesSkill
 - TasksStore
 - TasksSkill
+- ReminderScheduler
 - ConversationContextManager
 - IntentParser
 - ToolSelector structured intent routing
@@ -126,6 +127,7 @@ New task modules:
 
 - `memory.TasksStore`
 - `memory.TaskRecord`
+- `memory.ReminderScheduler`
 - `skills.builtin.TasksSkill`
 
 Tasks behavior:
@@ -134,9 +136,23 @@ Tasks behavior:
 - Keeps tasks separate from conversation memory, user profile memory, and notes.
 - Supports `add task...`, `remind me to...`, `list tasks`, `show tasks`, `mark task <id> done`, `delete task <id>`, and `clear completed tasks`.
 - Each task stores id, text, created timestamp, optional due text, and completed state.
-- Stores due text only; no real scheduling, notifications, calendar integration, voice, or GPT integration has been added.
+- Stores due text only; no notifications, calendar integration, voice, or GPT integration has been added.
 - Publishes `tasks.recorded`, `tasks.completed`, `tasks.deleted`, and `tasks.completed_cleared`.
 - Uses `ARES_TASKS_PATH` for test isolation.
+
+ReminderScheduler foundation has been added.
+
+Reminder scheduler behavior:
+
+- Parses existing task due text without changing `data/tasks.json`.
+- Supports `today`, `tomorrow`, `next week`, `in 10 minutes`, `in 2 hours`, and `at 18:00`.
+- Provides `parse_due_text(text)`, `due_tasks(now)`, and `upcoming_tasks(now, limit)`.
+- Returns incomplete due/upcoming tasks from `TasksStore`.
+- Ignores invalid due text safely.
+- Does not send notifications.
+- Does not schedule background jobs.
+- Does not call calendar APIs.
+- Does not use voice, GPT, or external APIs.
 
 Phase 7 ConversationContextManager has been added for short-term in-memory context.
 
@@ -281,7 +297,8 @@ Tasks Store:
 - Lists, marks done, deletes one task, and clears completed tasks.
 - Uses `data/tasks.json` by default.
 - Does not write to `MemoryStore`, `UserProfileStore`, or `NotesStore`.
-- Does not schedule tasks or send notifications.
+- ReminderScheduler can read task due text for passive due/upcoming queries.
+- Does not send notifications or run background scheduling.
 
 Conversation Context:
 
@@ -393,6 +410,7 @@ Verification Notes
 - Calculator tests cover simple arithmetic, precedence, parentheses, decimals, bounded powers, unsafe input rejection, and the REPL routing path.
 - Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
+- ReminderScheduler tests cover tomorrow parsing, relative minutes/hours, clock time parsing, due task detection, upcoming task ordering, and invalid due text handling.
 - Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
 - Intent parser tests cover intent detection, confidence values, entity extraction, ambiguous local phrasing, unknown intent, ToolSelector integration, SkillManager integration, live REPL parser use, and the REPL task path.
 - `git diff --check` passed after the automated test changes.
@@ -410,6 +428,7 @@ Latest Commits
 - CalculatorSkill with safe arithmetic tests
 - Persistent NotesSkill with storage and routing tests
 - Persistent TasksSkill with storage and routing tests
+- `0ba1c90` Add reminder scheduler foundation
 - In-memory ConversationContextManager with SkillManager and REPL tests
 - GitHub Actions CI for local verification commands
 - `f2e7a6b` Add structured intent parser

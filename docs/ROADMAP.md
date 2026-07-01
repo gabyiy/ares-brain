@@ -85,6 +85,17 @@ Phase 6: Local Tasks Skill
 - No notifications or calendar integration
 - Automated store, skill, selector, and REPL path tests
 
+Phase 6B: ReminderScheduler Foundation
+
+- `memory.ReminderScheduler`
+- Passive due-time parsing for existing task due text
+- Supported phrases: `today`, `tomorrow`, `next week`, `in 10 minutes`, `in 2 hours`, and `at 18:00`
+- `parse_due_text(text)`
+- `due_tasks(now)`
+- `upcoming_tasks(now, limit)`
+- Invalid due text is ignored safely
+- No notifications, calendar integration, voice, GPT, external APIs, or storage format changes
+
 Phase 7: In-Memory Conversation Context
 
 - `ConversationContextManager`
@@ -130,6 +141,7 @@ The current memory paths are:
 - `UserProfileStore` for persistent user facts
 - `NotesStore` for persistent local notes
 - `TasksStore` for persistent offline tasks
+- `ReminderScheduler` for passive due/upcoming task queries
 - `ConversationContextManager` for RAM-only short-term skill context
 
 Next Priorities
@@ -146,7 +158,7 @@ What Must Not Be Started Yet
 - No voice implementation.
 - No GPT or LLM integration.
 - No embeddings.
-- No real task scheduling or notifications.
+- No notification scheduling or delivery.
 - No calendar integration.
 - No Raspberry Pi deployment work.
 - No new skills before the roadmap and architecture decision is approved.
