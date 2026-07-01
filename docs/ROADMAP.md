@@ -131,13 +131,28 @@ Phase 10: Multi-Step Task Planner Foundation
 - Planner skips impossible steps and returns errors cleanly.
 - Planner serializes plans for events, tests, and REPL display.
 - ToolSelector builds a plan before returning a skill selection.
-- SkillManager executes multi-step local plans; Planner itself never executes skills.
+- Planner itself never executes skills.
 - Text REPL supports `show plan` and `show steps`.
+- No new skills, GPT, voice, notifications, calendar integration, external APIs, or storage format changes
+
+Phase 11: Execution Pipeline Foundation
+
+- `core.StepResult`
+- `core.ExecutionResult`
+- `core.RollbackHook`
+- `core.ExecutionPipeline`
+- ExecutionPipeline receives a `Plan` and executes each `PlanStep` sequentially.
+- Each step records start time, end time, duration, success/failure, returned data, and error messages.
+- SkillManager delegates executable planner steps to ExecutionPipeline.
+- ExecutionPipeline stops on unrecoverable failures and continues after recoverable local tool failures when appropriate.
+- ExecutionPipeline publishes execution events and emits standard logs.
+- Rollback hook interface exists as a no-op extension point.
+- Text REPL supports `show execution` and `show last execution`.
 - No new skills, GPT, voice, notifications, calendar integration, external APIs, or storage format changes
 
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, local multi-step planning, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, persistent local notes, offline tasks, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, local multi-step planning, sequential local plan execution, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, persistent local notes, offline tasks, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -147,10 +162,10 @@ The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, notes, and tasks
-- `Planner` plus `SkillManager` for multi-step local notes, tasks, calculator, and conversation memory requests
+- `Planner`, `ExecutionPipeline`, and `SkillManager` for local notes, tasks, calculator, and conversation memory plan execution
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 83 tests.
+The current pytest collection is 92 tests.
 
 The current memory paths are:
 

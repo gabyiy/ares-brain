@@ -4,7 +4,7 @@ Last Updated: 2026-07-01
 
 Current Version
 
-ARES v1.9 - Planner and Reminder Scheduler Foundation
+ARES v1.10 - Execution Pipeline Foundation
 
 ---
 
@@ -74,6 +74,7 @@ New test coverage:
 - ConversationContextManager
 - IntentParser
 - Planner
+- ExecutionPipeline
 - ToolSelector structured intent routing
 - Text REPL profile recall flow
 
@@ -226,6 +227,30 @@ Planner behavior:
 - `interfaces.text_repl` supports `show plan` and `show steps`.
 - No new skills, GPT, voice, notifications, calendar integration, external APIs, or storage format changes were added.
 
+Execution Pipeline foundation has been added.
+
+New execution modules:
+
+- `core.ExecutionPipeline`
+- `core.ExecutionResult`
+- `core.StepResult`
+- `core.RollbackHook`
+
+Execution behavior:
+
+- Receives a `Plan` from Planner.
+- Executes each `PlanStep` sequentially.
+- Calls registered local skills through SkillManager and SkillRegistry.
+- Executes conversation memory steps through MemoryStore.
+- Stops safely on unrecoverable failures.
+- Continues after recoverable local tool failures when appropriate.
+- Records start time, end time, duration, success/failure, returned data, and error message for every step.
+- Publishes execution lifecycle events.
+- Emits standard execution logs through `ares.execution`.
+- Provides a no-op rollback hook interface for future reversible local actions.
+- `interfaces.text_repl` supports `show execution` and `show last execution`.
+- No new skills, GPT, voice, notifications, calendar integration, external APIs, or storage format changes were added.
+
 GitHub Actions CI has been added.
 
 CI behavior:
@@ -364,7 +389,7 @@ MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing s
 The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `NotesSkill`, `TasksSkill`, and `TimeDateSkill`.
 The REPL priority skill path currently covers profile memory recall, calculator arithmetic, note commands, and task commands.
 `SkillManager` parses text into `core.Intent` before `ToolSelector` selects a local skill.
-`ToolSelector` builds a `core.Plan` before selection, and `SkillManager` executes multi-step local plans when a plan has multiple executable actions.
+`ToolSelector` builds a `core.Plan` before selection, and `SkillManager` delegates executable plan steps to `core.ExecutionPipeline`.
 `SkillManager` records handled skill turns in `ConversationContextManager`.
 
 Skill Manager
@@ -419,7 +444,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 83 tests.
+- Current pytest collection: 92 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -429,13 +454,14 @@ Verification Notes
   - `py -m compileall core interfaces events memory skills scripts`
   - `py scripts\verify_phase2_events_memory.py`
 - GitHub Actions CI runs the same verification suite on Windows with Python 3.13 for `main` pushes and pull requests.
-- Latest checked GitHub Actions run on `main` completed successfully for commit `e37e5d4`.
+- GitHub Actions should be checked after push for the latest `main` commit.
 - Tool selection tests cover current TimeDate/MemoryRecall/Calculator/Notes/Tasks selection.
 - Calculator tests cover simple arithmetic, precedence, parentheses, decimals, bounded powers, unsafe input rejection, and the REPL routing path.
 - Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - ReminderScheduler tests cover tomorrow parsing, relative minutes/hours, clock time parsing, due task detection, upcoming task ordering, and invalid due text handling.
 - Planner tests cover single-step plans, two-step plans, mixed notes/calculator, mixed task/memory, invalid plans, ordering, serialization, ToolSelector plan attachment, SkillManager execution, and REPL plan display.
+- ExecutionPipeline tests cover single-step execution, multi-step execution, notes plus calculator, task plus memory, unrecoverable failure, recoverable partial failure, execution ordering, execution logging, rollback hooks, SkillManager integration, and REPL execution display.
 - Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
 - Intent parser tests cover intent detection, confidence values, entity extraction, ambiguous local phrasing, unknown intent, ToolSelector integration, SkillManager integration, live REPL parser use, and the REPL task path.
 - `git diff --check` passed after the automated test changes.
@@ -444,6 +470,7 @@ Verification Notes
 
 Latest Commits
 
+- `cee3841` Add execution pipeline for planner steps
 - `98d8ff0` Document multi-step planner foundation
 - `aaca6b4` Add local multi-step planner foundation
 - `5cf4a3e` Document reminder scheduler foundation

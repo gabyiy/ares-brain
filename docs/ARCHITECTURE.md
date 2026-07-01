@@ -18,13 +18,14 @@ Current System Flow
 12. `ToolSelector` asks `core.Planner` to build a local execution plan before skill selection.
 13. `ToolSelector` scores the structured intent against registered skill `intent_names`.
 14. Priority skills are selected before normal intents only when a skill opts in.
-15. `SkillManager` executes the plan when it contains multiple local actions.
-16. Normal intents run next.
-17. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
-18. Responses are published as events.
-19. `SkillManager` records handled skill turns in `ConversationContextManager`.
-20. The REPL stores each conversation turn in `MemoryStore`.
-21. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
+15. `SkillManager` delegates executable plans to `core.ExecutionPipeline`.
+16. `ExecutionPipeline` executes each `PlanStep` sequentially and records step results.
+17. Normal intents run next when no priority skill path handles the message.
+18. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
+19. Responses are published as events.
+20. `SkillManager` records handled skill turns in `ConversationContextManager`.
+21. The REPL stores each conversation turn in `MemoryStore`.
+22. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
 
 Event Bus
 
@@ -58,6 +59,13 @@ Current event examples:
 - `skill.plugin_registered`
 - `skill.detected`
 - `skill.response_generated`
+- `execution.started`
+- `execution.step_started`
+- `execution.step_completed`
+- `execution.step_failed`
+- `execution.rollback_requested`
+- `execution.rollback_failed`
+- `execution.completed`
 
 Intent
 
@@ -127,7 +135,38 @@ Planner boundaries:
 - Planner never executes skills.
 - Planner does not write memory, notes, or tasks.
 - Planner does not call GPT, voice, notifications, calendar APIs, or external APIs.
-- `SkillManager` is responsible for executing planner steps when a plan is executable.
+- `ExecutionPipeline` is responsible for executing planner steps when a plan is executable.
+
+ExecutionPipeline
+
+`core.ExecutionPipeline` executes plans produced by `core.Planner`.
+
+Current execution objects:
+
+- `StepResult`
+- `ExecutionResult`
+- `RollbackHook`
+- `ExecutionPipeline`
+
+Current responsibilities:
+
+- Receive a `Plan`.
+- Execute each `PlanStep` in order.
+- Resolve local skill targets through `SkillManager` and `SkillRegistry`.
+- Execute conversation memory steps through `MemoryStore`.
+- Stop safely on unrecoverable failures such as missing skills or raised exceptions.
+- Continue after recoverable skill-level failures, such as safe local tool rejection.
+- Record start time, end time, duration, success/failure, returned data, and error messages for every step.
+- Publish execution lifecycle events.
+- Emit standard execution logs through the `ares.execution` logger.
+- Expose a no-op `RollbackHook` extension point for future reversible local actions.
+
+Execution boundaries:
+
+- ExecutionPipeline does not plan.
+- ExecutionPipeline does not create new skills.
+- ExecutionPipeline does not call GPT, voice, notifications, calendar APIs, or external APIs.
+- Rollback hooks are defined, but no real rollback behavior is implemented yet.
 
 Intent Router
 
@@ -321,7 +360,7 @@ Current responsibilities:
 - Register skill plugins.
 - Parse user text into `Intent` with `IntentParser`.
 - Select the best matching local skill through `ToolSelector`.
-- Execute multi-step local plans built by `Planner`.
+- Delegate executable local plans to `ExecutionPipeline`.
 - Execute a skill with `SkillContext`.
 - Record each handled skill interaction in `ConversationContextManager`.
 - Publish skill lifecycle events.
@@ -384,6 +423,7 @@ Current responsibilities:
 - Route parser-recognized local intents through `SkillManager` and `ToolSelector`.
 - Preserve unknown input safety when IntentParser returns `unknown`.
 - Show the last plan with `show plan` or `show steps`.
+- Show the last execution result with `show execution` or `show last execution`.
 - Share one in-memory conversation context with `SkillManager` for handled skill turns.
 - Print the final ARES response.
 
@@ -401,6 +441,7 @@ Voice should connect at the interface layer, beside the text REPL. It should reu
 - `TasksStore`
 - `ConversationContextManager`
 - `SkillManager`
+- `ExecutionPipeline`
 
 Voice must not bypass the existing routing, memory, or verification rules.
 
@@ -431,5 +472,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 83 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ConversationContextManager`, `memory.TasksStore`, `memory.ReminderScheduler`, and `skills.builtin.TasksSkill`.
+- Pytest collection: 92 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.TasksStore`, `memory.ReminderScheduler`, and `skills.builtin.TasksSkill`.
