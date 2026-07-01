@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from core.Intent import Intent
 from core.Planner import Plan, PlanStep
+from core.ToolAdapter import ToolRequest
 
 
 def _utc_now() -> str:
@@ -115,6 +116,7 @@ class ExecutionPipeline:
         skill_resolver: Callable[[str], Any],
         event_bus: Any = None,
         memory_store: Any = None,
+        tool_adapter_registry: Any = None,
         rollback_hook: Optional[RollbackHook] = None,
         logger: Optional[logging.Logger] = None,
         context_builder: Optional[Callable[[Any, Intent], Any]] = None,
@@ -122,6 +124,7 @@ class ExecutionPipeline:
         self.skill_resolver = skill_resolver
         self.event_bus = event_bus
         self.memory_store = memory_store
+        self.tool_adapter_registry = tool_adapter_registry
         self.rollback_hook = rollback_hook or RollbackHook()
         self.logger = logger or logging.getLogger("ares.execution")
         self.context_builder = context_builder or _context_with_intent
@@ -191,6 +194,9 @@ class ExecutionPipeline:
 
         if step.target == "conversation_memory":
             return self._execute_memory_step(step, context, start_time, started_at)
+
+        if step.target == "tool_adapter":
+            return self._execute_tool_adapter_step(step, context, start_time, started_at)
 
         skill = self.skill_resolver(step.target)
         if not skill:
@@ -304,6 +310,75 @@ class ExecutionPipeline:
             returned_data=returned_data,
             error_message="",
             recoverable=True,
+        )
+
+    def _execute_tool_adapter_step(
+        self,
+        step: PlanStep,
+        context: Any,
+        start_time: str,
+        started_at: float,
+    ) -> StepResult:
+        registry = getattr(context, "tool_adapter_registry", None) or self.tool_adapter_registry
+        if not registry:
+            return self._finish_step(
+                step=step,
+                start_time=start_time,
+                started_at=started_at,
+                success=False,
+                returned_data={},
+                error_message="Tool adapter registry is not available.",
+                recoverable=False,
+            )
+
+        request = ToolRequest(
+            adapter_name=str(step.entities.get("adapter_name") or step.action or "").strip(),
+            capability=str(step.entities.get("capability") or "").strip(),
+            query=str(step.entities.get("query") or "").strip(),
+            parameters=dict(step.entities.get("parameters") or {}),
+            raw_text=step.input_text,
+        )
+        if not request.adapter_name:
+            return self._finish_step(
+                step=step,
+                start_time=start_time,
+                started_at=started_at,
+                success=False,
+                returned_data={},
+                error_message="Missing tool adapter name.",
+                recoverable=True,
+            )
+        if not request.capability:
+            return self._finish_step(
+                step=step,
+                start_time=start_time,
+                started_at=started_at,
+                success=False,
+                returned_data={},
+                error_message="Missing tool adapter capability.",
+                recoverable=True,
+            )
+
+        response = registry.execute(request)
+        returned_data = {
+            "text": response.text,
+            "skill": "tool_adapter",
+            "data": dict(response.data),
+            "metadata": {
+                **dict(response.metadata),
+                "adapter_name": response.adapter_name,
+                "capability": response.capability,
+                "request": request.to_dict(),
+            },
+        }
+        return self._finish_step(
+            step=step,
+            start_time=start_time,
+            started_at=started_at,
+            success=response.success,
+            returned_data=returned_data,
+            error_message=response.error_message,
+            recoverable=not bool(response.metadata.get("unrecoverable")),
         )
 
     def _finish_step(

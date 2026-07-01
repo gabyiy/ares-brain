@@ -7,6 +7,14 @@ from core.ExecutionPipeline import ExecutionPipeline, ExecutionResult, RollbackH
 from core.Intent import Intent
 from core.IntentParser import IntentParser
 from core.Planner import Plan, Planner, PlanStep
+from core.ToolAdapter import (
+    MockMarketAdapter,
+    MockWeatherAdapter,
+    ToolAdapter,
+    ToolAdapterRegistry,
+    ToolRequest,
+    ToolResponse,
+)
 from core.ToolChain import MAX_CHAIN_DEPTH, ToolChain, ToolChainResult, ToolChainTraceStep
 
 __all__ = [
@@ -21,9 +29,15 @@ __all__ = [
     "PlanStep",
     "RollbackHook",
     "StepResult",
+    "MockMarketAdapter",
+    "MockWeatherAdapter",
     "MAX_CHAIN_DEPTH",
+    "ToolAdapter",
+    "ToolAdapterRegistry",
     "ToolChain",
     "ToolChainResult",
     "ToolChainTraceStep",
+    "ToolRequest",
+    "ToolResponse",
     "get_global_conversation_context",
 ]

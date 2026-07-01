@@ -70,6 +70,9 @@ class Plan:
 class Planner:
     """Builds deterministic execution plans without executing any skills."""
 
+    def __init__(self, tool_adapter_registry=None):
+        self.tool_adapter_registry = tool_adapter_registry
+
     def plan(self, intent: Intent) -> Plan:
         raw_text = (intent.raw_text or "").strip()
         if not raw_text:
