@@ -91,7 +91,11 @@ class ToolSelector:
             if not normalized_trigger:
                 continue
 
-            score, reason = self._score_trigger(normalized_text, normalized_trigger)
+            score, reason = self._score_trigger(
+                normalized_text,
+                normalized_trigger,
+                allow_token_overlap=intent.intent_name != "unknown",
+            )
             if score > best_score:
                 best_score = score
                 best_reason = reason
@@ -105,13 +109,21 @@ class ToolSelector:
         score = min(1.0, best_score + self._priority(skill))
         return score, best_reason
 
-    def _score_trigger(self, normalized_text: str, normalized_trigger: str):
+    def _score_trigger(
+        self,
+        normalized_text: str,
+        normalized_trigger: str,
+        allow_token_overlap: bool = True,
+    ):
         if normalized_text == normalized_trigger:
             return 1.0, "exact trigger match"
 
         if normalized_trigger in normalized_text:
             length_bonus = min(0.15, len(normalized_trigger) / 100.0)
             return 0.75 + length_bonus, "trigger phrase contained in text"
+
+        if not allow_token_overlap:
+            return 0.0, "token overlap disabled for unknown intent"
 
         text_tokens = set(self._tokens(normalized_text))
         trigger_tokens = set(self._tokens(normalized_trigger))

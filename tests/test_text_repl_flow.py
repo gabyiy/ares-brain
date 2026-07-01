@@ -1,5 +1,6 @@
 import io
 
+from core import IntentParser
 import memory.v1 as memory_v1
 from events import get_global_bus
 from interfaces import text_repl
@@ -79,6 +80,45 @@ def test_text_repl_routes_calculator_skill_before_generic_knowledge(monkeypatch,
     assert "response_generated" in events
 
 
+def test_text_repl_uses_intent_parser_for_live_skill_flow(monkeypatch, tmp_path, capsys):
+    parsed_intents = []
+
+    class RecordingIntentParser(IntentParser):
+        def parse(self, text: str):
+            intent = super().parse(text)
+            parsed_intents.append(intent)
+            return intent
+
+    monkeypatch.setattr("skills.manager.IntentParser", RecordingIntentParser)
+    monkeypatch.setattr(memory_v1, "SHORT_MEMORY_FILE", tmp_path / "short.json")
+    monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
+    monkeypatch.setenv("ARES_USER_PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setenv("ARES_NOTES_PATH", str(tmp_path / "notes.json"))
+    monkeypatch.setenv("ARES_TASKS_PATH", str(tmp_path / "tasks.json"))
+    monkeypatch.setattr("sys.stdin", io.StringIO("hello\nwhat is 2 + 3 * 4\nquit\n"))
+
+    event_bus = get_global_bus()
+    event_bus.clear_history()
+
+    text_repl.main()
+
+    output = capsys.readouterr().out
+    detected = [
+        event.payload
+        for event in event_bus.history("skill.detected")
+        if event.payload.get("skill") == "calculator"
+    ]
+
+    assert "Result: 14" in output
+    assert any(
+        intent.raw_text == "what is 2 + 3 * 4" and intent.intent_name == "calculate"
+        for intent in parsed_intents
+    )
+    assert detected
+    assert detected[-1]["intent"] == "calculate"
+    assert detected[-1]["reason"] == "structured intent match: calculate"
+
+
 def test_text_repl_routes_notes_skill_and_persists_note(monkeypatch, tmp_path, capsys):
     notes_path = tmp_path / "notes.json"
     monkeypatch.setattr(memory_v1, "SHORT_MEMORY_FILE", tmp_path / "short.json")
@@ -146,3 +186,27 @@ def test_text_repl_routes_tasks_skill_and_persists_task(monkeypatch, tmp_path, c
     assert "buy milk" in output
     assert "due tomorrow" in output
     assert detected
+
+
+def test_text_repl_unknown_intent_stays_safe(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(memory_v1, "SHORT_MEMORY_FILE", tmp_path / "short.json")
+    monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
+    monkeypatch.setenv("ARES_USER_PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setenv("ARES_NOTES_PATH", str(tmp_path / "notes.json"))
+    monkeypatch.setenv("ARES_TASKS_PATH", str(tmp_path / "tasks.json"))
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO("hello\nthe rover is parked beside the desk\nquit\n"),
+    )
+
+    event_bus = get_global_bus()
+    event_bus.clear_history()
+
+    text_repl.main()
+
+    output = capsys.readouterr().out
+    unmatched = event_bus.history("intent.unmatched")
+
+    assert "I'm not sure how to answer that yet." in output
+    assert unmatched
+    assert unmatched[-1].payload["text"] == "the rover is parked beside the desk"

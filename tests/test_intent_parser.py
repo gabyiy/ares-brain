@@ -126,16 +126,25 @@ def test_tool_selector_uses_structured_intents():
 
 def test_skill_manager_routes_structured_task_intent(tmp_path):
     tasks_store = TasksStore(path=tmp_path / "tasks.json", event_bus=EventBus())
+    event_bus = EventBus(raise_handler_errors=True)
     manager = SkillManager(
-        event_bus=EventBus(raise_handler_errors=True),
+        event_bus=event_bus,
         tasks_store=tasks_store,
     )
     manager.register(TasksSkill())
 
     response = manager.handle("remember buy milk tomorrow", run_before_intents=True)
     task = tasks_store.list()[0]
+    detected = event_bus.history("skill.detected")[-1]
 
     assert response.skill == "tasks"
     assert response.text == f"Saved task {task.id}: buy milk (due tomorrow)"
     assert task.text == "buy milk"
     assert task.due == "tomorrow"
+    assert detected.payload["intent"] == "task"
+    assert detected.payload["entities"] == {
+        "action": "add",
+        "text": "buy milk",
+        "due": "tomorrow",
+    }
+    assert detected.payload["reason"] == "structured intent match: task"
