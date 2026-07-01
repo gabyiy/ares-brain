@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.8 - ReminderScheduler Foundation
+ARES v1.9 - Multi-Step Task Planner Foundation
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` for local multi-step execution plans, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 ARES
 │
@@ -131,6 +131,7 @@ Implemented Features
 - Skill registry, skill manager, and skill plugin foundation
 - Tool selector for best local skill selection
 - Structured intent parser for deterministic local intent/entity extraction
+- Multi-step planner for local notes, tasks, calculator, and conversation memory steps
 - Built-in time/date skill
 - Built-in memory recall skill for saved profile facts
 - Built-in calculator skill for safe local arithmetic
@@ -139,7 +140,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for core Phase 2-8 modules
+- Pytest automated coverage for core Phase 2-10 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -181,7 +182,7 @@ Run Text REPL
 py interfaces\text_repl.py
 ```
 
-Say `hello` or `hello ares` to wake ARES, then type a supported request.
+Say `hello` or `hello ares` to wake ARES, then type a supported request. Use `show plan` or `show steps` to display the last local execution plan.
 
 Latest Architecture Status
 
@@ -192,7 +193,9 @@ Latest Architecture Status
 - NotesSkill runs as a priority local skill for note commands.
 - TasksSkill runs as a priority local skill for task/reminder commands.
 - SkillManager parses user text into a structured `Intent` before ToolSelector runs.
+- ToolSelector builds a `Plan` before selection so multi-step requests can be inspected before execution.
 - ToolSelector first scores matching `intent_names`, then falls back to legacy triggers only for unknown intents.
+- SkillManager executes planner steps when a request requires multiple local actions.
 - SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
 - IntentParser tests cover ambiguous local phrases such as `remember to buy milk`, note reminders, birthday recall, task actions, note actions, calculator requests, and unknown text.
 - REPL integration tests confirm live text input reaches IntentParser before SkillManager selects local skills.
@@ -200,6 +203,7 @@ Latest Architecture Status
 - SkillManager uses ToolSelector confidence scoring instead of first-match-only selection.
 - SkillManager records handled skill turns into the in-memory conversation context.
 - Conversation history, user profile facts, notes, and tasks are stored separately.
+- `show plan` and `show steps` in the text REPL display the last execution plan.
 - ReminderScheduler reads existing task due text and can identify due or upcoming tasks without changing `data/tasks.json`.
 - Supported due phrases include `today`, `tomorrow`, `next week`, `in 10 minutes`, `in 2 hours`, and `at 18:00`.
 - ConversationContextManager keeps only the last 20 skill turns in RAM and does not write to disk.
@@ -348,21 +352,32 @@ Phase 9 ReminderScheduler Foundation
 - Invalid due text is ignored safely.
 - No notifications, calendar integration, voice, GPT, or storage format changes were added.
 
-Phase 10
+Phase 10 Multi-Step Task Planner Foundation
+
+- `core.PlanStep` stores one ordered executable step.
+- `core.Plan` stores ordered steps plus planning errors.
+- `core.Planner` converts an `Intent` into a local execution plan without executing skills.
+- Supported planner targets are notes, tasks, calculator, and conversation memory.
+- ToolSelector attaches plans before SkillManager executes anything.
+- SkillManager can execute multi-step local plans and returns combined results.
+- The text REPL supports `show plan` and `show steps`.
+- No new skills, GPT, voice, notifications, calendar integration, or external APIs were added.
+
+Phase 11
 
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 11
+Phase 12
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 12
+Phase 13
 
 - Robotics
 - ROS2

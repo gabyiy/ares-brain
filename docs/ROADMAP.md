@@ -121,9 +121,23 @@ Phase 8: Structured Intent Parser
 - Unknown structured intents preserve safe fallback behavior and avoid loose token-overlap skill routing
 - No AI, GPT, embeddings, voice, or external API integration
 
+Phase 9: Multi-Step Task Planner Foundation
+
+- `core.PlanStep`
+- `core.Plan`
+- `core.Planner`
+- Planner receives an `Intent` and produces ordered executable steps.
+- Supported planner targets: notes, tasks, calculator, and conversation memory.
+- Planner skips impossible steps and returns errors cleanly.
+- Planner serializes plans for events, tests, and REPL display.
+- ToolSelector builds a plan before returning a skill selection.
+- SkillManager executes multi-step local plans; Planner itself never executes skills.
+- Text REPL supports `show plan` and `show steps`.
+- No new skills, GPT, voice, notifications, calendar integration, external APIs, or storage format changes
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, persistent local notes, offline tasks, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, local multi-step planning, deterministic skills, event publishing, conversation memory, user profile memory, local calculator arithmetic, persistent local notes, offline tasks, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -133,6 +147,7 @@ The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, notes, and tasks
+- `Planner` plus `SkillManager` for multi-step local notes, tasks, calculator, and conversation memory requests
 - In-memory conversation context for recent handled skill turns
 
 The current memory paths are:

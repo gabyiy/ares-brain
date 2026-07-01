@@ -15,14 +15,16 @@ Current System Flow
 9. User input is sent to `IntentRouter`.
 10. `IntentRouter` publishes input lifecycle events.
 11. When a skill path is checked, `SkillManager` parses user text into `core.Intent` with `core.IntentParser`.
-12. `ToolSelector` scores the structured intent against registered skill `intent_names`.
-13. Priority skills are selected before normal intents only when a skill opts in.
-14. Normal intents run next.
-15. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
-16. Responses are published as events.
-17. `SkillManager` records handled skill turns in `ConversationContextManager`.
-18. The REPL stores each conversation turn in `MemoryStore`.
-19. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
+12. `ToolSelector` asks `core.Planner` to build a local execution plan before skill selection.
+13. `ToolSelector` scores the structured intent against registered skill `intent_names`.
+14. Priority skills are selected before normal intents only when a skill opts in.
+15. `SkillManager` executes the plan when it contains multiple local actions.
+16. Normal intents run next.
+17. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
+18. Responses are published as events.
+19. `SkillManager` records handled skill turns in `ConversationContextManager`.
+20. The REPL stores each conversation turn in `MemoryStore`.
+21. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
 
 Event Bus
 
@@ -94,6 +96,38 @@ Current entity extraction examples:
 - `what did I tell you about my job` becomes a `memory_recall` intent with a recall topic.
 
 The parser is deterministic and offline. It does not use AI, GPT, embeddings, external APIs, or a broad regex-only dispatcher.
+
+Planner
+
+`core.Planner` converts structured intents into local execution plans.
+
+Current planning objects:
+
+- `PlanStep`
+- `Plan`
+- `Planner`
+
+Current responsibilities:
+
+- Receive an `Intent`.
+- Produce ordered `PlanStep` entries.
+- Estimate execution order through the step `order` field.
+- Skip impossible steps and return planning errors.
+- Serialize plans and steps for events, tests, and REPL display.
+
+Current supported planner targets:
+
+- `notes`
+- `tasks`
+- `calculator`
+- `conversation_memory`
+
+Planner boundaries:
+
+- Planner never executes skills.
+- Planner does not write memory, notes, or tasks.
+- Planner does not call GPT, voice, notifications, calendar APIs, or external APIs.
+- `SkillManager` is responsible for executing planner steps when a plan is executable.
 
 Intent Router
 
@@ -251,6 +285,8 @@ ToolSelector
 
 `skills.ToolSelector` chooses the best local skill for a user text request.
 
+ToolSelector also builds and attaches a `Plan` before returning a selection. This keeps planning visible before execution while preserving the existing skill scoring rules.
+
 Current scoring rules:
 
 - Matching structured intent name gets priority over trigger scoring.
@@ -285,6 +321,7 @@ Current responsibilities:
 - Register skill plugins.
 - Parse user text into `Intent` with `IntentParser`.
 - Select the best matching local skill through `ToolSelector`.
+- Execute multi-step local plans built by `Planner`.
 - Execute a skill with `SkillContext`.
 - Record each handled skill interaction in `ConversationContextManager`.
 - Publish skill lifecycle events.
@@ -346,6 +383,7 @@ Current responsibilities:
 - Route task commands to `TasksSkill` and persist tasks in `TasksStore`.
 - Route parser-recognized local intents through `SkillManager` and `ToolSelector`.
 - Preserve unknown input safety when IntentParser returns `unknown`.
+- Show the last plan with `show plan` or `show steps`.
 - Share one in-memory conversation context with `SkillManager` for handled skill turns.
 - Print the final ARES response.
 

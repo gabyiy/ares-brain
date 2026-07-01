@@ -73,6 +73,7 @@ New test coverage:
 - ReminderScheduler
 - ConversationContextManager
 - IntentParser
+- Planner
 - ToolSelector structured intent routing
 - Text REPL profile recall flow
 
@@ -203,6 +204,27 @@ Selection behavior:
 - `can_handle` fallback remains available for unknown intents and compatibility.
 - `SkillContext.metadata` carries the parsed `intent` and extracted `entities`.
 - `TasksSkill` consumes parser-derived task entities so `remember buy milk tomorrow` can route through the REPL as an offline task.
+
+Multi-step Planner foundation has been added.
+
+New planner modules:
+
+- `core.PlanStep`
+- `core.Plan`
+- `core.Planner`
+
+Planner behavior:
+
+- Receives an `Intent`.
+- Produces ordered executable steps.
+- Supports notes, tasks, calculator, and conversation memory targets.
+- Skips impossible steps and returns planning errors cleanly.
+- Serializes plans and steps for tests, events, and REPL display.
+- Planner never executes skills.
+- ToolSelector builds a plan before returning a skill selection.
+- SkillManager executes multi-step local plans when needed.
+- `interfaces.text_repl` supports `show plan` and `show steps`.
+- No new skills, GPT, voice, notifications, calendar integration, external APIs, or storage format changes were added.
 
 GitHub Actions CI has been added.
 
@@ -342,6 +364,7 @@ MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing s
 The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `NotesSkill`, `TasksSkill`, and `TimeDateSkill`.
 The REPL priority skill path currently covers profile memory recall, calculator arithmetic, note commands, and task commands.
 `SkillManager` parses text into `core.Intent` before `ToolSelector` selects a local skill.
+`ToolSelector` builds a `core.Plan` before selection, and `SkillManager` executes multi-step local plans when a plan has multiple executable actions.
 `SkillManager` records handled skill turns in `ConversationContextManager`.
 
 Skill Manager
@@ -411,6 +434,7 @@ Verification Notes
 - Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - ReminderScheduler tests cover tomorrow parsing, relative minutes/hours, clock time parsing, due task detection, upcoming task ordering, and invalid due text handling.
+- Planner tests cover single-step plans, two-step plans, mixed notes/calculator, mixed task/memory, invalid plans, ordering, serialization, ToolSelector plan attachment, SkillManager execution, and REPL plan display.
 - Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
 - Intent parser tests cover intent detection, confidence values, entity extraction, ambiguous local phrasing, unknown intent, ToolSelector integration, SkillManager integration, live REPL parser use, and the REPL task path.
 - `git diff --check` passed after the automated test changes.
@@ -429,6 +453,7 @@ Latest Commits
 - Persistent NotesSkill with storage and routing tests
 - Persistent TasksSkill with storage and routing tests
 - `0ba1c90` Add reminder scheduler foundation
+- `aaca6b4` Add local multi-step planner foundation
 - In-memory ConversationContextManager with SkillManager and REPL tests
 - GitHub Actions CI for local verification commands
 - `f2e7a6b` Add structured intent parser
