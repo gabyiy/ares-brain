@@ -188,6 +188,29 @@ def test_text_repl_routes_tasks_skill_and_persists_task(monkeypatch, tmp_path, c
     assert detected
 
 
+def test_text_repl_shows_last_plan(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(memory_v1, "SHORT_MEMORY_FILE", tmp_path / "short.json")
+    monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
+    monkeypatch.setenv("ARES_USER_PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setenv("ARES_NOTES_PATH", str(tmp_path / "notes.json"))
+    monkeypatch.setenv("ARES_TASKS_PATH", str(tmp_path / "tasks.json"))
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO("hello\ncalculate 2 + 2\nshow plan\nquit\n"),
+    )
+
+    event_bus = get_global_bus()
+    event_bus.clear_history()
+
+    text_repl.main()
+
+    output = capsys.readouterr().out
+
+    assert "Result: 4" in output
+    assert "Execution plan:" in output
+    assert "1. calculator.calculate - ready" in output
+
+
 def test_text_repl_unknown_intent_stays_safe(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(memory_v1, "SHORT_MEMORY_FILE", tmp_path / "short.json")
     monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")

@@ -4,6 +4,7 @@ from typing import Iterable, List, Optional
 
 from core.Intent import Intent
 from core.IntentParser import IntentParser
+from core.Planner import Plan, Planner
 from skills.base import Skill
 
 
@@ -12,6 +13,7 @@ class ToolSelection:
     skill: Skill
     confidence: float
     reason: str
+    plan: Plan
 
 
 class ToolSelector:
@@ -26,6 +28,8 @@ class ToolSelector:
     def __init__(self, min_confidence: float = 0.25):
         self.min_confidence = float(min_confidence)
         self.intent_parser = IntentParser()
+        self.planner = Planner()
+        self.last_plan = None
 
     def select(
         self,
@@ -34,6 +38,8 @@ class ToolSelector:
         run_before_intents: Optional[bool] = None,
     ) -> Optional[ToolSelection]:
         intent = self._coerce_intent(text)
+        plan = self.planner.plan(intent)
+        self.last_plan = plan
         candidates = []
         for index, skill in enumerate(skills):
             if run_before_intents is not None:
@@ -48,7 +54,7 @@ class ToolSelector:
             return None
 
         confidence, _priority, _index, reason, skill = max(candidates)
-        return ToolSelection(skill=skill, confidence=confidence, reason=reason)
+        return ToolSelection(skill=skill, confidence=confidence, reason=reason, plan=plan)
 
     def matching(
         self,
@@ -57,6 +63,8 @@ class ToolSelector:
         run_before_intents: Optional[bool] = None,
     ) -> List[ToolSelection]:
         intent = self._coerce_intent(text)
+        plan = self.planner.plan(intent)
+        self.last_plan = plan
         matches = []
         for skill in skills:
             if run_before_intents is not None:
@@ -65,7 +73,7 @@ class ToolSelector:
 
             confidence, reason = self.score(intent, skill)
             if confidence >= self.min_confidence:
-                matches.append(ToolSelection(skill=skill, confidence=confidence, reason=reason))
+                matches.append(ToolSelection(skill=skill, confidence=confidence, reason=reason, plan=plan))
 
         return sorted(
             matches,

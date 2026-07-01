@@ -95,6 +95,10 @@ def main():
             print_and_record(memory_store, profile_store, user, response)
             continue
 
+        if low in ("show plan", "show steps"):
+            print_and_record(memory_store, profile_store, user, skill_manager.format_last_plan())
+            continue
+
         try:
             print_and_record(memory_store, profile_store, user, router.handle(user))
         except Exception as e:
