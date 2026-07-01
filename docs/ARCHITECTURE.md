@@ -151,6 +151,7 @@ Planner boundaries:
 - Planner does not write memory, goals, notes, or tasks.
 - Planner does not call GPT, voice, notifications, calendar APIs, or external APIs.
 - `ToolChain` validates compatible planner steps before execution.
+- Planner can hold a `ToolAdapterRegistry` for future adapter-aware planning, but it does not create real external API calls.
 
 ToolChain
 
@@ -188,6 +189,43 @@ ToolChain boundaries:
 - ToolChain does not call GPT, voice, notifications, calendar APIs, weather, stocks, or external APIs.
 - ToolChain does not change storage formats.
 
+ToolAdapter
+
+`core.ToolAdapter` defines the future adapter contract for external tools without enabling real external integrations yet.
+
+Current adapter objects:
+
+- `ToolRequest`
+- `ToolResponse`
+- `ToolAdapter`
+- `ToolAdapterRegistry`
+- `MockWeatherAdapter`
+- `MockMarketAdapter`
+
+Current metadata fields:
+
+- `name`
+- `description`
+- `capabilities`
+- `requires_network`
+- `requires_auth`
+
+Current responsibilities:
+
+- Register local adapters.
+- Look up adapters by name.
+- Find adapters by capability.
+- Return clear missing-adapter and unsupported-capability responses.
+- Provide offline mock weather and market responses for tests.
+
+Current boundaries:
+
+- Mock adapters do not call real APIs.
+- Mock adapters do not require network.
+- Mock adapters do not require authentication.
+- No API keys are read or stored.
+- No GPT, voice, weather skill, stock skill, calendar integration, or web adapter has been added.
+
 ExecutionPipeline
 
 `core.ExecutionPipeline` executes plans produced by `core.Planner`.
@@ -205,6 +243,7 @@ Current responsibilities:
 - Execute each `PlanStep` in order.
 - Resolve local skill targets through `SkillManager` and `SkillRegistry`.
 - Execute conversation memory steps through `MemoryStore`.
+- Execute explicit `tool_adapter` steps through an injected `ToolAdapterRegistry`.
 - Stop safely on unrecoverable failures such as missing skills or raised exceptions.
 - Continue after recoverable skill-level failures, such as safe local tool rejection.
 - Record start time, end time, duration, success/failure, returned data, and error messages for every step.
@@ -227,6 +266,7 @@ Execution boundaries:
 - ExecutionPipeline does not plan.
 - ExecutionPipeline does not create new skills.
 - ExecutionPipeline does not call GPT, voice, notifications, calendar APIs, or external APIs.
+- ExecutionPipeline does not choose external providers; it only executes explicit adapter steps already present in a plan.
 - Rollback hooks are defined, but no real rollback behavior is implemented yet.
 
 Intent Router
@@ -564,5 +604,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 122 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, and `skills.builtin.TasksSkill`.
+- Pytest collection: 130 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ToolAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, and `skills.builtin.TasksSkill`.

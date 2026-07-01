@@ -4,7 +4,7 @@ Last Updated: 2026-07-01
 
 Current Version
 
-ARES v1.12 - Long-Term Goal Management Foundation
+ARES v1.13 - External Tool Adapter Foundation
 
 ---
 
@@ -78,6 +78,7 @@ New test coverage:
 - Planner
 - ExecutionPipeline
 - ToolChain
+- ToolAdapter
 - ToolSelector structured intent routing
 - Text REPL profile recall flow
 
@@ -303,6 +304,28 @@ Goals behavior:
 - Tests cover GoalsStore persistence, GoalsSkill commands, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and persistence after reload.
 - No GPT, autonomous background actions, notifications, external APIs, voice, weather, stocks, or calendar integration were added.
 
+External Tool Adapter foundation has been added.
+
+New adapter modules:
+
+- `core.ToolAdapter`
+- `core.ToolRequest`
+- `core.ToolResponse`
+- `core.ToolAdapterRegistry`
+- `core.MockWeatherAdapter`
+- `core.MockMarketAdapter`
+
+ToolAdapter behavior:
+
+- Registers and looks up local adapters by name.
+- Finds adapters by capability.
+- Exposes adapter metadata: name, description, capabilities, `requires_network`, and `requires_auth`.
+- Returns clear missing-adapter and unsupported-capability responses.
+- Provides offline mock weather and market adapters for tests only.
+- Planner accepts an optional ToolAdapterRegistry for future adapter-aware planning.
+- ExecutionPipeline can execute explicit `tool_adapter` PlanSteps through an injected registry.
+- No real APIs, API keys, GPT, voice, weather skill, stock skill, calendar integration, web adapter, or network calls were added.
+
 GitHub Actions CI has been added.
 
 CI behavior:
@@ -450,6 +473,7 @@ The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSk
 The REPL priority skill path currently covers profile memory recall, calculator arithmetic, goal commands, note commands, and task commands.
 `SkillManager` parses text into `core.Intent` before `ToolSelector` selects a local skill.
 `ToolSelector` builds a `core.Plan` before selection, `SkillManager` validates executable plan steps through `core.ToolChain`, and accepted chains execute through `core.ExecutionPipeline`.
+`ExecutionPipeline` can execute explicit `tool_adapter` PlanSteps through `core.ToolAdapterRegistry`; no live assistant path creates those steps yet.
 `SkillManager` records handled skill turns in `ConversationContextManager`.
 
 Skill Manager
@@ -474,12 +498,12 @@ Text REPL
 
 Immediate Next Milestone
 
-External tool adapter interface decision.
+Weather skill design on top of the adapter contract.
 
 Next technical choices:
 
 - Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
-- Decide how future external tools will plug in without bypassing deterministic local skills.
+- Design the first weather skill without bypassing deterministic local skills or adapter metadata.
 - Keep voice, GPT, embeddings, external weather/stocks/calendar APIs, real scheduling, notifications, and Raspberry Pi deployment out of scope until explicitly approved.
 - Connect selected daily reflection scripts and future providers to MemoryStore v1 only after the memory contract is documented.
 
@@ -487,25 +511,24 @@ Next technical choices:
 
 Future Roadmap
 
-1. External tool adapter interface
-2. Weather skill
-3. Calendar skill
-4. Stock/market skill
-5. GPT fallback integration
-6. Voice interface
-7. Raspberry Pi deployment
-8. Robot body / sensors
-9. Vision
-10. Robotics
-11. Jetson Orin migration
-12. Autonomous ARES
+1. Weather skill
+2. Calendar skill
+3. Stock/market skill
+4. GPT fallback integration
+5. Voice interface
+6. Raspberry Pi deployment
+7. Robot body / sensors
+8. Vision
+9. Robotics
+10. Jetson Orin migration
+11. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 122 tests.
+- Current pytest collection: 130 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -521,6 +544,7 @@ Verification Notes
 - Notes tests cover add, list, search, delete, duplicate note text, empty note rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
+- ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
 - ReminderScheduler tests cover tomorrow parsing, relative minutes/hours, clock time parsing, due task detection, upcoming task ordering, and invalid due text handling.
 - Planner tests cover single-step plans, two-step plans, mixed notes/calculator, mixed task/memory, goal steps, invalid plans, ordering, serialization, ToolSelector plan attachment, SkillManager execution, and REPL plan display.
 - ExecutionPipeline tests cover single-step execution, multi-step execution, notes plus calculator, task plus memory, unrecoverable failure, recoverable partial failure, execution ordering, execution logging, rollback hooks, SkillManager integration, REPL execution display, live REPL multi-step planning, live REPL pipeline execution, live REPL partial failure reporting, and live-path component usage.
@@ -533,6 +557,7 @@ Verification Notes
 
 Latest Commits
 
+- `8678a16` Add external tool adapter foundation
 - `bc5a4e7` Deepen goals live path integration tests
 - `4e5ec44` Add local long-term goal management
 - `5bad0d5` Add local tool chaining foundation
@@ -551,7 +576,7 @@ Latest Commits
 
 Next Planned Step
 
-- Design the external tool adapter interface.
+- Design the first Weather skill on top of the adapter contract.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not add weather, stocks, calendar, GPT, embeddings, voice, vision, scheduling, or notifications yet.

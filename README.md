@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.12 - Long-Term Goal Management Foundation
+ARES v1.13 - External Tool Adapter Foundation
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` for local multi-step execution plans, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` for local multi-step execution plans, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution, `core.ToolAdapter` for future external-tool adapters, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 ARES
 │
@@ -89,6 +89,7 @@ Completed
 - Structured intent parser and `Intent` object
 - Execution pipeline for planner steps
 - Tool chaining for bounded local multi-step requests
+- External tool adapter interface
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -144,6 +145,7 @@ Implemented Features
 - Multi-step planner for local goals, notes, tasks, calculator, and conversation memory steps
 - Tool chaining with max depth, loop prevention, execution trace, and chain history
 - Execution pipeline for ordered plan step execution, execution results, logging, and rollback hooks
+- External ToolAdapter foundation with `ToolRequest`, `ToolResponse`, `ToolAdapterRegistry`, and offline mock weather/market adapters
 - Built-in time/date skill
 - Built-in memory recall skill for saved profile facts
 - Built-in calculator skill for safe local arithmetic
@@ -153,7 +155,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 122 tests across core Phase 2-13 modules
+- Pytest automated coverage for 130 tests across core Phase 2-14 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -172,7 +174,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `122 tests`.
+Current pytest collection: `130 tests`.
 
 Continuous Integration
 
@@ -216,6 +218,9 @@ Latest Architecture Status
 - ToolChain enforces max chain depth 5, prevents repeated-step loops, and records chain trace/history.
 - ExecutionPipeline executes plan steps sequentially and records `StepResult` and `ExecutionResult` details.
 - ExecutionPipeline emits execution events and standard logs for start, step completion, recoverable failure, unrecoverable failure, rollback, and completion.
+- ToolAdapter defines future external-tool contracts with adapter metadata, requests, responses, and registry lookup.
+- MockWeatherAdapter and MockMarketAdapter are offline-only adapters that do not require network, auth, API keys, GPT, or voice.
+- Planner can hold a ToolAdapterRegistry for future adapter-aware planning, and ExecutionPipeline can safely execute explicit `tool_adapter` plan steps through an injected registry.
 - Live REPL integration tests verify multi-step plan creation, notes plus calculator execution, task plus memory execution, goal command routing, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
 - Goals live-path integration tests verify REPL add/list/milestone/pause/complete commands, persistence after reload, Planner goal steps, ExecutionPipeline goal execution, and ToolChain goal chains.
 - SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
@@ -272,17 +277,17 @@ Completed:
 - CI/tests
 - Tool chaining
 - Long-term goal management
+- External tool adapter interface
 
 Next:
 
-1. External tool adapter interface
-2. Weather skill
-3. Calendar skill
-4. Stock/market skill
-5. GPT fallback integration
-6. Voice input/output
-7. Raspberry Pi deployment
-8. Robot body / sensors
+1. Weather skill
+2. Calendar skill
+3. Stock/market skill
+4. GPT fallback integration
+5. Voice input/output
+6. Raspberry Pi deployment
+7. Robot body / sensors
 
 ---
 
@@ -451,21 +456,30 @@ Phase 13 Long-Term Goal Management Foundation
 - Live-path tests verify goal commands through the REPL plus goal-related ToolChain execution.
 - No GPT, autonomous background actions, notifications, external APIs, voice, weather, stocks, or calendar integration were added.
 
-Phase 14
+Phase 14 External Tool Adapter Foundation
+
+- `core.ToolAdapter` defines `ToolAdapter`, `ToolRequest`, `ToolResponse`, and `ToolAdapterRegistry`.
+- Adapter metadata includes name, description, capabilities, `requires_network`, and `requires_auth`.
+- `MockWeatherAdapter` and `MockMarketAdapter` provide offline mock responses only.
+- Planner accepts an optional adapter registry for future adapter-aware planning.
+- ExecutionPipeline can execute explicit `tool_adapter` plan steps through an injected registry.
+- No real APIs, API keys, GPT, voice, weather skill, stock skill, calendar integration, or web access were added.
+
+Phase 15
 
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 15
+Phase 16
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 16
+Phase 17
 
 - Robotics
 - ROS2

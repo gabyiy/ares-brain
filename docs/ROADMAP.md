@@ -177,9 +177,23 @@ Phase 13: Long-Term Goal Management Foundation
 - Tests cover store persistence, skill commands, selector routing, parser routing, planner steps, execution pipeline, SkillManager, ToolChain goal chains, REPL lifecycle commands, and persistence after reload
 - No GPT, autonomous background actions, notifications, external APIs, voice, weather, stocks, or calendar integration
 
+Phase 14: External Tool Adapter Foundation
+
+- `core.ToolAdapter`
+- `core.ToolRequest`
+- `core.ToolResponse`
+- `core.ToolAdapterRegistry`
+- Adapter metadata includes name, description, capabilities, `requires_network`, and `requires_auth`
+- `MockWeatherAdapter` returns offline mock weather data only
+- `MockMarketAdapter` returns offline mock market data only
+- Planner accepts an optional ToolAdapterRegistry for future adapter-aware planning
+- ExecutionPipeline can execute explicit `tool_adapter` PlanSteps through an injected registry
+- Tests cover adapter registration, lookup, missing adapters, mock weather, mock market, no-network metadata, and safe pipeline execution
+- No real APIs, API keys, GPT, voice, weather skill, stock skill, calendar integration, or web adapter
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, local multi-step planning, bounded local tool chaining, sequential local plan execution, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, local multi-step planning, bounded local tool chaining, sequential local plan execution, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, external tool adapter contracts with offline mocks, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -190,9 +204,10 @@ The current deterministic answer paths are:
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, and tasks
 - `Planner`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, and conversation memory plan execution
+- `ToolAdapterRegistry` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 122 tests.
+The current pytest collection is 130 tests.
 
 The current memory paths are:
 
@@ -206,14 +221,13 @@ The current memory paths are:
 
 Next Priorities
 
-1. External tool adapter interface.
-2. Weather skill.
-3. Calendar skill.
-4. Stock/market skill.
-5. GPT fallback integration.
-6. Voice input/output.
-7. Raspberry Pi deployment.
-8. Robot body / sensors.
+1. Weather skill.
+2. Calendar skill.
+3. Stock/market skill.
+4. GPT fallback integration.
+5. Voice input/output.
+6. Raspberry Pi deployment.
+7. Robot body / sensors.
 
 What Must Not Be Started Yet
 
