@@ -130,6 +130,9 @@ class Planner:
         if intent.intent_name == "calculate":
             return self._calculator_step(intent.raw_text, dict(intent.extracted_entities)), None
 
+        if intent.intent_name == "weather":
+            return self._weather_step(intent.raw_text, dict(intent.extracted_entities)), None
+
         memory_step = self._memory_step_from_text(intent.raw_text)
         if memory_step:
             return memory_step, None
@@ -144,6 +147,10 @@ class Planner:
         calculator_step = self._calculator_step_from_text(clean_clause)
         if calculator_step:
             return calculator_step, None
+
+        weather_step = self._weather_step_from_text(clean_clause)
+        if weather_step:
+            return weather_step, None
 
         memory_step = self._memory_step_from_text(clean_clause)
         if memory_step:
@@ -352,6 +359,49 @@ class Planner:
             {"action": "calculate", "expression": expression},
         )
 
+    def _weather_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
+        location = entities.get("location") or _weather_location(raw_text)
+        period = entities.get("period") or _weather_period(raw_text)
+        capability = entities.get("capability") or ("weather.forecast" if period == "tomorrow" else "weather.current")
+        clean_entities = {
+            **entities,
+            "action": "weather",
+            "location": location,
+            "period": period,
+            "adapter_name": entities.get("adapter_name") or "mock_weather",
+            "capability": capability,
+        }
+        command = "weather"
+        if period == "tomorrow":
+            command = "weather tomorrow"
+        elif period == "today":
+            command = "weather today"
+        if location and location != "local":
+            command = f"{command} in {location}"
+
+        return PlanStep(
+            order=0,
+            target="weather",
+            action="weather",
+            input_text=command,
+            intent_name="weather",
+            entities=clean_entities,
+            can_execute=True,
+            description=f"Check mock weather for {location}.",
+        )
+
+    def _weather_step_from_text(self, text: str):
+        if not _looks_like_weather(text):
+            return None
+        return self._weather_step(
+            text,
+            {
+                "action": "weather",
+                "location": _weather_location(text),
+                "period": _weather_period(text),
+            },
+        )
+
     def _memory_step_from_text(self, text: str):
         content = _memory_content(text)
         if not content:
@@ -523,3 +573,23 @@ def _task_description(task_text: str, due: str) -> str:
     if due:
         return f"Add task: {task_text} due {due}"
     return f"Add task: {task_text}"
+
+
+def _looks_like_weather(text: str) -> bool:
+    lowered = (text or "").lower()
+    return bool(re.search(r"\b(weather|forecast)\b", lowered))
+
+
+def _weather_period(text: str) -> str:
+    lowered = (text or "").lower()
+    if re.search(r"\btomorrow\b", lowered):
+        return "tomorrow"
+    return "today"
+
+
+def _weather_location(text: str) -> str:
+    match = re.search(r"\bin\s+(.+)$", text or "", flags=re.IGNORECASE)
+    if not match:
+        return "local"
+    location = _clean_clause(match.group(1))
+    return location or "local"

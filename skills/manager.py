@@ -5,6 +5,7 @@ from core.ExecutionPipeline import ExecutionPipeline
 from core.Intent import Intent
 from core.IntentParser import IntentParser
 from core.Planner import Plan
+from core.ToolAdapter import MockWeatherAdapter, ToolAdapterRegistry
 from core.ToolChain import ToolChain
 from events import get_global_bus
 from skills.base import Skill, SkillContext, SkillResponse
@@ -22,6 +23,7 @@ class SkillManager:
         notes_store=None,
         tasks_store=None,
         goals_store=None,
+        tool_adapter_registry=None,
         conversation_context=None,
         intent_parser=None,
     ):
@@ -32,14 +34,17 @@ class SkillManager:
         self.notes_store = notes_store
         self.tasks_store = tasks_store
         self.goals_store = goals_store
+        self.tool_adapter_registry = tool_adapter_registry or ToolAdapterRegistry([MockWeatherAdapter()])
         self.conversation_context = conversation_context or ConversationContextManager()
         self.intent_parser = intent_parser or IntentParser()
+        self.registry.selector.planner.tool_adapter_registry = self.tool_adapter_registry
         self.last_plan = None
         self.last_execution = None
         self.execution_pipeline = ExecutionPipeline(
             skill_resolver=self.registry.get,
             event_bus=self.event_bus,
             memory_store=self.memory_store,
+            tool_adapter_registry=self.tool_adapter_registry,
             context_builder=self._context_with_intent,
         )
         self.tool_chain = ToolChain(
@@ -152,6 +157,7 @@ class SkillManager:
             notes_store=self.notes_store,
             tasks_store=self.tasks_store,
             goals_store=self.goals_store,
+            tool_adapter_registry=self.tool_adapter_registry,
             conversation_context=self.conversation_context,
         )
 
@@ -166,6 +172,7 @@ class SkillManager:
             notes_store=context.notes_store,
             tasks_store=context.tasks_store,
             goals_store=context.goals_store,
+            tool_adapter_registry=context.tool_adapter_registry,
             conversation_context=context.conversation_context,
             metadata=metadata,
         )

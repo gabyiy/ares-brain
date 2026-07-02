@@ -6,6 +6,7 @@ from skills.builtin.goals import GoalsSkill
 from skills.builtin.memory_recall import MemoryRecallSkill
 from skills.builtin.notes import NotesSkill
 from skills.builtin.tasks import TasksSkill
+from skills.builtin.weather import WeatherSkill
 from skills.plugin import SkillPlugin
 
 
@@ -55,6 +56,7 @@ def create_builtin_plugin() -> SkillPlugin:
             GoalsSkill(),
             NotesSkill(),
             TasksSkill(),
+            WeatherSkill(),
             TimeDateSkill(),
         ],
     )

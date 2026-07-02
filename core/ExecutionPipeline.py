@@ -474,6 +474,7 @@ def _context_with_intent(context: Any, intent: Intent) -> Any:
         notes_store=getattr(context, "notes_store", None),
         tasks_store=getattr(context, "tasks_store", None),
         goals_store=getattr(context, "goals_store", None),
+        tool_adapter_registry=getattr(context, "tool_adapter_registry", None),
         conversation_context=getattr(context, "conversation_context", None),
         metadata=metadata,
     )

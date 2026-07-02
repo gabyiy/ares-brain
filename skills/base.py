@@ -11,6 +11,7 @@ class SkillContext:
     notes_store: Any = None
     tasks_store: Any = None
     goals_store: Any = None
+    tool_adapter_registry: Any = None
     conversation_context: Any = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
