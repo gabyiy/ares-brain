@@ -12,7 +12,7 @@ Current System Flow
 6. The REPL creates `NotesStore` for persistent local notes.
 7. The REPL creates `TasksStore` for persistent offline tasks.
 8. The REPL creates the shared in-memory `ConversationContextManager`.
-9. The REPL creates `SkillManager`, which owns an offline `ToolAdapterRegistry` with `MockWeatherAdapter`, `MockMarketAdapter`, and `MockCalendarAdapter`, can enforce future adapter config through `ExternalAdapterConfig` and `SecretsGuard`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
+9. The REPL creates `SkillManager`, which owns an offline `ToolAdapterRegistry` with `MockWeatherAdapter`, `MockMarketAdapter`, and `MockCalendarAdapter`, can enforce future adapter config through `ExternalAdapterConfig` and `SecretsGuard`, leaves `RealWeatherAdapter` opt-in only, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
 10. User input is sent to `IntentRouter`.
 11. `IntentRouter` publishes input lifecycle events.
 12. When a skill path is checked, `SkillManager` parses user text into `core.Intent` with `core.IntentParser`.
@@ -232,6 +232,7 @@ Current adapter objects:
 - `ToolAdapter`
 - `ToolAdapterRegistry`
 - `MockWeatherAdapter`
+- `RealWeatherAdapter`
 - `MockMarketAdapter`
 - `MockCalendarAdapter`
 
@@ -242,6 +243,7 @@ Current metadata fields:
 - `capabilities`
 - `requires_network`
 - `requires_auth`
+- `supports_real_mode`
 - optional validated config metadata
 
 Current responsibilities:
@@ -254,6 +256,7 @@ Current responsibilities:
 - Find adapters by capability.
 - Return clear missing-adapter and unsupported-capability responses.
 - Return clear disabled-adapter and real-mode fail-closed responses.
+- Allow explicit real-mode-capable skeleton adapters while keeping default runtime paths on mock/local adapters.
 - Provide offline mock weather, market, and calendar responses for tests.
 
 Current boundaries:
@@ -265,6 +268,9 @@ Current boundaries:
 - `config/adapters.example.json` contains fake placeholders only.
 - Local/private adapter config files are ignored by git.
 - Real mode fails safely when the env key is missing, when the env-key name is still a placeholder, or when real execution is not implemented.
+- `RealWeatherAdapter` supports the weather adapter contract but is not registered by default in `SkillManager`.
+- `RealWeatherAdapter` reads API keys only from the configured environment variable name and does not expose raw env values in responses.
+- `RealWeatherAdapter` currently returns a deterministic not-implemented response instead of making network calls.
 - No API keys are stored.
 - WeatherSkill uses `MockWeatherAdapter` through this registry for local weather answers.
 - MarketSkill uses `MockMarketAdapter` through this registry for local market quote answers.
@@ -634,7 +640,7 @@ Current built-in skills:
 
 `TasksSkill` can also consume parser-derived entities, so text such as `remember buy milk tomorrow` is stored as task text `buy milk` with due text `tomorrow`.
 
-`WeatherSkill` answers weather requests through `ToolAdapterRegistry` and the offline `MockWeatherAdapter`. It supports `weather`, `weather today`, `weather tomorrow`, and `weather in Madrid`. It does not call real APIs, require API keys, or use internet access.
+`WeatherSkill` answers weather requests through `ToolAdapterRegistry` and the offline `MockWeatherAdapter` by default. It supports `weather`, `weather today`, `weather tomorrow`, and `weather in Madrid`. It does not call real APIs, require API keys, or use internet access. Explicit tests can provide an intent with adapter `real_weather`, but that adapter skeleton fails safely without network execution until a future real provider is implemented.
 
 `MarketSkill` answers stock/market quote requests through `ToolAdapterRegistry` and the offline `MockMarketAdapter`. It supports `stock nvidia`, `nvidia stock`, `apple stock`, and `market price for tesla`. It does not call real APIs, require API keys, or use internet access.
 
@@ -717,5 +723,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 189 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, and `skills.builtin.CalendarSkill`.
+- Pytest collection: 197 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, and `skills.builtin.CalendarSkill`.
