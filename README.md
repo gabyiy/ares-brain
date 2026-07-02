@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.19 - Action Confirmation Layer
+ARES v1.20 - External Adapter Config and Secrets Guard
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 ARES
 │
@@ -93,6 +93,7 @@ Completed
 - Action confirmation layer
 - Tool chaining for bounded local multi-step requests
 - External tool adapter interface
+- External adapter config and secrets guard
 - Built-in weather skill using the offline mock weather adapter
 - Built-in market skill using the offline mock market adapter
 - Built-in calendar skill using the offline mock calendar adapter
@@ -178,6 +179,7 @@ Implemented Features
 - Tool chaining with max depth, loop prevention, execution trace, and chain history
 - Execution pipeline for ordered plan step execution, confirmation pauses, aggregated final responses, partial-result reporting, execution results, logging, and rollback hooks
 - External ToolAdapter foundation with `ToolRequest`, `ToolResponse`, `ToolAdapterRegistry`, and offline mock weather/market adapters
+- External adapter config model with enabled, mode, env-key name, base URL, timeout, placeholder detection, and secret validation
 - Built-in weather skill backed by `ToolAdapterRegistry` and `MockWeatherAdapter`
 - Built-in market skill backed by `ToolAdapterRegistry` and `MockMarketAdapter`
 - Built-in calendar skill backed by `ToolAdapterRegistry` and `MockCalendarAdapter`
@@ -190,7 +192,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 182 tests across core Phase 2-20 modules
+- Pytest automated coverage for 189 tests across core Phase 2-21 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -209,7 +211,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `182 tests`.
+Current pytest collection: `189 tests`.
 
 Continuous Integration
 
@@ -264,7 +266,11 @@ Latest Architecture Status
 - ExecutionPipeline collects all step outputs into one response and labels mixed success/failure as `Partial results:`.
 - ExecutionPipeline emits execution events and standard logs for start, step completion, recoverable failure, unrecoverable failure, rollback, and completion.
 - ToolAdapter defines external-tool contracts with adapter metadata, requests, responses, and registry lookup.
-- MockWeatherAdapter and MockMarketAdapter are offline-only adapters that do not require network, auth, API keys, GPT, or voice.
+- ToolAdapterRegistry can enforce `ExternalAdapterConfig` for enabled state, mock/local/real mode, env-key names, base URLs, and timeouts.
+- SecretsGuard rejects raw-looking secrets and validates that adapter config files reference environment variable names instead of storing keys.
+- Real adapter mode fails closed when an env key is missing, when the env-key name is only a placeholder, or when real execution is not implemented.
+- `config/adapters.example.json` contains fake placeholder config only; local/private adapter config files are ignored by git.
+- MockWeatherAdapter, MockMarketAdapter, and MockCalendarAdapter are offline-only adapters that do not require network, auth, API keys, GPT, or voice.
 - Planner can hold a ToolAdapterRegistry for adapter-aware planning, and ExecutionPipeline can safely execute weather skill steps or explicit `tool_adapter` plan steps through an injected registry.
 - Live REPL integration tests verify multi-step plan creation, notes plus calculator execution, task plus memory execution, goal command routing, weather routing through `MockWeatherAdapter`, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
 - Weather live-path tests verify `IntentParser -> Planner -> ExecutionPipeline -> WeatherSkill -> MockWeatherAdapter` through the text REPL.
@@ -273,6 +279,7 @@ Latest Architecture Status
 - Multi-step planner tests verify single-step compatibility, weather plus reminder planning, goals plus calendar planning, three-step ordering, execution ordering, partial failure recovery, and REPL execution.
 - Context-aware planner tests verify goal context, profile favorite context, note topic context, related task context, missing-context responses, multi-step context plans, partial failure recovery, and REPL integration.
 - Confirmation tests verify delete note/task/goal pauses, confirm executes, cancel does not execute, missing pending confirmation fails safely, weather/market/calendar remain unaffected, future external write actions require confirmation, and multi-step plans pause safely.
+- Adapter config tests verify mock mode, real-mode fail-closed behavior without env keys, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility.
 - ToolChain tests verify repeated weather steps are rejected before execution to prevent loop-style chains.
 - Goals live-path integration tests verify REPL add/list/milestone/pause/complete commands, persistence after reload, Planner goal steps, ExecutionPipeline goal execution, and ToolChain goal chains.
 - SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
@@ -333,6 +340,7 @@ Completed:
 - Weather skill
 - Stock/market skill
 - Calendar skill
+- External adapter config and secrets guard
 
 Next:
 
@@ -582,19 +590,31 @@ Phase 20
 
 Phase 21
 
+- External Adapter Config and Secrets Guard adds `ExternalAdapterConfig`, `SecretsGuard`, `SecretValidationError`, and safe adapter config loading.
+- Adapter config fields include `enabled`, `mode`, `api_key_env_name`, `base_url`, and `timeout_seconds`.
+- `ToolAdapterRegistry` enforces config before adapter execution.
+- Mock/local mode preserves existing offline Weather/Market/Calendar behavior.
+- Real mode fails safely without configured env keys and still does not call real APIs.
+- `config/adapters.example.json` uses fake placeholders only.
+- Local/private adapter config files are ignored by git.
+- Tests cover mock mode, real-mode missing-env failure, placeholder acceptance, raw-secret rejection, mock adapter preservation, and confirmation-layer compatibility.
+- No real API keys, real weather/stocks/calendar integrations, internet calls, GPT, voice, notifications, or background automation were added.
+
+Phase 22
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 22
+Phase 23
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 23
+Phase 24
 
 - Robotics
 - ROS2

@@ -269,9 +269,25 @@ Phase 20: Action Confirmation Layer
 - Tests cover confirmation-required actions, confirm, cancel, missing pending confirmation, unaffected weather/market/calendar paths, future external writes, and multi-step pause behavior
 - No GPT, internet access, real APIs, voice, notifications, or background automation
 
+Phase 21: External Adapter Config and Secrets Guard
+
+- `core.ExternalAdapterConfig`
+- `core.SecretsGuard`
+- `core.SecretValidationError`
+- `config/adapters.example.json`
+- Adapter config fields include enabled state, mock/local/real mode, API key environment variable name, base URL, and timeout seconds
+- `ToolAdapterRegistry` enforces adapter config before adapter execution
+- Mock/local mode preserves existing offline WeatherSkill, MarketSkill, and CalendarSkill behavior
+- Real mode fails safely without a configured env key and does not call real APIs
+- Fake placeholder values are accepted only as placeholders
+- Raw-looking API keys and tokens are rejected
+- Local/private adapter config files are ignored by git
+- Tests cover mock mode, real-mode missing-env failure, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility
+- No real APIs, API keys, internet access, GPT, voice, notifications, or background automation
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, adapter-backed mock market quotes, adapter-backed mock calendar answers, external tool adapter contracts with offline mocks, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, adapter-backed mock market quotes, adapter-backed mock calendar answers, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -282,10 +298,10 @@ The current deterministic answer paths are:
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, and calendar
 - `Planner`, `MultiStepPlan`, `ConfirmationManager`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, context responses, confirmations, and conversation memory plan execution
-- `ToolAdapterRegistry` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
+- `ToolAdapterRegistry`, `ExternalAdapterConfig`, and `SecretsGuard` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 182 tests.
+The current pytest collection is 189 tests.
 
 The current memory paths are:
 

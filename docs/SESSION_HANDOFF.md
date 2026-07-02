@@ -4,7 +4,7 @@ Last Updated: 2026-07-02
 
 Current Version
 
-ARES v1.19 - Action Confirmation Layer
+ARES v1.20 - External Adapter Config and Secrets Guard
 
 ---
 
@@ -79,6 +79,7 @@ New test coverage:
 - MultiStepPlan
 - Context-aware planner
 - Action confirmation layer
+- Adapter config and SecretsGuard
 - ExecutionPipeline
 - ToolChain
 - ToolAdapter
@@ -374,23 +375,52 @@ External Tool Adapter foundation has been added.
 
 New adapter modules:
 
+- `core.ExternalAdapterConfig`
+- `core.SecretsGuard`
+- `core.SecretValidationError`
 - `core.ToolAdapter`
 - `core.ToolRequest`
 - `core.ToolResponse`
 - `core.ToolAdapterRegistry`
 - `core.MockWeatherAdapter`
 - `core.MockMarketAdapter`
+- `core.MockCalendarAdapter`
 
 ToolAdapter behavior:
 
+- Validates future adapter config before execution.
+- Tracks adapter enabled state, mode, API key environment variable name, base URL, and timeout.
+- Rejects raw-looking secrets in adapter config payloads.
 - Registers and looks up local adapters by name.
 - Finds adapters by capability.
 - Exposes adapter metadata: name, description, capabilities, `requires_network`, and `requires_auth`.
 - Returns clear missing-adapter and unsupported-capability responses.
-- Provides offline mock weather and market adapters for tests only.
+- Provides offline mock weather, market, and calendar adapters for tests only.
 - Planner accepts an optional ToolAdapterRegistry for future adapter-aware planning.
 - ExecutionPipeline can execute explicit `tool_adapter` PlanSteps through an injected registry.
 - No real APIs, API keys, GPT, voice, stock skill, calendar integration, web adapter, or network calls were added.
+
+External Adapter Config and SecretsGuard foundation has been added.
+
+New config modules and files:
+
+- `core.AdapterConfig`
+- `core.ExternalAdapterConfig`
+- `core.SecretsGuard`
+- `core.SecretValidationError`
+- `config/adapters.example.json`
+
+Adapter config behavior:
+
+- Config fields include `enabled`, `mode`, `api_key_env_name`, `base_url`, and `timeout_seconds`.
+- Supported modes are `mock`, `local`, and `real`.
+- `ToolAdapterRegistry` enforces config before adapter execution.
+- Mock/local mode preserves existing offline WeatherSkill, MarketSkill, and CalendarSkill behavior.
+- Real mode fails safely when an env key is missing, when the env-key name is only a placeholder, or when real execution is not implemented.
+- Fake placeholders are allowed only as placeholders.
+- Raw-looking API keys and tokens are rejected.
+- Local/private adapter config files are ignored by git.
+- No real API keys, real API calls, internet access, GPT, voice, notifications, or background automation were added.
 
 Adapter-backed WeatherSkill has been added.
 
@@ -648,7 +678,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 182 tests.
+- Current pytest collection: 189 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -665,6 +695,7 @@ Verification Notes
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
+- Adapter config guard tests cover mock mode, real-mode missing-env failure, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility.
 - WeatherSkill tests cover weather intent parsing, mock adapter calls, WeatherSkill responses, ToolSelector routing, planner weather steps, execution pipeline weather steps, REPL routing, full live path into `MockWeatherAdapter`, ToolChain loop prevention for repeated weather steps, and missing adapter errors.
 - MarketSkill tests cover market intent parsing, mock adapter calls, MarketSkill responses, ToolSelector routing, planner market steps, execution pipeline market steps, REPL routing, and missing adapter errors.
 - CalendarSkill tests cover calendar intent parsing, mock adapter calls, CalendarSkill responses, ToolSelector routing, planner calendar steps, execution pipeline calendar steps, REPL routing, and missing adapter errors.
@@ -683,6 +714,7 @@ Verification Notes
 
 Latest Commits
 
+- `40ea8e5` Add external adapter config guard
 - `fbf4492` Add action confirmation layer
 - `79f7e4a` Add context-aware planner support
 - `7683dbc` Harden multi-step planner execution
