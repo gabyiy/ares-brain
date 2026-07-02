@@ -42,6 +42,7 @@ class IntentParser:
             IntentRule("calculate", self._parse_calculate),
             IntentRule("memory_recall", self._parse_memory_recall),
             IntentRule("weather", self._parse_weather),
+            IntentRule("market", self._parse_market),
             IntentRule("time_date", self._parse_time_date),
         ]
 
@@ -218,6 +219,24 @@ class IntentParser:
             capability=capability,
         )
 
+    def _parse_market(self, text: ParsedText) -> Optional[Intent]:
+        if "stock" not in text.tokens and "market" not in text.tokens:
+            return None
+
+        symbol = _market_symbol(text.raw_text)
+        if not symbol:
+            return None
+
+        return self._intent(
+            "market",
+            0.94,
+            text.raw_text,
+            action="quote",
+            symbol=symbol,
+            adapter_name="mock_market",
+            capability="market.quote",
+        )
+
     def _parse_time_date(self, text: ParsedText) -> Optional[Intent]:
         asks_time = any(token in text.tokens for token in ("time", "clock"))
         asks_date = any(token in text.tokens for token in ("date", "today")) or text.starts_with("what day")
@@ -346,6 +365,28 @@ def _weather_location(value: str) -> str:
         return "local"
     location = _clean_text(match.group(1))
     return location or "local"
+
+
+def _market_symbol(value: str) -> str:
+    clean = _clean_text(value)
+    patterns = (
+        r"^stock\s+(.+)$",
+        r"^market\s+price\s+for\s+(.+)$",
+        r"^market\s+quote\s+for\s+(.+)$",
+        r"^(.+?)\s+stock$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, clean, flags=re.IGNORECASE)
+        if match:
+            return _normalize_market_symbol(match.group(1))
+    return ""
+
+
+def _normalize_market_symbol(value: str) -> str:
+    symbol = _clean_text(value)
+    symbol = re.sub(r"^(?:the|a|an)\s+", "", symbol, flags=re.IGNORECASE)
+    symbol = symbol.replace("$", "").strip()
+    return symbol.upper()
 
 
 def _strip_leading_task_marker(value: str) -> str:

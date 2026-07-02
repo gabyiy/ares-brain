@@ -133,6 +133,9 @@ class Planner:
         if intent.intent_name == "weather":
             return self._weather_step(intent.raw_text, dict(intent.extracted_entities)), None
 
+        if intent.intent_name == "market":
+            return self._market_step(intent.raw_text, dict(intent.extracted_entities)), None
+
         memory_step = self._memory_step_from_text(intent.raw_text)
         if memory_step:
             return memory_step, None
@@ -151,6 +154,10 @@ class Planner:
         weather_step = self._weather_step_from_text(clean_clause)
         if weather_step:
             return weather_step, None
+
+        market_step = self._market_step_from_text(clean_clause)
+        if market_step:
+            return market_step, None
 
         memory_step = self._memory_step_from_text(clean_clause)
         if memory_step:
@@ -402,6 +409,42 @@ class Planner:
             },
         )
 
+    def _market_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
+        symbol = entities.get("symbol") or _market_symbol(raw_text)
+        capability = entities.get("capability") or "market.quote"
+        clean_entities = {
+            **entities,
+            "action": "quote",
+            "symbol": symbol,
+            "adapter_name": entities.get("adapter_name") or "mock_market",
+            "capability": capability,
+        }
+        can_execute = bool(symbol)
+        command = f"stock {symbol}" if symbol else raw_text
+
+        return PlanStep(
+            order=0,
+            target="market",
+            action="quote",
+            input_text=command,
+            intent_name="market",
+            entities=clean_entities,
+            can_execute=can_execute,
+            skip_reason="" if can_execute else "Missing market symbol.",
+            description=f"Check mock market quote for {symbol}." if symbol else "Check mock market quote.",
+        )
+
+    def _market_step_from_text(self, text: str):
+        if not _looks_like_market(text):
+            return None
+        return self._market_step(
+            text,
+            {
+                "action": "quote",
+                "symbol": _market_symbol(text),
+            },
+        )
+
     def _memory_step_from_text(self, text: str):
         content = _memory_content(text)
         if not content:
@@ -593,3 +636,30 @@ def _weather_location(text: str) -> str:
         return "local"
     location = _clean_clause(match.group(1))
     return location or "local"
+
+
+def _looks_like_market(text: str) -> bool:
+    lowered = (text or "").lower()
+    return bool(re.search(r"\b(stock|market)\b", lowered))
+
+
+def _market_symbol(text: str) -> str:
+    clean_text = _clean_clause(text)
+    patterns = (
+        r"^stock\s+(.+)$",
+        r"^market\s+price\s+for\s+(.+)$",
+        r"^market\s+quote\s+for\s+(.+)$",
+        r"^(.+?)\s+stock$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, clean_text, flags=re.IGNORECASE)
+        if match:
+            return _normalize_market_symbol(match.group(1))
+    return ""
+
+
+def _normalize_market_symbol(text: str) -> str:
+    symbol = _clean_clause(text)
+    symbol = re.sub(r"^(?:the|a|an)\s+", "", symbol, flags=re.IGNORECASE)
+    symbol = symbol.replace("$", "").strip()
+    return symbol.upper()
