@@ -443,6 +443,84 @@ class MockMarketAdapter(ToolAdapter):
         )
 
 
+class RealMarketAdapter(ToolAdapter):
+    name = "real_market"
+    description = "Real-market-capable adapter skeleton gated by real-mode config and an environment API key."
+    capabilities = ("market.quote", "market.summary")
+    requires_network = True
+    requires_auth = True
+    supports_real_mode = True
+
+    def handle(self, request: ToolRequest) -> ToolResponse:
+        return ToolResponse(
+            adapter_name=self.name,
+            capability=request.capability,
+            success=False,
+            text="Real market adapter requires explicit real-mode adapter config.",
+            error_message="Real market adapter requires explicit real-mode adapter config.",
+            metadata={"missing_adapter_config": True},
+        )
+
+    def handle_configured(
+        self,
+        request: ToolRequest,
+        config: Optional[ExternalAdapterConfig] = None,
+    ) -> ToolResponse:
+        if not config:
+            return self.handle(request)
+
+        if config.mode != "real":
+            return ToolResponse(
+                adapter_name=self.name,
+                capability=request.capability,
+                success=False,
+                text="Real market adapter is available only when adapter config mode is real.",
+                error_message="Real market adapter is available only when adapter config mode is real.",
+                metadata={"invalid_mode": config.mode, "config": config.to_dict()},
+            )
+
+        env_name = config.api_key_env_name
+        if not env_name or config.api_key_env_name_is_placeholder:
+            return ToolResponse(
+                adapter_name=self.name,
+                capability=request.capability,
+                success=False,
+                text="Real market adapter requires an API key environment variable name.",
+                error_message="Real market adapter requires an API key environment variable name.",
+                metadata={"missing_api_key_env_name": True, "config": config.to_dict()},
+            )
+
+        api_key = os.environ.get(env_name)
+        if not api_key:
+            return ToolResponse(
+                adapter_name=self.name,
+                capability=request.capability,
+                success=False,
+                text=f"Real market adapter requires environment variable {env_name}.",
+                error_message=f"Real market adapter requires environment variable {env_name}.",
+                metadata={"missing_env_key": env_name, "config": config.to_dict()},
+            )
+
+        symbol = str(request.parameters.get("symbol") or request.query or "").strip().upper()
+        return ToolResponse(
+            adapter_name=self.name,
+            capability=request.capability,
+            success=False,
+            text="Real market adapter is configured, but network execution is not implemented yet.",
+            error_message="Real market adapter network execution is not implemented.",
+            data={
+                "symbol": symbol,
+                "source": "real_market_skeleton",
+            },
+            metadata={
+                "real_market_skeleton": True,
+                "api_key_env_name": env_name,
+                "base_url": config.base_url,
+                "timeout_seconds": config.timeout_seconds,
+            },
+        )
+
+
 class MockCalendarAdapter(ToolAdapter):
     name = "mock_calendar"
     description = "Offline mock calendar adapter for adapter pipeline tests."

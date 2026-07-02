@@ -21,6 +21,13 @@
       "base_url": "https://example.invalid/market",
       "timeout_seconds": 5
     },
+    "real_market": {
+      "enabled": false,
+      "mode": "mock",
+      "api_key_env_name": "YOUR_REAL_MARKET_API_KEY_ENV_VAR_PLACEHOLDER",
+      "base_url": "https://example.invalid/market",
+      "timeout_seconds": 5
+    },
     "mock_calendar": {
       "enabled": true,
       "mode": "mock",
