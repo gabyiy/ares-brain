@@ -1,10 +1,10 @@
 ARES Session Handoff
 
-Last Updated: 2026-07-01
+Last Updated: 2026-07-02
 
 Current Version
 
-ARES v1.16 - Adapter-Backed Calendar Skill
+ARES v1.17 - Multi-Step Planner Hardening
 
 ---
 
@@ -76,6 +76,7 @@ New test coverage:
 - ConversationContextManager
 - IntentParser
 - Planner
+- MultiStepPlan
 - ExecutionPipeline
 - ToolChain
 - ToolAdapter
@@ -219,14 +220,19 @@ New planner modules:
 
 - `core.PlanStep`
 - `core.Plan`
+- `core.MultiStepPlan`
 - `core.Planner`
 
 Planner behavior:
 
 - Receives an `Intent`.
 - Produces ordered executable steps.
-- Supports notes, tasks, calculator, weather, market, calendar, and conversation memory targets.
+- Returns a regular `Plan` for single-step requests.
+- Returns a `MultiStepPlan` for compatible requests with more than one executable step.
+- Supports goals, notes, tasks, calculator, weather, market, calendar, and conversation memory targets.
 - Skips impossible steps and returns planning errors cleanly.
+- Splits compatible compound requests such as `What's the weather tomorrow and remind me to go to the gym`.
+- Splits compatible compound requests such as `Show my goals and today's calendar`.
 - Serializes plans and steps for tests, events, and REPL display.
 - Planner never executes skills.
 - ToolSelector builds a plan before returning a skill selection.
@@ -251,6 +257,8 @@ Execution behavior:
 - Executes conversation memory steps through MemoryStore.
 - Stops safely on unrecoverable failures.
 - Continues after recoverable local tool failures when appropriate.
+- Aggregates all step outputs into one final response.
+- Labels mixed successful and failed recoverable steps as `Partial results:`.
 - Records start time, end time, duration, success/failure, returned data, and error message for every step.
 - Publishes execution lifecycle events.
 - Emits standard execution logs through `ares.execution`.
@@ -268,6 +276,18 @@ New integration coverage:
 - Live REPL recoverable partial failure reporting and continued execution.
 - Live REPL `show execution` and `show last execution`.
 - Live-path spy coverage for `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill`.
+
+Multi-step Planner hardening has been added.
+
+New hardening coverage:
+
+- Single-step requests still return regular `Plan` objects.
+- Compatible multi-step requests return ordered `MultiStepPlan` objects.
+- Weather plus reminder requests plan and execute through the live REPL path.
+- Goals plus calendar requests plan and execute through the live REPL path.
+- Three-step requests preserve planner and execution ordering.
+- Recoverable step failures continue remaining work and report partial results.
+- No GPT, internet access, real APIs, voice, notifications, or background automation were added.
 
 Tool Chaining foundation has been added.
 
@@ -528,8 +548,9 @@ MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing s
 The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `CalendarSkill`, `GoalsSkill`, `MarketSkill`, `NotesSkill`, `TasksSkill`, `WeatherSkill`, and `TimeDateSkill`.
 The REPL priority skill path currently covers profile memory recall, calculator arithmetic, goal commands, note commands, task commands, weather commands, stock/market commands, and calendar/schedule commands.
 `SkillManager` parses text into `core.Intent` before `ToolSelector` selects a local skill.
-`ToolSelector` builds a `core.Plan` before selection, `SkillManager` validates executable plan steps through `core.ToolChain`, and accepted chains execute through `core.ExecutionPipeline`.
+`ToolSelector` builds a `core.Plan` or `core.MultiStepPlan` before selection, `SkillManager` validates executable plan steps through `core.ToolChain`, and accepted chains execute through `core.ExecutionPipeline`.
 `ExecutionPipeline` can execute weather skill PlanSteps, market skill PlanSteps, calendar skill PlanSteps, and explicit `tool_adapter` PlanSteps through `core.ToolAdapterRegistry`.
+`ExecutionPipeline` aggregates all step outputs and reports mixed recoverable success/failure as partial results.
 `SkillManager` records handled skill turns in `ConversationContextManager`.
 
 Skill Manager
@@ -580,7 +601,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 156 tests.
+- Current pytest collection: 164 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -602,6 +623,7 @@ Verification Notes
 - CalendarSkill tests cover calendar intent parsing, mock adapter calls, CalendarSkill responses, ToolSelector routing, planner calendar steps, execution pipeline calendar steps, REPL routing, and missing adapter errors.
 - ReminderScheduler tests cover tomorrow parsing, relative minutes/hours, clock time parsing, due task detection, upcoming task ordering, and invalid due text handling.
 - Planner tests cover single-step plans, two-step plans, mixed notes/calculator, mixed task/memory, goal steps, invalid plans, ordering, serialization, ToolSelector plan attachment, SkillManager execution, and REPL plan display.
+- Multi-step planner tests cover single-step compatibility, weather plus reminder, goals plus calendar, three-step plans, planner ordering, execution ordering, partial failure recovery, and REPL integration.
 - ExecutionPipeline tests cover single-step execution, multi-step execution, notes plus calculator, task plus memory, unrecoverable failure, recoverable partial failure, execution ordering, execution logging, rollback hooks, SkillManager integration, REPL execution display, live REPL multi-step planning, live REPL pipeline execution, live REPL partial failure reporting, and live-path component usage.
 - ToolChain tests cover memory plus calculator, note plus memory, task/reminder plus memory, ordering, max depth enforcement, repeated-step loop prevention, and REPL chain display/history.
 - Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
@@ -612,6 +634,7 @@ Verification Notes
 
 Latest Commits
 
+- `7683dbc` Harden multi-step planner execution
 - `8678a16` Add external tool adapter foundation
 - `f7f5e78` Add adapter-backed local weather skill
 - `7d56178` Harden weather live path tests

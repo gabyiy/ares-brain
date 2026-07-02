@@ -136,15 +136,20 @@ Current planning objects:
 
 - `PlanStep`
 - `Plan`
+- `MultiStepPlan`
 - `Planner`
 
 Current responsibilities:
 
 - Receive an `Intent`.
 - Produce ordered `PlanStep` entries.
+- Return a regular `Plan` for single-step requests.
+- Return a `MultiStepPlan` for compatible requests with more than one executable step.
 - Estimate execution order through the step `order` field.
 - Skip impossible steps and return planning errors.
 - Serialize plans and steps for events, tests, and REPL display.
+- Split compatible compound requests such as `What's the weather tomorrow and remind me to go to the gym`.
+- Split compatible compound requests such as `Show my goals and today's calendar`.
 
 Current supported planner targets:
 
@@ -262,6 +267,8 @@ Current responsibilities:
 - Execute explicit `tool_adapter` steps through an injected `ToolAdapterRegistry`.
 - Stop safely on unrecoverable failures such as missing skills or raised exceptions.
 - Continue after recoverable skill-level failures, such as safe local tool rejection.
+- Continue remaining steps after recoverable failures and report partial success.
+- Aggregate all step outputs into one final response.
 - Record start time, end time, duration, success/failure, returned data, and error messages for every step.
 - Publish execution lifecycle events.
 - Emit standard execution logs through the `ares.execution` logger.
@@ -270,6 +277,8 @@ Current responsibilities:
 Current integration verification:
 
 - Live REPL tests verify multi-step plan creation.
+- Live REPL tests verify weather plus reminder multi-step execution.
+- Live REPL tests verify goals plus calendar multi-step execution.
 - Live REPL tests verify notes plus calculator execution through ExecutionPipeline.
 - Live REPL tests verify task plus memory execution through ExecutionPipeline.
 - Live REPL tests verify goal add, list, add milestone, pause, complete, and show commands.
@@ -279,6 +288,7 @@ Current integration verification:
 - Live REPL tests verify calendar requests through `CalendarSkill` and `MockCalendarAdapter`.
 - ToolChain tests verify repeated weather steps are rejected before execution to prevent loop-style chains.
 - Live REPL tests verify recoverable partial failure reporting and continued execution.
+- Multi-step planner tests verify single-step compatibility, two-step plans, three-step plans, planner ordering, execution ordering, and partial-result formatting.
 - Live REPL tests verify `show execution` and `show last execution`.
 - A live-path spy verifies the active path uses `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill`.
 
@@ -641,5 +651,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 156 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ToolAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, and `skills.builtin.CalendarSkill`.
+- Pytest collection: 164 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.ToolAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, and `skills.builtin.CalendarSkill`.

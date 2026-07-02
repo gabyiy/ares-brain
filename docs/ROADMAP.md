@@ -125,11 +125,16 @@ Phase 10: Multi-Step Task Planner Foundation
 
 - `core.PlanStep`
 - `core.Plan`
+- `core.MultiStepPlan`
 - `core.Planner`
 - Planner receives an `Intent` and produces ordered executable steps.
+- Planner returns a regular `Plan` for single-step requests.
+- Planner returns a `MultiStepPlan` for compatible requests with more than one executable step.
 - Supported planner targets: goals, notes, tasks, calculator, weather, market, calendar, and conversation memory.
 - Planner skips impossible steps and returns errors cleanly.
 - Planner serializes plans for events, tests, and REPL display.
+- Planner can split compatible compound requests such as `What's the weather tomorrow and remind me to go to the gym`.
+- Planner can split compatible compound requests such as `Show my goals and today's calendar`.
 - ToolSelector builds a plan before returning a skill selection.
 - Planner itself never executes skills.
 - Text REPL supports `show plan` and `show steps`.
@@ -145,6 +150,8 @@ Phase 11: Execution Pipeline Foundation
 - Each step records start time, end time, duration, success/failure, returned data, and error messages.
 - SkillManager delegates executable planner steps to ExecutionPipeline.
 - ExecutionPipeline stops on unrecoverable failures and continues after recoverable local tool failures when appropriate.
+- ExecutionPipeline aggregates every step output into one final response.
+- Mixed successful and failed recoverable steps are reported as partial results while remaining steps continue.
 - ExecutionPipeline publishes execution events and emits standard logs.
 - Rollback hook interface exists as a no-op extension point.
 - Text REPL supports `show execution` and `show last execution`.
@@ -219,9 +226,20 @@ Phase 17: Adapter-Backed Calendar Skill
 - Tests cover calendar intent parsing, mock adapter calls, CalendarSkill responses, planner calendar steps, execution pipeline calendar steps, REPL routing, and missing adapter errors
 - No Google Calendar integration, real APIs, API keys, internet access, GPT, voice, notifications, or background automation
 
+Phase 18: Multi-Step Planner Hardening
+
+- Explicit `core.MultiStepPlan` support
+- Single-step requests remain compatible with regular `Plan` objects
+- Compatible multi-step requests produce ordered `MultiStepPlan` objects
+- Supported examples include weather plus reminder and goals plus calendar requests
+- ExecutionPipeline continues after recoverable step failures and aggregates all step outputs
+- Mixed successful and failed recoverable steps are labeled as partial results
+- Tests cover single-step compatibility, two-step plans, three-step plans, planner ordering, execution ordering, partial failure recovery, and REPL integration
+- No GPT, internet access, real APIs, voice, notifications, or background automation
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, local multi-step planning, bounded local tool chaining, sequential local plan execution, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, adapter-backed mock market quotes, adapter-backed mock calendar answers, external tool adapter contracts with offline mocks, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, adapter-backed mock market quotes, adapter-backed mock calendar answers, external tool adapter contracts with offline mocks, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -231,11 +249,11 @@ The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, and calendar
-- `Planner`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, and conversation memory plan execution
+- `Planner`, `MultiStepPlan`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, and conversation memory plan execution
 - `ToolAdapterRegistry` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 156 tests.
+The current pytest collection is 164 tests.
 
 The current memory paths are:
 
