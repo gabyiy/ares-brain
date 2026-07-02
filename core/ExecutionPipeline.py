@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any, Callable, Dict, List, Optional
 
+from core.Confirmation import ConfirmationManager, mark_confirmation_approved, requires_confirmation
 from core.Intent import Intent
 from core.Planner import Plan, PlanStep
 from core.ToolAdapter import ToolRequest
@@ -56,6 +57,7 @@ class ExecutionResult:
     error_message: str = ""
     rollback_attempted: bool = False
     rollback_error: str = ""
+    pending_confirmation: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -69,6 +71,7 @@ class ExecutionResult:
             "error_message": self.error_message,
             "rollback_attempted": self.rollback_attempted,
             "rollback_error": self.rollback_error,
+            "pending_confirmation": dict(self.pending_confirmation),
         }
 
     def format(self) -> str:
@@ -123,6 +126,7 @@ class ExecutionPipeline:
         rollback_hook: Optional[RollbackHook] = None,
         logger: Optional[logging.Logger] = None,
         context_builder: Optional[Callable[[Any, Intent], Any]] = None,
+        confirmation_manager: Optional[ConfirmationManager] = None,
     ):
         self.skill_resolver = skill_resolver
         self.event_bus = event_bus
@@ -131,6 +135,7 @@ class ExecutionPipeline:
         self.rollback_hook = rollback_hook or RollbackHook()
         self.logger = logger or logging.getLogger("ares.execution")
         self.context_builder = context_builder or _context_with_intent
+        self.confirmation_manager = confirmation_manager or ConfirmationManager()
 
     def execute(self, plan: Plan, context: Any = None) -> ExecutionResult:
         start_time = _utc_now()
@@ -140,6 +145,7 @@ class ExecutionPipeline:
         error_message = ""
         rollback_attempted = False
         rollback_error = ""
+        pending_confirmation = {}
 
         self.logger.info("Execution started for intent %s", plan.intent_name)
         self._publish("execution.started", {"plan": plan.to_dict(), "start_time": start_time})
@@ -147,6 +153,13 @@ class ExecutionPipeline:
         for step in sorted(plan.steps, key=lambda item: item.order):
             result = self._execute_step(step, context)
             step_results.append(result)
+
+            confirmation = _result_confirmation(result)
+            if confirmation:
+                stopped = True
+                error_message = "Confirmation required."
+                pending_confirmation = confirmation
+                break
 
             if result.success or result.recoverable:
                 continue
@@ -173,10 +186,20 @@ class ExecutionPipeline:
             error_message=error_message,
             rollback_attempted=rollback_attempted,
             rollback_error=rollback_error,
+            pending_confirmation=pending_confirmation,
         )
         self._publish("execution.completed", execution.to_dict())
         self.logger.info("Execution completed: success=%s stopped=%s", execution.success, execution.stopped)
         return execution
+
+    def execute_confirmed(self, request, context: Any = None) -> ExecutionResult:
+        confirmed_step = mark_confirmation_approved(request.step, request.id)
+        plan = Plan(
+            raw_text=request.action_label,
+            intent_name=confirmed_step.intent_name,
+            steps=[confirmed_step],
+        )
+        return self.execute(plan, context)
 
     def _execute_step(self, step: PlanStep, context: Any) -> StepResult:
         start_time = _utc_now()
@@ -194,6 +217,9 @@ class ExecutionPipeline:
                 error_message=step.skip_reason or "Step cannot execute.",
                 recoverable=True,
             )
+
+        if requires_confirmation(step):
+            return self._execute_confirmation_step(step, start_time, started_at)
 
         if step.target == "conversation_memory":
             return self._execute_memory_step(step, context, start_time, started_at)
@@ -315,6 +341,32 @@ class ExecutionPipeline:
             success=True,
             returned_data=returned_data,
             error_message="",
+            recoverable=True,
+        )
+
+    def _execute_confirmation_step(
+        self,
+        step: PlanStep,
+        start_time: str,
+        started_at: float,
+    ) -> StepResult:
+        request = self.confirmation_manager.request(step)
+        returned_data = {
+            "text": request.prompt,
+            "skill": "confirmation",
+            "metadata": {
+                "confirmation_required": True,
+                "confirmation": request.to_dict(),
+            },
+        }
+        self._publish("confirmation.requested", request.to_dict())
+        return self._finish_step(
+            step=step,
+            start_time=start_time,
+            started_at=started_at,
+            success=False,
+            returned_data=returned_data,
+            error_message="Confirmation required.",
             recoverable=True,
         )
 
@@ -499,6 +551,14 @@ def _response_error(returned_data: Dict[str, Any]) -> str:
     if metadata.get("missing"):
         return str(returned_data.get("text") or "Requested item was not found.")
     return ""
+
+
+def _result_confirmation(result: StepResult) -> Dict[str, Any]:
+    metadata = dict(result.returned_data.get("metadata", {}) or {})
+    if not metadata.get("confirmation_required"):
+        return {}
+    confirmation = metadata.get("confirmation") or {}
+    return dict(confirmation) if isinstance(confirmation, dict) else {}
 
 
 def _context_with_intent(context: Any, intent: Intent) -> Any:

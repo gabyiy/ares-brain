@@ -3,6 +3,7 @@ from core.ConversationContext import (
     ConversationTurn,
     get_global_conversation_context,
 )
+from core.Confirmation import ConfirmationDecision, ConfirmationManager, ConfirmationRequest
 from core.ExecutionPipeline import ExecutionPipeline, ExecutionResult, RollbackHook, StepResult
 from core.Intent import Intent
 from core.IntentParser import IntentParser
@@ -21,6 +22,9 @@ from core.ToolChain import MAX_CHAIN_DEPTH, ToolChain, ToolChainResult, ToolChai
 __all__ = [
     "ConversationContextManager",
     "ConversationTurn",
+    "ConfirmationDecision",
+    "ConfirmationManager",
+    "ConfirmationRequest",
     "ExecutionPipeline",
     "ExecutionResult",
     "Intent",

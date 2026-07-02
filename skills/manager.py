@@ -1,5 +1,6 @@
 from typing import Optional
 
+from core.Confirmation import ConfirmationManager
 from core.ConversationContext import ConversationContextManager
 from core.ExecutionPipeline import ExecutionPipeline
 from core.Intent import Intent
@@ -26,6 +27,7 @@ class SkillManager:
         tool_adapter_registry=None,
         conversation_context=None,
         intent_parser=None,
+        confirmation_manager=None,
     ):
         self.registry = registry or SkillRegistry()
         self.event_bus = event_bus or get_global_bus()
@@ -39,6 +41,7 @@ class SkillManager:
         )
         self.conversation_context = conversation_context or ConversationContextManager()
         self.intent_parser = intent_parser or IntentParser()
+        self.confirmation_manager = confirmation_manager or ConfirmationManager()
         self.registry.selector.planner.tool_adapter_registry = self.tool_adapter_registry
         self.registry.selector.planner.set_context_sources(
             profile_store=self.profile_store,
@@ -54,6 +57,7 @@ class SkillManager:
             memory_store=self.memory_store,
             tool_adapter_registry=self.tool_adapter_registry,
             context_builder=self._context_with_intent,
+            confirmation_manager=self.confirmation_manager,
         )
         self.tool_chain = ToolChain(
             execution_pipeline=self.execution_pipeline,
@@ -96,6 +100,10 @@ class SkillManager:
         context: Optional[SkillContext] = None,
         run_before_intents: Optional[bool] = None,
     ):
+        confirmation_response = self._handle_confirmation_text(text, context or self.create_context())
+        if confirmation_response:
+            return confirmation_response
+
         intent = self.parse_intent(text)
         selection = self.registry.select(intent, run_before_intents=run_before_intents)
         plan = selection.plan if selection else getattr(self.registry.selector, "last_plan", None)
@@ -216,6 +224,66 @@ class SkillManager:
                 "execution": execution.to_dict() if execution else None,
                 "results": [result.to_dict() for result in execution.step_results] if execution else [],
             },
+        )
+
+    def _handle_confirmation_text(self, text, context: SkillContext):
+        decision = self.confirmation_manager.decide(str(text or ""))
+        if not decision:
+            return None
+
+        self.event_bus.publish(
+            "confirmation.decision",
+            decision.to_dict(),
+            source="skill_manager",
+        )
+
+        if not decision.request:
+            response = SkillResponse(
+                text=decision.message,
+                skill="confirmation",
+                metadata={"confirmation": decision.to_dict(), "error": "missing_confirmation"},
+            )
+            self._record_confirmation_response(text, response)
+            return response
+
+        if not decision.accepted:
+            response = SkillResponse(
+                text=decision.message,
+                skill="confirmation",
+                metadata={"confirmation": decision.to_dict()},
+            )
+            self._record_confirmation_response(text, response)
+            return response
+
+        execution = self.execution_pipeline.execute_confirmed(decision.request, context)
+        self.last_execution = execution
+        if execution and len(execution.step_results) == 1:
+            response_skill = execution.step_results[0].returned_data.get("skill") or "confirmation"
+        else:
+            response_skill = "confirmation"
+
+        response = SkillResponse(
+            text=execution.format_response_text(),
+            skill=response_skill,
+            metadata={
+                "confirmation": decision.to_dict(),
+                "execution": execution.to_dict(),
+                "results": [result.to_dict() for result in execution.step_results],
+            },
+        )
+        self._record_confirmation_response(text, response)
+        return response
+
+    def _record_confirmation_response(self, text, response: SkillResponse) -> None:
+        self.conversation_context.record_turn(
+            user_message=str(text or ""),
+            assistant_response=response.text,
+            detected_skill=response.skill,
+        )
+        self.event_bus.publish(
+            "skill.response_generated",
+            {"skill": response.skill, "response": response.text},
+            source="skill_manager",
         )
 
     def _publish_skill_detected(self, selection, intent: Intent, plan) -> None:

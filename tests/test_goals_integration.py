@@ -153,7 +153,9 @@ def test_text_repl_runs_goal_lifecycle_commands(monkeypatch, tmp_path, capsys):
             "list goals\n"
             f"add milestone to goal {seeded.id} Write tests\n"
             f"pause goal {seeded.id}\n"
+            "confirm\n"
             f"complete goal {seeded.id}\n"
+            "confirm\n"
             f"show goal {seeded.id}\n"
             "quit\n"
         ),
@@ -169,16 +171,20 @@ def test_text_repl_runs_goal_lifecycle_commands(monkeypatch, tmp_path, capsys):
         for event in event_bus.history("skill.detected")
         if event.payload.get("skill") == "goals"
     ]
+    decisions = event_bus.history("confirmation.decision")
 
     assert goal.status == "completed"
     assert goal.milestones == ["Write tests"]
     assert "Your goals:" in output
     assert f"Added milestone to goal {seeded.id}: Write tests" in output
+    assert f"Confirmation required to pause goal {seeded.id}" in output
     assert f"Paused goal {seeded.id}." in output
+    assert f"Confirmation required to complete goal {seeded.id}" in output
     assert f"Completed goal {seeded.id}." in output
     assert "Milestones:" in output
     assert "Write tests" in output
-    assert len(detected) >= 5
+    assert len(detected) >= 4
+    assert len(decisions) == 2
 
 
 def test_text_repl_goal_persistence_after_reload(monkeypatch, tmp_path, capsys):

@@ -187,6 +187,22 @@ class Planner:
         if not clean_clause:
             return None, "Skipped empty plan clause."
 
+        task_step = self._task_step_from_text(clean_clause)
+        if task_step:
+            return task_step, None
+
+        goal_step = self._goal_step_from_text(clean_clause)
+        if goal_step:
+            return goal_step, None
+
+        memory_step = self._memory_step_from_text(clean_clause)
+        if memory_step:
+            return memory_step, None
+
+        note_step = self._note_step_from_text(clean_clause)
+        if note_step:
+            return note_step, None
+
         calculator_step = self._calculator_step_from_text(clean_clause)
         if calculator_step:
             return calculator_step, None
@@ -202,22 +218,6 @@ class Planner:
         calendar_step = self._calendar_step_from_text(clean_clause)
         if calendar_step:
             return calendar_step, None
-
-        memory_step = self._memory_step_from_text(clean_clause)
-        if memory_step:
-            return memory_step, None
-
-        task_step = self._task_step_from_text(clean_clause)
-        if task_step:
-            return task_step, None
-
-        goal_step = self._goal_step_from_text(clean_clause)
-        if goal_step:
-            return goal_step, None
-
-        note_step = self._note_step_from_text(clean_clause)
-        if note_step:
-            return note_step, None
 
         return None, f"Skipped unsupported plan clause: {clean_clause}"
 
@@ -370,6 +370,11 @@ class Planner:
 
     def _note_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
         action = entities.get("action") or "add"
+        if action == "delete_all_request":
+            action = "delete_all_confirm"
+            entities = {**entities, "action": action}
+            raw_text = "confirm delete all notes"
+
         if action == "search":
             keyword = entities.get("keyword") or _strip_prefix(raw_text, "search notes")
             can_execute = bool(keyword)
@@ -407,6 +412,18 @@ class Planner:
         search_keyword = _note_search_keyword(text)
         if search_keyword is not None:
             return self._note_search_step(text, search_keyword)
+
+        if lowered == "delete all notes":
+            return self._note_step(text, {"action": "delete_all_request"})
+
+        if lowered.startswith("confirm delete all notes"):
+            return self._note_step(text, {"action": "delete_all_confirm"})
+
+        if lowered.startswith("delete note"):
+            return self._note_step(
+                text,
+                {"action": "delete", "note_id": _first_word(_strip_prefix(text, "delete note"))},
+            )
 
         if lowered.startswith("search notes"):
             return self._note_step(
@@ -502,6 +519,18 @@ class Planner:
 
     def _task_step_from_text(self, text: str):
         lowered = text.lower()
+        if lowered == "clear completed tasks":
+            return self._task_step(text, {"action": "clear_completed"})
+        if lowered.startswith("delete task"):
+            return self._task_step(
+                text,
+                {"action": "delete", "task_id": _first_word(_strip_prefix(text, "delete task"))},
+            )
+        if lowered.startswith("mark task") and lowered.endswith(" done"):
+            return self._task_step(
+                text,
+                {"action": "mark_done", "task_id": _first_word(_strip_prefix(text, "mark task"))},
+            )
         if lowered.startswith("create a task"):
             task_text = _strip_prefix(text, "create a task")
         elif lowered.startswith("add task"):
