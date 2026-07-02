@@ -1,0 +1,25 @@
+{
+  "adapters": {
+    "mock_weather": {
+      "enabled": true,
+      "mode": "mock",
+      "api_key_env_name": "YOUR_WEATHER_API_KEY_ENV_VAR_PLACEHOLDER",
+      "base_url": "https://example.invalid/weather",
+      "timeout_seconds": 5
+    },
+    "mock_market": {
+      "enabled": true,
+      "mode": "mock",
+      "api_key_env_name": "YOUR_MARKET_API_KEY_ENV_VAR_PLACEHOLDER",
+      "base_url": "https://example.invalid/market",
+      "timeout_seconds": 5
+    },
+    "mock_calendar": {
+      "enabled": true,
+      "mode": "mock",
+      "api_key_env_name": "YOUR_CALENDAR_API_KEY_ENV_VAR_PLACEHOLDER",
+      "base_url": "https://example.invalid/calendar",
+      "timeout_seconds": 5
+    }
+  }
+}

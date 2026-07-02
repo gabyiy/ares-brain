@@ -1,6 +1,9 @@
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+
+from core.AdapterConfig import ExternalAdapterConfig, SecretsGuard
 
 
 @dataclass(frozen=True)
@@ -68,8 +71,17 @@ class ToolAdapter(ABC):
 
 
 class ToolAdapterRegistry:
-    def __init__(self, adapters: Optional[Iterable[ToolAdapter]] = None):
+    def __init__(
+        self,
+        adapters: Optional[Iterable[ToolAdapter]] = None,
+        configs: Optional[Mapping[str, ExternalAdapterConfig]] = None,
+        secrets_guard: Optional[SecretsGuard] = None,
+    ):
         self._adapters: Dict[str, ToolAdapter] = {}
+        self._configs: Dict[str, ExternalAdapterConfig] = {}
+        self.secrets_guard = secrets_guard or SecretsGuard()
+        for name, config in (configs or {}).items():
+            self.set_config(name, config)
         for adapter in adapters or ():
             self.register(adapter)
 
@@ -89,6 +101,30 @@ class ToolAdapterRegistry:
 
     def unregister(self, name: str) -> Optional[ToolAdapter]:
         return self._adapters.pop((name or "").strip(), None)
+
+    def set_config(self, name: str, config: ExternalAdapterConfig) -> ExternalAdapterConfig:
+        if not isinstance(config, ExternalAdapterConfig):
+            raise TypeError("Adapter config must be an ExternalAdapterConfig")
+
+        clean_name = (name or config.name or "").strip()
+        if not clean_name:
+            raise ValueError("Adapter config name is required")
+        if config.name != clean_name:
+            config = ExternalAdapterConfig(
+                name=clean_name,
+                enabled=config.enabled,
+                mode=config.mode,
+                api_key_env_name=config.api_key_env_name,
+                base_url=config.base_url,
+                timeout_seconds=config.timeout_seconds,
+            )
+
+        self.secrets_guard.validate_adapter_config(config)
+        self._configs[clean_name] = config
+        return config
+
+    def config_for(self, name: str) -> Optional[ExternalAdapterConfig]:
+        return self._configs.get((name or "").strip())
 
     def get(self, name: str) -> Optional[ToolAdapter]:
         return self._adapters.get((name or "").strip())
@@ -112,6 +148,10 @@ class ToolAdapterRegistry:
                 metadata={"missing_adapter": request.adapter_name},
             )
 
+        blocked_response = self._blocked_by_config(adapter, request)
+        if blocked_response:
+            return blocked_response
+
         if not adapter.supports(request.capability):
             return ToolResponse(
                 adapter_name=adapter.name,
@@ -125,7 +165,62 @@ class ToolAdapterRegistry:
         return adapter.handle(request)
 
     def metadata(self) -> List[Dict[str, Any]]:
-        return [adapter.metadata() for adapter in self.all()]
+        metadata = []
+        for adapter in self.all():
+            adapter_metadata = adapter.metadata()
+            config = self.config_for(adapter.name)
+            if config:
+                adapter_metadata["config"] = config.to_dict()
+            metadata.append(adapter_metadata)
+        return metadata
+
+    def _blocked_by_config(self, adapter: ToolAdapter, request: ToolRequest) -> Optional[ToolResponse]:
+        config = self.config_for(adapter.name)
+        if not config:
+            return None
+
+        if not config.enabled:
+            return ToolResponse(
+                adapter_name=adapter.name,
+                capability=request.capability,
+                success=False,
+                text=f"Tool adapter is disabled: {adapter.name}",
+                error_message=f"Tool adapter is disabled: {adapter.name}",
+                metadata={"disabled_adapter": adapter.name, "config": config.to_dict()},
+            )
+
+        if config.mode in {"mock", "local"}:
+            return None
+
+        env_name = config.api_key_env_name
+        if not env_name or config.api_key_env_name_is_placeholder:
+            return ToolResponse(
+                adapter_name=adapter.name,
+                capability=request.capability,
+                success=False,
+                text=f"Real mode for adapter {adapter.name} requires a configured environment variable name.",
+                error_message=f"Real mode for adapter {adapter.name} requires a configured environment variable name.",
+                metadata={"missing_api_key_env_name": True, "config": config.to_dict()},
+            )
+
+        if not os.environ.get(env_name):
+            return ToolResponse(
+                adapter_name=adapter.name,
+                capability=request.capability,
+                success=False,
+                text=f"Real mode for adapter {adapter.name} requires environment variable {env_name}.",
+                error_message=f"Real mode for adapter {adapter.name} requires environment variable {env_name}.",
+                metadata={"missing_env_key": env_name, "config": config.to_dict()},
+            )
+
+        return ToolResponse(
+            adapter_name=adapter.name,
+            capability=request.capability,
+            success=False,
+            text=f"Real mode is not implemented for adapter {adapter.name}.",
+            error_message=f"Real mode is not implemented for adapter {adapter.name}.",
+            metadata={"real_mode_not_implemented": True, "config": config.to_dict()},
+        )
 
 
 class MockWeatherAdapter(ToolAdapter):

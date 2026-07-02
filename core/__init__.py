@@ -3,6 +3,14 @@ from core.ConversationContext import (
     ConversationTurn,
     get_global_conversation_context,
 )
+from core.AdapterConfig import (
+    AdapterConfigError,
+    ExternalAdapterConfig,
+    SecretScanIssue,
+    SecretValidationError,
+    SecretsGuard,
+    load_adapter_configs,
+)
 from core.Confirmation import ConfirmationDecision, ConfirmationManager, ConfirmationRequest
 from core.ExecutionPipeline import ExecutionPipeline, ExecutionResult, RollbackHook, StepResult
 from core.Intent import Intent
@@ -22,11 +30,13 @@ from core.ToolChain import MAX_CHAIN_DEPTH, ToolChain, ToolChainResult, ToolChai
 __all__ = [
     "ConversationContextManager",
     "ConversationTurn",
+    "AdapterConfigError",
     "ConfirmationDecision",
     "ConfirmationManager",
     "ConfirmationRequest",
     "ExecutionPipeline",
     "ExecutionResult",
+    "ExternalAdapterConfig",
     "Intent",
     "IntentParser",
     "MultiStepPlan",
@@ -34,6 +44,9 @@ __all__ = [
     "Planner",
     "PlanStep",
     "RollbackHook",
+    "SecretScanIssue",
+    "SecretValidationError",
+    "SecretsGuard",
     "StepResult",
     "MockCalendarAdapter",
     "MockMarketAdapter",
@@ -47,4 +60,5 @@ __all__ = [
     "ToolRequest",
     "ToolResponse",
     "get_global_conversation_context",
+    "load_adapter_configs",
 ]

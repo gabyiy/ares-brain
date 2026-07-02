@@ -7,6 +7,10 @@ backups/
 __pycache__/
 *.pyc
 .env
+config/adapters.json
+config/adapters.local.json
+config/*.secret.json
+config/*.secrets.json
 data/user_profile.json
 data/goals.json
 data/notes.json
