@@ -41,6 +41,9 @@ class Plan:
     def executable_steps(self) -> List[PlanStep]:
         return [step for step in self.steps if step.can_execute]
 
+    def is_multi_step(self) -> bool:
+        return len(self.executable_steps()) > 1
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "raw_text": self.raw_text,
@@ -65,6 +68,11 @@ class Plan:
             lines.append("Planning errors:")
             lines.extend(f"- {error}" for error in self.errors)
         return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class MultiStepPlan(Plan):
+    """Marker plan for ordered requests that execute more than one step."""
 
 
 class Planner:
@@ -110,7 +118,8 @@ class Planner:
         if not ordered_steps and not errors:
             errors.append("No executable steps found.")
 
-        return Plan(
+        plan_type = MultiStepPlan if len(ordered_steps) > 1 else Plan
+        return plan_type(
             raw_text=raw_text,
             intent_name=intent.intent_name,
             steps=ordered_steps,
@@ -251,7 +260,7 @@ class Planner:
                     {"action": action, "goal_id": _first_word(_strip_prefix(text, prefix))},
                 )
 
-        if lowered in ("list goals", "show goals"):
+        if lowered in ("list goals", "show goals", "list my goals", "show my goals"):
             return self._goal_step(text, {"action": "list"})
 
         if lowered.startswith("add goal"):

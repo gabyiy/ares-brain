@@ -6,7 +6,7 @@ from core.ConversationContext import (
 from core.ExecutionPipeline import ExecutionPipeline, ExecutionResult, RollbackHook, StepResult
 from core.Intent import Intent
 from core.IntentParser import IntentParser
-from core.Planner import Plan, Planner, PlanStep
+from core.Planner import MultiStepPlan, Plan, Planner, PlanStep
 from core.ToolAdapter import (
     MockCalendarAdapter,
     MockMarketAdapter,
@@ -25,6 +25,7 @@ __all__ = [
     "ExecutionResult",
     "Intent",
     "IntentParser",
+    "MultiStepPlan",
     "Plan",
     "Planner",
     "PlanStep",

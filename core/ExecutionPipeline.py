@@ -94,7 +94,10 @@ class ExecutionResult:
             result = self.step_results[0]
             return result.returned_data.get("text") or result.error_message or self.format()
 
-        lines = ["Plan results:"]
+        has_success = any(result.success for result in self.step_results)
+        has_failure = any(not result.success for result in self.step_results)
+        heading = "Partial results:" if has_success and has_failure else "Plan results:"
+        lines = [heading]
         for index, result in enumerate(self.step_results, start=1):
             text = result.returned_data.get("text") or result.error_message or "No response."
             lines.append(f"{index}. {text}")

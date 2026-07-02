@@ -65,7 +65,7 @@ class IntentParser:
         return self._unknown(parsed.raw_text)
 
     def _parse_goal(self, text: ParsedText) -> Optional[Intent]:
-        if text.is_exact("list goals", "show goals"):
+        if text.is_exact("list goals", "show goals", "list my goals", "show my goals"):
             return self._intent("goal", 0.96, text.raw_text, action="list")
 
         if text.starts_with("show goal"):
