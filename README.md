@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.15 - Adapter-Backed Market Skill
+ARES v1.16 - Adapter-Backed Calendar Skill
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` for local multi-step execution plans, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution, `core.ToolAdapter` for offline adapter-backed tools, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` for local multi-step execution plans, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution, `core.ToolAdapter` for offline adapter-backed tools, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 ARES
 │
@@ -92,6 +92,7 @@ Completed
 - External tool adapter interface
 - Built-in weather skill using the offline mock weather adapter
 - Built-in market skill using the offline mock market adapter
+- Built-in calendar skill using the offline mock calendar adapter
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -113,6 +114,10 @@ ARES currently understands questions such as:
 - nvidia stock
 - apple stock
 - market price for tesla
+- what is on my calendar today
+- calendar tomorrow
+- schedule today
+- do I have anything tomorrow
 - latest defense news
 - what is artificial intelligence
 - nvidia stock
@@ -157,6 +162,7 @@ Implemented Features
 - External ToolAdapter foundation with `ToolRequest`, `ToolResponse`, `ToolAdapterRegistry`, and offline mock weather/market adapters
 - Built-in weather skill backed by `ToolAdapterRegistry` and `MockWeatherAdapter`
 - Built-in market skill backed by `ToolAdapterRegistry` and `MockMarketAdapter`
+- Built-in calendar skill backed by `ToolAdapterRegistry` and `MockCalendarAdapter`
 - Built-in time/date skill
 - Built-in memory recall skill for saved profile facts
 - Built-in calculator skill for safe local arithmetic
@@ -166,7 +172,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 148 tests across core Phase 2-16 modules
+- Pytest automated coverage for 156 tests across core Phase 2-17 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -185,7 +191,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `148 tests`.
+Current pytest collection: `156 tests`.
 
 Continuous Integration
 
@@ -223,6 +229,7 @@ Latest Architecture Status
 - TasksSkill runs as a priority local skill for task/reminder commands.
 - WeatherSkill runs as a priority local skill for weather commands and uses only the offline `MockWeatherAdapter`.
 - MarketSkill runs as a priority local skill for stock/market quote commands and uses only the offline `MockMarketAdapter`.
+- CalendarSkill runs as a priority local skill for schedule/calendar commands and uses only the offline `MockCalendarAdapter`.
 - SkillManager parses user text into a structured `Intent` before ToolSelector runs.
 - ToolSelector builds a `Plan` before selection so multi-step requests can be inspected before execution.
 - ToolSelector first scores matching `intent_names`, then falls back to legacy triggers only for unknown intents.
@@ -237,6 +244,7 @@ Latest Architecture Status
 - Live REPL integration tests verify multi-step plan creation, notes plus calculator execution, task plus memory execution, goal command routing, weather routing through `MockWeatherAdapter`, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
 - Weather live-path tests verify `IntentParser -> Planner -> ExecutionPipeline -> WeatherSkill -> MockWeatherAdapter` through the text REPL.
 - Market tests verify parser, selector, planner, execution pipeline, REPL routing, missing adapter handling, and `MockMarketAdapter` responses.
+- Calendar tests verify parser, selector, planner, execution pipeline, REPL routing, missing adapter handling, and `MockCalendarAdapter` responses.
 - ToolChain tests verify repeated weather steps are rejected before execution to prevent loop-style chains.
 - Goals live-path integration tests verify REPL add/list/milestone/pause/complete commands, persistence after reload, Planner goal steps, ExecutionPipeline goal execution, and ToolChain goal chains.
 - SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
@@ -296,14 +304,14 @@ Completed:
 - External tool adapter interface
 - Weather skill
 - Stock/market skill
+- Calendar skill
 
 Next:
 
-1. Calendar skill
-2. GPT fallback integration
-3. Voice input/output
-4. Raspberry Pi deployment
-5. Robot body / sensors
+1. GPT fallback integration
+2. Voice input/output
+3. Raspberry Pi deployment
+4. Robot body / sensors
 
 ---
 
@@ -417,7 +425,7 @@ Phase 8 Structured Intent Parser
 
 - `core.Intent` stores `intent_name`, `confidence`, `extracted_entities`, and `raw_text`.
 - `core.IntentParser` converts local natural language into structured intents before ToolSelector runs.
-- Recognized intents include `calculate`, `goal`, `note`, `task`, `memory_recall`, `weather`, `market`, `time_date`, and `unknown`.
+- Recognized intents include `calculate`, `goal`, `note`, `task`, `memory_recall`, `weather`, `market`, `calendar`, `time_date`, and `unknown`.
 - Useful entities are extracted for local tools, such as task text and due text.
 - Parser hardening covers common user phrasing without adding GPT, new skills, or storage format changes.
 - SkillManager consumes structured intents without using AI, GPT, embeddings, or external APIs.
@@ -436,7 +444,7 @@ Phase 10 Multi-Step Task Planner Foundation
 - `core.PlanStep` stores one ordered executable step.
 - `core.Plan` stores ordered steps plus planning errors.
 - `core.Planner` converts an `Intent` into a local execution plan without executing skills.
-- Supported planner targets are goals, notes, tasks, calculator, weather, market, and conversation memory.
+- Supported planner targets are goals, notes, tasks, calculator, weather, market, calendar, and conversation memory.
 - ToolSelector attaches plans before SkillManager executes anything.
 - The text REPL supports `show plan` and `show steps`.
 - No new skills, GPT, voice, notifications, calendar integration, or external APIs were added.
@@ -502,19 +510,28 @@ Phase 16
 
 Phase 17
 
+- `skills.builtin.CalendarSkill` answers local calendar/schedule requests through `ToolAdapterRegistry`.
+- CalendarSkill uses `MockCalendarAdapter` only.
+- Supported phrases include `what is on my calendar today`, `calendar tomorrow`, `schedule today`, and `do I have anything tomorrow`.
+- `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL route the local `calendar` intent.
+- Tests cover calendar parsing, mock adapter calls, skill responses, planner steps, execution pipeline steps, REPL routing, and missing adapter errors.
+- No Google Calendar integration, real calendar API, API keys, internet access, GPT, voice, notifications, or background automation were added.
+
+Phase 18
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 18
+Phase 19
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 19
+Phase 20
 
 - Robotics
 - ROS2
