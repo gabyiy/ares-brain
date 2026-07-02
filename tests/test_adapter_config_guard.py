@@ -112,8 +112,10 @@ def test_raw_looking_secret_is_rejected():
 def test_example_adapter_config_uses_only_safe_placeholders():
     configs = load_adapter_configs("config/adapters.example.json")
 
-    assert sorted(configs) == ["mock_calendar", "mock_market", "mock_weather"]
+    assert sorted(configs) == ["mock_calendar", "mock_market", "mock_weather", "real_weather"]
     assert configs["mock_weather"].mode == "mock"
+    assert configs["real_weather"].enabled is False
+    assert configs["real_weather"].mode == "mock"
     assert configs["mock_market"].api_key_env_name_is_placeholder is True
     assert configs["mock_calendar"].timeout_seconds == 5.0
 

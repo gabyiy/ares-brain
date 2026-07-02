@@ -52,6 +52,7 @@ class ToolAdapter(ABC):
     capabilities: Tuple[str, ...] = ()
     requires_network = False
     requires_auth = False
+    supports_real_mode = False
 
     def metadata(self) -> Dict[str, Any]:
         return {
@@ -60,10 +61,18 @@ class ToolAdapter(ABC):
             "capabilities": list(self.capabilities),
             "requires_network": bool(self.requires_network),
             "requires_auth": bool(self.requires_auth),
+            "supports_real_mode": bool(self.supports_real_mode),
         }
 
     def supports(self, capability: str) -> bool:
         return (capability or "").strip() in set(self.capabilities)
+
+    def handle_configured(
+        self,
+        request: ToolRequest,
+        config: Optional[ExternalAdapterConfig] = None,
+    ) -> ToolResponse:
+        return self.handle(request)
 
     @abstractmethod
     def handle(self, request: ToolRequest) -> ToolResponse:
@@ -162,7 +171,8 @@ class ToolAdapterRegistry:
                 metadata={"unsupported_capability": request.capability},
             )
 
-        return adapter.handle(request)
+        config = self.config_for(adapter.name)
+        return adapter.handle_configured(request, config)
 
     def metadata(self) -> List[Dict[str, Any]]:
         metadata = []
@@ -213,14 +223,17 @@ class ToolAdapterRegistry:
                 metadata={"missing_env_key": env_name, "config": config.to_dict()},
             )
 
-        return ToolResponse(
-            adapter_name=adapter.name,
-            capability=request.capability,
-            success=False,
-            text=f"Real mode is not implemented for adapter {adapter.name}.",
-            error_message=f"Real mode is not implemented for adapter {adapter.name}.",
-            metadata={"real_mode_not_implemented": True, "config": config.to_dict()},
-        )
+        if not bool(getattr(adapter, "supports_real_mode", False)):
+            return ToolResponse(
+                adapter_name=adapter.name,
+                capability=request.capability,
+                success=False,
+                text=f"Real mode is not implemented for adapter {adapter.name}.",
+                error_message=f"Real mode is not implemented for adapter {adapter.name}.",
+                metadata={"real_mode_not_implemented": True, "config": config.to_dict()},
+            )
+
+        return None
 
 
 class MockWeatherAdapter(ToolAdapter):
@@ -245,6 +258,86 @@ class MockWeatherAdapter(ToolAdapter):
             text=f"Mock weather for {location}: clear, 21 C.",
             data=data,
             metadata={"mock": True},
+        )
+
+
+class RealWeatherAdapter(ToolAdapter):
+    name = "real_weather"
+    description = "Real-weather-capable adapter skeleton. Network execution is intentionally not implemented yet."
+    capabilities = ("weather.current", "weather.forecast")
+    requires_network = True
+    requires_auth = True
+    supports_real_mode = True
+
+    def handle(self, request: ToolRequest) -> ToolResponse:
+        return ToolResponse(
+            adapter_name=self.name,
+            capability=request.capability,
+            success=False,
+            text="Real weather adapter requires explicit real-mode adapter config.",
+            error_message="Real weather adapter requires explicit real-mode adapter config.",
+            metadata={"missing_adapter_config": True},
+        )
+
+    def handle_configured(
+        self,
+        request: ToolRequest,
+        config: Optional[ExternalAdapterConfig] = None,
+    ) -> ToolResponse:
+        if not config:
+            return self.handle(request)
+
+        if config.mode != "real":
+            return ToolResponse(
+                adapter_name=self.name,
+                capability=request.capability,
+                success=False,
+                text="Real weather adapter is available only when adapter config mode is real.",
+                error_message="Real weather adapter is available only when adapter config mode is real.",
+                metadata={"invalid_mode": config.mode, "config": config.to_dict()},
+            )
+
+        env_name = config.api_key_env_name
+        if not env_name or config.api_key_env_name_is_placeholder:
+            return ToolResponse(
+                adapter_name=self.name,
+                capability=request.capability,
+                success=False,
+                text="Real weather adapter requires an API key environment variable name.",
+                error_message="Real weather adapter requires an API key environment variable name.",
+                metadata={"missing_api_key_env_name": True, "config": config.to_dict()},
+            )
+
+        api_key = os.environ.get(env_name)
+        if not api_key:
+            return ToolResponse(
+                adapter_name=self.name,
+                capability=request.capability,
+                success=False,
+                text=f"Real weather adapter requires environment variable {env_name}.",
+                error_message=f"Real weather adapter requires environment variable {env_name}.",
+                metadata={"missing_env_key": env_name, "config": config.to_dict()},
+            )
+
+        location = str(request.parameters.get("location") or request.query or "local").strip()
+        period = str(request.parameters.get("period") or "today").strip().lower()
+        return ToolResponse(
+            adapter_name=self.name,
+            capability=request.capability,
+            success=False,
+            text="Real weather adapter is configured, but network execution is not implemented yet.",
+            error_message="Real weather adapter network execution is not implemented.",
+            data={
+                "location": location,
+                "period": period,
+                "source": "real_weather_skeleton",
+            },
+            metadata={
+                "real_weather_skeleton": True,
+                "api_key_env_name": env_name,
+                "base_url": config.base_url,
+                "timeout_seconds": config.timeout_seconds,
+            },
         )
 
 

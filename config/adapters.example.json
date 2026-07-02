@@ -7,6 +7,13 @@
       "base_url": "https://example.invalid/weather",
       "timeout_seconds": 5
     },
+    "real_weather": {
+      "enabled": false,
+      "mode": "mock",
+      "api_key_env_name": "YOUR_REAL_WEATHER_API_KEY_ENV_VAR_PLACEHOLDER",
+      "base_url": "https://example.invalid/weather",
+      "timeout_seconds": 5
+    },
     "mock_market": {
       "enabled": true,
       "mode": "mock",
