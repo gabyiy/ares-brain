@@ -12,7 +12,7 @@ Current System Flow
 6. The REPL creates `NotesStore` for persistent local notes.
 7. The REPL creates `TasksStore` for persistent offline tasks.
 8. The REPL creates the shared in-memory `ConversationContextManager`.
-9. The REPL creates `SkillManager`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
+9. The REPL creates `SkillManager`, which owns an offline `ToolAdapterRegistry` with `MockWeatherAdapter`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
 10. User input is sent to `IntentRouter`.
 11. `IntentRouter` publishes input lifecycle events.
 12. When a skill path is checked, `SkillManager` parses user text into `core.Intent` with `core.IntentParser`.
@@ -102,6 +102,7 @@ Current recognized intents:
 - `note`
 - `task`
 - `memory_recall`
+- `weather`
 - `time_date`
 - `unknown`
 
@@ -116,6 +117,8 @@ Current entity extraction examples:
 - `show my notes` becomes a `note` intent with a list action.
 - `what is my birthday` becomes a `memory_recall` intent for the birthday profile fact.
 - `what did I tell you about my job` becomes a `memory_recall` intent with a recall topic.
+- `weather in Madrid` becomes a `weather` intent with location `Madrid`, adapter `mock_weather`, and capability `weather.current`.
+- `weather tomorrow` becomes a `weather` intent with period `tomorrow` and capability `weather.forecast`.
 
 The parser is deterministic and offline. It does not use AI, GPT, embeddings, external APIs, or a broad regex-only dispatcher.
 
@@ -143,6 +146,7 @@ Current supported planner targets:
 - `tasks`
 - `goals`
 - `calculator`
+- `weather`
 - `conversation_memory`
 
 Planner boundaries:
@@ -186,7 +190,7 @@ ToolChain boundaries:
 - ToolChain does not plan.
 - ToolChain does not execute skills directly.
 - ToolChain does not write memory, goals, notes, or tasks directly.
-- ToolChain does not call GPT, voice, notifications, calendar APIs, weather, stocks, or external APIs.
+- ToolChain does not call GPT, voice, notifications, calendar APIs, stocks, or external APIs.
 - ToolChain does not change storage formats.
 
 ToolAdapter
@@ -224,7 +228,8 @@ Current boundaries:
 - Mock adapters do not require network.
 - Mock adapters do not require authentication.
 - No API keys are read or stored.
-- No GPT, voice, weather skill, stock skill, calendar integration, or web adapter has been added.
+- WeatherSkill uses `MockWeatherAdapter` through this registry for local weather answers.
+- No real weather API, stock skill, calendar integration, GPT, voice, or web adapter has been added.
 
 ExecutionPipeline
 
@@ -257,6 +262,7 @@ Current integration verification:
 - Live REPL tests verify notes plus calculator execution through ExecutionPipeline.
 - Live REPL tests verify task plus memory execution through ExecutionPipeline.
 - Live REPL tests verify goal add, list, add milestone, pause, complete, and show commands.
+- Live REPL tests verify weather requests through `WeatherSkill` and `MockWeatherAdapter`.
 - Live REPL tests verify recoverable partial failure reporting and continued execution.
 - Live REPL tests verify `show execution` and `show last execution`.
 - A live-path spy verifies the active path uses `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill`.
@@ -468,6 +474,7 @@ Current supported runtime skills:
 - `GoalsSkill`
 - `NotesSkill`
 - `TasksSkill`
+- `WeatherSkill`
 
 Future local skills should define clear triggers and optional `selection_keywords` so they can use the same selector without a giant if/else chain.
 New deterministic skills should also define `intent_names` when they have a parser-recognized intent.
@@ -496,6 +503,7 @@ Skill context currently carries:
 - `goals_store`
 - `notes_store`
 - `tasks_store`
+- `tool_adapter_registry`
 - `conversation_context`
 - `metadata`
 
@@ -515,6 +523,7 @@ Current built-in skills:
 - `GoalsSkill`
 - `NotesSkill`
 - `TasksSkill`
+- `WeatherSkill`
 
 `TimeDateSkill` answers local time and date questions.
 
@@ -530,7 +539,9 @@ Current built-in skills:
 
 `TasksSkill` can also consume parser-derived entities, so text such as `remember buy milk tomorrow` is stored as task text `buy milk` with due text `tomorrow`.
 
-No notifications, voice, weather, stocks, calendar, external API, or GPT integration has been added as part of the tasks milestone.
+`WeatherSkill` answers weather requests through `ToolAdapterRegistry` and the offline `MockWeatherAdapter`. It supports `weather`, `weather today`, `weather tomorrow`, and `weather in Madrid`. It does not call real APIs, require API keys, or use internet access.
+
+No notifications, voice, real weather APIs, stocks, calendar, external API, or GPT integration has been added as part of the current local skill milestones.
 
 Conversation context is not a persistent memory store. It only tracks recent handled skill turns in RAM so local skills and interfaces can inspect short-term context without GPT or embeddings.
 
@@ -548,6 +559,7 @@ Current responsibilities:
 - Route goal commands to `GoalsSkill` and persist goals in `GoalsStore`.
 - Route note commands to `NotesSkill` and persist notes in `NotesStore`.
 - Route task commands to `TasksSkill` and persist tasks in `TasksStore`.
+- Route weather commands to `WeatherSkill` through `MockWeatherAdapter`.
 - Route parser-recognized local intents through `SkillManager` and `ToolSelector`.
 - Preserve unknown input safety when IntentParser returns `unknown`.
 - Show the last plan with `show plan` or `show steps`.
@@ -604,5 +616,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 130 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ToolAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, and `skills.builtin.TasksSkill`.
+- Pytest collection: 138 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ToolAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, and `skills.builtin.WeatherSkill`.

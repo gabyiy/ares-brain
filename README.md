@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.13 - External Tool Adapter Foundation
+ARES v1.14 - Adapter-Backed Weather Skill
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` for local multi-step execution plans, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution, `core.ToolAdapter` for future external-tool adapters, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` for local multi-step execution plans, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution, `core.ToolAdapter` for offline adapter-backed tools, `skills.builtin.WeatherSkill` for mock/local weather answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 ARES
 │
@@ -90,6 +90,7 @@ Completed
 - Execution pipeline for planner steps
 - Tool chaining for bounded local multi-step requests
 - External tool adapter interface
+- Built-in weather skill using the offline mock weather adapter
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -103,7 +104,10 @@ ARES currently understands questions such as:
 
 - hello ares
 - goodbye ares
-- weather madrid tomorrow
+- weather
+- weather today
+- weather tomorrow
+- weather in Madrid
 - latest defense news
 - what is artificial intelligence
 - nvidia stock
@@ -146,6 +150,7 @@ Implemented Features
 - Tool chaining with max depth, loop prevention, execution trace, and chain history
 - Execution pipeline for ordered plan step execution, execution results, logging, and rollback hooks
 - External ToolAdapter foundation with `ToolRequest`, `ToolResponse`, `ToolAdapterRegistry`, and offline mock weather/market adapters
+- Built-in weather skill backed by `ToolAdapterRegistry` and `MockWeatherAdapter`
 - Built-in time/date skill
 - Built-in memory recall skill for saved profile facts
 - Built-in calculator skill for safe local arithmetic
@@ -155,7 +160,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 130 tests across core Phase 2-14 modules
+- Pytest automated coverage for 138 tests across core Phase 2-15 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -174,7 +179,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `130 tests`.
+Current pytest collection: `138 tests`.
 
 Continuous Integration
 
@@ -210,6 +215,7 @@ Latest Architecture Status
 - GoalsSkill runs as a priority local skill for long-term goal commands.
 - NotesSkill runs as a priority local skill for note commands.
 - TasksSkill runs as a priority local skill for task/reminder commands.
+- WeatherSkill runs as a priority local skill for weather commands and uses only the offline `MockWeatherAdapter`.
 - SkillManager parses user text into a structured `Intent` before ToolSelector runs.
 - ToolSelector builds a `Plan` before selection so multi-step requests can be inspected before execution.
 - ToolSelector first scores matching `intent_names`, then falls back to legacy triggers only for unknown intents.
@@ -218,10 +224,10 @@ Latest Architecture Status
 - ToolChain enforces max chain depth 5, prevents repeated-step loops, and records chain trace/history.
 - ExecutionPipeline executes plan steps sequentially and records `StepResult` and `ExecutionResult` details.
 - ExecutionPipeline emits execution events and standard logs for start, step completion, recoverable failure, unrecoverable failure, rollback, and completion.
-- ToolAdapter defines future external-tool contracts with adapter metadata, requests, responses, and registry lookup.
+- ToolAdapter defines external-tool contracts with adapter metadata, requests, responses, and registry lookup.
 - MockWeatherAdapter and MockMarketAdapter are offline-only adapters that do not require network, auth, API keys, GPT, or voice.
-- Planner can hold a ToolAdapterRegistry for future adapter-aware planning, and ExecutionPipeline can safely execute explicit `tool_adapter` plan steps through an injected registry.
-- Live REPL integration tests verify multi-step plan creation, notes plus calculator execution, task plus memory execution, goal command routing, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
+- Planner can hold a ToolAdapterRegistry for adapter-aware planning, and ExecutionPipeline can safely execute weather skill steps or explicit `tool_adapter` plan steps through an injected registry.
+- Live REPL integration tests verify multi-step plan creation, notes plus calculator execution, task plus memory execution, goal command routing, weather routing, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
 - Goals live-path integration tests verify REPL add/list/milestone/pause/complete commands, persistence after reload, Planner goal steps, ExecutionPipeline goal execution, and ToolChain goal chains.
 - SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
 - IntentParser tests cover ambiguous local phrases such as `remember to buy milk`, note reminders, birthday recall, goal actions, task actions, note actions, calculator requests, and unknown text.
@@ -278,16 +284,16 @@ Completed:
 - Tool chaining
 - Long-term goal management
 - External tool adapter interface
+- Weather skill
 
 Next:
 
-1. Weather skill
-2. Calendar skill
-3. Stock/market skill
-4. GPT fallback integration
-5. Voice input/output
-6. Raspberry Pi deployment
-7. Robot body / sensors
+1. Calendar skill
+2. Stock/market skill
+3. GPT fallback integration
+4. Voice input/output
+5. Raspberry Pi deployment
+6. Robot body / sensors
 
 ---
 
@@ -401,7 +407,7 @@ Phase 8 Structured Intent Parser
 
 - `core.Intent` stores `intent_name`, `confidence`, `extracted_entities`, and `raw_text`.
 - `core.IntentParser` converts local natural language into structured intents before ToolSelector runs.
-- Recognized intents include `calculate`, `goal`, `note`, `task`, `memory_recall`, `time_date`, and `unknown`.
+- Recognized intents include `calculate`, `goal`, `note`, `task`, `memory_recall`, `weather`, `time_date`, and `unknown`.
 - Useful entities are extracted for local tools, such as task text and due text.
 - Parser hardening covers common user phrasing without adding GPT, new skills, or storage format changes.
 - SkillManager consumes structured intents without using AI, GPT, embeddings, or external APIs.
@@ -420,7 +426,7 @@ Phase 10 Multi-Step Task Planner Foundation
 - `core.PlanStep` stores one ordered executable step.
 - `core.Plan` stores ordered steps plus planning errors.
 - `core.Planner` converts an `Intent` into a local execution plan without executing skills.
-- Supported planner targets are goals, notes, tasks, calculator, and conversation memory.
+- Supported planner targets are goals, notes, tasks, calculator, weather, and conversation memory.
 - ToolSelector attaches plans before SkillManager executes anything.
 - The text REPL supports `show plan` and `show steps`.
 - No new skills, GPT, voice, notifications, calendar integration, or external APIs were added.
@@ -463,23 +469,32 @@ Phase 14 External Tool Adapter Foundation
 - `MockWeatherAdapter` and `MockMarketAdapter` provide offline mock responses only.
 - Planner accepts an optional adapter registry for future adapter-aware planning.
 - ExecutionPipeline can execute explicit `tool_adapter` plan steps through an injected registry.
-- No real APIs, API keys, GPT, voice, weather skill, stock skill, calendar integration, or web access were added.
+- No real APIs, API keys, GPT, voice, stock skill, calendar integration, or web access were added.
 
 Phase 15
+
+- `skills.builtin.WeatherSkill` answers local weather requests through `ToolAdapterRegistry`.
+- WeatherSkill uses `MockWeatherAdapter` only.
+- Supported phrases include `weather`, `weather today`, `weather tomorrow`, and `weather in Madrid`.
+- `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL route the local `weather` intent.
+- Tests cover weather parsing, mock adapter calls, skill responses, planner steps, execution pipeline steps, REPL routing, and missing adapter errors.
+- No real weather API, API keys, internet access, GPT, voice, calendar, stocks, or notifications were added.
+
+Phase 16
 
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 16
+Phase 17
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 17
+Phase 18
 
 - Robotics
 - ROS2

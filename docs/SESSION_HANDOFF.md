@@ -4,7 +4,7 @@ Last Updated: 2026-07-01
 
 Current Version
 
-ARES v1.13 - External Tool Adapter Foundation
+ARES v1.14 - Adapter-Backed Weather Skill
 
 ---
 
@@ -79,6 +79,7 @@ New test coverage:
 - ExecutionPipeline
 - ToolChain
 - ToolAdapter
+- WeatherSkill
 - ToolSelector structured intent routing
 - Text REPL profile recall flow
 
@@ -95,7 +96,7 @@ Selection behavior:
 
 - Scores local skills instead of relying on first registered match only.
 - Supports exact trigger matches, contained trigger phrases, token overlap, optional `selection_keywords`, optional `selection_priority`, and `run_before_intents` filtering.
-- Currently routes `TimeDateSkill`, `MemoryRecallSkill`, `CalculatorSkill`, `GoalsSkill`, `NotesSkill`, and `TasksSkill`.
+- Currently routes `TimeDateSkill`, `MemoryRecallSkill`, `CalculatorSkill`, `GoalsSkill`, `NotesSkill`, `TasksSkill`, and `WeatherSkill`.
 
 Phase 4 CalculatorSkill has been added as the first real local tool.
 
@@ -188,7 +189,7 @@ New intent parser modules:
 Intent behavior:
 
 - `Intent` stores `intent_name`, `confidence`, `extracted_entities`, and `raw_text`.
-- `IntentParser` recognizes `calculate`, `note`, `task`, `memory_recall`, `time_date`, and `unknown`.
+- `IntentParser` recognizes `calculate`, `note`, `task`, `memory_recall`, `weather`, `time_date`, and `unknown`.
 - Useful entities are extracted for local tools, including task action/text/due, note actions, calculator expressions, and memory recall topics.
 - Example: `remember buy milk tomorrow` becomes a `task` intent with text `buy milk` and due text `tomorrow`.
 - Example: `remember to buy milk` becomes a `task` intent with text `buy milk`.
@@ -222,7 +223,7 @@ Planner behavior:
 
 - Receives an `Intent`.
 - Produces ordered executable steps.
-- Supports notes, tasks, calculator, and conversation memory targets.
+- Supports notes, tasks, calculator, weather, and conversation memory targets.
 - Skips impossible steps and returns planning errors cleanly.
 - Serializes plans and steps for tests, events, and REPL display.
 - Planner never executes skills.
@@ -324,7 +325,24 @@ ToolAdapter behavior:
 - Provides offline mock weather and market adapters for tests only.
 - Planner accepts an optional ToolAdapterRegistry for future adapter-aware planning.
 - ExecutionPipeline can execute explicit `tool_adapter` PlanSteps through an injected registry.
-- No real APIs, API keys, GPT, voice, weather skill, stock skill, calendar integration, web adapter, or network calls were added.
+- No real APIs, API keys, GPT, voice, stock skill, calendar integration, web adapter, or network calls were added.
+
+Adapter-backed WeatherSkill has been added.
+
+New weather module:
+
+- `skills.builtin.WeatherSkill`
+
+Weather behavior:
+
+- Uses `ToolAdapterRegistry` and `MockWeatherAdapter`.
+- Supports `weather`, `weather today`, `weather tomorrow`, and `weather in Madrid`.
+- Runs as a priority local skill so weather requests are handled before legacy weather provider routing.
+- `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL route the local `weather` intent.
+- Tests cover weather intent parsing, mock weather adapter calls, WeatherSkill responses, planner weather steps, execution pipeline weather steps, REPL routing, and missing adapter errors.
+- Does not call real APIs.
+- Does not use API keys.
+- Does not use internet access, GPT, voice, calendar, stocks, or notifications.
 
 GitHub Actions CI has been added.
 
@@ -469,11 +487,11 @@ Each intent owns its own logic and communicates with its corresponding provider.
 
 MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing scripts keep working.
 
-The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `GoalsSkill`, `NotesSkill`, `TasksSkill`, and `TimeDateSkill`.
-The REPL priority skill path currently covers profile memory recall, calculator arithmetic, goal commands, note commands, and task commands.
+The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `GoalsSkill`, `NotesSkill`, `TasksSkill`, `WeatherSkill`, and `TimeDateSkill`.
+The REPL priority skill path currently covers profile memory recall, calculator arithmetic, goal commands, note commands, task commands, and weather commands.
 `SkillManager` parses text into `core.Intent` before `ToolSelector` selects a local skill.
 `ToolSelector` builds a `core.Plan` before selection, `SkillManager` validates executable plan steps through `core.ToolChain`, and accepted chains execute through `core.ExecutionPipeline`.
-`ExecutionPipeline` can execute explicit `tool_adapter` PlanSteps through `core.ToolAdapterRegistry`; no live assistant path creates those steps yet.
+`ExecutionPipeline` can execute weather skill PlanSteps and explicit `tool_adapter` PlanSteps through `core.ToolAdapterRegistry`.
 `SkillManager` records handled skill turns in `ConversationContextManager`.
 
 Skill Manager
@@ -498,12 +516,11 @@ Text REPL
 
 Immediate Next Milestone
 
-Weather skill design on top of the adapter contract.
+Calendar skill design on top of the existing deterministic skill/planner architecture.
 
 Next technical choices:
 
 - Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
-- Design the first weather skill without bypassing deterministic local skills or adapter metadata.
 - Keep voice, GPT, embeddings, external weather/stocks/calendar APIs, real scheduling, notifications, and Raspberry Pi deployment out of scope until explicitly approved.
 - Connect selected daily reflection scripts and future providers to MemoryStore v1 only after the memory contract is documented.
 
@@ -511,24 +528,23 @@ Next technical choices:
 
 Future Roadmap
 
-1. Weather skill
-2. Calendar skill
-3. Stock/market skill
-4. GPT fallback integration
-5. Voice interface
-6. Raspberry Pi deployment
-7. Robot body / sensors
-8. Vision
-9. Robotics
-10. Jetson Orin migration
-11. Autonomous ARES
+1. Calendar skill
+2. Stock/market skill
+3. GPT fallback integration
+4. Voice interface
+5. Raspberry Pi deployment
+6. Robot body / sensors
+7. Vision
+8. Robotics
+9. Jetson Orin migration
+10. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 130 tests.
+- Current pytest collection: 138 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -545,6 +561,7 @@ Verification Notes
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
+- WeatherSkill tests cover weather intent parsing, mock adapter calls, WeatherSkill responses, ToolSelector routing, planner weather steps, execution pipeline weather steps, REPL routing, and missing adapter errors.
 - ReminderScheduler tests cover tomorrow parsing, relative minutes/hours, clock time parsing, due task detection, upcoming task ordering, and invalid due text handling.
 - Planner tests cover single-step plans, two-step plans, mixed notes/calculator, mixed task/memory, goal steps, invalid plans, ordering, serialization, ToolSelector plan attachment, SkillManager execution, and REPL plan display.
 - ExecutionPipeline tests cover single-step execution, multi-step execution, notes plus calculator, task plus memory, unrecoverable failure, recoverable partial failure, execution ordering, execution logging, rollback hooks, SkillManager integration, REPL execution display, live REPL multi-step planning, live REPL pipeline execution, live REPL partial failure reporting, and live-path component usage.
@@ -558,6 +575,7 @@ Verification Notes
 Latest Commits
 
 - `8678a16` Add external tool adapter foundation
+- `f7f5e78` Add adapter-backed local weather skill
 - `bc5a4e7` Deepen goals live path integration tests
 - `4e5ec44` Add local long-term goal management
 - `5bad0d5` Add local tool chaining foundation
@@ -576,8 +594,8 @@ Latest Commits
 
 Next Planned Step
 
-- Design the first Weather skill on top of the adapter contract.
+- Design the first Calendar skill or Stock/market skill only after explicit approval.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
-- Do not add weather, stocks, calendar, GPT, embeddings, voice, vision, scheduling, or notifications yet.
+- Do not add real weather APIs, stocks, calendar, GPT, embeddings, voice, vision, scheduling, or notifications yet.
 - Do not start voice yet.
