@@ -3,6 +3,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
+import requests
+
 from core.AdapterConfig import ExternalAdapterConfig, SecretsGuard
 
 
@@ -263,11 +265,14 @@ class MockWeatherAdapter(ToolAdapter):
 
 class RealWeatherAdapter(ToolAdapter):
     name = "real_weather"
-    description = "Real-weather-capable adapter skeleton. Network execution is intentionally not implemented yet."
+    description = "Real-weather-capable adapter gated by real-mode config and an environment API key."
     capabilities = ("weather.current", "weather.forecast")
     requires_network = True
     requires_auth = True
     supports_real_mode = True
+
+    def __init__(self, http_get=None):
+        self._http_get = http_get or requests.get
 
     def handle(self, request: ToolRequest) -> ToolResponse:
         return ToolResponse(
@@ -321,22 +326,94 @@ class RealWeatherAdapter(ToolAdapter):
 
         location = str(request.parameters.get("location") or request.query or "local").strip()
         period = str(request.parameters.get("period") or "today").strip().lower()
+        if not config.base_url:
+            return ToolResponse(
+                adapter_name=self.name,
+                capability=request.capability,
+                success=False,
+                text="Real weather adapter requires a base URL.",
+                error_message="Real weather adapter requires a base URL.",
+                metadata={"missing_base_url": True, "config": config.to_dict()},
+            )
+
+        params = {
+            "q": location,
+            "key": api_key,
+            "units": "metric",
+            "period": period,
+            "capability": request.capability,
+        }
+        try:
+            response = self._http_get(
+                config.base_url,
+                params=params,
+                timeout=config.timeout_seconds,
+            )
+        except requests.exceptions.Timeout:
+            return _real_weather_error(
+                request,
+                "Real weather request timed out.",
+                "timeout",
+                {"timeout_seconds": config.timeout_seconds},
+            )
+        except TimeoutError:
+            return _real_weather_error(
+                request,
+                "Real weather request timed out.",
+                "timeout",
+                {"timeout_seconds": config.timeout_seconds},
+            )
+        except requests.exceptions.RequestException as error:
+            return _real_weather_error(
+                request,
+                "Real weather request failed safely.",
+                "request_error",
+                {"exception_type": type(error).__name__},
+            )
+
+        status_code = int(getattr(response, "status_code", 200) or 200)
+        if status_code >= 400:
+            return _real_weather_error(
+                request,
+                f"Real weather request failed with HTTP status {status_code}.",
+                "http_status",
+                {"http_status_code": status_code},
+            )
+
+        try:
+            payload = response.json()
+        except (TypeError, ValueError):
+            return _real_weather_error(
+                request,
+                "Real weather response was not valid JSON.",
+                "invalid_json",
+            )
+
+        normalized = _normalize_real_weather_payload(
+            payload,
+            location=location,
+            period=period,
+            capability=request.capability,
+        )
+        if not normalized:
+            return _real_weather_error(
+                request,
+                "Real weather response could not be normalized.",
+                "invalid_response",
+            )
+
+        temperature_text = _format_temperature(normalized["temperature_c"])
         return ToolResponse(
             adapter_name=self.name,
             capability=request.capability,
-            success=False,
-            text="Real weather adapter is configured, but network execution is not implemented yet.",
-            error_message="Real weather adapter network execution is not implemented.",
-            data={
-                "location": location,
-                "period": period,
-                "source": "real_weather_skeleton",
-            },
+            success=True,
+            text=f"Real weather for {normalized['location']}: {normalized['condition']}, {temperature_text} C.",
+            data=normalized,
             metadata={
-                "real_weather_skeleton": True,
                 "api_key_env_name": env_name,
                 "base_url": config.base_url,
                 "timeout_seconds": config.timeout_seconds,
+                "normalized": True,
             },
         )
 
@@ -403,3 +480,156 @@ def _mock_calendar_events(period: str) -> List[Dict[str, str]]:
     if period == "tomorrow":
         return []
     return []
+
+
+def _real_weather_error(
+    request: ToolRequest,
+    message: str,
+    reason: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> ToolResponse:
+    return ToolResponse(
+        adapter_name="real_weather",
+        capability=request.capability,
+        success=False,
+        text=message,
+        error_message=message,
+        metadata={"reason": reason, **dict(metadata or {})},
+    )
+
+
+def _normalize_real_weather_payload(
+    payload: Any,
+    location: str,
+    period: str,
+    capability: str,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, Mapping):
+        return None
+
+    normalized_location = _payload_location(payload) or location or "local"
+    condition = _payload_condition(payload)
+    temperature = _payload_temperature(payload)
+    if condition is None or temperature is None:
+        return None
+
+    return {
+        "location": normalized_location,
+        "condition": condition,
+        "temperature_c": round(float(temperature), 2),
+        "period": period or "today",
+        "capability": capability,
+        "source": "real_weather",
+    }
+
+
+def _payload_location(payload: Mapping[str, Any]) -> str:
+    location = payload.get("location")
+    if isinstance(location, str):
+        return location.strip()
+    if isinstance(location, Mapping):
+        for key in ("name", "city", "region"):
+            value = location.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    for key in ("name", "city"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _payload_condition(payload: Mapping[str, Any]) -> Optional[str]:
+    direct = payload.get("condition")
+    condition = _condition_text(direct)
+    if condition:
+        return condition
+
+    current = payload.get("current")
+    if isinstance(current, Mapping):
+        condition = _condition_text(current.get("condition"))
+        if condition:
+            return condition
+        weather = current.get("weather")
+        if isinstance(weather, list) and weather:
+            condition = _condition_text(weather[0])
+            if condition:
+                return condition
+        code = current.get("weather_code") or current.get("weathercode")
+        if code is not None:
+            return f"weather code {code}"
+
+    current_weather = payload.get("current_weather")
+    if isinstance(current_weather, Mapping):
+        condition = _condition_text(current_weather.get("condition"))
+        if condition:
+            return condition
+        code = current_weather.get("weathercode") or current_weather.get("weather_code")
+        if code is not None:
+            return f"weather code {code}"
+
+    weather = payload.get("weather")
+    if isinstance(weather, list) and weather:
+        condition = _condition_text(weather[0])
+        if condition:
+            return condition
+
+    return None
+
+
+def _condition_text(value: Any) -> Optional[str]:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, Mapping):
+        for key in ("text", "description", "main", "condition"):
+            text = value.get(key)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    return None
+
+
+def _payload_temperature(payload: Mapping[str, Any]) -> Optional[float]:
+    direct = _first_number(payload, ("temperature_c", "temp_c", "temperature", "temp"))
+    if direct is not None:
+        return direct
+
+    current = payload.get("current")
+    if isinstance(current, Mapping):
+        value = _first_number(current, ("temp_c", "temperature_c", "temperature_2m", "temperature", "temp"))
+        if value is not None:
+            return value
+
+    current_weather = payload.get("current_weather")
+    if isinstance(current_weather, Mapping):
+        value = _first_number(current_weather, ("temperature", "temperature_c", "temp_c"))
+        if value is not None:
+            return value
+
+    main = payload.get("main")
+    if isinstance(main, Mapping):
+        value = _first_number(main, ("temp", "temperature", "temperature_c"))
+        if value is not None:
+            return value
+
+    return None
+
+
+def _first_number(payload: Mapping[str, Any], keys: Tuple[str, ...]) -> Optional[float]:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                continue
+    return None
+
+
+def _format_temperature(value: float) -> str:
+    number = float(value)
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.1f}".rstrip("0").rstrip(".")

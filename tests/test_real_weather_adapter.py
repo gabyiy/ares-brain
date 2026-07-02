@@ -13,6 +13,18 @@ from skills import SkillContext
 from skills.builtin.weather import WeatherSkill
 
 
+class FakeWeatherResponse:
+    def __init__(self, payload, status_code=200, json_error=None):
+        self._payload = payload
+        self.status_code = status_code
+        self._json_error = json_error
+
+    def json(self):
+        if self._json_error:
+            raise self._json_error
+        return self._payload
+
+
 def test_default_weather_remains_mock_even_when_real_adapter_exists():
     registry = ToolAdapterRegistry(
         [MockWeatherAdapter(), RealWeatherAdapter()],
@@ -82,9 +94,23 @@ def test_real_weather_real_mode_without_env_key_fails_safely(monkeypatch):
 def test_real_weather_uses_env_name_only_and_does_not_expose_raw_key(monkeypatch):
     env_name = "ARES_TEST_REAL_WEATHER_API_KEY"
     raw_env_value = "test-env-value-used-only-in-memory"
+    calls = []
+
+    def fake_http_get(url, params, timeout):
+        calls.append({"url": url, "params": dict(params), "timeout": timeout})
+        return FakeWeatherResponse(
+            {
+                "location": {"name": "Madrid"},
+                "current": {
+                    "temp_c": 21.4,
+                    "condition": {"text": "Sunny"},
+                },
+            }
+        )
+
     monkeypatch.setenv(env_name, raw_env_value)
     registry = ToolAdapterRegistry(
-        [RealWeatherAdapter()],
+        [RealWeatherAdapter(http_get=fake_http_get)],
         configs={
             "real_weather": ExternalAdapterConfig(
                 name="real_weather",
@@ -106,11 +132,121 @@ def test_real_weather_uses_env_name_only_and_does_not_expose_raw_key(monkeypatch
     )
 
     serialized = str(response.to_dict())
-    assert response.success is False
-    assert response.metadata["real_weather_skeleton"] is True
+    assert response.success is True
+    assert response.text == "Real weather for Madrid: Sunny, 21.4 C."
+    assert response.data == {
+        "location": "Madrid",
+        "condition": "Sunny",
+        "temperature_c": 21.4,
+        "period": "tomorrow",
+        "capability": "weather.forecast",
+        "source": "real_weather",
+    }
     assert response.metadata["api_key_env_name"] == env_name
     assert raw_env_value not in serialized
-    assert "network execution is not implemented" in response.text
+    assert calls == [
+        {
+            "url": "https://example.invalid/weather",
+            "params": {
+                "q": "Madrid",
+                "key": raw_env_value,
+                "units": "metric",
+                "period": "tomorrow",
+                "capability": "weather.forecast",
+            },
+            "timeout": 3.0,
+        }
+    ]
+
+
+def test_real_weather_http_timeout_returns_safe_error(monkeypatch):
+    def timeout_http_get(url, params, timeout):
+        raise TimeoutError("test timeout")
+
+    monkeypatch.setenv("ARES_TEST_REAL_WEATHER_API_KEY", "test-key")
+    registry = ToolAdapterRegistry(
+        [RealWeatherAdapter(http_get=timeout_http_get)],
+        configs={
+            "real_weather": ExternalAdapterConfig(
+                name="real_weather",
+                enabled=True,
+                mode="real",
+                api_key_env_name="ARES_TEST_REAL_WEATHER_API_KEY",
+                base_url="https://example.invalid/weather",
+                timeout_seconds=2,
+            )
+        },
+    )
+
+    response = registry.execute(
+        ToolRequest(
+            adapter_name="real_weather",
+            capability="weather.current",
+            parameters={"location": "Madrid"},
+        )
+    )
+
+    assert response.success is False
+    assert response.error_message == "Real weather request timed out."
+    assert response.metadata["reason"] == "timeout"
+    assert response.metadata["timeout_seconds"] == 2.0
+
+
+def test_real_weather_bad_api_response_returns_safe_error(monkeypatch):
+    monkeypatch.setenv("ARES_TEST_REAL_WEATHER_API_KEY", "test-key")
+    registry = ToolAdapterRegistry(
+        [RealWeatherAdapter(http_get=lambda url, params, timeout: FakeWeatherResponse({"unexpected": True}))],
+        configs={
+            "real_weather": ExternalAdapterConfig(
+                name="real_weather",
+                enabled=True,
+                mode="real",
+                api_key_env_name="ARES_TEST_REAL_WEATHER_API_KEY",
+                base_url="https://example.invalid/weather",
+            )
+        },
+    )
+
+    response = registry.execute(
+        ToolRequest(
+            adapter_name="real_weather",
+            capability="weather.current",
+            parameters={"location": "Madrid"},
+        )
+    )
+
+    assert response.success is False
+    assert response.error_message == "Real weather response could not be normalized."
+    assert response.metadata["reason"] == "invalid_response"
+
+
+def test_real_weather_http_status_error_returns_safe_error(monkeypatch):
+    monkeypatch.setenv("ARES_TEST_REAL_WEATHER_API_KEY", "test-key")
+    registry = ToolAdapterRegistry(
+        [RealWeatherAdapter(http_get=lambda url, params, timeout: FakeWeatherResponse({"error": "bad"}, status_code=503))],
+        configs={
+            "real_weather": ExternalAdapterConfig(
+                name="real_weather",
+                enabled=True,
+                mode="real",
+                api_key_env_name="ARES_TEST_REAL_WEATHER_API_KEY",
+                base_url="https://example.invalid/weather",
+            )
+        },
+    )
+
+    response = registry.execute(
+        ToolRequest(
+            adapter_name="real_weather",
+            capability="weather.current",
+            parameters={"location": "Madrid"},
+        )
+    )
+
+    assert response.success is False
+    assert response.error_message == "Real weather request failed with HTTP status 503."
+    assert response.metadata["reason"] == "http_status"
+    assert response.metadata["http_status_code"] == 503
 
 
 def test_weather_skill_handles_real_adapter_failure_safely(monkeypatch):
