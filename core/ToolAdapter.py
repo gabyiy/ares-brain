@@ -176,3 +176,42 @@ class MockMarketAdapter(ToolAdapter):
             data=data,
             metadata={"mock": True},
         )
+
+
+class MockCalendarAdapter(ToolAdapter):
+    name = "mock_calendar"
+    description = "Offline mock calendar adapter for adapter pipeline tests."
+    capabilities = ("calendar.events",)
+    requires_network = False
+    requires_auth = False
+
+    def handle(self, request: ToolRequest) -> ToolResponse:
+        period = str(request.parameters.get("period") or request.query or "today").strip().lower()
+        events = _mock_calendar_events(period)
+        data = {
+            "period": period,
+            "events": events,
+            "source": "mock",
+        }
+        if events:
+            event_text = "; ".join(f"{event['title']} at {event['time']}" for event in events)
+            text = f"Mock calendar for {period}: {event_text}."
+        else:
+            text = f"Mock calendar for {period}: no events."
+
+        return ToolResponse(
+            adapter_name=self.name,
+            capability=request.capability,
+            success=True,
+            text=text,
+            data=data,
+            metadata={"mock": True},
+        )
+
+
+def _mock_calendar_events(period: str) -> List[Dict[str, str]]:
+    if period == "today":
+        return [{"time": "09:00", "title": "ARES systems check"}]
+    if period == "tomorrow":
+        return []
+    return []

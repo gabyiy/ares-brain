@@ -8,6 +8,7 @@ from core.Intent import Intent
 from core.IntentParser import IntentParser
 from core.Planner import Plan, Planner, PlanStep
 from core.ToolAdapter import (
+    MockCalendarAdapter,
     MockMarketAdapter,
     MockWeatherAdapter,
     ToolAdapter,
@@ -29,6 +30,7 @@ __all__ = [
     "PlanStep",
     "RollbackHook",
     "StepResult",
+    "MockCalendarAdapter",
     "MockMarketAdapter",
     "MockWeatherAdapter",
     "MAX_CHAIN_DEPTH",

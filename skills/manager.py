@@ -5,7 +5,7 @@ from core.ExecutionPipeline import ExecutionPipeline
 from core.Intent import Intent
 from core.IntentParser import IntentParser
 from core.Planner import Plan
-from core.ToolAdapter import MockMarketAdapter, MockWeatherAdapter, ToolAdapterRegistry
+from core.ToolAdapter import MockCalendarAdapter, MockMarketAdapter, MockWeatherAdapter, ToolAdapterRegistry
 from core.ToolChain import ToolChain
 from events import get_global_bus
 from skills.base import Skill, SkillContext, SkillResponse
@@ -35,7 +35,7 @@ class SkillManager:
         self.tasks_store = tasks_store
         self.goals_store = goals_store
         self.tool_adapter_registry = tool_adapter_registry or ToolAdapterRegistry(
-            [MockWeatherAdapter(), MockMarketAdapter()]
+            [MockWeatherAdapter(), MockMarketAdapter(), MockCalendarAdapter()]
         )
         self.conversation_context = conversation_context or ConversationContextManager()
         self.intent_parser = intent_parser or IntentParser()

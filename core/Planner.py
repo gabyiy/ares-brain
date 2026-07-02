@@ -136,6 +136,9 @@ class Planner:
         if intent.intent_name == "market":
             return self._market_step(intent.raw_text, dict(intent.extracted_entities)), None
 
+        if intent.intent_name == "calendar":
+            return self._calendar_step(intent.raw_text, dict(intent.extracted_entities)), None
+
         memory_step = self._memory_step_from_text(intent.raw_text)
         if memory_step:
             return memory_step, None
@@ -158,6 +161,10 @@ class Planner:
         market_step = self._market_step_from_text(clean_clause)
         if market_step:
             return market_step, None
+
+        calendar_step = self._calendar_step_from_text(clean_clause)
+        if calendar_step:
+            return calendar_step, None
 
         memory_step = self._memory_step_from_text(clean_clause)
         if memory_step:
@@ -445,6 +452,38 @@ class Planner:
             },
         )
 
+    def _calendar_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
+        period = entities.get("period") or _calendar_period(raw_text)
+        clean_entities = {
+            **entities,
+            "action": "list",
+            "period": period,
+            "adapter_name": entities.get("adapter_name") or "mock_calendar",
+            "capability": entities.get("capability") or "calendar.events",
+        }
+
+        return PlanStep(
+            order=0,
+            target="calendar",
+            action="list",
+            input_text=f"calendar {period}",
+            intent_name="calendar",
+            entities=clean_entities,
+            can_execute=True,
+            description=f"Check mock calendar for {period}.",
+        )
+
+    def _calendar_step_from_text(self, text: str):
+        if not _looks_like_calendar(text):
+            return None
+        return self._calendar_step(
+            text,
+            {
+                "action": "list",
+                "period": _calendar_period(text),
+            },
+        )
+
     def _memory_step_from_text(self, text: str):
         content = _memory_content(text)
         if not content:
@@ -663,3 +702,17 @@ def _normalize_market_symbol(text: str) -> str:
     symbol = re.sub(r"^(?:the|a|an)\s+", "", symbol, flags=re.IGNORECASE)
     symbol = symbol.replace("$", "").strip()
     return symbol.upper()
+
+
+def _looks_like_calendar(text: str) -> bool:
+    lowered = (text or "").lower()
+    if re.search(r"\b(calendar|schedule)\b", lowered):
+        return True
+    return lowered.startswith("do i have anything")
+
+
+def _calendar_period(text: str) -> str:
+    lowered = (text or "").lower()
+    if re.search(r"\btomorrow\b", lowered):
+        return "tomorrow"
+    return "today"

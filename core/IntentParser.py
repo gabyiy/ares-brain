@@ -43,6 +43,7 @@ class IntentParser:
             IntentRule("memory_recall", self._parse_memory_recall),
             IntentRule("weather", self._parse_weather),
             IntentRule("market", self._parse_market),
+            IntentRule("calendar", self._parse_calendar),
             IntentRule("time_date", self._parse_time_date),
         ]
 
@@ -237,6 +238,24 @@ class IntentParser:
             capability="market.quote",
         )
 
+    def _parse_calendar(self, text: ParsedText) -> Optional[Intent]:
+        calendar_tokens = {"calendar", "schedule"}
+        has_calendar_word = bool(calendar_tokens & set(text.tokens))
+        asks_anything = text.starts_with("do i have anything")
+        if not has_calendar_word and not asks_anything:
+            return None
+
+        period = _calendar_period(text)
+        return self._intent(
+            "calendar",
+            0.94,
+            text.raw_text,
+            action="list",
+            period=period,
+            adapter_name="mock_calendar",
+            capability="calendar.events",
+        )
+
     def _parse_time_date(self, text: ParsedText) -> Optional[Intent]:
         asks_time = any(token in text.tokens for token in ("time", "clock"))
         asks_date = any(token in text.tokens for token in ("date", "today")) or text.starts_with("what day")
@@ -387,6 +406,12 @@ def _normalize_market_symbol(value: str) -> str:
     symbol = re.sub(r"^(?:the|a|an)\s+", "", symbol, flags=re.IGNORECASE)
     symbol = symbol.replace("$", "").strip()
     return symbol.upper()
+
+
+def _calendar_period(text: ParsedText) -> str:
+    if "tomorrow" in text.tokens:
+        return "tomorrow"
+    return "today"
 
 
 def _strip_leading_task_marker(value: str) -> str:

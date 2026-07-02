@@ -2,6 +2,7 @@ from datetime import datetime
 
 from skills.base import Skill, SkillContext, SkillResponse
 from skills.builtin.calculator import CalculatorSkill
+from skills.builtin.calendar import CalendarSkill
 from skills.builtin.goals import GoalsSkill
 from skills.builtin.market import MarketSkill
 from skills.builtin.memory_recall import MemoryRecallSkill
@@ -54,6 +55,7 @@ def create_builtin_plugin() -> SkillPlugin:
         skills=[
             MemoryRecallSkill(),
             CalculatorSkill(),
+            CalendarSkill(),
             GoalsSkill(),
             MarketSkill(),
             NotesSkill(),
