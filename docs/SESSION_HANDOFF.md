@@ -4,7 +4,7 @@ Last Updated: 2026-07-02
 
 Current Version
 
-ARES v1.18 - Context-Aware Planner
+ARES v1.19 - Action Confirmation Layer
 
 ---
 
@@ -78,6 +78,7 @@ New test coverage:
 - Planner
 - MultiStepPlan
 - Context-aware planner
+- Action confirmation layer
 - ExecutionPipeline
 - ToolChain
 - ToolAdapter
@@ -260,6 +261,7 @@ Execution behavior:
 - Receives a `Plan` from Planner.
 - Executes each `PlanStep` sequentially.
 - Calls registered local skills through SkillManager and SkillRegistry.
+- Pauses before destructive or important actions and returns a confirmation request.
 - Executes conversation memory steps through MemoryStore.
 - Executes internal `planner_context` response steps for deterministic context-only answers.
 - Stops safely on unrecoverable failures.
@@ -308,6 +310,26 @@ New context-aware behavior:
 - Planner answers next-goal questions from related open tasks, milestones, or deterministic fallback guidance.
 - Missing context returns safe local `planner_context` responses instead of direct file access, GPT, or external calls.
 - REPL integration verifies `what should I do next for my goals?` through the live path.
+- No GPT, internet access, real APIs, voice, notifications, or background automation were added.
+
+Action Confirmation Layer has been added.
+
+New confirmation modules:
+
+- `core.ConfirmationRequest`
+- `core.ConfirmationDecision`
+- `core.ConfirmationManager`
+
+Confirmation behavior:
+
+- `ExecutionPipeline` pauses before destructive or important `PlanStep` actions.
+- One pending confirmation id is kept in memory for the active runtime.
+- `SkillManager` handles `yes` and `confirm` as approval for the pending request.
+- `SkillManager` handles `no` and `cancel` as cancellation.
+- Missing pending confirmation returns a safe local failure message.
+- Confirmed actions rerun with a confirmation-approved marker so they do not ask again.
+- Multi-step plans stop safely at the confirmation step and do not run later steps until the user explicitly confirms the protected action.
+- Protected actions include note deletion, delete-all notes, task deletion, clear-completed tasks, goal delete/pause/complete, and future external adapter write/delete actions.
 - No GPT, internet access, real APIs, voice, notifications, or background automation were added.
 
 Tool Chaining foundation has been added.
@@ -570,9 +592,11 @@ The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSk
 The REPL priority skill path currently covers profile memory recall, calculator arithmetic, goal commands, note commands, task commands, weather commands, stock/market commands, and calendar/schedule commands.
 `SkillManager` parses text into `core.Intent` before `ToolSelector` selects a local skill.
 `ToolSelector` builds a `core.Plan` or `core.MultiStepPlan` before selection, and its Planner can use safe injected store interfaces for local context.
+`SkillManager` handles confirmation decisions through `core.ConfirmationManager` before normal intent parsing.
 `SkillManager` validates executable plan steps through `core.ToolChain`, and accepted chains execute through `core.ExecutionPipeline`.
 `ExecutionPipeline` can execute weather skill PlanSteps, market skill PlanSteps, calendar skill PlanSteps, and explicit `tool_adapter` PlanSteps through `core.ToolAdapterRegistry`.
 `ExecutionPipeline` can execute internal `planner_context` PlanSteps for context-only responses.
+`ExecutionPipeline` pauses destructive actions with `ConfirmationRequest` instead of executing them immediately.
 `ExecutionPipeline` aggregates all step outputs and reports mixed recoverable success/failure as partial results.
 `SkillManager` records handled skill turns in `ConversationContextManager`.
 
@@ -624,7 +648,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 172 tests.
+- Current pytest collection: 182 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -648,6 +672,7 @@ Verification Notes
 - Planner tests cover single-step plans, two-step plans, mixed notes/calculator, mixed task/memory, goal steps, invalid plans, ordering, serialization, ToolSelector plan attachment, SkillManager execution, and REPL plan display.
 - Multi-step planner tests cover single-step compatibility, weather plus reminder, goals plus calendar, three-step plans, planner ordering, execution ordering, partial failure recovery, and REPL integration.
 - Context-aware planner tests cover goal context, profile favorite context, notes context, task context, missing context, multi-step context plans, partial failure recovery, and REPL integration.
+- Confirmation tests cover delete note/task/goal confirmation, confirm execution, cancel behavior, missing pending confirmation, unaffected weather/market/calendar paths, future external write confirmation, clear completed tasks, goal status changes, and multi-step confirmation pause behavior.
 - ExecutionPipeline tests cover single-step execution, multi-step execution, notes plus calculator, task plus memory, unrecoverable failure, recoverable partial failure, execution ordering, execution logging, rollback hooks, SkillManager integration, REPL execution display, live REPL multi-step planning, live REPL pipeline execution, live REPL partial failure reporting, and live-path component usage.
 - ToolChain tests cover memory plus calculator, note plus memory, task/reminder plus memory, ordering, max depth enforcement, repeated-step loop prevention, and REPL chain display/history.
 - Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
@@ -658,6 +683,7 @@ Verification Notes
 
 Latest Commits
 
+- `fbf4492` Add action confirmation layer
 - `79f7e4a` Add context-aware planner support
 - `7683dbc` Harden multi-step planner execution
 - `8678a16` Add external tool adapter foundation

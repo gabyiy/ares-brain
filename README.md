@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.18 - Context-Aware Planner
+ARES v1.19 - Action Confirmation Layer
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 ARES
 │
@@ -90,6 +90,7 @@ Completed
 - Execution pipeline for planner steps
 - Explicit `MultiStepPlan` support
 - Context-aware planner support
+- Action confirmation layer
 - Tool chaining for bounded local multi-step requests
 - External tool adapter interface
 - Built-in weather skill using the offline mock weather adapter
@@ -146,7 +147,12 @@ ARES currently understands questions such as:
 - show goal <id>
 - complete goal <id>
 - pause goal <id>
+- delete goal <id>
 - add milestone to goal <id>
+- yes
+- confirm
+- no
+- cancel
 - What's the weather tomorrow and remind me to go to the gym
 - Show my goals and today's calendar
 - remind me about my main goal tomorrow
@@ -168,8 +174,9 @@ Implemented Features
 - `MultiStepPlan` marker support for ordered requests with more than one executable step
 - Context-aware planner reads user profile, goals, notes, and tasks through store interfaces only
 - Safe context-only planner responses when local context is missing
+- Action confirmation model with pending confirmation ids and confirm/cancel decisions
 - Tool chaining with max depth, loop prevention, execution trace, and chain history
-- Execution pipeline for ordered plan step execution, aggregated final responses, partial-result reporting, execution results, logging, and rollback hooks
+- Execution pipeline for ordered plan step execution, confirmation pauses, aggregated final responses, partial-result reporting, execution results, logging, and rollback hooks
 - External ToolAdapter foundation with `ToolRequest`, `ToolResponse`, `ToolAdapterRegistry`, and offline mock weather/market adapters
 - Built-in weather skill backed by `ToolAdapterRegistry` and `MockWeatherAdapter`
 - Built-in market skill backed by `ToolAdapterRegistry` and `MockMarketAdapter`
@@ -183,7 +190,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 172 tests across core Phase 2-19 modules
+- Pytest automated coverage for 182 tests across core Phase 2-20 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -202,7 +209,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `172 tests`.
+Current pytest collection: `182 tests`.
 
 Continuous Integration
 
@@ -249,8 +256,10 @@ Latest Architecture Status
 - ToolSelector first scores matching `intent_names`, then falls back to legacy triggers only for unknown intents.
 - SkillManager delegates executable planner steps to ExecutionPipeline.
 - SkillManager validates executable planner steps through ToolChain before ExecutionPipeline runs.
+- SkillManager handles `yes`, `confirm`, `no`, and `cancel` as confirmation decisions when a confirmation is pending.
 - ToolChain enforces max chain depth 5, prevents repeated-step loops, and records chain trace/history.
 - ExecutionPipeline executes plan steps sequentially and records `StepResult` and `ExecutionResult` details.
+- ExecutionPipeline pauses before destructive actions and returns a `ConfirmationRequest`.
 - ExecutionPipeline can execute internal `planner_context` response steps for safe context-only answers.
 - ExecutionPipeline collects all step outputs into one response and labels mixed success/failure as `Partial results:`.
 - ExecutionPipeline emits execution events and standard logs for start, step completion, recoverable failure, unrecoverable failure, rollback, and completion.
@@ -263,6 +272,7 @@ Latest Architecture Status
 - Calendar tests verify parser, selector, planner, execution pipeline, REPL routing, missing adapter handling, and `MockCalendarAdapter` responses.
 - Multi-step planner tests verify single-step compatibility, weather plus reminder planning, goals plus calendar planning, three-step ordering, execution ordering, partial failure recovery, and REPL execution.
 - Context-aware planner tests verify goal context, profile favorite context, note topic context, related task context, missing-context responses, multi-step context plans, partial failure recovery, and REPL integration.
+- Confirmation tests verify delete note/task/goal pauses, confirm executes, cancel does not execute, missing pending confirmation fails safely, weather/market/calendar remain unaffected, future external write actions require confirmation, and multi-step plans pause safely.
 - ToolChain tests verify repeated weather steps are rejected before execution to prevent loop-style chains.
 - Goals live-path integration tests verify REPL add/list/milestone/pause/complete commands, persistence after reload, Planner goal steps, ExecutionPipeline goal execution, and ToolChain goal chains.
 - SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
@@ -561,19 +571,30 @@ Phase 19
 
 Phase 20
 
+- Action Confirmation Layer adds `ConfirmationRequest`, `ConfirmationDecision`, and an in-memory pending confirmation id.
+- ExecutionPipeline pauses before destructive or important actions and returns a confirmation request.
+- Confirmed actions execute only after `yes` or `confirm`.
+- Cancelled actions stop safely after `no` or `cancel`.
+- Covered actions include note deletion, delete-all notes, task deletion, clear-completed tasks, goal delete/pause/complete, and future external adapter write actions.
+- Multi-step plans pause safely at confirmation steps without executing the destructive action or later steps.
+- Tests cover confirmation-required actions, confirm, cancel, missing pending confirmation, unaffected read-only adapter-backed skills, future external writes, and multi-step pause behavior.
+- No GPT, internet access, real APIs, voice, notifications, or background automation were added.
+
+Phase 21
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 21
+Phase 22
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 22
+Phase 23
 
 - Robotics
 - ROS2

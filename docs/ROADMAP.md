@@ -151,6 +151,7 @@ Phase 11: Execution Pipeline Foundation
 - ExecutionPipeline receives a `Plan` and executes each `PlanStep` sequentially.
 - Each step records start time, end time, duration, success/failure, returned data, and error messages.
 - SkillManager delegates executable planner steps to ExecutionPipeline.
+- ExecutionPipeline pauses before destructive or important actions and returns confirmation requests.
 - ExecutionPipeline can execute internal `planner_context` response steps.
 - ExecutionPipeline stops on unrecoverable failures and continues after recoverable local tool failures when appropriate.
 - ExecutionPipeline aggregates every step output into one final response.
@@ -252,9 +253,25 @@ Phase 19: Context-Aware Planner Foundation
 - Tests cover goal context, profile favorite context, notes context, task context, missing context, multi-step context plans, partial failure recovery, and REPL integration
 - No GPT, internet access, real APIs, voice, notifications, or background automation
 
+Phase 20: Action Confirmation Layer
+
+- `core.ConfirmationRequest`
+- `core.ConfirmationDecision`
+- `core.ConfirmationManager`
+- One in-memory pending confirmation id for the active runtime
+- ExecutionPipeline pauses destructive or important actions before skill execution
+- SkillManager handles `yes`, `confirm`, `no`, and `cancel` as confirmation decisions
+- Confirmed actions rerun with an approval marker
+- Cancelled actions do not execute
+- Missing pending confirmation fails safely
+- Protected actions include note deletion, delete-all notes, task deletion, clear-completed tasks, goal delete/pause/complete, and future external adapter write/delete actions
+- Multi-step plans pause safely at a confirmation step without executing the protected action or later steps
+- Tests cover confirmation-required actions, confirm, cancel, missing pending confirmation, unaffected weather/market/calendar paths, future external writes, and multi-step pause behavior
+- No GPT, internet access, real APIs, voice, notifications, or background automation
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, adapter-backed mock market quotes, adapter-backed mock calendar answers, external tool adapter contracts with offline mocks, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, adapter-backed mock market quotes, adapter-backed mock calendar answers, external tool adapter contracts with offline mocks, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -264,11 +281,11 @@ The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, and calendar
-- `Planner`, `MultiStepPlan`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, context responses, and conversation memory plan execution
+- `Planner`, `MultiStepPlan`, `ConfirmationManager`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, context responses, confirmations, and conversation memory plan execution
 - `ToolAdapterRegistry` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 172 tests.
+The current pytest collection is 182 tests.
 
 The current memory paths are:
 

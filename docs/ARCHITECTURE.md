@@ -23,12 +23,14 @@ Current System Flow
 17. `ToolChain` enforces chain depth, loop prevention, and execution tracing.
 18. `ToolChain` delegates accepted plans to `core.ExecutionPipeline`.
 19. `ExecutionPipeline` executes each `PlanStep` sequentially and records step results.
-20. Normal intents run next when no priority skill path handles the message.
-21. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
-22. Responses are published as events.
-23. `SkillManager` records handled skill turns in `ConversationContextManager`.
-24. The REPL stores each conversation turn in `MemoryStore`.
-25. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
+20. When a destructive or important step is reached, `ExecutionPipeline` pauses and returns a `ConfirmationRequest`.
+21. `SkillManager` handles `yes`, `confirm`, `no`, and `cancel` as `ConfirmationDecision` values for the pending request.
+22. Normal intents run next when no priority skill path handles the message.
+23. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
+24. Responses are published as events.
+25. `SkillManager` records handled skill turns in `ConversationContextManager`.
+26. The REPL stores each conversation turn in `MemoryStore`.
+27. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
 
 Event Bus
 
@@ -77,6 +79,8 @@ Current event examples:
 - `tool_chain.started`
 - `tool_chain.rejected`
 - `tool_chain.completed`
+- `confirmation.requested`
+- `confirmation.decision`
 
 Intent
 
@@ -255,6 +259,44 @@ Current boundaries:
 - CalendarSkill uses `MockCalendarAdapter` through this registry for local schedule answers.
 - No real weather API, real market API, Google Calendar integration, real calendar API, GPT, voice, or web adapter has been added.
 
+Confirmation
+
+`core.Confirmation` provides the in-memory confirmation model for destructive and important actions.
+
+Current confirmation objects:
+
+- `ConfirmationRequest`
+- `ConfirmationDecision`
+- `ConfirmationManager`
+
+Current responsibilities:
+
+- Detect destructive local plan steps before skill execution.
+- Create one pending confirmation id for the active runtime.
+- Return a confirmation prompt that accepts `yes` or `confirm`.
+- Cancel pending work when the user says `no` or `cancel`.
+- Fail safely when a confirmation decision arrives without pending context.
+- Mark approved steps so confirmed execution does not request confirmation again.
+
+Current protected actions:
+
+- `notes.delete`
+- `notes.delete_all_request`
+- `notes.delete_all_confirm`
+- `tasks.delete`
+- `tasks.clear_completed`
+- `goals.delete`
+- `goals.pause`
+- `goals.complete`
+- Future explicit `tool_adapter` write/delete actions
+
+Confirmation boundaries:
+
+- Confirmations are stored in memory only.
+- Confirmations do not survive process restart.
+- Confirmation does not call GPT, voice, internet, notifications, or external APIs.
+- Confirmation does not execute skills directly; ExecutionPipeline executes approved steps.
+
 ExecutionPipeline
 
 `core.ExecutionPipeline` executes plans produced by `core.Planner`.
@@ -271,6 +313,7 @@ Current responsibilities:
 - Receive a `Plan`.
 - Execute each `PlanStep` in order.
 - Resolve local skill targets through `SkillManager` and `SkillRegistry`.
+- Pause before destructive or important actions and return a `ConfirmationRequest`.
 - Execute conversation memory steps through `MemoryStore`.
 - Execute internal `planner_context` response steps for deterministic context-only answers.
 - Execute explicit `tool_adapter` steps through an injected `ToolAdapterRegistry`.
@@ -299,6 +342,7 @@ Current integration verification:
 - Live REPL tests verify recoverable partial failure reporting and continued execution.
 - Multi-step planner tests verify single-step compatibility, two-step plans, three-step plans, planner ordering, execution ordering, and partial-result formatting.
 - Context-aware planner tests verify goal context, profile favorite context, note topic context, related task context, missing-context responses, multi-step context plans, partial failure recovery, and REPL integration.
+- Confirmation tests verify delete note/task/goal pauses, confirm executes, cancel does not execute, missing pending confirmation fails safely, weather/market/calendar remain unaffected, future external writes require confirmation, and multi-step plans pause safely.
 - Live REPL tests verify `show execution` and `show last execution`.
 - A live-path spy verifies the active path uses `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill`.
 
@@ -661,5 +705,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 172 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.ToolAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, and `skills.builtin.CalendarSkill`.
+- Pytest collection: 182 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.ToolAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, and `skills.builtin.CalendarSkill`.
