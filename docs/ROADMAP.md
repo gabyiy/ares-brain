@@ -100,7 +100,7 @@ Phase 8: Structured Intent Parser
 - `core.Intent`
 - `core.IntentParser`
 - Deterministic local intent parsing before ToolSelector runs
-- Recognized intents: `calculate`, `goal`, `note`, `task`, `memory_recall`, `weather`, `time_date`, and `unknown`
+- Recognized intents: `calculate`, `goal`, `note`, `task`, `memory_recall`, `weather`, `market`, `time_date`, and `unknown`
 - Entity extraction for local tools, including task text, due text, note actions, calculator expressions, and memory recall topics
 - `SkillManager` consumes `Intent` objects before calling `ToolSelector`
 - Skills declare `intent_names` for structured matching
@@ -127,7 +127,7 @@ Phase 10: Multi-Step Task Planner Foundation
 - `core.Plan`
 - `core.Planner`
 - Planner receives an `Intent` and produces ordered executable steps.
-- Supported planner targets: goals, notes, tasks, calculator, weather, and conversation memory.
+- Supported planner targets: goals, notes, tasks, calculator, weather, market, and conversation memory.
 - Planner skips impossible steps and returns errors cleanly.
 - Planner serializes plans for events, tests, and REPL display.
 - ToolSelector builds a plan before returning a skill selection.
@@ -200,9 +200,18 @@ Phase 15: Adapter-Backed Weather Skill
 - Tests cover weather intent parsing, mock adapter calls, WeatherSkill responses, planner weather steps, execution pipeline weather steps, REPL routing, full live path into `MockWeatherAdapter`, ToolChain loop prevention for repeated weather steps, and missing adapter errors
 - No real APIs, API keys, internet access, GPT, voice, calendar integration, stocks, or notifications
 
+Phase 16: Adapter-Backed Market Skill
+
+- `skills.builtin.MarketSkill`
+- Uses `ToolAdapterRegistry` and `MockMarketAdapter`
+- Supports `stock nvidia`, `nvidia stock`, `apple stock`, and `market price for tesla`
+- `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL route the local `market` intent
+- Tests cover market intent parsing, mock adapter calls, MarketSkill responses, planner market steps, execution pipeline market steps, REPL routing, and missing adapter errors
+- No real APIs, API keys, internet access, GPT, voice, calendar integration, notifications, or real market provider integration
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, local multi-step planning, bounded local tool chaining, sequential local plan execution, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, external tool adapter contracts with offline mocks, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, local multi-step planning, bounded local tool chaining, sequential local plan execution, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, adapter-backed mock market quotes, external tool adapter contracts with offline mocks, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -211,12 +220,12 @@ The current active interface is:
 The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
-- `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, and weather
-- `Planner`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, and conversation memory plan execution
+- `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, and market
+- `Planner`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, and conversation memory plan execution
 - `ToolAdapterRegistry` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 140 tests.
+The current pytest collection is 148 tests.
 
 The current memory paths are:
 
@@ -231,11 +240,10 @@ The current memory paths are:
 Next Priorities
 
 1. Calendar skill.
-2. Stock/market skill.
-3. GPT fallback integration.
-4. Voice input/output.
-5. Raspberry Pi deployment.
-6. Robot body / sensors.
+2. GPT fallback integration.
+3. Voice input/output.
+4. Raspberry Pi deployment.
+5. Robot body / sensors.
 
 What Must Not Be Started Yet
 

@@ -12,7 +12,7 @@ Current System Flow
 6. The REPL creates `NotesStore` for persistent local notes.
 7. The REPL creates `TasksStore` for persistent offline tasks.
 8. The REPL creates the shared in-memory `ConversationContextManager`.
-9. The REPL creates `SkillManager`, which owns an offline `ToolAdapterRegistry` with `MockWeatherAdapter`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
+9. The REPL creates `SkillManager`, which owns an offline `ToolAdapterRegistry` with `MockWeatherAdapter` and `MockMarketAdapter`, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
 10. User input is sent to `IntentRouter`.
 11. `IntentRouter` publishes input lifecycle events.
 12. When a skill path is checked, `SkillManager` parses user text into `core.Intent` with `core.IntentParser`.
@@ -103,6 +103,7 @@ Current recognized intents:
 - `task`
 - `memory_recall`
 - `weather`
+- `market`
 - `time_date`
 - `unknown`
 
@@ -119,6 +120,8 @@ Current entity extraction examples:
 - `what did I tell you about my job` becomes a `memory_recall` intent with a recall topic.
 - `weather in Madrid` becomes a `weather` intent with location `Madrid`, adapter `mock_weather`, and capability `weather.current`.
 - `weather tomorrow` becomes a `weather` intent with period `tomorrow` and capability `weather.forecast`.
+- `stock nvidia` becomes a `market` intent with symbol `NVIDIA`, adapter `mock_market`, and capability `market.quote`.
+- `market price for tesla` becomes a `market` intent with symbol `TESLA`.
 
 The parser is deterministic and offline. It does not use AI, GPT, embeddings, external APIs, or a broad regex-only dispatcher.
 
@@ -147,6 +150,7 @@ Current supported planner targets:
 - `goals`
 - `calculator`
 - `weather`
+- `market`
 - `conversation_memory`
 
 Planner boundaries:
@@ -229,7 +233,8 @@ Current boundaries:
 - Mock adapters do not require authentication.
 - No API keys are read or stored.
 - WeatherSkill uses `MockWeatherAdapter` through this registry for local weather answers.
-- No real weather API, stock skill, calendar integration, GPT, voice, or web adapter has been added.
+- MarketSkill uses `MockMarketAdapter` through this registry for local market quote answers.
+- No real weather API, real market API, calendar integration, GPT, voice, or web adapter has been added.
 
 ExecutionPipeline
 
@@ -264,6 +269,7 @@ Current integration verification:
 - Live REPL tests verify goal add, list, add milestone, pause, complete, and show commands.
 - Live REPL tests verify weather requests through `WeatherSkill` and `MockWeatherAdapter`.
 - Hardened weather live-path tests verify `IntentParser -> Planner -> ExecutionPipeline -> WeatherSkill -> MockWeatherAdapter` through the text REPL.
+- Live REPL tests verify market requests through `MarketSkill` and `MockMarketAdapter`.
 - ToolChain tests verify repeated weather steps are rejected before execution to prevent loop-style chains.
 - Live REPL tests verify recoverable partial failure reporting and continued execution.
 - Live REPL tests verify `show execution` and `show last execution`.
@@ -474,6 +480,7 @@ Current supported runtime skills:
 - `MemoryRecallSkill`
 - `CalculatorSkill`
 - `GoalsSkill`
+- `MarketSkill`
 - `NotesSkill`
 - `TasksSkill`
 - `WeatherSkill`
@@ -523,6 +530,7 @@ Current built-in skills:
 - `MemoryRecallSkill`
 - `CalculatorSkill`
 - `GoalsSkill`
+- `MarketSkill`
 - `NotesSkill`
 - `TasksSkill`
 - `WeatherSkill`
@@ -543,7 +551,9 @@ Current built-in skills:
 
 `WeatherSkill` answers weather requests through `ToolAdapterRegistry` and the offline `MockWeatherAdapter`. It supports `weather`, `weather today`, `weather tomorrow`, and `weather in Madrid`. It does not call real APIs, require API keys, or use internet access.
 
-No notifications, voice, real weather APIs, stocks, calendar, external API, or GPT integration has been added as part of the current local skill milestones.
+`MarketSkill` answers stock/market quote requests through `ToolAdapterRegistry` and the offline `MockMarketAdapter`. It supports `stock nvidia`, `nvidia stock`, `apple stock`, and `market price for tesla`. It does not call real APIs, require API keys, or use internet access.
+
+No notifications, voice, real weather APIs, real market APIs, calendar, external API, or GPT integration has been added as part of the current local skill milestones.
 
 Conversation context is not a persistent memory store. It only tracks recent handled skill turns in RAM so local skills and interfaces can inspect short-term context without GPT or embeddings.
 
@@ -562,6 +572,7 @@ Current responsibilities:
 - Route note commands to `NotesSkill` and persist notes in `NotesStore`.
 - Route task commands to `TasksSkill` and persist tasks in `TasksStore`.
 - Route weather commands to `WeatherSkill` through `MockWeatherAdapter`.
+- Route stock/market commands to `MarketSkill` through `MockMarketAdapter`.
 - Route parser-recognized local intents through `SkillManager` and `ToolSelector`.
 - Preserve unknown input safety when IntentParser returns `unknown`.
 - Show the last plan with `show plan` or `show steps`.
@@ -618,5 +629,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 140 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ToolAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, and `skills.builtin.WeatherSkill`.
+- Pytest collection: 148 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ToolAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, and `skills.builtin.MarketSkill`.
