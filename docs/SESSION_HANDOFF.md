@@ -4,7 +4,7 @@ Last Updated: 2026-07-02
 
 Current Version
 
-ARES v1.22 - Real Weather Adapter HTTP Logic
+ARES v1.23 - Real Market Adapter Skeleton
 
 ---
 
@@ -82,6 +82,7 @@ New test coverage:
 - Adapter config and SecretsGuard
 - RealWeatherAdapter skeleton
 - RealWeatherAdapter HTTP logic
+- RealMarketAdapter skeleton
 - ExecutionPipeline
 - ToolChain
 - ToolAdapter
@@ -387,6 +388,7 @@ New adapter modules:
 - `core.MockWeatherAdapter`
 - `core.RealWeatherAdapter`
 - `core.MockMarketAdapter`
+- `core.RealMarketAdapter`
 - `core.MockCalendarAdapter`
 
 ToolAdapter behavior:
@@ -400,6 +402,7 @@ ToolAdapter behavior:
 - Returns clear missing-adapter and unsupported-capability responses.
 - Provides offline mock weather, market, and calendar adapters for tests only.
 - Provides a real-weather-capable adapter that runs HTTP only after explicit real-mode config and env-key gates pass.
+- Provides a real-market-capable skeleton that fails safely and does not make network calls.
 - Planner accepts an optional ToolAdapterRegistry for future adapter-aware planning.
 - ExecutionPipeline can execute explicit `tool_adapter` PlanSteps through an injected registry.
 - No real APIs, API keys, GPT, voice, stock skill, calendar integration, web adapter, or network calls were added.
@@ -461,6 +464,27 @@ HTTP behavior:
 - Tests mock HTTP and make no real network calls.
 - Default WeatherSkill behavior remains `mock_weather`.
 - No real API key, default real mode, GPT, voice, calendar write, stocks real API, notification, or background job was added.
+
+Real Market Adapter skeleton has been added.
+
+New market adapter module:
+
+- `core.RealMarketAdapter`
+
+Real market skeleton behavior:
+
+- Uses explicit adapter name `real_market`.
+- Supports `market.quote` and `market.summary` capabilities.
+- Marks `requires_network` and `requires_auth` as true.
+- Is not registered in the default SkillManager adapter registry.
+- Reads API keys only from the configured environment variable name.
+- Fails safely when the env key is missing.
+- Does not hardcode or store raw secrets.
+- Does not expose raw env values in responses.
+- Returns a deterministic not-implemented response instead of making network calls.
+- `config/adapters.example.json` keeps `real_market` disabled and mock-mode by default with fake placeholders.
+- Existing MarketSkill behavior stays on `mock_market` unless a structured intent explicitly selects `real_market`.
+- No real market API key, real market API call, GPT, voice, calendar write, notification, or background job was added.
 
 Adapter-backed WeatherSkill has been added.
 
@@ -718,7 +742,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 200 tests.
+- Current pytest collection: 208 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -737,6 +761,7 @@ Verification Notes
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
 - Adapter config guard tests cover mock mode, real-mode missing-env failure, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility.
 - RealWeatherAdapter tests cover default mock weather behavior, real adapter instantiation, real-mode missing-env failure, mocked HTTP success, timeout safe errors, bad API response safe errors, HTTP status safe errors, normalized output stability, env-key-name-only config, raw env value non-exposure, safe WeatherSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
+- RealMarketAdapter tests cover default mock market behavior, real adapter instantiation, real-mode missing-env failure, env-key-name-only config, raw env value non-exposure, safe MarketSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
 - WeatherSkill tests cover weather intent parsing, mock adapter calls, WeatherSkill responses, ToolSelector routing, planner weather steps, execution pipeline weather steps, REPL routing, full live path into `MockWeatherAdapter`, ToolChain loop prevention for repeated weather steps, and missing adapter errors.
 - MarketSkill tests cover market intent parsing, mock adapter calls, MarketSkill responses, ToolSelector routing, planner market steps, execution pipeline market steps, REPL routing, and missing adapter errors.
 - CalendarSkill tests cover calendar intent parsing, mock adapter calls, CalendarSkill responses, ToolSelector routing, planner calendar steps, execution pipeline calendar steps, REPL routing, and missing adapter errors.
@@ -755,6 +780,7 @@ Verification Notes
 
 Latest Commits
 
+- `88e739e` Add real market adapter skeleton
 - `d95ace8` Implement gated real weather HTTP adapter
 - `4fbb734` Add real weather adapter skeleton
 - `40ea8e5` Add external adapter config guard

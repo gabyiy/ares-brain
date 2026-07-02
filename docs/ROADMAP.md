@@ -310,9 +310,23 @@ Phase 23: Real Weather Adapter HTTP Logic
 - Default WeatherSkill behavior remains `mock_weather`
 - No real API keys, default real mode, GPT, voice, calendar writes, stocks real API, notifications, or background jobs
 
+Phase 24: Real Market Adapter Skeleton
+
+- `core.RealMarketAdapter`
+- Explicit `real_market` adapter name for future real market capability
+- Supports market quote and summary capabilities
+- Requires network/auth metadata but is not registered in the default SkillManager adapter registry
+- Reads API keys only from the configured environment variable name
+- Fails safely when the env key is missing
+- Returns a deterministic not-implemented response instead of making network calls
+- `config/adapters.example.json` keeps real market disabled and mock-mode by default with a fake placeholder env name
+- Existing MarketSkill behavior stays on `mock_market` unless an explicit real-market adapter is configured and selected
+- Tests cover default mock behavior, real-mode missing-env failure, env-name-only config, adapter instantiation, safe MarketSkill failure, and SecretsGuard compatibility
+- No real API keys, real market API calls, GPT, voice, calendar writes, notifications, or background jobs
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, adapter-backed mock calendar answers, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market skeleton gated by config and env keys, adapter-backed mock calendar answers, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -323,10 +337,10 @@ The current deterministic answer paths are:
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, and calendar
 - `Planner`, `MultiStepPlan`, `ConfirmationManager`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, context responses, confirmations, and conversation memory plan execution
-- `ToolAdapterRegistry`, `ExternalAdapterConfig`, `SecretsGuard`, and `RealWeatherAdapter` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
+- `ToolAdapterRegistry`, `ExternalAdapterConfig`, `SecretsGuard`, `RealWeatherAdapter`, and `RealMarketAdapter` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 200 tests.
+The current pytest collection is 208 tests.
 
 The current memory paths are:
 

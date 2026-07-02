@@ -12,7 +12,7 @@ Current System Flow
 6. The REPL creates `NotesStore` for persistent local notes.
 7. The REPL creates `TasksStore` for persistent offline tasks.
 8. The REPL creates the shared in-memory `ConversationContextManager`.
-9. The REPL creates `SkillManager`, which owns an offline `ToolAdapterRegistry` with `MockWeatherAdapter`, `MockMarketAdapter`, and `MockCalendarAdapter`, can enforce future adapter config through `ExternalAdapterConfig` and `SecretsGuard`, leaves `RealWeatherAdapter` opt-in only, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
+9. The REPL creates `SkillManager`, which owns an offline `ToolAdapterRegistry` with `MockWeatherAdapter`, `MockMarketAdapter`, and `MockCalendarAdapter`, can enforce future adapter config through `ExternalAdapterConfig` and `SecretsGuard`, leaves `RealWeatherAdapter` and `RealMarketAdapter` opt-in only, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
 10. User input is sent to `IntentRouter`.
 11. `IntentRouter` publishes input lifecycle events.
 12. When a skill path is checked, `SkillManager` parses user text into `core.Intent` with `core.IntentParser`.
@@ -234,6 +234,7 @@ Current adapter objects:
 - `MockWeatherAdapter`
 - `RealWeatherAdapter`
 - `MockMarketAdapter`
+- `RealMarketAdapter`
 - `MockCalendarAdapter`
 
 Current metadata fields:
@@ -275,11 +276,14 @@ Current boundaries:
 - `RealWeatherAdapter` normalizes supported weather payloads into ARES weather data.
 - `RealWeatherAdapter` returns deterministic safe errors for timeouts, HTTP status errors, invalid JSON, and unrecognized payloads.
 - Real-weather tests mock HTTP and do not make real network calls.
+- `RealMarketAdapter` supports the market adapter contract but is not registered by default in `SkillManager`.
+- `RealMarketAdapter` reads API keys only from the configured environment variable name and does not expose raw env values in responses.
+- `RealMarketAdapter` returns a deterministic not-implemented response instead of making network calls.
 - No API keys are stored.
 - WeatherSkill uses `MockWeatherAdapter` through this registry for local weather answers.
 - MarketSkill uses `MockMarketAdapter` through this registry for local market quote answers.
 - CalendarSkill uses `MockCalendarAdapter` through this registry for local schedule answers.
-- No real-weather adapter is registered by default, and no real market API, Google Calendar integration, real calendar API, GPT, voice, or web adapter has been added.
+- No real-weather or real-market adapter is registered by default, and no real market HTTP logic, Google Calendar integration, real calendar API, GPT, voice, or web adapter has been added.
 
 Confirmation
 
@@ -646,7 +650,7 @@ Current built-in skills:
 
 `WeatherSkill` answers weather requests through `ToolAdapterRegistry` and the offline `MockWeatherAdapter` by default. It supports `weather`, `weather today`, `weather tomorrow`, and `weather in Madrid`. The default path does not call real APIs, require API keys, or use internet access. Explicit tests can provide an intent with adapter `real_weather`; that adapter can make HTTP requests only when real-mode config and the required env key are present.
 
-`MarketSkill` answers stock/market quote requests through `ToolAdapterRegistry` and the offline `MockMarketAdapter`. It supports `stock nvidia`, `nvidia stock`, `apple stock`, and `market price for tesla`. It does not call real APIs, require API keys, or use internet access.
+`MarketSkill` answers stock/market quote requests through `ToolAdapterRegistry` and the offline `MockMarketAdapter` by default. It supports `stock nvidia`, `nvidia stock`, `apple stock`, and `market price for tesla`. The default path does not call real APIs, require API keys, or use internet access. Explicit tests can provide an intent with adapter `real_market`; that adapter skeleton fails safely without network execution until a future real market provider is implemented.
 
 `CalendarSkill` answers calendar/schedule requests through `ToolAdapterRegistry` and the offline `MockCalendarAdapter`. It supports `what is on my calendar today`, `calendar tomorrow`, `schedule today`, and `do I have anything tomorrow`. It does not call Google Calendar, real APIs, require API keys, use internet access, or run background automation.
 
@@ -727,5 +731,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 200 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, and `skills.builtin.CalendarSkill`.
+- Pytest collection: 208 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, and `skills.builtin.CalendarSkill`.
