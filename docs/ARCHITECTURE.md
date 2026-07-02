@@ -16,7 +16,7 @@ Current System Flow
 10. User input is sent to `IntentRouter`.
 11. `IntentRouter` publishes input lifecycle events.
 12. When a skill path is checked, `SkillManager` parses user text into `core.Intent` with `core.IntentParser`.
-13. `ToolSelector` asks `core.Planner` to build a local execution plan before skill selection.
+13. `ToolSelector` asks `core.Planner` to build a local execution plan before skill selection. Planner can read existing store context through safe store interfaces provided by `SkillManager`.
 14. `ToolSelector` scores the structured intent against registered skill `intent_names`.
 15. Priority skills are selected before normal intents only when a skill opts in.
 16. `SkillManager` validates executable plans through `core.ToolChain`.
@@ -117,6 +117,9 @@ Current entity extraction examples:
 - `add goal build ARES memory` becomes a `goal` intent with an add action and title.
 - `add milestone to goal <id> write tests` becomes a `goal` intent with goal id and milestone text.
 - `show my notes` becomes a `note` intent with a list action.
+- `notes about gym` becomes a `note` intent with a search action and keyword `gym`.
+- `remind me about my main goal tomorrow` becomes a `task` intent with task text `my main goal` and due text `tomorrow`.
+- `what should I do next for my goals` becomes a `goal` intent with a next-step action.
 - `what is my birthday` becomes a `memory_recall` intent for the birthday profile fact.
 - `what did I tell you about my job` becomes a `memory_recall` intent with a recall topic.
 - `weather in Madrid` becomes a `weather` intent with location `Madrid`, adapter `mock_weather`, and capability `weather.current`.
@@ -150,6 +153,9 @@ Current responsibilities:
 - Serialize plans and steps for events, tests, and REPL display.
 - Split compatible compound requests such as `What's the weather tomorrow and remind me to go to the gym`.
 - Split compatible compound requests such as `Show my goals and today's calendar`.
+- Read context through existing `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces when those stores are injected.
+- Resolve context references such as main goal reminders, profile favorite reminders, note topic searches, and next goal actions.
+- Return safe local empty-context responses when required context is missing.
 
 Current supported planner targets:
 
@@ -161,11 +167,13 @@ Current supported planner targets:
 - `market`
 - `calendar`
 - `conversation_memory`
+- `planner_context`
 
 Planner boundaries:
 
 - Planner never executes skills.
 - Planner does not write memory, goals, notes, or tasks.
+- Planner does not read data files directly.
 - Planner does not call GPT, voice, notifications, calendar APIs, or external APIs.
 - `ToolChain` validates compatible planner steps before execution.
 - Planner can hold a `ToolAdapterRegistry` for future adapter-aware planning, but it does not create real external API calls.
@@ -264,6 +272,7 @@ Current responsibilities:
 - Execute each `PlanStep` in order.
 - Resolve local skill targets through `SkillManager` and `SkillRegistry`.
 - Execute conversation memory steps through `MemoryStore`.
+- Execute internal `planner_context` response steps for deterministic context-only answers.
 - Execute explicit `tool_adapter` steps through an injected `ToolAdapterRegistry`.
 - Stop safely on unrecoverable failures such as missing skills or raised exceptions.
 - Continue after recoverable skill-level failures, such as safe local tool rejection.
@@ -289,6 +298,7 @@ Current integration verification:
 - ToolChain tests verify repeated weather steps are rejected before execution to prevent loop-style chains.
 - Live REPL tests verify recoverable partial failure reporting and continued execution.
 - Multi-step planner tests verify single-step compatibility, two-step plans, three-step plans, planner ordering, execution ordering, and partial-result formatting.
+- Context-aware planner tests verify goal context, profile favorite context, note topic context, related task context, missing-context responses, multi-step context plans, partial failure recovery, and REPL integration.
 - Live REPL tests verify `show execution` and `show last execution`.
 - A live-path spy verifies the active path uses `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill`.
 
@@ -651,5 +661,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 164 tests.
+- Pytest collection: 172 tests.
 - Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.ToolAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, and `skills.builtin.CalendarSkill`.

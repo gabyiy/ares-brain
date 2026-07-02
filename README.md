@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.17 - Multi-Step Planner Hardening
+ARES v1.18 - Context-Aware Planner
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 ARES
 │
@@ -89,6 +89,7 @@ Completed
 - Structured intent parser and `Intent` object
 - Execution pipeline for planner steps
 - Explicit `MultiStepPlan` support
+- Context-aware planner support
 - Tool chaining for bounded local multi-step requests
 - External tool adapter interface
 - Built-in weather skill using the offline mock weather adapter
@@ -148,6 +149,9 @@ ARES currently understands questions such as:
 - add milestone to goal <id>
 - What's the weather tomorrow and remind me to go to the gym
 - Show my goals and today's calendar
+- remind me about my main goal tomorrow
+- what should I do next for my goals
+- show my goals and notes about gym
 
 Each request is automatically routed to its correct intent.
 
@@ -162,6 +166,8 @@ Implemented Features
 - Structured intent parser for deterministic local intent/entity extraction
 - Multi-step planner for local goals, notes, tasks, calculator, weather, market, calendar, and conversation memory steps
 - `MultiStepPlan` marker support for ordered requests with more than one executable step
+- Context-aware planner reads user profile, goals, notes, and tasks through store interfaces only
+- Safe context-only planner responses when local context is missing
 - Tool chaining with max depth, loop prevention, execution trace, and chain history
 - Execution pipeline for ordered plan step execution, aggregated final responses, partial-result reporting, execution results, logging, and rollback hooks
 - External ToolAdapter foundation with `ToolRequest`, `ToolResponse`, `ToolAdapterRegistry`, and offline mock weather/market adapters
@@ -177,7 +183,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 164 tests across core Phase 2-18 modules
+- Pytest automated coverage for 172 tests across core Phase 2-19 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -196,7 +202,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `164 tests`.
+Current pytest collection: `172 tests`.
 
 Continuous Integration
 
@@ -238,11 +244,14 @@ Latest Architecture Status
 - SkillManager parses user text into a structured `Intent` before ToolSelector runs.
 - ToolSelector builds a `Plan` before selection so multi-step requests can be inspected before execution.
 - Planner returns a `MultiStepPlan` when a request contains more than one executable local step.
+- Planner can use existing store interfaces for profile favorites, main goals, matching notes, and related open tasks.
+- Planner never reads data files directly and returns deterministic empty-context responses when context is unavailable.
 - ToolSelector first scores matching `intent_names`, then falls back to legacy triggers only for unknown intents.
 - SkillManager delegates executable planner steps to ExecutionPipeline.
 - SkillManager validates executable planner steps through ToolChain before ExecutionPipeline runs.
 - ToolChain enforces max chain depth 5, prevents repeated-step loops, and records chain trace/history.
 - ExecutionPipeline executes plan steps sequentially and records `StepResult` and `ExecutionResult` details.
+- ExecutionPipeline can execute internal `planner_context` response steps for safe context-only answers.
 - ExecutionPipeline collects all step outputs into one response and labels mixed success/failure as `Partial results:`.
 - ExecutionPipeline emits execution events and standard logs for start, step completion, recoverable failure, unrecoverable failure, rollback, and completion.
 - ToolAdapter defines external-tool contracts with adapter metadata, requests, responses, and registry lookup.
@@ -253,6 +262,7 @@ Latest Architecture Status
 - Market tests verify parser, selector, planner, execution pipeline, REPL routing, missing adapter handling, and `MockMarketAdapter` responses.
 - Calendar tests verify parser, selector, planner, execution pipeline, REPL routing, missing adapter handling, and `MockCalendarAdapter` responses.
 - Multi-step planner tests verify single-step compatibility, weather plus reminder planning, goals plus calendar planning, three-step ordering, execution ordering, partial failure recovery, and REPL execution.
+- Context-aware planner tests verify goal context, profile favorite context, note topic context, related task context, missing-context responses, multi-step context plans, partial failure recovery, and REPL integration.
 - ToolChain tests verify repeated weather steps are rejected before execution to prevent loop-style chains.
 - Goals live-path integration tests verify REPL add/list/milestone/pause/complete commands, persistence after reload, Planner goal steps, ExecutionPipeline goal execution, and ToolChain goal chains.
 - SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
@@ -542,19 +552,28 @@ Phase 18
 
 Phase 19
 
+- Context-aware Planner can read `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` through existing safe interfaces.
+- Planner does not read data files directly and does not write to memory, goals, notes, or tasks.
+- Supported context examples include `remind me about my main goal tomorrow`, `what should I do next for my goals`, and `show my goals and notes about gym`.
+- Missing context returns deterministic local empty-context responses through internal `planner_context` steps.
+- Tests cover goal, profile, notes, task, missing context, multi-step context, partial failure recovery, and REPL integration.
+- No GPT, internet access, real APIs, voice, notifications, or background automation were added.
+
+Phase 20
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 20
+Phase 21
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 21
+Phase 22
 
 - Robotics
 - ROS2

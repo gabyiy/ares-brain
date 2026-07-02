@@ -135,6 +135,8 @@ Phase 10: Multi-Step Task Planner Foundation
 - Planner serializes plans for events, tests, and REPL display.
 - Planner can split compatible compound requests such as `What's the weather tomorrow and remind me to go to the gym`.
 - Planner can split compatible compound requests such as `Show my goals and today's calendar`.
+- Planner can use injected profile, goals, notes, and tasks stores through their public interfaces.
+- Planner returns safe local empty-context responses when requested context is unavailable.
 - ToolSelector builds a plan before returning a skill selection.
 - Planner itself never executes skills.
 - Text REPL supports `show plan` and `show steps`.
@@ -149,6 +151,7 @@ Phase 11: Execution Pipeline Foundation
 - ExecutionPipeline receives a `Plan` and executes each `PlanStep` sequentially.
 - Each step records start time, end time, duration, success/failure, returned data, and error messages.
 - SkillManager delegates executable planner steps to ExecutionPipeline.
+- ExecutionPipeline can execute internal `planner_context` response steps.
 - ExecutionPipeline stops on unrecoverable failures and continues after recoverable local tool failures when appropriate.
 - ExecutionPipeline aggregates every step output into one final response.
 - Mixed successful and failed recoverable steps are reported as partial results while remaining steps continue.
@@ -237,9 +240,21 @@ Phase 18: Multi-Step Planner Hardening
 - Tests cover single-step compatibility, two-step plans, three-step plans, planner ordering, execution ordering, partial failure recovery, and REPL integration
 - No GPT, internet access, real APIs, voice, notifications, or background automation
 
+Phase 19: Context-Aware Planner Foundation
+
+- Planner reads `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` through existing safe interfaces only
+- Planner does not read data files directly
+- Planner does not write memory, goals, notes, or tasks
+- Supports context-aware examples such as `remind me about my main goal tomorrow`, `what should I do next for my goals`, and `show my goals and notes about gym`
+- Adds internal `planner_context` response steps for deterministic context-only answers and missing-context responses
+- SkillManager injects its existing store handles into ToolSelector's Planner
+- ExecutionPipeline executes `planner_context` steps without requiring a new public skill
+- Tests cover goal context, profile favorite context, notes context, task context, missing context, multi-step context plans, partial failure recovery, and REPL integration
+- No GPT, internet access, real APIs, voice, notifications, or background automation
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, adapter-backed mock market quotes, adapter-backed mock calendar answers, external tool adapter contracts with offline mocks, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, adapter-backed mock market quotes, adapter-backed mock calendar answers, external tool adapter contracts with offline mocks, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -249,11 +264,11 @@ The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, and calendar
-- `Planner`, `MultiStepPlan`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, and conversation memory plan execution
+- `Planner`, `MultiStepPlan`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, context responses, and conversation memory plan execution
 - `ToolAdapterRegistry` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 164 tests.
+The current pytest collection is 172 tests.
 
 The current memory paths are:
 
