@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.21 - Real Weather Adapter Skeleton
+ARES v1.22 - Real Weather Adapter HTTP Logic
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in real-weather skeleton with no network execution yet, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 ARES
 │
@@ -95,6 +95,7 @@ Completed
 - External tool adapter interface
 - External adapter config and secrets guard
 - Real weather adapter skeleton
+- Real weather adapter HTTP logic
 - Built-in weather skill using the offline mock weather adapter
 - Built-in market skill using the offline mock market adapter
 - Built-in calendar skill using the offline mock calendar adapter
@@ -181,7 +182,7 @@ Implemented Features
 - Execution pipeline for ordered plan step execution, confirmation pauses, aggregated final responses, partial-result reporting, execution results, logging, and rollback hooks
 - External ToolAdapter foundation with `ToolRequest`, `ToolResponse`, `ToolAdapterRegistry`, and offline mock weather/market adapters
 - External adapter config model with enabled, mode, env-key name, base URL, timeout, placeholder detection, and secret validation
-- RealWeatherAdapter skeleton that reads API keys only from environment variables and fails safely without network execution
+- RealWeatherAdapter HTTP logic gated by `mode=real`, env-key lookup, timeout handling, safe errors, and normalized ARES weather output
 - Built-in weather skill backed by `ToolAdapterRegistry` and `MockWeatherAdapter`
 - Built-in market skill backed by `ToolAdapterRegistry` and `MockMarketAdapter`
 - Built-in calendar skill backed by `ToolAdapterRegistry` and `MockCalendarAdapter`
@@ -194,7 +195,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 197 tests across core Phase 2-22 modules
+- Pytest automated coverage for 200 tests across core Phase 2-23 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -213,7 +214,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `197 tests`.
+Current pytest collection: `200 tests`.
 
 Continuous Integration
 
@@ -270,10 +271,10 @@ Latest Architecture Status
 - ToolAdapter defines external-tool contracts with adapter metadata, requests, responses, and registry lookup.
 - ToolAdapterRegistry can enforce `ExternalAdapterConfig` for enabled state, mock/local/real mode, env-key names, base URLs, and timeouts.
 - SecretsGuard rejects raw-looking secrets and validates that adapter config files reference environment variable names instead of storing keys.
-- Real adapter mode fails closed when an env key is missing, when the env-key name is only a placeholder, or when real execution is not implemented.
+- Real adapter mode fails closed when an env key is missing, when the env-key name is only a placeholder, or when real execution is not implemented for an adapter.
 - `config/adapters.example.json` contains fake placeholder config only; local/private adapter config files are ignored by git.
-- RealWeatherAdapter is available as an explicit `real_weather` adapter skeleton, but the default WeatherSkill path still uses `mock_weather`.
-- RealWeatherAdapter marks `requires_network` and `requires_auth` true, reads API keys only from the configured environment variable name, and returns a not-implemented response instead of making network calls.
+- RealWeatherAdapter is available as an explicit `real_weather` adapter, but the default WeatherSkill path still uses `mock_weather`.
+- RealWeatherAdapter marks `requires_network` and `requires_auth` true, reads API keys only from the configured environment variable name, applies configured timeouts, performs HTTP only after real-mode/env gating, and normalizes supported weather responses into ARES weather data.
 - MockWeatherAdapter, MockMarketAdapter, and MockCalendarAdapter are offline-only adapters that do not require network, auth, API keys, GPT, or voice.
 - Planner can hold a ToolAdapterRegistry for adapter-aware planning, and ExecutionPipeline can safely execute weather skill steps or explicit `tool_adapter` plan steps through an injected registry.
 - Live REPL integration tests verify multi-step plan creation, notes plus calculator execution, task plus memory execution, goal command routing, weather routing through `MockWeatherAdapter`, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
@@ -284,7 +285,7 @@ Latest Architecture Status
 - Context-aware planner tests verify goal context, profile favorite context, note topic context, related task context, missing-context responses, multi-step context plans, partial failure recovery, and REPL integration.
 - Confirmation tests verify delete note/task/goal pauses, confirm executes, cancel does not execute, missing pending confirmation fails safely, weather/market/calendar remain unaffected, future external write actions require confirmation, and multi-step plans pause safely.
 - Adapter config tests verify mock mode, real-mode fail-closed behavior without env keys, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility.
-- RealWeatherAdapter tests verify default weather remains mock, missing env keys fail safely, raw key values are not exposed, explicit real-weather failures are handled safely, and SecretsGuard still accepts placeholder config.
+- RealWeatherAdapter tests verify default weather remains mock, missing env keys fail safely, mocked HTTP succeeds, HTTP timeouts fail safely, bad API responses fail safely, normalized output stays stable, raw key values are not exposed, explicit real-weather failures are handled safely, and SecretsGuard still accepts placeholder config.
 - ToolChain tests verify repeated weather steps are rejected before execution to prevent loop-style chains.
 - Goals live-path integration tests verify REPL add/list/milestone/pause/complete commands, persistence after reload, Planner goal steps, ExecutionPipeline goal execution, and ToolChain goal chains.
 - SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
@@ -347,6 +348,7 @@ Completed:
 - Calendar skill
 - External adapter config and secrets guard
 - Real weather adapter skeleton
+- Real weather adapter HTTP logic
 
 Next:
 
@@ -544,7 +546,7 @@ Phase 15
 - `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL route the local `weather` intent.
 - Tests cover weather parsing, mock adapter calls, skill responses, planner steps, execution pipeline steps, REPL routing, and missing adapter errors.
 - Hardened live-path tests also verify ToolChain loop prevention for repeated weather steps and the full REPL path into `MockWeatherAdapter`.
-- No real weather API, API keys, internet access, GPT, voice, calendar, stocks, or notifications were added.
+- The default WeatherSkill path still does not call a real weather API, use API keys, require internet access, GPT, voice, calendar, stocks, or notifications.
 
 Phase 16
 
@@ -608,7 +610,7 @@ Phase 21
 
 Phase 22
 
-- RealWeatherAdapter skeleton adds an explicit `real_weather` adapter that supports weather capabilities but does not make network calls yet.
+- RealWeatherAdapter skeleton added an explicit `real_weather` adapter that supports weather capabilities while keeping default runtime behavior on mock weather.
 - The adapter requires real-mode config and environment-variable-based API keys.
 - The default WeatherSkill flow continues to use `mock_weather`.
 - Real mode without the configured env key fails safely before execution.
@@ -618,19 +620,30 @@ Phase 22
 
 Phase 23
 
+- RealWeatherAdapter HTTP logic performs weather HTTP requests only after `mode=real` and env-key gates pass.
+- API keys are read only from the configured environment variable name and are not stored in config or returned in responses.
+- Configured timeout seconds are passed to the HTTP client.
+- Real weather responses are normalized into ARES weather data: location, condition, temperature C, period, capability, and source.
+- HTTP timeout, HTTP status errors, invalid JSON, and unrecognized weather payloads return safe deterministic errors.
+- Tests mock HTTP and perform no real network calls.
+- The default WeatherSkill path remains `mock_weather`.
+- No real API keys, default real mode, GPT, voice, calendar writes, stocks real API, notifications, or background jobs were added.
+
+Phase 24
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 24
+Phase 25
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 25
+Phase 26
 
 - Robotics
 - ROS2
