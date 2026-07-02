@@ -78,8 +78,31 @@ class MultiStepPlan(Plan):
 class Planner:
     """Builds deterministic execution plans without executing any skills."""
 
-    def __init__(self, tool_adapter_registry=None):
+    def __init__(
+        self,
+        tool_adapter_registry=None,
+        profile_store=None,
+        notes_store=None,
+        tasks_store=None,
+        goals_store=None,
+    ):
         self.tool_adapter_registry = tool_adapter_registry
+        self.profile_store = profile_store
+        self.notes_store = notes_store
+        self.tasks_store = tasks_store
+        self.goals_store = goals_store
+
+    def set_context_sources(
+        self,
+        profile_store=None,
+        notes_store=None,
+        tasks_store=None,
+        goals_store=None,
+    ) -> None:
+        self.profile_store = profile_store
+        self.notes_store = notes_store
+        self.tasks_store = tasks_store
+        self.goals_store = goals_store
 
     def plan(self, intent: Intent) -> Plan:
         raw_text = (intent.raw_text or "").strip()
@@ -131,7 +154,12 @@ class Planner:
             return self._goal_step(intent.raw_text, dict(intent.extracted_entities)), None
 
         if intent.intent_name == "note":
-            return self._note_step(intent.raw_text, dict(intent.extracted_entities)), None
+            entities = dict(intent.extracted_entities)
+            if entities.get("action") == "search":
+                context_keyword = _note_search_keyword(intent.raw_text)
+                if context_keyword is not None:
+                    return self._note_search_step(intent.raw_text, context_keyword), None
+            return self._note_step(intent.raw_text, entities), None
 
         if intent.intent_name == "task":
             return self._task_step(intent.raw_text, dict(intent.extracted_entities)), None
@@ -197,6 +225,9 @@ class Planner:
         action = entities.get("action") or "add"
         clean_entities = dict(entities)
 
+        if action == "next":
+            return self._next_goal_step(raw_text)
+
         if action == "add":
             title = entities.get("title") or _strip_goal_prefix(raw_text)
             description = entities.get("description") or ""
@@ -245,6 +276,9 @@ class Planner:
 
     def _goal_step_from_text(self, text: str):
         lowered = text.lower()
+        if _is_next_goal_question(lowered):
+            return self._goal_step(text, {"action": "next"})
+
         if lowered.startswith("add milestone to goal"):
             goal_id, milestone = _split_first_word(_strip_prefix(text, "add milestone to goal"))
             return self._goal_step(
@@ -277,8 +311,83 @@ class Planner:
 
         return None
 
+    def _next_goal_step(self, raw_text: str) -> PlanStep:
+        if not self.goals_store:
+            return self._context_response_step(
+                raw_text,
+                "I do not have goal context available yet.",
+                context_type="goals",
+                reason="missing_goals_store",
+            )
+
+        goal = self._main_goal()
+        if not goal:
+            return self._context_response_step(
+                raw_text,
+                "I do not have any goals yet.",
+                context_type="goals",
+                reason="empty_goals",
+            )
+
+        task = self._next_task_for_goal(goal)
+        if task:
+            due = f" due {task.due}" if getattr(task, "due", None) else ""
+            return self._context_response_step(
+                raw_text,
+                f'Next for your goal "{goal.title}": finish task {task.id}: {task.text}{due}.',
+                context_type="goals",
+                reason="related_task",
+                extra_entities={
+                    "goal_id": goal.id,
+                    "goal_title": goal.title,
+                    "task_id": task.id,
+                    "task_text": task.text,
+                    "task_due": getattr(task, "due", None),
+                },
+            )
+
+        milestones = list(getattr(goal, "milestones", []) or [])
+        if milestones:
+            return self._context_response_step(
+                raw_text,
+                f'Next for your goal "{goal.title}": {milestones[0]}.',
+                context_type="goals",
+                reason="first_milestone",
+                extra_entities={
+                    "goal_id": goal.id,
+                    "goal_title": goal.title,
+                    "milestone": milestones[0],
+                },
+            )
+
+        return self._context_response_step(
+            raw_text,
+            f'Next for your goal "{goal.title}": add a milestone or task for the next concrete step.',
+            context_type="goals",
+            reason="missing_next_step",
+            extra_entities={"goal_id": goal.id, "goal_title": goal.title},
+        )
+
     def _note_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
         action = entities.get("action") or "add"
+        if action == "search":
+            keyword = entities.get("keyword") or _strip_prefix(raw_text, "search notes")
+            can_execute = bool(keyword)
+            clean_entities = dict(entities)
+            if keyword:
+                clean_entities["keyword"] = keyword
+            return PlanStep(
+                order=0,
+                target="notes",
+                action="search",
+                input_text=f"search notes {keyword}" if keyword else raw_text,
+                intent_name="note",
+                entities=clean_entities,
+                can_execute=can_execute,
+                skip_reason="" if can_execute else "Missing note search keyword.",
+                description=f"Search notes for: {keyword}" if keyword else "Search notes.",
+            )
+
         note_text = entities.get("text") or _strip_note_prefix(raw_text)
         can_execute = bool(action != "add" or note_text)
         return PlanStep(
@@ -295,6 +404,16 @@ class Planner:
 
     def _note_step_from_text(self, text: str):
         lowered = text.lower()
+        search_keyword = _note_search_keyword(text)
+        if search_keyword is not None:
+            return self._note_search_step(text, search_keyword)
+
+        if lowered.startswith("search notes"):
+            return self._note_step(
+                text,
+                {"action": "search", "keyword": _strip_prefix(text, "search notes")},
+            )
+
         if lowered.startswith(("remember this", "save note", "take a note")):
             note_text = _strip_note_prefix(text)
         elif lowered.startswith("remember "):
@@ -307,12 +426,56 @@ class Planner:
             {"action": "add", "text": note_text},
         )
 
+    def _note_search_step(self, raw_text: str, keyword: str) -> PlanStep:
+        clean_keyword = _clean_clause(keyword)
+        if not clean_keyword:
+            return self._context_response_step(
+                raw_text,
+                "I need a note topic to search.",
+                context_type="notes",
+                reason="missing_note_keyword",
+            )
+
+        if not self.notes_store:
+            return self._context_response_step(
+                raw_text,
+                "I do not have notes context available yet.",
+                context_type="notes",
+                reason="missing_notes_store",
+                extra_entities={"keyword": clean_keyword},
+            )
+
+        matches = self.notes_store.search(clean_keyword)
+        if not matches:
+            return self._context_response_step(
+                raw_text,
+                f'I do not have notes about "{clean_keyword}" yet.',
+                context_type="notes",
+                reason="empty_note_search",
+                extra_entities={"keyword": clean_keyword},
+            )
+
+        return self._note_step(
+            f"search notes {clean_keyword}",
+            {
+                "action": "search",
+                "keyword": clean_keyword,
+                "context_source": "notes",
+                "context_count": len(matches),
+            },
+        )
+
     def _task_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
         action = entities.get("action") or "add"
         task_text = entities.get("text") or _strip_task_prefix(raw_text)
         due = entities.get("due")
         if not due:
             task_text, due = _split_due_text(task_text)
+
+        if action == "add" and not entities.get("context_resolved"):
+            context_step = self._contextual_task_step(raw_text, task_text, due)
+            if context_step:
+                return context_step
 
         can_execute = bool(action != "add" or task_text)
         command = f"add task {task_text}" if action == "add" else raw_text
@@ -345,6 +508,8 @@ class Planner:
             task_text = _strip_prefix(text, "add task")
         elif lowered.startswith("remind me to"):
             task_text = _strip_prefix(text, "remind me to")
+        elif lowered.startswith("remind me about"):
+            task_text = _strip_prefix(text, "remind me about")
         elif lowered.startswith("remember to"):
             task_text = _strip_prefix(text, "remember to")
         else:
@@ -357,6 +522,74 @@ class Planner:
             text,
             {"action": "add", "text": task_text, "due": due},
         )
+
+    def _contextual_task_step(self, raw_text: str, task_text: str, due: str):
+        if _is_main_goal_reference(task_text):
+            if not self.goals_store:
+                return self._context_response_step(
+                    raw_text,
+                    "I do not have goal context available yet.",
+                    context_type="goals",
+                    reason="missing_goals_store",
+                )
+
+            goal = self._main_goal()
+            if not goal:
+                return self._context_response_step(
+                    raw_text,
+                    "I do not have any goals yet.",
+                    context_type="goals",
+                    reason="empty_goals",
+                )
+
+            return self._task_step(
+                raw_text,
+                {
+                    "action": "add",
+                    "text": f"Review goal: {goal.title}",
+                    "due": due,
+                    "context_resolved": True,
+                    "context_source": "goals",
+                    "context_goal_id": goal.id,
+                    "context_goal_title": goal.title,
+                },
+            )
+
+        favorite_subject = _favorite_subject(task_text)
+        if favorite_subject is not None:
+            if not self.profile_store:
+                return self._context_response_step(
+                    raw_text,
+                    "I do not have profile context available yet.",
+                    context_type="profile",
+                    reason="missing_profile_store",
+                    extra_entities={"subject": favorite_subject},
+                )
+
+            favorite = self.profile_store.get_favorite(favorite_subject)
+            if not favorite:
+                return self._context_response_step(
+                    raw_text,
+                    f'I do not know your favorite {favorite_subject} yet.',
+                    context_type="profile",
+                    reason="missing_favorite",
+                    extra_entities={"subject": favorite_subject},
+                )
+
+            return self._task_step(
+                raw_text,
+                {
+                    "action": "add",
+                    "text": f"Review favorite {favorite_subject}: {favorite}",
+                    "due": due,
+                    "context_resolved": True,
+                    "context_source": "profile",
+                    "context_subject": favorite_subject,
+                    "context_value": favorite,
+                },
+            )
+
+        return None
 
     def _calculator_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
         expression = entities.get("expression") or _extract_expression(raw_text)
@@ -508,6 +741,65 @@ class Planner:
             description=f"Store long-term memory: {content}",
         )
 
+    def _context_response_step(
+        self,
+        raw_text: str,
+        response_text: str,
+        context_type: str,
+        reason: str,
+        extra_entities: Dict[str, Any] = None,
+    ) -> PlanStep:
+        entities = {
+            "text": response_text,
+            "context_type": context_type,
+            "reason": reason,
+        }
+        if extra_entities:
+            entities.update(extra_entities)
+
+        return PlanStep(
+            order=0,
+            target="planner_context",
+            action="respond",
+            input_text=response_text,
+            intent_name="planner_context",
+            entities=entities,
+            can_execute=True,
+            description="Return a context-aware planner response.",
+        )
+
+    def _main_goal(self):
+        goals = self.goals_store.list()
+        candidates = [goal for goal in goals if getattr(goal, "status", "active") == "active"]
+        if not candidates:
+            candidates = goals
+        if not candidates:
+            return None
+
+        indexed = list(enumerate(candidates))
+        indexed.sort(key=lambda item: (-_priority_score(getattr(item[1], "priority", "")), item[0]))
+        return indexed[0][1]
+
+    def _next_task_for_goal(self, goal):
+        if not self.tasks_store:
+            return None
+
+        goal_tokens = {
+            token
+            for token in _tokens(getattr(goal, "title", ""))
+            if len(token) >= 3
+        }
+        if not goal_tokens:
+            return None
+
+        for task in self.tasks_store.list():
+            if getattr(task, "completed", False):
+                continue
+            task_tokens = set(_tokens(getattr(task, "text", "")))
+            if goal_tokens & task_tokens:
+                return task
+        return None
+
 
 def _split_clauses(text: str) -> List[str]:
     return [
@@ -519,6 +811,61 @@ def _split_clauses(text: str) -> List[str]:
 
 def _clean_clause(text: str) -> str:
     return (text or "").strip().strip(" .!?").strip()
+
+
+def _tokens(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+
+def _is_next_goal_question(text: str) -> bool:
+    lowered = (text or "").lower().strip(" ?!.")
+    return lowered in {
+        "what should i do next for my goals",
+        "what should i do next for my goal",
+        "next for my goals",
+        "next for my goal",
+    }
+
+
+def _is_main_goal_reference(text: str) -> bool:
+    lowered = (text or "").lower().strip(" ?!.")
+    if lowered in {"my goal", "my goals", "main goal", "my main goal"}:
+        return True
+    return bool(re.search(r"\bmy\s+main\s+goal\b|\bmain\s+goal\b", lowered))
+
+
+def _favorite_subject(text: str):
+    match = re.search(r"\bmy\s+favorite\s+(.+)$", text or "", flags=re.IGNORECASE)
+    if not match:
+        return None
+    subject = _clean_clause(match.group(1))
+    return subject or None
+
+
+def _note_search_keyword(text: str):
+    clean_text = _clean_clause(text)
+    patterns = (
+        r"^notes\s+about\s+(.+)$",
+        r"^show\s+notes\s+about\s+(.+)$",
+        r"^show\s+my\s+notes\s+about\s+(.+)$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, clean_text, flags=re.IGNORECASE)
+        if match:
+            return _clean_clause(match.group(1))
+    return None
+
+
+def _priority_score(priority: str) -> int:
+    normalized = (priority or "").strip().lower()
+    return {
+        "critical": 4,
+        "urgent": 4,
+        "high": 3,
+        "normal": 2,
+        "medium": 2,
+        "low": 1,
+    }.get(normalized, 2)
 
 
 def _renumber_step(step: PlanStep, order: int) -> PlanStep:

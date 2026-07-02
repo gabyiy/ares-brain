@@ -40,6 +40,12 @@ class SkillManager:
         self.conversation_context = conversation_context or ConversationContextManager()
         self.intent_parser = intent_parser or IntentParser()
         self.registry.selector.planner.tool_adapter_registry = self.tool_adapter_registry
+        self.registry.selector.planner.set_context_sources(
+            profile_store=self.profile_store,
+            notes_store=self.notes_store,
+            tasks_store=self.tasks_store,
+            goals_store=self.goals_store,
+        )
         self.last_plan = None
         self.last_execution = None
         self.execution_pipeline = ExecutionPipeline(

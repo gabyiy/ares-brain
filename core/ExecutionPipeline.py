@@ -198,6 +198,9 @@ class ExecutionPipeline:
         if step.target == "conversation_memory":
             return self._execute_memory_step(step, context, start_time, started_at)
 
+        if step.target == "planner_context":
+            return self._execute_planner_context_step(step, context, start_time, started_at)
+
         if step.target == "tool_adapter":
             return self._execute_tool_adapter_step(step, context, start_time, started_at)
 
@@ -311,6 +314,42 @@ class ExecutionPipeline:
             started_at=started_at,
             success=True,
             returned_data=returned_data,
+            error_message="",
+            recoverable=True,
+        )
+
+    def _execute_planner_context_step(
+        self,
+        step: PlanStep,
+        context: Any,
+        start_time: str,
+        started_at: float,
+    ) -> StepResult:
+        response_text = str(step.entities.get("text") or step.input_text or "").strip()
+        if not response_text:
+            return self._finish_step(
+                step=step,
+                start_time=start_time,
+                started_at=started_at,
+                success=False,
+                returned_data={},
+                error_message="Missing planner context response.",
+                recoverable=True,
+            )
+
+        return self._finish_step(
+            step=step,
+            start_time=start_time,
+            started_at=started_at,
+            success=True,
+            returned_data={
+                "text": response_text,
+                "skill": "planner_context",
+                "metadata": {
+                    "context_type": step.entities.get("context_type"),
+                    "reason": step.entities.get("reason"),
+                },
+            },
             error_message="",
             recoverable=True,
         )

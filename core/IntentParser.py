@@ -65,6 +65,9 @@ class IntentParser:
         return self._unknown(parsed.raw_text)
 
     def _parse_goal(self, text: ParsedText) -> Optional[Intent]:
+        if _is_next_goal_question(text.normalized):
+            return self._intent("goal", 0.9, text.raw_text, action="next")
+
         if text.is_exact("list goals", "show goals", "list my goals", "show my goals"):
             return self._intent("goal", 0.96, text.raw_text, action="list")
 
@@ -113,6 +116,10 @@ class IntentParser:
         if text.is_exact("list my notes", "show my notes"):
             return self._intent("note", 0.96, text.raw_text, action="list")
 
+        notes_about_keyword = _notes_about_keyword(text.raw_text)
+        if notes_about_keyword is not None:
+            return self._intent("note", 0.9, text.raw_text, action="search", keyword=notes_about_keyword)
+
         if text.is_exact("delete all notes"):
             return self._intent("note", 0.96, text.raw_text, action="delete_all_request")
 
@@ -149,7 +156,7 @@ class IntentParser:
             task_id = _first_word(text.after("delete task"))
             return self._intent("task", 0.94, text.raw_text, action="delete", task_id=task_id)
 
-        for phrase in ("add task", "remind me to", "remember"):
+        for phrase in ("add task", "remind me to", "remind me about", "remember"):
             if text.starts_with(phrase):
                 task_text, due = _split_due_text(_strip_leading_task_marker(text.after(phrase)))
                 return self._intent("task", 0.9, text.raw_text, action="add", text=task_text, due=due)
@@ -303,6 +310,31 @@ def _tokens(value: str) -> List[str]:
 
 def _clean_text(value: str) -> str:
     return (value or "").strip().strip(" ?!.").strip(":- ").strip()
+
+
+def _is_next_goal_question(value: str) -> bool:
+    normalized = _normalize(value).strip()
+    return normalized in {
+        "what should i do next for my goals",
+        "what should i do next for my goal",
+        "next for my goals",
+        "next for my goal",
+    }
+
+
+def _notes_about_keyword(value: str):
+    clean = _clean_text(value)
+    patterns = (
+        r"^notes\s+about\s+(.+)$",
+        r"^show\s+notes\s+about\s+(.+)$",
+        r"^show\s+my\s+notes\s+about\s+(.+)$",
+        r"\bnotes\s+about\s+(.+)$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, clean, flags=re.IGNORECASE)
+        if match:
+            return _clean_text(match.group(1))
+    return None
 
 
 def _first_word(value: str) -> str:
