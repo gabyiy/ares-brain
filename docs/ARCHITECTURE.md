@@ -263,6 +263,8 @@ Current integration verification:
 - Live REPL tests verify task plus memory execution through ExecutionPipeline.
 - Live REPL tests verify goal add, list, add milestone, pause, complete, and show commands.
 - Live REPL tests verify weather requests through `WeatherSkill` and `MockWeatherAdapter`.
+- Hardened weather live-path tests verify `IntentParser -> Planner -> ExecutionPipeline -> WeatherSkill -> MockWeatherAdapter` through the text REPL.
+- ToolChain tests verify repeated weather steps are rejected before execution to prevent loop-style chains.
 - Live REPL tests verify recoverable partial failure reporting and continued execution.
 - Live REPL tests verify `show execution` and `show last execution`.
 - A live-path spy verifies the active path uses `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill`.
@@ -616,5 +618,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 138 tests.
+- Pytest collection: 140 tests.
 - Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.ToolAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, and `skills.builtin.WeatherSkill`.

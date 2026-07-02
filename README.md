@@ -160,7 +160,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 138 tests across core Phase 2-15 modules
+- Pytest automated coverage for 140 tests across core Phase 2-15 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -179,7 +179,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `138 tests`.
+Current pytest collection: `140 tests`.
 
 Continuous Integration
 
@@ -227,7 +227,9 @@ Latest Architecture Status
 - ToolAdapter defines external-tool contracts with adapter metadata, requests, responses, and registry lookup.
 - MockWeatherAdapter and MockMarketAdapter are offline-only adapters that do not require network, auth, API keys, GPT, or voice.
 - Planner can hold a ToolAdapterRegistry for adapter-aware planning, and ExecutionPipeline can safely execute weather skill steps or explicit `tool_adapter` plan steps through an injected registry.
-- Live REPL integration tests verify multi-step plan creation, notes plus calculator execution, task plus memory execution, goal command routing, weather routing, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
+- Live REPL integration tests verify multi-step plan creation, notes plus calculator execution, task plus memory execution, goal command routing, weather routing through `MockWeatherAdapter`, recoverable partial failure reporting, last execution display, and the active `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path.
+- Weather live-path tests verify `IntentParser -> Planner -> ExecutionPipeline -> WeatherSkill -> MockWeatherAdapter` through the text REPL.
+- ToolChain tests verify repeated weather steps are rejected before execution to prevent loop-style chains.
 - Goals live-path integration tests verify REPL add/list/milestone/pause/complete commands, persistence after reload, Planner goal steps, ExecutionPipeline goal execution, and ToolChain goal chains.
 - SkillContext metadata carries the parsed intent and extracted entities for skills that need them.
 - IntentParser tests cover ambiguous local phrases such as `remember to buy milk`, note reminders, birthday recall, goal actions, task actions, note actions, calculator requests, and unknown text.
@@ -478,6 +480,7 @@ Phase 15
 - Supported phrases include `weather`, `weather today`, `weather tomorrow`, and `weather in Madrid`.
 - `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL route the local `weather` intent.
 - Tests cover weather parsing, mock adapter calls, skill responses, planner steps, execution pipeline steps, REPL routing, and missing adapter errors.
+- Hardened live-path tests also verify ToolChain loop prevention for repeated weather steps and the full REPL path into `MockWeatherAdapter`.
 - No real weather API, API keys, internet access, GPT, voice, calendar, stocks, or notifications were added.
 
 Phase 16

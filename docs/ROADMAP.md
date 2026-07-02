@@ -197,7 +197,7 @@ Phase 15: Adapter-Backed Weather Skill
 - Uses `ToolAdapterRegistry` and `MockWeatherAdapter`
 - Supports `weather`, `weather today`, `weather tomorrow`, and `weather in Madrid`
 - `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL route the local `weather` intent
-- Tests cover weather intent parsing, mock adapter calls, WeatherSkill responses, planner weather steps, execution pipeline weather steps, REPL routing, and missing adapter errors
+- Tests cover weather intent parsing, mock adapter calls, WeatherSkill responses, planner weather steps, execution pipeline weather steps, REPL routing, full live path into `MockWeatherAdapter`, ToolChain loop prevention for repeated weather steps, and missing adapter errors
 - No real APIs, API keys, internet access, GPT, voice, calendar integration, stocks, or notifications
 
 Current State
@@ -216,7 +216,7 @@ The current deterministic answer paths are:
 - `ToolAdapterRegistry` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 138 tests.
+The current pytest collection is 140 tests.
 
 The current memory paths are:
 
