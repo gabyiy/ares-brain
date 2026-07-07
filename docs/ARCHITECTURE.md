@@ -289,6 +289,41 @@ Current boundaries:
 - CalendarSkill uses `MockCalendarAdapter` through this registry for local schedule answers.
 - No real-weather or real-market adapter is registered by default, and no Google Calendar integration, real calendar API, GPT, voice, or web adapter has been added.
 
+Device Action Framework
+
+`core.DeviceAction` defines the foundation for safe local device actions without executing dangerous commands.
+
+Current device action objects:
+
+- `DeviceAction`
+- `DeviceActionResult`
+- `DeviceActionRegistry`
+- `LocalDeviceActionAdapter`
+
+Current safe built-in actions:
+
+- `echo`
+- `system_status_mock`
+- `list_actions`
+
+Current responsibilities:
+
+- Represent local device action metadata in a stable model.
+- Return stable execution result dictionaries with action name, success, text, data, error message, and metadata.
+- Register named safe local actions.
+- List available safe local actions.
+- Return safe failures for unknown actions.
+- Reject dangerous placeholders such as shutdown and restart.
+
+Current boundaries:
+
+- No shutdown or restart action exists.
+- No arbitrary shell command execution exists.
+- No Telegram, voice, internet, GPT, remote control, notifications, or background device automation was added.
+- `system_status_mock` returns deterministic mock data and does not inspect the host system.
+- Future dangerous actions must require explicit confirmation before execution.
+- The framework is not a live REPL command path yet; it is a safe foundation for the future Device/PC City bridge.
+
 Confirmation
 
 `core.Confirmation` provides the in-memory confirmation model for destructive and important actions.
@@ -789,5 +824,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 212 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, and `skills.builtin.CalendarSkill`.
+- Pytest collection: 220 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, and `skills.builtin.CalendarSkill`.

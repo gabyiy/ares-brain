@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.24 - Real Market Adapter HTTP Logic
+ARES v1.25 - Device Action Framework Skeleton
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.DeviceAction`, `DeviceActionRegistry`, and `LocalDeviceActionAdapter` for safe mock-only local device action foundations, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 Long-Term City Model
 
@@ -120,6 +120,7 @@ Completed
 - Real weather adapter HTTP logic
 - Real market adapter skeleton
 - Real market adapter HTTP logic
+- Safe local device action framework skeleton
 - Built-in weather skill using the offline mock weather adapter
 - Built-in market skill using the offline mock market adapter
 - Built-in calendar skill using the offline mock calendar adapter
@@ -205,6 +206,7 @@ Implemented Features
 - Tool chaining with max depth, loop prevention, execution trace, and chain history
 - Execution pipeline for ordered plan step execution, confirmation pauses, aggregated final responses, partial-result reporting, execution results, logging, and rollback hooks
 - External ToolAdapter foundation with `ToolRequest`, `ToolResponse`, `ToolAdapterRegistry`, and offline mock weather/market adapters
+- DeviceAction foundation with `DeviceAction`, `DeviceActionResult`, `DeviceActionRegistry`, and `LocalDeviceActionAdapter`
 - External adapter config model with enabled, mode, env-key name, base URL, timeout, placeholder detection, and secret validation
 - RealWeatherAdapter HTTP logic gated by `mode=real`, env-key lookup, timeout handling, safe errors, and normalized ARES weather output
 - RealMarketAdapter HTTP logic gated by `mode=real`, env-key lookup, timeout handling, safe errors, and normalized ARES market output
@@ -220,7 +222,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 212 tests across core Phase 2-25 modules
+- Pytest automated coverage for 220 tests across core Phase 2-26 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -239,7 +241,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `212 tests`.
+Current pytest collection: `220 tests`.
 
 Continuous Integration
 
@@ -295,6 +297,9 @@ Latest Architecture Status
 - ExecutionPipeline emits execution events and standard logs for start, step completion, recoverable failure, unrecoverable failure, rollback, and completion.
 - ToolAdapter defines external-tool contracts with adapter metadata, requests, responses, and registry lookup.
 - ToolAdapterRegistry can enforce `ExternalAdapterConfig` for enabled state, mock/local/real mode, env-key names, base URLs, and timeouts.
+- DeviceAction defines safe local action metadata and stable execution result formatting.
+- DeviceActionRegistry registers named safe local actions, rejects dangerous placeholders, and returns safe failures for unknown actions.
+- LocalDeviceActionAdapter currently exposes only `echo`, `system_status_mock`, and `list_actions`; it does not run arbitrary shell commands or add shutdown/restart actions.
 - SecretsGuard rejects raw-looking secrets and validates that adapter config files reference environment variable names instead of storing keys.
 - Real adapter mode fails closed when an env key is missing, when the env-key name is only a placeholder, or when real execution is not implemented for an adapter.
 - `config/adapters.example.json` contains fake placeholder config only; local/private adapter config files are ignored by git.
@@ -379,6 +384,7 @@ Completed:
 - Real weather adapter HTTP logic
 - Real market adapter skeleton
 - Real market adapter HTTP logic
+- Device action framework skeleton
 
 Next:
 
@@ -682,19 +688,28 @@ Phase 25
 
 Phase 26
 
+- DeviceAction model and DeviceActionResult model define stable local device action metadata and result payloads.
+- DeviceActionRegistry registers safe local actions and returns safe failures for unknown actions.
+- LocalDeviceActionAdapter exposes only `echo`, `system_status_mock`, and `list_actions`.
+- Dangerous placeholders such as shutdown/restart are rejected.
+- No shutdown, restart, arbitrary shell execution, Telegram, voice, internet, GPT, remote control, notifications, or dangerous device action execution was added.
+- Future dangerous actions must require explicit confirmation before execution.
+
+Phase 27
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 27
+Phase 28
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 28
+Phase 29
 
 - Robotics
 - ROS2

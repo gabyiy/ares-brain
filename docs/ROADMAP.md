@@ -335,9 +335,22 @@ Phase 25: Real Market Adapter HTTP Logic
 - Default MarketSkill behavior remains `mock_market`
 - No real API keys, default real mode, GPT, voice, calendar writes, notifications, or background jobs
 
+Phase 26: Device Action Framework Skeleton
+
+- `core.DeviceAction`
+- `core.DeviceActionResult`
+- `core.DeviceActionRegistry`
+- `core.LocalDeviceActionAdapter`
+- Safe built-in actions only: `echo`, `system_status_mock`, and `list_actions`
+- Unknown actions fail safely
+- Dangerous placeholders such as shutdown and restart are rejected
+- Result payloads have stable action name, success, text, data, error message, and metadata fields
+- No arbitrary shell commands, shutdown/restart actions, Telegram, voice, internet, GPT, remote control, notifications, or dangerous device automation
+- Future dangerous actions must require explicit confirmation
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, a safe mock-only local device action framework skeleton, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -349,9 +362,10 @@ The current deterministic answer paths are:
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, and calendar
 - `Planner`, `MultiStepPlan`, `ConfirmationManager`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, context responses, confirmations, and conversation memory plan execution
 - `ToolAdapterRegistry`, `ExternalAdapterConfig`, `SecretsGuard`, `RealWeatherAdapter`, and `RealMarketAdapter` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
+- `DeviceActionRegistry` and `LocalDeviceActionAdapter` for safe local Device/PC City action foundations
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 212 tests.
+The current pytest collection is 220 tests.
 
 The current memory paths are:
 
@@ -404,6 +418,7 @@ What Must Not Be Started Yet
 - No AI parser or regex-only parser rewrite.
 - No robotics or movement integration.
 - No vision integration.
+- No shutdown/restart, arbitrary shell command execution, Telegram, remote control, or dangerous device action execution.
 - No broad refactors of the router, memory, or skill system.
 
 Testing Rules Before Each Phase
