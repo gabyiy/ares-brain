@@ -445,11 +445,14 @@ class MockMarketAdapter(ToolAdapter):
 
 class RealMarketAdapter(ToolAdapter):
     name = "real_market"
-    description = "Real-market-capable adapter skeleton gated by real-mode config and an environment API key."
+    description = "Real-market-capable adapter gated by real-mode config and an environment API key."
     capabilities = ("market.quote", "market.summary")
     requires_network = True
     requires_auth = True
     supports_real_mode = True
+
+    def __init__(self, http_get=None):
+        self._http_get = http_get or requests.get
 
     def handle(self, request: ToolRequest) -> ToolResponse:
         return ToolResponse(
@@ -502,21 +505,95 @@ class RealMarketAdapter(ToolAdapter):
             )
 
         symbol = str(request.parameters.get("symbol") or request.query or "").strip().upper()
+        if not symbol:
+            return _real_market_error(
+                request,
+                "Real market adapter requires a symbol.",
+                "missing_symbol",
+            )
+        if not config.base_url:
+            return _real_market_error(
+                request,
+                "Real market adapter requires a base URL.",
+                "missing_base_url",
+                {"config": config.to_dict()},
+            )
+
+        params = {
+            "symbol": symbol,
+            "key": api_key,
+            "capability": request.capability,
+        }
+        try:
+            response = self._http_get(
+                config.base_url,
+                params=params,
+                timeout=config.timeout_seconds,
+            )
+        except requests.exceptions.Timeout:
+            return _real_market_error(
+                request,
+                "Real market request timed out.",
+                "timeout",
+                {"timeout_seconds": config.timeout_seconds},
+            )
+        except TimeoutError:
+            return _real_market_error(
+                request,
+                "Real market request timed out.",
+                "timeout",
+                {"timeout_seconds": config.timeout_seconds},
+            )
+        except requests.exceptions.RequestException as error:
+            return _real_market_error(
+                request,
+                "Real market request failed safely.",
+                "request_error",
+                {"exception_type": type(error).__name__},
+            )
+
+        status_code = int(getattr(response, "status_code", 200) or 200)
+        if status_code >= 400:
+            return _real_market_error(
+                request,
+                f"Real market request failed with HTTP status {status_code}.",
+                "http_status",
+                {"http_status_code": status_code},
+            )
+
+        try:
+            payload = response.json()
+        except (TypeError, ValueError):
+            return _real_market_error(
+                request,
+                "Real market response was not valid JSON.",
+                "invalid_json",
+            )
+
+        normalized = _normalize_real_market_payload(
+            payload,
+            symbol=symbol,
+            capability=request.capability,
+        )
+        if not normalized:
+            return _real_market_error(
+                request,
+                "Real market response could not be normalized.",
+                "invalid_response",
+            )
+
+        price_text = _format_market_price(normalized["price"])
         return ToolResponse(
             adapter_name=self.name,
             capability=request.capability,
-            success=False,
-            text="Real market adapter is configured, but network execution is not implemented yet.",
-            error_message="Real market adapter network execution is not implemented.",
-            data={
-                "symbol": symbol,
-                "source": "real_market_skeleton",
-            },
+            success=True,
+            text=f"Real market quote for {normalized['symbol']}: {price_text} {normalized['currency']}.",
+            data=normalized,
             metadata={
-                "real_market_skeleton": True,
                 "api_key_env_name": env_name,
                 "base_url": config.base_url,
                 "timeout_seconds": config.timeout_seconds,
+                "normalized": True,
             },
         )
 
@@ -576,6 +653,22 @@ def _real_weather_error(
     )
 
 
+def _real_market_error(
+    request: ToolRequest,
+    message: str,
+    reason: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> ToolResponse:
+    return ToolResponse(
+        adapter_name="real_market",
+        capability=request.capability,
+        success=False,
+        text=message,
+        error_message=message,
+        metadata={"reason": reason, **dict(metadata or {})},
+    )
+
+
 def _normalize_real_weather_payload(
     payload: Any,
     location: str,
@@ -599,6 +692,125 @@ def _normalize_real_weather_payload(
         "capability": capability,
         "source": "real_weather",
     }
+
+
+def _normalize_real_market_payload(
+    payload: Any,
+    symbol: str,
+    capability: str,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, Mapping):
+        return None
+
+    quote = _market_quote_payload(payload)
+    normalized_symbol = _market_payload_symbol(quote) or _market_payload_symbol(payload) or symbol
+    price = _market_payload_price(quote)
+    if price is None:
+        price = _market_payload_price(payload)
+    if price is None or not normalized_symbol:
+        return None
+
+    currency = _market_payload_currency(quote) or _market_payload_currency(payload) or "USD"
+    normalized: Dict[str, Any] = {
+        "symbol": normalized_symbol.upper(),
+        "price": round(float(price), 4),
+        "currency": currency.upper(),
+        "capability": capability,
+        "source": "real_market",
+    }
+
+    name = _market_payload_text(quote, ("name", "shortName", "longName", "companyName"))
+    if name:
+        normalized["name"] = name
+
+    change = _market_payload_price_from_keys(quote, ("change", "regularMarketChange", "09. change"))
+    if change is not None:
+        normalized["change"] = round(float(change), 4)
+
+    change_percent = _market_payload_percent(quote)
+    if change_percent is not None:
+        normalized["change_percent"] = round(float(change_percent), 4)
+
+    return normalized
+
+
+def _market_quote_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    for key in ("quote", "Global Quote", "global_quote"):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            return value
+
+    quote_response = payload.get("quoteResponse")
+    if isinstance(quote_response, Mapping):
+        result = quote_response.get("result")
+        if isinstance(result, list) and result and isinstance(result[0], Mapping):
+            return result[0]
+
+    data = payload.get("data")
+    if isinstance(data, Mapping):
+        return data
+    if isinstance(data, list) and data and isinstance(data[0], Mapping):
+        return data[0]
+
+    result = payload.get("result")
+    if isinstance(result, Mapping):
+        return result
+    if isinstance(result, list) and result and isinstance(result[0], Mapping):
+        return result[0]
+
+    return payload
+
+
+def _market_payload_symbol(payload: Mapping[str, Any]) -> str:
+    return _market_payload_text(payload, ("symbol", "ticker", "01. symbol", "Symbol")).upper()
+
+
+def _market_payload_currency(payload: Mapping[str, Any]) -> str:
+    return _market_payload_text(payload, ("currency", "currencyCode", "8. currency", "Currency"))
+
+
+def _market_payload_price(payload: Mapping[str, Any]) -> Optional[float]:
+    return _market_payload_price_from_keys(
+        payload,
+        (
+            "price",
+            "regularMarketPrice",
+            "marketPrice",
+            "currentPrice",
+            "last",
+            "last_price",
+            "close",
+            "c",
+            "05. price",
+        ),
+    )
+
+
+def _market_payload_price_from_keys(payload: Mapping[str, Any], keys: Tuple[str, ...]) -> Optional[float]:
+    return _first_number(payload, keys)
+
+
+def _market_payload_percent(payload: Mapping[str, Any]) -> Optional[float]:
+    for key in ("change_percent", "changePercent", "regularMarketChangePercent", "10. change percent"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            value = value.strip().replace("%", "")
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                continue
+    return None
+
+
+def _market_payload_text(payload: Mapping[str, Any], keys: Tuple[str, ...]) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _payload_location(payload: Mapping[str, Any]) -> str:
@@ -711,3 +923,7 @@ def _format_temperature(value: float) -> str:
     if number.is_integer():
         return str(int(number))
     return f"{number:.1f}".rstrip("0").rstrip(".")
+
+
+def _format_market_price(value: float) -> str:
+    return f"{float(value):.2f}"
