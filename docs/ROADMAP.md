@@ -363,6 +363,28 @@ The current memory paths are:
 - `ReminderScheduler` for passive due/upcoming task queries
 - `ConversationContextManager` for RAM-only short-term skill context
 
+Long-Term City Model
+
+The long-term roadmap uses a city model. ARES Brain is the capital city and remains responsible for identity, memory, profile, goals, planning, decisions, and history with the owner.
+
+Specialized cities connect to the capital through explicit bridges:
+
+- Voice City
+- Vision City
+- Device/PC City
+- Weather City
+- Market City
+- Calendar City
+- Home City
+- Robot Body City
+- Codex City
+
+Core Services City is a shared infrastructure city for scheduler, permissions, logging, configuration, health monitoring, plugin manager, secrets guard, and confirmation layer. These services should be reused by specialized cities rather than duplicated.
+
+Codex City is a future maintenance city. It should check the ARES GitHub repository, pull latest code, run tests, check compile, check docs freshness, report problems, and suggest fixes. Codex City must never auto-edit without owner approval.
+
+This roadmap entry is planning documentation only. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, voice, internet access, real APIs, or notifications.
+
 Next Priorities
 
 1. GPT fallback integration.

@@ -592,6 +592,26 @@ New planning docs:
 
 These documents explain the current system flow, event bus, intent router, memory stores, skill system, REPL flow, future integration points, completed phases, current state, next priorities, blocked work, and testing rules before each phase.
 
+Long-term city model architecture has been documented.
+
+City model summary:
+
+- ARES Brain is the capital city.
+- The capital owns identity, memory, profile, goals, planning, decisions, and history with the owner.
+- Specialized cities connect to the capital through explicit bridges.
+- Planned specialized cities are Voice City, Vision City, Device/PC City, Weather City, Market City, Calendar City, Home City, Robot Body City, and Codex City.
+- Core Services City provides scheduler, permissions, logging, configuration, health monitoring, plugin manager, secrets guard, and confirmation layer.
+- Codex City is a future maintenance city that can check the ARES GitHub repository, pull latest code, run tests, check compile, check docs freshness, report problems, and suggest fixes.
+- Codex City must never auto-edit without owner approval.
+
+Boundary:
+
+- Documentation only.
+- No scheduler implementation was added.
+- No GitHub API integration was added.
+- No self-modifying behavior was added.
+- No GPT, voice, internet access, real APIs, or notifications were added.
+
 Current working intents:
 
 - Greeting

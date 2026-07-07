@@ -18,6 +18,28 @@ Current Architecture
 
 The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
+Long-Term City Model
+
+The long-term architecture treats ARES Brain as the capital city. The capital owns identity, memory, profile, goals, planning, decisions, and history with the owner. Specialized cities connect to the capital through explicit bridges instead of bypassing the brain.
+
+Specialized cities planned around the capital:
+
+- Voice City
+- Vision City
+- Device/PC City
+- Weather City
+- Market City
+- Calendar City
+- Home City
+- Robot Body City
+- Codex City
+
+Core Services City provides shared infrastructure for the whole system: scheduler, permissions, logging, configuration, health monitoring, plugin manager, secrets guard, and confirmation layer.
+
+Codex City is a future maintenance city. Its planned role is to check the ARES GitHub repository, pull latest code, run tests, check compile, check docs freshness, report problems, and suggest fixes. Codex City must never auto-edit without owner approval.
+
+This city model is documentation only. It does not add scheduler implementation, GitHub API integration, self-modifying behavior, GPT, voice, internet access, real APIs, or notifications.
+
 ARES
 │
 ├── Event Bus

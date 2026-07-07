@@ -688,6 +688,60 @@ Current responsibilities:
 - Share one in-memory conversation context with `SkillManager` for handled skill turns.
 - Print the final ARES response.
 
+Long-Term City Model
+
+The long-term system model treats ARES Brain as the capital city. The capital city is the owner-facing center of gravity and owns the system identity, durable memory, user profile, long-term goals, planning, decisions, and shared history with the owner.
+
+The capital city keeps these responsibilities centralized:
+
+- Identity: what ARES is, whose assistant it is, and what operating boundaries apply.
+- Memory: conversation memory, profile memory, notes, tasks, goals, and future summarized history.
+- Profile: user facts and preferences stored separately from generic conversation history.
+- Goals: long-term local goals and milestones owned by the user.
+- Planning: deterministic plans, multi-step plans, context-aware planning, and future planner upgrades.
+- Decisions: local tool selection, confirmation decisions, permissions checks, and escalation points.
+- History with owner: auditable interaction history and session handoff state.
+
+Specialized cities connect to ARES Brain through explicit bridges. A bridge is an interface, adapter, event contract, or permissioned command path. Specialized cities should not own the user's durable identity, goals, or global decision history.
+
+Planned specialized cities:
+
+- Voice City: speech input, wake word, speech-to-text, and text-to-speech.
+- Vision City: camera input, image understanding, and visual observations.
+- Device/PC City: local device automation and desktop control paths.
+- Weather City: weather providers and weather-specific adapter behavior.
+- Market City: market data providers and market-specific adapter behavior.
+- Calendar City: calendar reads and future permissioned calendar writes.
+- Home City: home automation and smart-home device control.
+- Robot Body City: robot body, sensors, actuators, navigation, and hardware safety.
+- Codex City: repository maintenance, verification, and owner-approved development support.
+
+Core Services City provides shared infrastructure used by ARES Brain and the specialized cities:
+
+- Scheduler
+- Permissions
+- Logging
+- Configuration
+- Health monitoring
+- Plugin manager
+- Secrets guard
+- Confirmation layer
+
+Codex City Future Plan
+
+Codex City is planned as a maintenance and verification city, not as an autonomous self-modification system. Its future responsibilities are:
+
+- Check the ARES GitHub repository.
+- Pull latest code.
+- Run tests.
+- Check compile.
+- Check docs freshness.
+- Report problems.
+- Suggest fixes.
+- Never auto-edit without owner approval.
+
+This city model is architecture documentation only. It does not add scheduler implementation, GitHub API integration, self-modifying behavior, GPT, voice, internet access, real APIs, or notifications.
+
 Future Integration Points
 
 Voice
