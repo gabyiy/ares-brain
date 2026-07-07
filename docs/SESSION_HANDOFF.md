@@ -4,7 +4,7 @@ Last Updated: 2026-07-02
 
 Current Version
 
-ARES v1.25 - Device Action Framework Skeleton
+ARES v1.26 - DeviceActionSkill Safe Live Path
 
 ---
 
@@ -427,6 +427,24 @@ Device action behavior:
 - Future dangerous actions must require explicit confirmation before execution.
 - No shutdown/restart, arbitrary shell command execution, Telegram, voice, internet, GPT, remote control, notifications, or dangerous device automation was added.
 
+DeviceActionSkill safe live path has been added.
+
+New skill module:
+
+- `skills.builtin.DeviceActionSkill`
+
+Live path behavior:
+
+- IntentParser recognizes `device_action` intents for safe device commands and unsafe device phrases.
+- ToolSelector selects DeviceActionSkill through structured intent matching.
+- Planner creates `device_action` plan steps.
+- ExecutionPipeline executes the plan through the registered DeviceActionSkill.
+- SkillManager carries `LocalDeviceActionAdapter` through SkillContext.
+- Text REPL can execute safe device actions through the normal router flow.
+- Supported commands are `echo <text>`, `list device actions`, and `system status`.
+- Shutdown, restart, sleep, lock, run command, open app, delete, arbitrary shell, and unknown device actions fail safely.
+- No real OS commands, shutdown/restart, Telegram, voice, internet, GPT, remote access, notifications, or background jobs were added.
+
 External Adapter Config and SecretsGuard foundation has been added.
 
 New config modules and files:
@@ -797,7 +815,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 220 tests.
+- Current pytest collection: 229 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -815,6 +833,7 @@ Verification Notes
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
 - DeviceAction tests cover registry registration/listing, unknown action safe failure, echo, list actions, deterministic system status mock, stable result formatting, and dangerous placeholder rejection.
+- DeviceActionSkill tests cover echo, list actions, system status mock, dangerous action rejection, unknown action safe failure, ToolSelector routing, Planner routing, SkillManager/ExecutionPipeline execution, and text REPL execution.
 - Adapter config guard tests cover mock mode, real-mode missing-env failure, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility.
 - RealWeatherAdapter tests cover default mock weather behavior, real adapter instantiation, real-mode missing-env failure, mocked HTTP success, timeout safe errors, bad API response safe errors, HTTP status safe errors, normalized output stability, env-key-name-only config, raw env value non-exposure, safe WeatherSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
 - RealMarketAdapter tests cover default mock market behavior, real adapter instantiation, real-mode missing-env failure, mocked HTTP success, timeout safe errors, bad API response safe errors, HTTP status safe errors, normalized output stability, env-key-name-only config, raw env value non-exposure, safe MarketSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
@@ -836,6 +855,7 @@ Verification Notes
 
 Latest Commits
 
+- `63e4a6e` Add device action skill live path
 - `694da9e` Add safe device action framework skeleton
 - `357f984` Implement gated real market HTTP adapter
 - `88e739e` Add real market adapter skeleton
