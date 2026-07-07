@@ -358,9 +358,20 @@ Phase 27: DeviceActionSkill Safe Live Path
 - No real OS commands, shutdown/restart, Telegram, voice, internet, GPT, remote access, notifications, or background jobs
 - Future dangerous actions must require explicit confirmation
 
+Phase 28: Device Dangerous-Action Confirmation Gate
+
+- Device actions now carry `safe`, `confirmation_required`, or `forbidden` classifications.
+- Shutdown, restart, sleep, lock, and open app are confirmation-required placeholders.
+- Run command, delete, and arbitrary shell are forbidden placeholders.
+- `DeviceActionSkill` never executes confirmation-required or forbidden actions directly.
+- Confirmation-required responses include a stable device action confirmation request token.
+- Planner and REPL paths preserve confirmation-required results safely.
+- Tests cover safe actions, shutdown/restart confirmation-required responses, run command/delete not-executed responses, unknown safe failures, planner propagation, and REPL display.
+- No real OS commands, shutdown/restart, Telegram, voice, internet, GPT, remote access, notifications, or background jobs
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, safe mock-only local device action live routing, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, safe mock-only local device action live routing with dangerous-action classifications, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -372,10 +383,10 @@ The current deterministic answer paths are:
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, and calendar
 - `Planner`, `MultiStepPlan`, `ConfirmationManager`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, context responses, confirmations, and conversation memory plan execution
 - `ToolAdapterRegistry`, `ExternalAdapterConfig`, `SecretsGuard`, `RealWeatherAdapter`, and `RealMarketAdapter` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
-- `DeviceActionRegistry`, `LocalDeviceActionAdapter`, and `DeviceActionSkill` for safe local Device/PC City action foundations and safe live routing
+- `DeviceActionRegistry`, `LocalDeviceActionAdapter`, and `DeviceActionSkill` for safe local Device/PC City action foundations, safe live routing, and stable confirmation-required/forbidden responses
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 229 tests.
+The current pytest collection is 237 tests.
 
 The current memory paths are:
 

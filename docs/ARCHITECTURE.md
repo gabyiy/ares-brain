@@ -296,14 +296,22 @@ Current boundaries:
 
 Device Action Framework
 
-`core.DeviceAction` defines the foundation for safe local device actions without executing dangerous commands. `skills.builtin.DeviceActionSkill` exposes this foundation through the live skill routing path for safe mock-only actions.
+`core.DeviceAction` defines the foundation for safe local device actions without executing dangerous commands. `skills.builtin.DeviceActionSkill` exposes this foundation through the live skill routing path for safe mock-only actions and stable not-executed responses for dangerous placeholders.
 
 Current device action objects:
 
 - `DeviceAction`
 - `DeviceActionResult`
+- `DeviceActionSafetyDecision`
+- `DeviceActionConfirmationRequest`
 - `DeviceActionRegistry`
 - `LocalDeviceActionAdapter`
+
+Current danger classifications:
+
+- `safe`
+- `confirmation_required`
+- `forbidden`
 
 Current safe built-in actions:
 
@@ -318,14 +326,17 @@ Current responsibilities:
 - Register named safe local actions.
 - List available safe local actions.
 - Return safe failures for unknown actions.
-- Reject dangerous placeholders such as shutdown and restart.
+- Classify dangerous placeholders before any adapter execution.
 - Route `echo <text>`, `list device actions`, and `system status` through `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL.
-- Reject shutdown, restart, sleep, lock, run command, open app, delete, and arbitrary shell requests through `DeviceActionSkill`.
+- Return stable confirmation-required responses for shutdown, restart, sleep, lock, and open app placeholders.
+- Return stable forbidden responses for run command, delete, and arbitrary shell placeholders.
+- Include a stable device action confirmation request token for confirmation-required placeholders.
 
 Current boundaries:
 
 - No shutdown or restart action exists.
 - No arbitrary shell command execution exists.
+- Confirmation-required and forbidden device actions are never executed directly.
 - No Telegram, voice, internet, GPT, remote control, notifications, or background device automation was added.
 - `system_status_mock` returns deterministic mock data and does not inspect the host system.
 - Future dangerous actions must require explicit confirmation before execution.
@@ -701,7 +712,7 @@ Current built-in skills:
 
 `CalendarSkill` answers calendar/schedule requests through `ToolAdapterRegistry` and the offline `MockCalendarAdapter`. It supports `what is on my calendar today`, `calendar tomorrow`, `schedule today`, and `do I have anything tomorrow`. It does not call Google Calendar, real APIs, require API keys, use internet access, or run background automation.
 
-`DeviceActionSkill` answers safe local device action requests through `LocalDeviceActionAdapter`. It supports `echo <text>`, `list device actions`, and `system status`. It rejects shutdown, restart, sleep, lock, run command, open app, delete, arbitrary shell, and unknown device actions safely. It does not run real OS commands, remote control, Telegram, voice, internet, GPT, notifications, or background jobs.
+`DeviceActionSkill` answers safe local device action requests through `LocalDeviceActionAdapter`. It supports `echo <text>`, `list device actions`, and `system status`. It returns confirmation-required responses for shutdown, restart, sleep, lock, and open app placeholders. It returns forbidden responses for run command, delete, arbitrary shell, and unknown device actions safely. It does not run real OS commands, remote control, Telegram, voice, internet, GPT, notifications, or background jobs.
 
 No notifications, voice, default real weather/market API mode, Google Calendar integration, real calendar APIs, external write API, or GPT integration has been added as part of the current local skill milestones.
 
@@ -835,5 +846,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 229 tests.
+- Pytest collection: 237 tests.
 - Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.

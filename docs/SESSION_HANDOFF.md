@@ -1,10 +1,10 @@
 ARES Session Handoff
 
-Last Updated: 2026-07-02
+Last Updated: 2026-07-07
 
 Current Version
 
-ARES v1.26 - DeviceActionSkill Safe Live Path
+ARES v1.27 - Device Dangerous-Action Confirmation Gate
 
 ---
 
@@ -89,6 +89,8 @@ New test coverage:
 - WeatherSkill
 - MarketSkill
 - CalendarSkill
+- DeviceAction framework
+- DeviceActionSkill
 - ToolSelector structured intent routing
 - Text REPL profile recall flow
 
@@ -105,7 +107,7 @@ Selection behavior:
 
 - Scores local skills instead of relying on first registered match only.
 - Supports exact trigger matches, contained trigger phrases, token overlap, optional `selection_keywords`, optional `selection_priority`, and `run_before_intents` filtering.
-- Currently routes `TimeDateSkill`, `MemoryRecallSkill`, `CalculatorSkill`, `GoalsSkill`, `NotesSkill`, `TasksSkill`, `WeatherSkill`, `MarketSkill`, and `CalendarSkill`.
+- Currently routes `TimeDateSkill`, `MemoryRecallSkill`, `CalculatorSkill`, `GoalsSkill`, `NotesSkill`, `TasksSkill`, `WeatherSkill`, `MarketSkill`, `CalendarSkill`, and `DeviceActionSkill`.
 
 Phase 4 CalculatorSkill has been added as the first real local tool.
 
@@ -413,6 +415,8 @@ New device action modules:
 
 - `core.DeviceAction`
 - `core.DeviceActionResult`
+- `core.DeviceActionSafetyDecision`
+- `core.DeviceActionConfirmationRequest`
 - `core.DeviceActionRegistry`
 - `core.LocalDeviceActionAdapter`
 
@@ -422,7 +426,10 @@ Device action behavior:
 - Registers safe local actions by name.
 - Returns safe failures for unknown actions.
 - Exposes only safe built-in actions: `echo`, `system_status_mock`, and `list_actions`.
-- Rejects dangerous placeholders such as shutdown and restart.
+- Classifies device actions as `safe`, `confirmation_required`, or `forbidden`.
+- Marks shutdown, restart, sleep, lock, and open app as confirmation-required placeholders.
+- Marks run command, delete, and arbitrary shell as forbidden placeholders.
+- Returns stable confirmation-required or forbidden results without executing those actions.
 - `system_status_mock` returns deterministic mock data and does not inspect the host.
 - Future dangerous actions must require explicit confirmation before execution.
 - No shutdown/restart, arbitrary shell command execution, Telegram, voice, internet, GPT, remote control, notifications, or dangerous device automation was added.
@@ -442,8 +449,23 @@ Live path behavior:
 - SkillManager carries `LocalDeviceActionAdapter` through SkillContext.
 - Text REPL can execute safe device actions through the normal router flow.
 - Supported commands are `echo <text>`, `list device actions`, and `system status`.
-- Shutdown, restart, sleep, lock, run command, open app, delete, arbitrary shell, and unknown device actions fail safely.
+- Shutdown, restart, sleep, lock, and open app return stable confirmation-required responses.
+- Run command, delete, and arbitrary shell return stable forbidden responses.
+- Confirmation-required and forbidden device actions are never executed directly.
 - No real OS commands, shutdown/restart, Telegram, voice, internet, GPT, remote access, notifications, or background jobs were added.
+
+Device dangerous-action confirmation gate has been added.
+
+Danger gate behavior:
+
+- Device action danger classification is centralized in `core.DeviceAction`.
+- `DeviceActionSkill` uses the classification before calling `LocalDeviceActionAdapter`.
+- Confirmation-required results include a stable `device-action-confirmation:<action>` token.
+- Confirmation-required metadata records that the action was not executed.
+- Forbidden metadata records that the action was not executed.
+- Planner preserves the classification fields on `device_action` plan steps.
+- The text REPL displays confirmation-required and forbidden responses safely through the normal assistant path.
+- No real OS commands, shutdown/restart, arbitrary shell, Telegram, voice, GPT, internet, notifications, remote access, or background jobs were added.
 
 External Adapter Config and SecretsGuard foundation has been added.
 
@@ -755,13 +777,13 @@ Each intent owns its own logic and communicates with its corresponding provider.
 
 MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing scripts keep working.
 
-The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `CalendarSkill`, `GoalsSkill`, `MarketSkill`, `NotesSkill`, `TasksSkill`, `WeatherSkill`, and `TimeDateSkill`.
-The REPL priority skill path currently covers profile memory recall, calculator arithmetic, goal commands, note commands, task commands, weather commands, stock/market commands, and calendar/schedule commands.
+The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `CalendarSkill`, `DeviceActionSkill`, `GoalsSkill`, `MarketSkill`, `NotesSkill`, `TasksSkill`, `WeatherSkill`, and `TimeDateSkill`.
+The REPL priority skill path currently covers profile memory recall, calculator arithmetic, goal commands, note commands, task commands, weather commands, stock/market commands, calendar/schedule commands, and safe device action commands.
 `SkillManager` parses text into `core.Intent` before `ToolSelector` selects a local skill.
 `ToolSelector` builds a `core.Plan` or `core.MultiStepPlan` before selection, and its Planner can use safe injected store interfaces for local context.
 `SkillManager` handles confirmation decisions through `core.ConfirmationManager` before normal intent parsing.
 `SkillManager` validates executable plan steps through `core.ToolChain`, and accepted chains execute through `core.ExecutionPipeline`.
-`ExecutionPipeline` can execute weather skill PlanSteps, market skill PlanSteps, calendar skill PlanSteps, and explicit `tool_adapter` PlanSteps through `core.ToolAdapterRegistry`.
+`ExecutionPipeline` can execute weather skill PlanSteps, market skill PlanSteps, calendar skill PlanSteps, device action PlanSteps, and explicit `tool_adapter` PlanSteps through `core.ToolAdapterRegistry`.
 `ExecutionPipeline` can execute internal `planner_context` PlanSteps for context-only responses.
 `ExecutionPipeline` pauses destructive actions with `ConfirmationRequest` instead of executing them immediately.
 `ExecutionPipeline` aggregates all step outputs and reports mixed recoverable success/failure as partial results.
@@ -815,7 +837,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 229 tests.
+- Current pytest collection: 237 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -832,8 +854,8 @@ Verification Notes
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
-- DeviceAction tests cover registry registration/listing, unknown action safe failure, echo, list actions, deterministic system status mock, stable result formatting, and dangerous placeholder rejection.
-- DeviceActionSkill tests cover echo, list actions, system status mock, dangerous action rejection, unknown action safe failure, ToolSelector routing, Planner routing, SkillManager/ExecutionPipeline execution, and text REPL execution.
+- DeviceAction tests cover registry registration/listing, unknown action safe failure, echo, list actions, deterministic system status mock, stable result formatting, danger classification, confirmation-required placeholders, forbidden placeholders, and not-executed dangerous results.
+- DeviceActionSkill tests cover echo, list actions, system status mock, shutdown/restart confirmation-required responses, run command/delete forbidden responses, unknown action safe failure, ToolSelector routing, Planner routing, SkillManager/ExecutionPipeline confirmation-required handling, and text REPL display.
 - Adapter config guard tests cover mock mode, real-mode missing-env failure, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility.
 - RealWeatherAdapter tests cover default mock weather behavior, real adapter instantiation, real-mode missing-env failure, mocked HTTP success, timeout safe errors, bad API response safe errors, HTTP status safe errors, normalized output stability, env-key-name-only config, raw env value non-exposure, safe WeatherSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
 - RealMarketAdapter tests cover default mock market behavior, real adapter instantiation, real-mode missing-env failure, mocked HTTP success, timeout safe errors, bad API response safe errors, HTTP status safe errors, normalized output stability, env-key-name-only config, raw env value non-exposure, safe MarketSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
@@ -855,6 +877,7 @@ Verification Notes
 
 Latest Commits
 
+- `5a789bf` Add device action danger confirmation gate
 - `63e4a6e` Add device action skill live path
 - `694da9e` Add safe device action framework skeleton
 - `357f984` Implement gated real market HTTP adapter
