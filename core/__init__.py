@@ -3,6 +3,12 @@ from core.ConversationContext import (
     ConversationTurn,
     get_global_conversation_context,
 )
+from core.DeviceAction import (
+    DeviceAction,
+    DeviceActionRegistry,
+    DeviceActionResult,
+    LocalDeviceActionAdapter,
+)
 from core.AdapterConfig import (
     AdapterConfigError,
     ExternalAdapterConfig,
@@ -33,6 +39,9 @@ __all__ = [
     "ConversationContextManager",
     "ConversationTurn",
     "AdapterConfigError",
+    "DeviceAction",
+    "DeviceActionRegistry",
+    "DeviceActionResult",
     "ConfirmationDecision",
     "ConfirmationManager",
     "ConfirmationRequest",
@@ -63,6 +72,7 @@ __all__ = [
     "ToolChainTraceStep",
     "ToolRequest",
     "ToolResponse",
+    "LocalDeviceActionAdapter",
     "get_global_conversation_context",
     "load_adapter_configs",
 ]
