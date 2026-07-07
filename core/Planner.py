@@ -164,6 +164,9 @@ class Planner:
         if intent.intent_name == "task":
             return self._task_step(intent.raw_text, dict(intent.extracted_entities)), None
 
+        if intent.intent_name == "device_action":
+            return self._device_action_step(intent.raw_text, dict(intent.extracted_entities)), None
+
         if intent.intent_name == "calculate":
             return self._calculator_step(intent.raw_text, dict(intent.extracted_entities)), None
 
@@ -218,6 +221,10 @@ class Planner:
         calendar_step = self._calendar_step_from_text(clean_clause)
         if calendar_step:
             return calendar_step, None
+
+        device_action_step = self._device_action_step_from_text(clean_clause)
+        if device_action_step:
+            return device_action_step, None
 
         return None, f"Skipped unsupported plan clause: {clean_clause}"
 
@@ -619,6 +626,43 @@ class Planner:
             )
 
         return None
+
+    def _device_action_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
+        action = entities.get("action") or "execute"
+        action_name = entities.get("action_name") or _device_action_name(raw_text)
+        parameters = dict(entities.get("parameters") or {})
+        dangerous = bool(entities.get("dangerous"))
+        reason = entities.get("reason") or ""
+        can_execute = bool(action_name)
+
+        clean_entities = {
+            **entities,
+            "action": action,
+            "action_name": action_name,
+            "parameters": parameters,
+        }
+        if dangerous:
+            clean_entities["dangerous"] = True
+        if reason:
+            clean_entities["reason"] = reason
+
+        return PlanStep(
+            order=0,
+            target="device_action",
+            action=action_name or action,
+            input_text=_device_action_command(action_name, parameters, raw_text),
+            intent_name="device_action",
+            entities=clean_entities,
+            can_execute=can_execute,
+            skip_reason="" if can_execute else "Missing device action name.",
+            description=_device_action_description(action_name, parameters, dangerous),
+        )
+
+    def _device_action_step_from_text(self, text: str):
+        entities = _device_action_entities(text)
+        if not entities:
+            return None
+        return self._device_action_step(text, entities)
 
     def _calculator_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
         expression = entities.get("expression") or _extract_expression(raw_text)
@@ -1087,6 +1131,103 @@ def _normalize_market_symbol(text: str) -> str:
     symbol = re.sub(r"^(?:the|a|an)\s+", "", symbol, flags=re.IGNORECASE)
     symbol = symbol.replace("$", "").strip()
     return symbol.upper()
+
+
+def _device_action_entities(text: str):
+    clean_text = _clean_clause(text)
+    lowered = " ".join(_tokens(clean_text))
+    if not lowered:
+        return None
+
+    dangerous_reason = _dangerous_device_action_reason(lowered)
+    if dangerous_reason:
+        return {
+            "action": "reject",
+            "action_name": _first_word(lowered),
+            "parameters": {},
+            "dangerous": True,
+            "reason": dangerous_reason,
+        }
+
+    if lowered.startswith("echo "):
+        message = _clean_clause(clean_text[len("echo") :])
+        if not message:
+            return None
+        return {
+            "action": "echo",
+            "action_name": "echo",
+            "parameters": {"message": message},
+        }
+
+    if lowered in {"list device actions", "show device actions", "list available device actions"}:
+        return {
+            "action": "list",
+            "action_name": "list_actions",
+            "parameters": {},
+        }
+
+    if lowered in {"system status", "device status"}:
+        return {
+            "action": "status",
+            "action_name": "system_status_mock",
+            "parameters": {},
+        }
+
+    if lowered.startswith("device action "):
+        return {
+            "action": "execute",
+            "action_name": _normalize_action_name(lowered[len("device action ") :]),
+            "parameters": {},
+        }
+
+    return None
+
+
+def _device_action_name(text: str) -> str:
+    entities = _device_action_entities(text)
+    if not entities:
+        return ""
+    return str(entities.get("action_name") or "")
+
+
+def _device_action_command(action_name: str, parameters: Dict[str, Any], fallback_text: str) -> str:
+    if action_name == "echo":
+        return f"echo {parameters.get('message') or ''}".strip()
+    if action_name == "list_actions":
+        return "list device actions"
+    if action_name == "system_status_mock":
+        return "system status"
+    return fallback_text
+
+
+def _device_action_description(action_name: str, parameters: Dict[str, Any], dangerous: bool) -> str:
+    if dangerous:
+        return f"Reject unsafe device action: {action_name}."
+    if action_name == "echo":
+        return f"Run safe echo action: {parameters.get('message') or ''}"
+    if action_name == "list_actions":
+        return "List safe local device actions."
+    if action_name == "system_status_mock":
+        return "Return mock system status."
+    return f"Run safe device action: {action_name}."
+
+
+def _dangerous_device_action_reason(normalized_text: str) -> str:
+    if normalized_text in {"shutdown", "restart", "sleep", "lock", "arbitrary shell"}:
+        return f"{normalized_text} is not available"
+    if normalized_text.startswith("run command"):
+        return "run command is not available"
+    if normalized_text.startswith("open app"):
+        return "open app is not available"
+    if normalized_text == "delete" or normalized_text.startswith("delete "):
+        return "delete is not available as a device action"
+    if "arbitrary shell" in normalized_text or normalized_text.startswith("shell "):
+        return "arbitrary shell is not available"
+    return ""
+
+
+def _normalize_action_name(value: str) -> str:
+    return "_".join(re.findall(r"[a-z0-9]+", (value or "").lower()))
 
 
 def _looks_like_calendar(text: str) -> bool:

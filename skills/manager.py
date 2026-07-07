@@ -2,6 +2,7 @@ from typing import Optional
 
 from core.Confirmation import ConfirmationManager
 from core.ConversationContext import ConversationContextManager
+from core.DeviceAction import LocalDeviceActionAdapter
 from core.ExecutionPipeline import ExecutionPipeline
 from core.Intent import Intent
 from core.IntentParser import IntentParser
@@ -25,6 +26,7 @@ class SkillManager:
         tasks_store=None,
         goals_store=None,
         tool_adapter_registry=None,
+        device_action_adapter=None,
         conversation_context=None,
         intent_parser=None,
         confirmation_manager=None,
@@ -39,6 +41,7 @@ class SkillManager:
         self.tool_adapter_registry = tool_adapter_registry or ToolAdapterRegistry(
             [MockWeatherAdapter(), MockMarketAdapter(), MockCalendarAdapter()]
         )
+        self.device_action_adapter = device_action_adapter or LocalDeviceActionAdapter()
         self.conversation_context = conversation_context or ConversationContextManager()
         self.intent_parser = intent_parser or IntentParser()
         self.confirmation_manager = confirmation_manager or ConfirmationManager()
@@ -174,6 +177,7 @@ class SkillManager:
             tasks_store=self.tasks_store,
             goals_store=self.goals_store,
             tool_adapter_registry=self.tool_adapter_registry,
+            device_action_adapter=self.device_action_adapter,
             conversation_context=self.conversation_context,
         )
 
@@ -189,6 +193,7 @@ class SkillManager:
             tasks_store=context.tasks_store,
             goals_store=context.goals_store,
             tool_adapter_registry=context.tool_adapter_registry,
+            device_action_adapter=context.device_action_adapter,
             conversation_context=context.conversation_context,
             metadata=metadata,
         )
@@ -197,7 +202,19 @@ class SkillManager:
         if not isinstance(plan, Plan):
             return False
 
+        if not self._plan_targets_available(plan) and selection:
+            return False
+
         return bool(plan.executable_steps())
+
+    def _plan_targets_available(self, plan: Plan) -> bool:
+        internal_targets = {"conversation_memory", "planner_context", "tool_adapter"}
+        for step in plan.executable_steps():
+            if step.target in internal_targets:
+                continue
+            if not self.registry.get(step.target):
+                return False
+        return True
 
     def _execute_plan(self, plan: Plan, context: SkillContext) -> SkillResponse:
         self.event_bus.publish(

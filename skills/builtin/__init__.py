@@ -1,5 +1,6 @@
 from skills.builtin.calculator import CalculatorSkill
 from skills.builtin.calendar import CalendarSkill
+from skills.builtin.device_action import DeviceActionSkill
 from skills.builtin.goals import GoalsSkill
 from skills.builtin.market import MarketSkill
 from skills.builtin.memory_recall import MemoryRecallSkill
@@ -11,6 +12,7 @@ from skills.builtin.weather import WeatherSkill
 __all__ = [
     "CalculatorSkill",
     "CalendarSkill",
+    "DeviceActionSkill",
     "GoalsSkill",
     "MarketSkill",
     "MemoryRecallSkill",

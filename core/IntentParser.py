@@ -39,6 +39,7 @@ class IntentParser:
             IntentRule("goal", self._parse_goal),
             IntentRule("note", self._parse_note),
             IntentRule("task", self._parse_task),
+            IntentRule("device_action", self._parse_device_action),
             IntentRule("calculate", self._parse_calculate),
             IntentRule("memory_recall", self._parse_memory_recall),
             IntentRule("weather", self._parse_weather),
@@ -160,6 +161,65 @@ class IntentParser:
             if text.starts_with(phrase):
                 task_text, due = _split_due_text(_strip_leading_task_marker(text.after(phrase)))
                 return self._intent("task", 0.9, text.raw_text, action="add", text=task_text, due=due)
+
+        return None
+
+    def _parse_device_action(self, text: ParsedText) -> Optional[Intent]:
+        dangerous_reason = _dangerous_device_action_reason(text.normalized)
+        if dangerous_reason:
+            return self._intent(
+                "device_action",
+                0.96,
+                text.raw_text,
+                action="reject",
+                action_name=_first_word(text.normalized),
+                dangerous=True,
+                reason=dangerous_reason,
+            )
+
+        if text.starts_with("echo"):
+            message = _clean_text(text.after("echo"))
+            if message:
+                return self._intent(
+                    "device_action",
+                    0.94,
+                    text.raw_text,
+                    action="echo",
+                    action_name="echo",
+                    parameters={"message": message},
+                )
+
+        if text.is_exact("list device actions", "show device actions", "list available device actions"):
+            return self._intent(
+                "device_action",
+                0.96,
+                text.raw_text,
+                action="list",
+                action_name="list_actions",
+                parameters={},
+            )
+
+        if text.is_exact("system status", "device status"):
+            return self._intent(
+                "device_action",
+                0.94,
+                text.raw_text,
+                action="status",
+                action_name="system_status_mock",
+                parameters={},
+            )
+
+        if text.starts_with("device action"):
+            action_name = _normalize_action_name(text.after("device action"))
+            if action_name:
+                return self._intent(
+                    "device_action",
+                    0.76,
+                    text.raw_text,
+                    action="execute",
+                    action_name=action_name,
+                    parameters={},
+                )
 
         return None
 
@@ -438,6 +498,24 @@ def _normalize_market_symbol(value: str) -> str:
     symbol = re.sub(r"^(?:the|a|an)\s+", "", symbol, flags=re.IGNORECASE)
     symbol = symbol.replace("$", "").strip()
     return symbol.upper()
+
+
+def _dangerous_device_action_reason(normalized_text: str) -> str:
+    if normalized_text in {"shutdown", "restart", "sleep", "lock", "arbitrary shell"}:
+        return f"{normalized_text} is not available"
+    if normalized_text.startswith("run command"):
+        return "run command is not available"
+    if normalized_text.startswith("open app"):
+        return "open app is not available"
+    if normalized_text == "delete" or normalized_text.startswith("delete "):
+        return "delete is not available as a device action"
+    if "arbitrary shell" in normalized_text or normalized_text.startswith("shell "):
+        return "arbitrary shell is not available"
+    return ""
+
+
+def _normalize_action_name(value: str) -> str:
+    return "_".join(re.findall(r"[a-z0-9]+", (value or "").lower()))
 
 
 def _calendar_period(text: ParsedText) -> str:
