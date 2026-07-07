@@ -27,11 +27,12 @@ def test_device_action_skill_lists_actions():
     )
 
     assert response.skill == "device_action"
-    assert response.text == "Available device actions: echo, system_status_mock, list_actions."
+    assert response.text == "Available device actions: echo, system_status_mock, list_actions, lock_pc."
     assert [action["name"] for action in response.metadata["data"]["actions"]] == [
         "echo",
         "system_status_mock",
         "list_actions",
+        "lock_pc",
     ]
 
 
@@ -74,6 +75,27 @@ def test_device_action_skill_returns_confirmation_required_for_restart():
     assert response.metadata["danger_classification"] == "confirmation_required"
     assert response.metadata["confirmation_required"] is True
     assert response.metadata["executed"] is False
+
+
+def test_device_action_skill_returns_confirmation_required_for_lock_pc_without_execution():
+    calls = []
+    adapter = LocalDeviceActionAdapter(
+        lock_impl=lambda: calls.append("locked") or True,
+        platform_system=lambda: "Windows",
+    )
+    response = DeviceActionSkill().handle(
+        "lock pc",
+        SkillContext(device_action_adapter=adapter),
+    )
+
+    assert response.skill == "device_action"
+    assert response.text == 'Confirmation required for device action "lock_pc". Device action was not executed.'
+    assert response.metadata["error"] == "confirmation_required"
+    assert response.metadata["danger_classification"] == "confirmation_required"
+    assert response.metadata["confirmation_required"] is True
+    assert response.metadata["executed"] is False
+    assert response.metadata["confirmation_request"]["token"] == "device-action-confirmation:lock_pc"
+    assert calls == []
 
 
 def test_device_action_skill_forbids_run_command_without_execution():
@@ -135,14 +157,14 @@ def test_planner_routes_safe_device_action():
 
 
 def test_planner_preserves_confirmation_required_device_action():
-    intent = IntentParser().parse("shutdown")
+    intent = IntentParser().parse("lock pc")
     plan = Planner().plan(intent)
 
     assert intent.intent_name == "device_action"
     assert plan.errors == []
     assert len(plan.steps) == 1
     assert plan.steps[0].target == "device_action"
-    assert plan.steps[0].action == "shutdown"
+    assert plan.steps[0].action == "lock_pc"
     assert plan.steps[0].entities["danger_classification"] == "confirmation_required"
     assert plan.steps[0].entities["confirmation_required"] is True
 
@@ -175,6 +197,32 @@ def test_skill_manager_reports_confirmation_required_without_execution():
     assert step_result.returned_data["metadata"]["executed"] is False
 
 
+def test_skill_manager_confirms_lock_pc_before_execution():
+    calls = []
+    adapter = LocalDeviceActionAdapter(
+        lock_impl=lambda: calls.append("locked") or True,
+        platform_system=lambda: "Windows",
+    )
+    manager = SkillManager(event_bus=get_global_bus(), device_action_adapter=adapter)
+    manager.register(DeviceActionSkill())
+
+    response = manager.handle("lock pc", run_before_intents=True)
+
+    assert response.skill == "confirmation"
+    assert "Confirmation required to lock Windows session" in response.text
+    assert manager.confirmation_manager.pending() is not None
+    assert calls == []
+
+    confirmed = manager.handle("yes")
+
+    assert confirmed.skill == "device_action"
+    assert confirmed.text == "Windows session lock requested."
+    assert calls == ["locked"]
+    assert manager.confirmation_manager.pending() is None
+    assert manager.last_execution.step_results[0].success is True
+    assert manager.last_execution.step_results[0].returned_data["metadata"]["executed"] is True
+
+
 def test_text_repl_executes_safe_device_action(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(memory_v1, "SHORT_MEMORY_FILE", tmp_path / "short.json")
     monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
@@ -196,7 +244,7 @@ def test_text_repl_executes_safe_device_action(monkeypatch, tmp_path, capsys):
         if event.payload.get("skill") == "device_action"
     ]
 
-    assert "Available device actions: echo, system_status_mock, list_actions." in output
+    assert "Available device actions: echo, system_status_mock, list_actions, lock_pc." in output
     assert detected
 
 
@@ -217,3 +265,23 @@ def test_text_repl_shows_confirmation_required_device_action(monkeypatch, tmp_pa
     output = capsys.readouterr().out
 
     assert 'Confirmation required for device action "shutdown". Device action was not executed.' in output
+
+
+def test_text_repl_shows_lock_pc_confirmation_prompt(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(memory_v1, "SHORT_MEMORY_FILE", tmp_path / "short.json")
+    monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
+    monkeypatch.setenv("ARES_USER_PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setenv("ARES_NOTES_PATH", str(tmp_path / "notes.json"))
+    monkeypatch.setenv("ARES_TASKS_PATH", str(tmp_path / "tasks.json"))
+    monkeypatch.setenv("ARES_GOALS_PATH", str(tmp_path / "goals.json"))
+    monkeypatch.setattr("sys.stdin", io.StringIO("hello\nlock pc\ncancel\nquit\n"))
+
+    event_bus = get_global_bus()
+    event_bus.clear_history()
+
+    text_repl.main()
+
+    output = capsys.readouterr().out
+
+    assert "Confirmation required to lock Windows session" in output
+    assert "Cancelled: lock Windows session." in output

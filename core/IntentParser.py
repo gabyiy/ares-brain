@@ -513,7 +513,9 @@ def _normalize_market_symbol(value: str) -> str:
 
 
 def _dangerous_device_action_name(normalized_text: str) -> str:
-    if normalized_text in {"shutdown", "restart", "sleep", "lock"}:
+    if normalized_text in {"lock", "lock pc", "lock computer", "lock session", "lock windows", "lock windows session"}:
+        return "lock_pc"
+    if normalized_text in {"shutdown", "restart", "sleep"}:
         return normalized_text
     if normalized_text.startswith("run command"):
         return "run_command"

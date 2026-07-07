@@ -178,6 +178,11 @@ def requires_confirmation(step: PlanStep) -> bool:
         if action in {"create", "update", "write", "delete", "post", "put", "patch"}:
             return True
 
+    if step.target == "device_action":
+        action_name = str(step.entities.get("action_name") or step.action or "").strip().lower()
+        if action_name == "lock_pc" and bool(step.entities.get("confirmation_required")):
+            return True
+
     return False
 
 
@@ -200,6 +205,9 @@ def confirmation_action_label(step: PlanStep) -> str:
 
     if step.target == "tool_adapter":
         return f"run external write action {step.action}"
+
+    if step.target == "device_action" and (step.entities.get("action_name") or step.action) == "lock_pc":
+        return "lock Windows session"
 
     return f"run {step.target}.{step.action}"
 

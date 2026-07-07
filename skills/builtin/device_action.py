@@ -54,7 +54,8 @@ class DeviceActionSkill(Skill):
             )
 
         classification = parsed["danger_classification"]
-        if classification == DANGER_CONFIRMATION_REQUIRED:
+        confirmation_approved = bool(parsed.get("confirmation_approved"))
+        if classification == DANGER_CONFIRMATION_REQUIRED and not confirmation_approved:
             return self._confirmation_required_response(parsed)
 
         if classification == DANGER_FORBIDDEN:
@@ -63,6 +64,10 @@ class DeviceActionSkill(Skill):
         adapter = getattr(context, "device_action_adapter", None) or self.adapter
         action_name = parsed["action_name"]
         parameters = dict(parsed.get("parameters") or {})
+        if confirmation_approved:
+            parameters["confirmation_approved"] = True
+            if parsed.get("confirmation_id"):
+                parameters["confirmation_id"] = parsed["confirmation_id"]
         result = adapter.execute(action_name, parameters)
         if not result.success:
             return self._response(
@@ -206,6 +211,8 @@ def _normalize_parsed_device_action(entities: Dict[str, object], fallback_text: 
 
     action_name = str(entities.get("action_name") or "").strip()
     parameters = dict(entities.get("parameters") or {})
+    confirmation_approved = bool(entities.get("confirmation_approved"))
+    confirmation_id = str(entities.get("confirmation_id") or "")
     classification = str(entities.get("danger_classification") or "").strip()
     if not classification:
         classification = DANGER_FORBIDDEN if entities.get("dangerous") else ""
@@ -228,11 +235,15 @@ def _normalize_parsed_device_action(entities: Dict[str, object], fallback_text: 
         "confirmation_required": classification == DANGER_CONFIRMATION_REQUIRED,
         "forbidden": classification == DANGER_FORBIDDEN,
         "reason": str(entities.get("reason") or safety.reason),
+        "confirmation_approved": confirmation_approved,
+        "confirmation_id": confirmation_id,
     }
 
 
 def _dangerous_action_name(normalized_text: str) -> str:
-    if normalized_text in {"shutdown", "restart", "sleep", "lock"}:
+    if normalized_text in {"lock", "lock pc", "lock computer", "lock session", "lock windows", "lock windows session"}:
+        return "lock_pc"
+    if normalized_text in {"shutdown", "restart", "sleep"}:
         return normalized_text
     if normalized_text.startswith("run command"):
         return "run_command"

@@ -49,8 +49,9 @@ def test_list_available_device_actions_works():
         "echo",
         "system_status_mock",
         "list_actions",
+        "lock_pc",
     ]
-    assert "Available device actions: echo, system_status_mock, list_actions." == result.text
+    assert "Available device actions: echo, system_status_mock, list_actions, lock_pc." == result.text
 
 
 def test_system_status_mock_action_is_deterministic():
@@ -127,6 +128,76 @@ def test_confirmation_required_device_action_result_is_stable_and_not_executed()
             "This placeholder cannot execute real OS commands yet."
         ),
     }
+
+
+def test_lock_pc_is_confirmation_required_by_default():
+    result = LocalDeviceActionAdapter().execute("lock pc")
+
+    assert result.success is False
+    assert result.text == 'Confirmation required for device action "lock_pc". Device action was not executed.'
+    assert result.error_message == "confirmation_required"
+    assert result.metadata["danger_classification"] == "confirmation_required"
+    assert result.metadata["confirmation_required"] is True
+    assert result.metadata["executed"] is False
+    assert result.metadata["confirmation_request"] == {
+        "token": "device-action-confirmation:lock_pc",
+        "action_name": "lock_pc",
+        "classification": "confirmation_required",
+        "reason": "lock_pc requires explicit confirmation before locking the Windows session",
+        "prompt": (
+            'Confirmation required for device action "lock_pc". '
+            "This will lock the current Windows session if confirmed."
+        ),
+    }
+
+
+def test_lock_pc_does_not_execute_without_confirmation():
+    calls = []
+    adapter = LocalDeviceActionAdapter(
+        lock_impl=lambda: calls.append("locked") or True,
+        platform_system=lambda: "Windows",
+    )
+
+    result = adapter.execute("lock_pc")
+
+    assert result.success is False
+    assert result.error_message == "confirmation_required"
+    assert calls == []
+
+
+def test_confirmed_lock_pc_calls_mocked_windows_lock_implementation():
+    calls = []
+    adapter = LocalDeviceActionAdapter(
+        lock_impl=lambda: calls.append("locked") or True,
+        platform_system=lambda: "Windows",
+    )
+
+    result = adapter.execute("lock_pc", {"confirmation_approved": True})
+
+    assert result.success is True
+    assert result.text == "Windows session lock requested."
+    assert result.data == {"action": "lock_pc"}
+    assert result.metadata["executed"] is True
+    assert result.metadata["platform"] == "Windows"
+    assert calls == ["locked"]
+
+
+def test_confirmed_lock_pc_fails_safely_on_non_windows_platform():
+    calls = []
+    adapter = LocalDeviceActionAdapter(
+        lock_impl=lambda: calls.append("locked") or True,
+        platform_system=lambda: "Linux",
+    )
+
+    result = adapter.execute("lock_pc", {"confirmation_approved": True})
+
+    assert result.success is False
+    assert result.text == "Windows session lock is unsupported on this platform."
+    assert result.error_message == "unsupported_platform"
+    assert result.metadata["executed"] is False
+    assert result.metadata["supported"] is False
+    assert result.metadata["platform"] == "Linux"
+    assert calls == []
 
 
 def test_forbidden_device_action_result_is_stable_and_not_executed():
