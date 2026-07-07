@@ -278,12 +278,16 @@ Current boundaries:
 - Real-weather tests mock HTTP and do not make real network calls.
 - `RealMarketAdapter` supports the market adapter contract but is not registered by default in `SkillManager`.
 - `RealMarketAdapter` reads API keys only from the configured environment variable name and does not expose raw env values in responses.
-- `RealMarketAdapter` returns a deterministic not-implemented response instead of making network calls.
+- `RealMarketAdapter` performs HTTP requests only after explicit real-mode config and env-key gates pass.
+- `RealMarketAdapter` passes configured timeouts to the HTTP client.
+- `RealMarketAdapter` normalizes supported market quote payloads into ARES market data.
+- `RealMarketAdapter` returns deterministic safe errors for timeouts, HTTP status errors, invalid JSON, and unrecognized payloads.
+- Real-market tests mock HTTP and do not make real network calls.
 - No API keys are stored.
 - WeatherSkill uses `MockWeatherAdapter` through this registry for local weather answers.
 - MarketSkill uses `MockMarketAdapter` through this registry for local market quote answers.
 - CalendarSkill uses `MockCalendarAdapter` through this registry for local schedule answers.
-- No real-weather or real-market adapter is registered by default, and no real market HTTP logic, Google Calendar integration, real calendar API, GPT, voice, or web adapter has been added.
+- No real-weather or real-market adapter is registered by default, and no Google Calendar integration, real calendar API, GPT, voice, or web adapter has been added.
 
 Confirmation
 
@@ -650,11 +654,11 @@ Current built-in skills:
 
 `WeatherSkill` answers weather requests through `ToolAdapterRegistry` and the offline `MockWeatherAdapter` by default. It supports `weather`, `weather today`, `weather tomorrow`, and `weather in Madrid`. The default path does not call real APIs, require API keys, or use internet access. Explicit tests can provide an intent with adapter `real_weather`; that adapter can make HTTP requests only when real-mode config and the required env key are present.
 
-`MarketSkill` answers stock/market quote requests through `ToolAdapterRegistry` and the offline `MockMarketAdapter` by default. It supports `stock nvidia`, `nvidia stock`, `apple stock`, and `market price for tesla`. The default path does not call real APIs, require API keys, or use internet access. Explicit tests can provide an intent with adapter `real_market`; that adapter skeleton fails safely without network execution until a future real market provider is implemented.
+`MarketSkill` answers stock/market quote requests through `ToolAdapterRegistry` and the offline `MockMarketAdapter` by default. It supports `stock nvidia`, `nvidia stock`, `apple stock`, and `market price for tesla`. The default path does not call real APIs, require API keys, or use internet access. Explicit tests can provide an intent with adapter `real_market`; that adapter can make HTTP requests only when real-mode config and the required env key are present.
 
 `CalendarSkill` answers calendar/schedule requests through `ToolAdapterRegistry` and the offline `MockCalendarAdapter`. It supports `what is on my calendar today`, `calendar tomorrow`, `schedule today`, and `do I have anything tomorrow`. It does not call Google Calendar, real APIs, require API keys, use internet access, or run background automation.
 
-No notifications, voice, real weather APIs, real market APIs, Google Calendar integration, real calendar APIs, external API, or GPT integration has been added as part of the current local skill milestones.
+No notifications, voice, default real weather/market API mode, Google Calendar integration, real calendar APIs, external write API, or GPT integration has been added as part of the current local skill milestones.
 
 Conversation context is not a persistent memory store. It only tracks recent handled skill turns in RAM so local skills and interfaces can inspect short-term context without GPT or embeddings.
 
@@ -731,5 +735,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 208 tests.
+- Pytest collection: 212 tests.
 - Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, and `skills.builtin.CalendarSkill`.
