@@ -2,6 +2,7 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Iterable, List, Optional
 
+from core.DeviceAction import DANGER_SAFE, classify_device_action
 from core.Intent import Intent
 
 
@@ -165,16 +166,19 @@ class IntentParser:
         return None
 
     def _parse_device_action(self, text: ParsedText) -> Optional[Intent]:
-        dangerous_reason = _dangerous_device_action_reason(text.normalized)
-        if dangerous_reason:
+        dangerous_action_name = _dangerous_device_action_name(text.normalized)
+        if dangerous_action_name:
+            safety = classify_device_action(dangerous_action_name)
             return self._intent(
                 "device_action",
                 0.96,
                 text.raw_text,
-                action="reject",
-                action_name=_first_word(text.normalized),
-                dangerous=True,
-                reason=dangerous_reason,
+                action=safety.classification,
+                action_name=safety.action_name,
+                danger_classification=safety.classification,
+                confirmation_required=safety.requires_confirmation,
+                forbidden=safety.forbidden,
+                reason=safety.reason,
             )
 
         if text.starts_with("echo"):
@@ -187,6 +191,7 @@ class IntentParser:
                     action="echo",
                     action_name="echo",
                     parameters={"message": message},
+                    danger_classification=DANGER_SAFE,
                 )
 
         if text.is_exact("list device actions", "show device actions", "list available device actions"):
@@ -197,6 +202,7 @@ class IntentParser:
                 action="list",
                 action_name="list_actions",
                 parameters={},
+                danger_classification=DANGER_SAFE,
             )
 
         if text.is_exact("system status", "device status"):
@@ -207,11 +213,13 @@ class IntentParser:
                 action="status",
                 action_name="system_status_mock",
                 parameters={},
+                danger_classification=DANGER_SAFE,
             )
 
         if text.starts_with("device action"):
             action_name = _normalize_action_name(text.after("device action"))
             if action_name:
+                safety = classify_device_action(action_name)
                 return self._intent(
                     "device_action",
                     0.76,
@@ -219,6 +227,10 @@ class IntentParser:
                     action="execute",
                     action_name=action_name,
                     parameters={},
+                    danger_classification=safety.classification,
+                    confirmation_required=safety.requires_confirmation,
+                    forbidden=safety.forbidden,
+                    reason=safety.reason,
                 )
 
         return None
@@ -500,17 +512,17 @@ def _normalize_market_symbol(value: str) -> str:
     return symbol.upper()
 
 
-def _dangerous_device_action_reason(normalized_text: str) -> str:
-    if normalized_text in {"shutdown", "restart", "sleep", "lock", "arbitrary shell"}:
-        return f"{normalized_text} is not available"
+def _dangerous_device_action_name(normalized_text: str) -> str:
+    if normalized_text in {"shutdown", "restart", "sleep", "lock"}:
+        return normalized_text
     if normalized_text.startswith("run command"):
-        return "run command is not available"
+        return "run_command"
     if normalized_text.startswith("open app"):
-        return "open app is not available"
+        return "open_app"
     if normalized_text == "delete" or normalized_text.startswith("delete "):
-        return "delete is not available as a device action"
+        return "delete"
     if "arbitrary shell" in normalized_text or normalized_text.startswith("shell "):
-        return "arbitrary shell is not available"
+        return "arbitrary_shell"
     return ""
 
 

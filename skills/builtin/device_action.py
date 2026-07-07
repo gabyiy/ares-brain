@@ -1,7 +1,13 @@
 import re
 from typing import Dict
 
-from core.DeviceAction import LocalDeviceActionAdapter
+from core.DeviceAction import (
+    DANGER_CONFIRMATION_REQUIRED,
+    DANGER_FORBIDDEN,
+    DANGER_SAFE,
+    LocalDeviceActionAdapter,
+    classify_device_action,
+)
 from skills.base import Skill, SkillContext, SkillResponse
 
 
@@ -24,6 +30,7 @@ class DeviceActionSkill(Skill):
         "run command",
         "open app",
         "arbitrary shell",
+        "delete",
     )
     selection_keywords = (
         "device",
@@ -46,13 +53,12 @@ class DeviceActionSkill(Skill):
                 error="unknown_device_action",
             )
 
-        if parsed["dangerous"]:
-            return self._response(
-                f"I cannot run that device action safely: {parsed['reason']}.",
-                error=parsed["reason"],
-                action_name=parsed["action_name"],
-                dangerous=True,
-            )
+        classification = parsed["danger_classification"]
+        if classification == DANGER_CONFIRMATION_REQUIRED:
+            return self._confirmation_required_response(parsed)
+
+        if classification == DANGER_FORBIDDEN:
+            return self._forbidden_response(parsed)
 
         adapter = getattr(context, "device_action_adapter", None) or self.adapter
         action_name = parsed["action_name"]
@@ -70,6 +76,8 @@ class DeviceActionSkill(Skill):
         return self._response(
             result.text,
             action_name=result.action_name,
+            danger_classification=DANGER_SAFE,
+            executed=True,
             data=dict(result.data),
             action_metadata=dict(result.metadata),
         )
@@ -84,6 +92,34 @@ class DeviceActionSkill(Skill):
     def _response(self, text: str, **metadata) -> SkillResponse:
         return SkillResponse(text=text, skill=self.name, metadata=metadata)
 
+    def _confirmation_required_response(self, parsed: Dict[str, object]) -> SkillResponse:
+        action_name = str(parsed["action_name"])
+        safety = classify_device_action(action_name)
+        request = safety.confirmation_request()
+        return self._response(
+            f'Confirmation required for device action "{action_name}". Device action was not executed.',
+            error="confirmation_required",
+            action_name=action_name,
+            danger_classification=DANGER_CONFIRMATION_REQUIRED,
+            confirmation_required=True,
+            executed=False,
+            reason=safety.reason,
+            confirmation_request=request.to_dict() if request else None,
+        )
+
+    def _forbidden_response(self, parsed: Dict[str, object]) -> SkillResponse:
+        action_name = str(parsed["action_name"])
+        safety = classify_device_action(action_name)
+        return self._response(
+            f'Device action "{action_name}" is forbidden and was not executed.',
+            error="forbidden",
+            action_name=action_name,
+            danger_classification=DANGER_FORBIDDEN,
+            forbidden=True,
+            executed=False,
+            reason=safety.reason,
+        )
+
 
 def _parse_device_action_text(text: str) -> Dict[str, object]:
     raw_text = (text or "").strip()
@@ -91,14 +127,17 @@ def _parse_device_action_text(text: str) -> Dict[str, object]:
     if not normalized:
         return {}
 
-    dangerous_reason = _dangerous_reason(normalized)
-    if dangerous_reason:
+    action_name = _dangerous_action_name(normalized)
+    safety = classify_device_action(action_name) if action_name else None
+    if safety and not safety.is_safe:
         return {
-            "action": "reject",
-            "action_name": _first_token(normalized),
+            "action": safety.classification,
+            "action_name": safety.action_name,
             "parameters": {},
-            "dangerous": True,
-            "reason": dangerous_reason,
+            "danger_classification": safety.classification,
+            "confirmation_required": safety.requires_confirmation,
+            "forbidden": safety.forbidden,
+            "reason": safety.reason,
         }
 
     if normalized.startswith("echo "):
@@ -108,14 +147,18 @@ def _parse_device_action_text(text: str) -> Dict[str, object]:
                 "action": "echo",
                 "action_name": "echo",
                 "parameters": {},
-                "dangerous": False,
+                "danger_classification": DANGER_SAFE,
+                "confirmation_required": False,
+                "forbidden": False,
                 "reason": "missing_echo_text",
             }
         return {
             "action": "echo",
             "action_name": "echo",
             "parameters": {"message": message},
-            "dangerous": False,
+            "danger_classification": DANGER_SAFE,
+            "confirmation_required": False,
+            "forbidden": False,
             "reason": "",
         }
 
@@ -124,7 +167,9 @@ def _parse_device_action_text(text: str) -> Dict[str, object]:
             "action": "list",
             "action_name": "list_actions",
             "parameters": {},
-            "dangerous": False,
+            "danger_classification": DANGER_SAFE,
+            "confirmation_required": False,
+            "forbidden": False,
             "reason": "",
         }
 
@@ -133,18 +178,23 @@ def _parse_device_action_text(text: str) -> Dict[str, object]:
             "action": "status",
             "action_name": "system_status_mock",
             "parameters": {},
-            "dangerous": False,
+            "danger_classification": DANGER_SAFE,
+            "confirmation_required": False,
+            "forbidden": False,
             "reason": "",
         }
 
     if normalized.startswith("device action "):
         action_name = _normalize_action_name(normalized[len("device action ") :])
+        safety = classify_device_action(action_name)
         return {
             "action": "execute",
             "action_name": action_name,
             "parameters": {},
-            "dangerous": False,
-            "reason": "",
+            "danger_classification": safety.classification,
+            "confirmation_required": safety.requires_confirmation,
+            "forbidden": safety.forbidden,
+            "reason": safety.reason,
         }
 
     return {}
@@ -156,31 +206,46 @@ def _normalize_parsed_device_action(entities: Dict[str, object], fallback_text: 
 
     action_name = str(entities.get("action_name") or "").strip()
     parameters = dict(entities.get("parameters") or {})
+    classification = str(entities.get("danger_classification") or "").strip()
+    if not classification:
+        classification = DANGER_FORBIDDEN if entities.get("dangerous") else ""
     if not action_name:
         parsed = _parse_device_action_text(fallback_text)
         action_name = str(parsed.get("action_name") or "")
         parameters = dict(parsed.get("parameters") or parameters)
+        classification = str(parsed.get("danger_classification") or classification or DANGER_SAFE)
+
+    safety = classify_device_action(action_name)
+    if safety.classification != DANGER_SAFE:
+        classification = safety.classification
+    classification = classification or DANGER_SAFE
 
     return {
         "action": str(entities.get("action") or "execute"),
         "action_name": action_name,
         "parameters": parameters,
-        "dangerous": bool(entities.get("dangerous")),
-        "reason": str(entities.get("reason") or ""),
+        "danger_classification": classification,
+        "confirmation_required": classification == DANGER_CONFIRMATION_REQUIRED,
+        "forbidden": classification == DANGER_FORBIDDEN,
+        "reason": str(entities.get("reason") or safety.reason),
     }
 
 
-def _dangerous_reason(normalized_text: str) -> str:
-    if normalized_text in {"shutdown", "restart", "sleep", "lock", "arbitrary shell"}:
-        return f"{normalized_text} is not available"
+def _dangerous_action_name(normalized_text: str) -> str:
+    if normalized_text in {"shutdown", "restart", "sleep", "lock"}:
+        return normalized_text
     if normalized_text.startswith("run command"):
-        return "run command is not available"
+        return "run_command"
     if normalized_text.startswith("open app"):
-        return "open app is not available"
+        return "open_app"
     if normalized_text == "delete" or normalized_text.startswith("delete "):
-        return "delete is not available as a device action"
-    if "arbitrary shell" in normalized_text or normalized_text.startswith("shell "):
-        return "arbitrary shell is not available"
+        return "delete"
+    if (
+        normalized_text == "arbitrary shell"
+        or "arbitrary shell" in normalized_text
+        or normalized_text.startswith("shell ")
+    ):
+        return "arbitrary_shell"
     return ""
 
 
@@ -190,8 +255,3 @@ def _normalize(value: str) -> str:
 
 def _normalize_action_name(value: str) -> str:
     return "_".join(re.findall(r"[a-z0-9]+", (value or "").lower()))
-
-
-def _first_token(value: str) -> str:
-    tokens = value.split()
-    return tokens[0] if tokens else ""

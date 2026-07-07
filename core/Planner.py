@@ -2,6 +2,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
+from core.DeviceAction import DANGER_SAFE, classify_device_action
 from core.Intent import Intent
 
 
@@ -631,7 +632,8 @@ class Planner:
         action = entities.get("action") or "execute"
         action_name = entities.get("action_name") or _device_action_name(raw_text)
         parameters = dict(entities.get("parameters") or {})
-        dangerous = bool(entities.get("dangerous"))
+        safety = classify_device_action(action_name)
+        classification = entities.get("danger_classification") or safety.classification
         reason = entities.get("reason") or ""
         can_execute = bool(action_name)
 
@@ -640,9 +642,10 @@ class Planner:
             "action": action,
             "action_name": action_name,
             "parameters": parameters,
+            "danger_classification": classification,
+            "confirmation_required": classification == "confirmation_required",
+            "forbidden": classification == "forbidden",
         }
-        if dangerous:
-            clean_entities["dangerous"] = True
         if reason:
             clean_entities["reason"] = reason
 
@@ -655,7 +658,7 @@ class Planner:
             entities=clean_entities,
             can_execute=can_execute,
             skip_reason="" if can_execute else "Missing device action name.",
-            description=_device_action_description(action_name, parameters, dangerous),
+            description=_device_action_description(action_name, parameters, classification),
         )
 
     def _device_action_step_from_text(self, text: str):
@@ -1139,14 +1142,17 @@ def _device_action_entities(text: str):
     if not lowered:
         return None
 
-    dangerous_reason = _dangerous_device_action_reason(lowered)
-    if dangerous_reason:
+    dangerous_action_name = _dangerous_device_action_name(lowered)
+    if dangerous_action_name:
+        safety = classify_device_action(dangerous_action_name)
         return {
-            "action": "reject",
-            "action_name": _first_word(lowered),
+            "action": safety.classification,
+            "action_name": safety.action_name,
             "parameters": {},
-            "dangerous": True,
-            "reason": dangerous_reason,
+            "danger_classification": safety.classification,
+            "confirmation_required": safety.requires_confirmation,
+            "forbidden": safety.forbidden,
+            "reason": safety.reason,
         }
 
     if lowered.startswith("echo "):
@@ -1157,6 +1163,7 @@ def _device_action_entities(text: str):
             "action": "echo",
             "action_name": "echo",
             "parameters": {"message": message},
+            "danger_classification": DANGER_SAFE,
         }
 
     if lowered in {"list device actions", "show device actions", "list available device actions"}:
@@ -1164,6 +1171,7 @@ def _device_action_entities(text: str):
             "action": "list",
             "action_name": "list_actions",
             "parameters": {},
+            "danger_classification": DANGER_SAFE,
         }
 
     if lowered in {"system status", "device status"}:
@@ -1171,13 +1179,20 @@ def _device_action_entities(text: str):
             "action": "status",
             "action_name": "system_status_mock",
             "parameters": {},
+            "danger_classification": DANGER_SAFE,
         }
 
     if lowered.startswith("device action "):
+        action_name = _normalize_action_name(lowered[len("device action ") :])
+        safety = classify_device_action(action_name)
         return {
             "action": "execute",
-            "action_name": _normalize_action_name(lowered[len("device action ") :]),
+            "action_name": action_name,
             "parameters": {},
+            "danger_classification": safety.classification,
+            "confirmation_required": safety.requires_confirmation,
+            "forbidden": safety.forbidden,
+            "reason": safety.reason,
         }
 
     return None
@@ -1200,9 +1215,11 @@ def _device_action_command(action_name: str, parameters: Dict[str, Any], fallbac
     return fallback_text
 
 
-def _device_action_description(action_name: str, parameters: Dict[str, Any], dangerous: bool) -> str:
-    if dangerous:
-        return f"Reject unsafe device action: {action_name}."
+def _device_action_description(action_name: str, parameters: Dict[str, Any], classification: str) -> str:
+    if classification == "confirmation_required":
+        return f"Require confirmation for device action: {action_name}."
+    if classification == "forbidden":
+        return f"Reject forbidden device action: {action_name}."
     if action_name == "echo":
         return f"Run safe echo action: {parameters.get('message') or ''}"
     if action_name == "list_actions":
@@ -1212,17 +1229,17 @@ def _device_action_description(action_name: str, parameters: Dict[str, Any], dan
     return f"Run safe device action: {action_name}."
 
 
-def _dangerous_device_action_reason(normalized_text: str) -> str:
-    if normalized_text in {"shutdown", "restart", "sleep", "lock", "arbitrary shell"}:
-        return f"{normalized_text} is not available"
+def _dangerous_device_action_name(normalized_text: str) -> str:
+    if normalized_text in {"shutdown", "restart", "sleep", "lock"}:
+        return normalized_text
     if normalized_text.startswith("run command"):
-        return "run command is not available"
+        return "run_command"
     if normalized_text.startswith("open app"):
-        return "open app is not available"
+        return "open_app"
     if normalized_text == "delete" or normalized_text.startswith("delete "):
-        return "delete is not available as a device action"
+        return "delete"
     if "arbitrary shell" in normalized_text or normalized_text.startswith("shell "):
-        return "arbitrary shell is not available"
+        return "arbitrary_shell"
     return ""
 
 

@@ -4,10 +4,16 @@ from core.ConversationContext import (
     get_global_conversation_context,
 )
 from core.DeviceAction import (
+    DANGER_CONFIRMATION_REQUIRED,
+    DANGER_FORBIDDEN,
+    DANGER_SAFE,
     DeviceAction,
+    DeviceActionConfirmationRequest,
     DeviceActionRegistry,
     DeviceActionResult,
+    DeviceActionSafetyDecision,
     LocalDeviceActionAdapter,
+    classify_device_action,
 )
 from core.AdapterConfig import (
     AdapterConfigError,
@@ -39,9 +45,14 @@ __all__ = [
     "ConversationContextManager",
     "ConversationTurn",
     "AdapterConfigError",
+    "DANGER_CONFIRMATION_REQUIRED",
+    "DANGER_FORBIDDEN",
+    "DANGER_SAFE",
     "DeviceAction",
+    "DeviceActionConfirmationRequest",
     "DeviceActionRegistry",
     "DeviceActionResult",
+    "DeviceActionSafetyDecision",
     "ConfirmationDecision",
     "ConfirmationManager",
     "ConfirmationRequest",
@@ -73,6 +84,7 @@ __all__ = [
     "ToolRequest",
     "ToolResponse",
     "LocalDeviceActionAdapter",
+    "classify_device_action",
     "get_global_conversation_context",
     "load_adapter_configs",
 ]

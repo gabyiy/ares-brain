@@ -4,16 +4,28 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 DeviceActionHandler = Callable[[Mapping[str, Any]], "DeviceActionResult"]
 
-_DANGEROUS_ACTION_NAMES = {
+DANGER_SAFE = "safe"
+DANGER_CONFIRMATION_REQUIRED = "confirmation_required"
+DANGER_FORBIDDEN = "forbidden"
+
+_CONFIRMATION_REQUIRED_ACTIONS = {
+    "lock",
+    "open_app",
+    "restart",
+    "shutdown",
+    "sleep",
+}
+_FORBIDDEN_ACTIONS = {
+    "arbitrary_shell",
     "command",
+    "delete",
     "exec",
     "format",
     "poweroff",
     "reboot",
-    "restart",
     "run",
+    "run_command",
     "shell",
-    "shutdown",
 }
 
 
@@ -21,6 +33,7 @@ _DANGEROUS_ACTION_NAMES = {
 class DeviceAction:
     name: str
     description: str
+    danger_classification: str = DANGER_SAFE
     requires_confirmation: bool = False
     dangerous: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -29,9 +42,76 @@ class DeviceAction:
         return {
             "name": self.name,
             "description": self.description,
+            "danger_classification": self.danger_classification,
             "requires_confirmation": bool(self.requires_confirmation),
             "dangerous": bool(self.dangerous),
             "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
+class DeviceActionConfirmationRequest:
+    token: str
+    action_name: str
+    classification: str
+    reason: str
+    prompt: str
+
+    @classmethod
+    def create(cls, action_name: str, reason: str):
+        normalized = _normalize_action_name(action_name)
+        prompt = (
+            f'Confirmation required for device action "{normalized}". '
+            "This placeholder cannot execute real OS commands yet."
+        )
+        return cls(
+            token=f"device-action-confirmation:{normalized}",
+            action_name=normalized,
+            classification=DANGER_CONFIRMATION_REQUIRED,
+            reason=reason,
+            prompt=prompt,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "token": self.token,
+            "action_name": self.action_name,
+            "classification": self.classification,
+            "reason": self.reason,
+            "prompt": self.prompt,
+        }
+
+
+@dataclass(frozen=True)
+class DeviceActionSafetyDecision:
+    action_name: str
+    classification: str
+    reason: str = ""
+
+    @property
+    def is_safe(self) -> bool:
+        return self.classification == DANGER_SAFE
+
+    @property
+    def requires_confirmation(self) -> bool:
+        return self.classification == DANGER_CONFIRMATION_REQUIRED
+
+    @property
+    def forbidden(self) -> bool:
+        return self.classification == DANGER_FORBIDDEN
+
+    def confirmation_request(self) -> Optional[DeviceActionConfirmationRequest]:
+        if not self.requires_confirmation:
+            return None
+        return DeviceActionConfirmationRequest.create(self.action_name, self.reason)
+
+    def to_dict(self) -> Dict[str, Any]:
+        request = self.confirmation_request()
+        return {
+            "action_name": self.action_name,
+            "classification": self.classification,
+            "reason": self.reason,
+            "confirmation_request": request.to_dict() if request else None,
         }
 
 
@@ -71,8 +151,10 @@ class DeviceActionRegistry:
         name = _normalize_action_name(action.name)
         if not name:
             raise ValueError("Device action name is required")
-        if name in _DANGEROUS_ACTION_NAMES or action.dangerous:
-            raise ValueError("Dangerous device actions are not implemented yet")
+        safety = classify_device_action(name)
+        requested_classification = _normalize_classification(action.danger_classification)
+        if not safety.is_safe or requested_classification != DANGER_SAFE or action.dangerous:
+            raise ValueError("Non-safe device actions are not implemented yet")
         if action.requires_confirmation:
             raise ValueError("Confirmed device actions are not implemented yet")
         if name in self._actions:
@@ -81,6 +163,7 @@ class DeviceActionRegistry:
         normalized = DeviceAction(
             name=name,
             description=action.description,
+            danger_classification=DANGER_SAFE,
             requires_confirmation=action.requires_confirmation,
             dangerous=action.dangerous,
             metadata=dict(action.metadata),
@@ -97,6 +180,12 @@ class DeviceActionRegistry:
 
     def execute(self, name: str, parameters: Optional[Mapping[str, Any]] = None) -> DeviceActionResult:
         action_name = _normalize_action_name(name)
+        safety = classify_device_action(action_name)
+        if safety.requires_confirmation:
+            return _confirmation_required_result(safety)
+        if safety.forbidden:
+            return _forbidden_result(safety)
+
         action = self._actions.get(action_name)
         if not action:
             return DeviceActionResult(
@@ -125,6 +214,9 @@ class LocalDeviceActionAdapter:
 
     def list_actions(self) -> List[DeviceAction]:
         return self.registry.list_actions()
+
+    def classify(self, action_name: str) -> DeviceActionSafetyDecision:
+        return classify_device_action(_adapter_action_alias(action_name))
 
     def _register_safe_builtins(self) -> None:
         self.registry.register(
@@ -191,6 +283,58 @@ def _list_actions_action(registry: DeviceActionRegistry) -> DeviceActionResult:
     )
 
 
+def classify_device_action(action_name: str) -> DeviceActionSafetyDecision:
+    normalized = _normalize_action_name(action_name)
+    if normalized in _CONFIRMATION_REQUIRED_ACTIONS:
+        return DeviceActionSafetyDecision(
+            action_name=normalized,
+            classification=DANGER_CONFIRMATION_REQUIRED,
+            reason=f"{normalized} requires explicit confirmation and is not implemented",
+        )
+    if normalized in _FORBIDDEN_ACTIONS:
+        return DeviceActionSafetyDecision(
+            action_name=normalized,
+            classification=DANGER_FORBIDDEN,
+            reason=f"{normalized} is forbidden and is not implemented",
+        )
+    return DeviceActionSafetyDecision(
+        action_name=normalized,
+        classification=DANGER_SAFE,
+    )
+
+
+def _confirmation_required_result(safety: DeviceActionSafetyDecision) -> DeviceActionResult:
+    request = safety.confirmation_request()
+    return DeviceActionResult(
+        action_name=safety.action_name,
+        success=False,
+        text=f'Confirmation required for device action "{safety.action_name}". Device action was not executed.',
+        error_message="confirmation_required",
+        metadata={
+            "danger_classification": DANGER_CONFIRMATION_REQUIRED,
+            "confirmation_required": True,
+            "executed": False,
+            "reason": safety.reason,
+            "confirmation_request": request.to_dict() if request else None,
+        },
+    )
+
+
+def _forbidden_result(safety: DeviceActionSafetyDecision) -> DeviceActionResult:
+    return DeviceActionResult(
+        action_name=safety.action_name,
+        success=False,
+        text=f'Device action "{safety.action_name}" is forbidden and was not executed.',
+        error_message="forbidden",
+        metadata={
+            "danger_classification": DANGER_FORBIDDEN,
+            "forbidden": True,
+            "executed": False,
+            "reason": safety.reason,
+        },
+    )
+
+
 def _adapter_action_alias(action_name: str) -> str:
     normalized = _normalize_action_name(action_name)
     aliases = {
@@ -200,6 +344,13 @@ def _adapter_action_alias(action_name: str) -> str:
         "status": "system_status_mock",
     }
     return aliases.get(normalized, normalized)
+
+
+def _normalize_classification(value: str) -> str:
+    normalized = str(value or DANGER_SAFE).strip().lower()
+    if normalized in {DANGER_SAFE, DANGER_CONFIRMATION_REQUIRED, DANGER_FORBIDDEN}:
+        return normalized
+    return DANGER_FORBIDDEN
 
 
 def _normalize_action_name(name: str) -> str:
