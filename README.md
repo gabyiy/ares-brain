@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.27 - Device Dangerous-Action Confirmation Gate
+ARES v1.28 - Confirmed Windows Lock Device Action
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.DeviceAction`, `DeviceActionRegistry`, and `LocalDeviceActionAdapter` for safe mock-only local device action foundations with `safe`, `confirmation_required`, and `forbidden` classifications, `skills.builtin.DeviceActionSkill` for safe live routing of `echo`, `list device actions`, and `system status` plus stable confirmation-required/forbidden responses for dangerous placeholders, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.DeviceAction`, `DeviceActionRegistry`, and `LocalDeviceActionAdapter` for local device action foundations with `safe`, `confirmation_required`, and `forbidden` classifications, confirmed Windows-only `lock_pc`, and no arbitrary shell execution, `skills.builtin.DeviceActionSkill` for safe live routing of `echo`, `list device actions`, and `system status` plus confirmation-gated `lock_pc` and stable forbidden responses for dangerous placeholders, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 Long-Term City Model
 
@@ -126,6 +126,7 @@ Completed
 - Built-in calendar skill using the offline mock calendar adapter
 - Built-in device action skill using safe local mock actions
 - Device dangerous-action confirmation gate
+- Confirmed Windows lock device action
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -191,6 +192,7 @@ ARES currently understands questions such as:
 - echo hello ARES
 - list device actions
 - system status
+- lock pc
 
 Each request is automatically routed to its correct intent.
 
@@ -213,6 +215,7 @@ Implemented Features
 - External ToolAdapter foundation with `ToolRequest`, `ToolResponse`, `ToolAdapterRegistry`, and offline mock weather/market adapters
 - DeviceAction foundation with `DeviceAction`, `DeviceActionResult`, `DeviceActionRegistry`, and `LocalDeviceActionAdapter`
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
+- Confirmed Windows-only `lock_pc` action after explicit user approval
 - External adapter config model with enabled, mode, env-key name, base URL, timeout, placeholder detection, and secret validation
 - RealWeatherAdapter HTTP logic gated by `mode=real`, env-key lookup, timeout handling, safe errors, and normalized ARES weather output
 - RealMarketAdapter HTTP logic gated by `mode=real`, env-key lookup, timeout handling, safe errors, and normalized ARES market output
@@ -229,7 +232,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 237 tests across core Phase 2-28 modules
+- Pytest automated coverage for 244 tests across core Phase 2-29 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -248,7 +251,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `237 tests`.
+Current pytest collection: `244 tests`.
 
 Continuous Integration
 
@@ -305,13 +308,14 @@ Latest Architecture Status
 - ToolAdapter defines external-tool contracts with adapter metadata, requests, responses, and registry lookup.
 - ToolAdapterRegistry can enforce `ExternalAdapterConfig` for enabled state, mock/local/real mode, env-key names, base URLs, and timeouts.
 - DeviceAction defines safe local action metadata and stable execution result formatting.
-- DeviceActionRegistry registers named safe local actions, rejects dangerous placeholders, and returns safe failures for unknown actions.
-- LocalDeviceActionAdapter currently exposes only `echo`, `system_status_mock`, and `list_actions`; it does not run arbitrary shell commands or add shutdown/restart actions.
+- DeviceActionRegistry registers named local actions, blocks unapproved confirmation-required actions, rejects forbidden placeholders, and returns safe failures for unknown actions.
+- LocalDeviceActionAdapter exposes `echo`, `system_status_mock`, `list_actions`, and confirmation-gated `lock_pc`; it does not run arbitrary shell commands or add shutdown/restart/sleep/open-app actions.
 - DeviceActionSkill routes safe device commands through IntentParser, ToolSelector, Planner, ExecutionPipeline, SkillManager, and the text REPL.
-- DeviceActionSkill supports only `echo <text>`, `list device actions`, and `system status`.
-- DeviceActionSkill returns stable confirmation-required responses for shutdown, restart, sleep, lock, and open app placeholders.
+- DeviceActionSkill supports `echo <text>`, `list device actions`, `system status`, and confirmation-gated `lock_pc`.
+- DeviceActionSkill returns stable confirmation-required responses for shutdown, restart, sleep, open app, and unapproved `lock_pc` requests.
+- Confirmed `lock_pc` calls the Windows lock implementation only after `yes` or `confirm`; non-Windows platforms return a safe unsupported response.
 - DeviceActionSkill returns stable forbidden responses for run command, delete, and arbitrary shell placeholders.
-- DeviceActionSkill never executes confirmation-required or forbidden actions directly.
+- DeviceActionSkill never executes unapproved confirmation-required actions or forbidden actions directly.
 - SecretsGuard rejects raw-looking secrets and validates that adapter config files reference environment variable names instead of storing keys.
 - Real adapter mode fails closed when an env key is missing, when the env-key name is only a placeholder, or when real execution is not implemented for an adapter.
 - `config/adapters.example.json` contains fake placeholder config only; local/private adapter config files are ignored by git.
@@ -399,6 +403,7 @@ Completed:
 - Device action framework skeleton
 - DeviceActionSkill safe live path
 - Device dangerous-action confirmation gate
+- Confirmed Windows lock device action
 
 Next:
 
@@ -716,13 +721,13 @@ Phase 27
 - ToolSelector and Planner route safe device actions to `device_action` plan steps.
 - ExecutionPipeline executes safe device actions through the registered DeviceActionSkill and LocalDeviceActionAdapter.
 - Text REPL can execute safe device actions through the normal router flow.
-- Dangerous requests including shutdown, restart, sleep, lock, run command, open app, delete, and arbitrary shell return safe rejection.
+- Dangerous requests including shutdown, restart, sleep, run command, open app, delete, and arbitrary shell return safe rejection; lock requests now route to Phase 29 `lock_pc`.
 - No real OS commands, shutdown/restart, Telegram, voice, internet, GPT, remote access, notifications, or background jobs were added.
 
 Phase 28
 
 - Device actions now have `safe`, `confirmation_required`, and `forbidden` classifications.
-- Shutdown, restart, sleep, lock, and open app are confirmation-required placeholders.
+- Shutdown, restart, sleep, and open app are confirmation-required placeholders; lock requests now route to Phase 29 `lock_pc`.
 - Run command, delete, and arbitrary shell are forbidden placeholders.
 - DeviceActionSkill returns stable confirmation-required or forbidden responses without executing those actions.
 - Confirmation-required responses include a stable device action confirmation request token.
@@ -731,19 +736,28 @@ Phase 28
 
 Phase 29
 
+- `lock_pc` is the first real OS-backed device action.
+- `lock_pc` requires explicit confirmation through the existing confirmation layer before execution.
+- The Windows lock implementation is called only after a confirmed request.
+- Non-Windows platforms return a safe unsupported response.
+- Tests mock the Windows lock implementation; no test locks the workstation.
+- Shutdown, restart, sleep, open app, run command, delete, arbitrary shell, Telegram, voice, GPT, internet, notifications, remote access, and background jobs were not added.
+
+Phase 30
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 30
+Phase 31
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 31
+Phase 32
 
 - Robotics
 - ROS2

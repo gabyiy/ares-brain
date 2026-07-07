@@ -296,7 +296,7 @@ Current boundaries:
 
 Device Action Framework
 
-`core.DeviceAction` defines the foundation for safe local device actions without executing dangerous commands. `skills.builtin.DeviceActionSkill` exposes this foundation through the live skill routing path for safe mock-only actions and stable not-executed responses for dangerous placeholders.
+`core.DeviceAction` defines the foundation for local device actions without arbitrary shell execution. `skills.builtin.DeviceActionSkill` exposes this foundation through the live skill routing path for safe mock actions, confirmation-gated `lock_pc`, and stable not-executed responses for dangerous placeholders.
 
 Current device action objects:
 
@@ -319,28 +319,37 @@ Current safe built-in actions:
 - `system_status_mock`
 - `list_actions`
 
+Current confirmation-gated built-in actions:
+
+- `lock_pc`
+
 Current responsibilities:
 
 - Represent local device action metadata in a stable model.
 - Return stable execution result dictionaries with action name, success, text, data, error message, and metadata.
 - Register named safe local actions.
-- List available safe local actions.
+- List available local device actions with their classifications.
 - Return safe failures for unknown actions.
 - Classify dangerous placeholders before any adapter execution.
-- Route `echo <text>`, `list device actions`, and `system status` through `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL.
-- Return stable confirmation-required responses for shutdown, restart, sleep, lock, and open app placeholders.
+- Route `echo <text>`, `list device actions`, `system status`, and `lock pc` through `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL.
+- Require explicit confirmation before `lock_pc` executes.
+- Call the Windows lock implementation only after confirmation approval.
+- Return a safe unsupported response for `lock_pc` on non-Windows platforms.
+- Return stable confirmation-required responses for shutdown, restart, sleep, open app, and unapproved `lock_pc` requests.
 - Return stable forbidden responses for run command, delete, and arbitrary shell placeholders.
 - Include a stable device action confirmation request token for confirmation-required placeholders.
 
 Current boundaries:
 
 - No shutdown or restart action exists.
+- No sleep or open-app action exists.
 - No arbitrary shell command execution exists.
-- Confirmation-required and forbidden device actions are never executed directly.
+- Confirmation-required actions are never executed directly unless they are explicitly implemented and confirmed; currently only `lock_pc` meets that rule.
+- Forbidden device actions are never executed.
 - No Telegram, voice, internet, GPT, remote control, notifications, or background device automation was added.
 - `system_status_mock` returns deterministic mock data and does not inspect the host system.
 - Future dangerous actions must require explicit confirmation before execution.
-- The live REPL path only exposes the safe mock actions listed above.
+- The live REPL path exposes the safe mock actions listed above and confirmation-gated `lock_pc`.
 
 Confirmation
 
@@ -712,7 +721,7 @@ Current built-in skills:
 
 `CalendarSkill` answers calendar/schedule requests through `ToolAdapterRegistry` and the offline `MockCalendarAdapter`. It supports `what is on my calendar today`, `calendar tomorrow`, `schedule today`, and `do I have anything tomorrow`. It does not call Google Calendar, real APIs, require API keys, use internet access, or run background automation.
 
-`DeviceActionSkill` answers safe local device action requests through `LocalDeviceActionAdapter`. It supports `echo <text>`, `list device actions`, and `system status`. It returns confirmation-required responses for shutdown, restart, sleep, lock, and open app placeholders. It returns forbidden responses for run command, delete, arbitrary shell, and unknown device actions safely. It does not run real OS commands, remote control, Telegram, voice, internet, GPT, notifications, or background jobs.
+`DeviceActionSkill` answers local device action requests through `LocalDeviceActionAdapter`. It supports `echo <text>`, `list device actions`, `system status`, and confirmation-gated `lock_pc`. Confirmed `lock_pc` can call the Windows lock implementation; unconfirmed `lock_pc` pauses through the confirmation layer, and non-Windows platforms return a safe unsupported response. It returns confirmation-required responses for shutdown, restart, sleep, and open app placeholders. It returns forbidden responses for run command, delete, arbitrary shell, and unknown device actions safely. It does not run shutdown/restart/sleep/open-app actions, arbitrary shell commands, remote control, Telegram, voice, internet, GPT, notifications, or background jobs.
 
 No notifications, voice, default real weather/market API mode, Google Calendar integration, real calendar APIs, external write API, or GPT integration has been added as part of the current local skill milestones.
 
@@ -846,5 +855,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 237 tests.
+- Pytest collection: 244 tests.
 - Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.
