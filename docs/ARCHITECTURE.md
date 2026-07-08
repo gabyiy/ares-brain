@@ -296,7 +296,7 @@ Current boundaries:
 
 Device Action Framework
 
-`core.DeviceAction` defines the foundation for local device actions without arbitrary shell execution. `core.PCService` is the dedicated entry point for current and future PC operations. `LocalDeviceActionAdapter` delegates status, lock, sleep, and open-app behavior through PCService instead of calling Windows helpers directly. `skills.builtin.DeviceActionSkill` exposes this foundation through the live skill routing path for safe mock actions, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated Windows app-launch requests, and stable not-executed responses for dangerous placeholders.
+`core.DeviceAction` defines the foundation for local device actions without arbitrary shell execution. `core.PCService` is the dedicated entry point for current and future PC operations. `LocalDeviceActionAdapter` delegates status, lock, sleep, and open-app behavior through PCService instead of calling Windows helpers directly. `PCService.get_status()` returns structured safe local PC information through `PCStatus`. `skills.builtin.DeviceActionSkill` exposes this foundation through the live skill routing path for safe mock actions, structured `system status`, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated Windows app-launch requests, and stable not-executed responses for dangerous placeholders.
 
 Current device action objects:
 
@@ -307,6 +307,7 @@ Current device action objects:
 - `DeviceActionResult`
 - `PCService`
 - `PCServiceResult`
+- `PCStatus`
 - `WindowsPCService`
 - `DeviceActionSafetyDecision`
 - `DeviceActionConfirmationRequest`
@@ -336,7 +337,9 @@ Current responsibilities:
 
 - Represent local device action metadata in a stable model.
 - Return stable execution result dictionaries with action name, success, text, data, error message, and metadata.
-- Expose PC operations through `PCService.lock()`, `PCService.sleep()`, `PCService.open_app(app_id)`, and `PCService.status()`.
+- Expose PC operations through `PCService.lock()`, `PCService.sleep()`, `PCService.open_app(app_id)`, and `PCService.get_status()`.
+- Keep `PCService.status()` as a compatibility wrapper around `get_status()`.
+- Return structured safe status fields through `PCStatus`: operating system, hostname, current user, Python version, optional uptime, and available actions.
 - Keep the Windows implementation behind `WindowsPCService`.
 - Convert `PCServiceResult` values into stable `DeviceActionResult` payloads at the device-action boundary.
 - Register named safe local actions.
@@ -362,10 +365,11 @@ Current boundaries:
 - DeviceAction does not call Windows helpers directly; PC operations are routed through `PCService`.
 - `open_app` never accepts arbitrary user-provided paths or shell-like app ids.
 - No arbitrary shell command execution exists.
+- `system_status_mock` obtains status data only from `PCService.get_status()`.
+- PC status does not perform network access, hardware telemetry, process enumeration, remote control, or internet calls.
 - Confirmation-required actions are never executed directly unless they are explicitly implemented and confirmed; currently `lock_pc`, `sleep_pc`, and allowlisted Windows `open_app` meet that rule.
 - Forbidden device actions are never executed.
 - No Telegram, voice, internet, GPT, remote control, notifications, or background device automation was added.
-- `system_status_mock` returns deterministic mock data through PCService and does not inspect the host system.
 - `open_app` returns unsupported safely on non-Windows platforms.
 - `open_app` launches only enabled apps from `config/apps.json` or an injected test allowlist and uses `subprocess.Popen([configured_command], shell=False)`.
 - User input can select only an app id; user-supplied command/path values are ignored and never become launch commands.
@@ -877,5 +881,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 280 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.PCService`, `core.PCServiceResult`, `core.WindowsPCService`, `core.AppLaunchConfig`, `core.AppAllowlistLoader`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.
+- Pytest collection: 282 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.PCService`, `core.PCServiceResult`, `core.PCStatus`, `core.WindowsPCService`, `core.AppLaunchConfig`, `core.AppAllowlistLoader`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.
