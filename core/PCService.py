@@ -11,6 +11,8 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 AppLauncherHandler = Callable[[Any], bool]
 AppResolver = Callable[[str], Optional[Any]]
 AvailableActionsProvider = Callable[[], Iterable[str]]
+CapabilityActionsProvider = Callable[[], Iterable[Any]]
+ApplicationsProvider = Callable[[], Iterable[Any]]
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,31 @@ class PCStatus:
         }
 
 
+@dataclass(frozen=True)
+class PCCapabilities:
+    supported_device_actions: List[Dict[str, Any]] = field(default_factory=list)
+    supported_applications: List[Dict[str, Any]] = field(default_factory=list)
+    available_status_providers: List[str] = field(default_factory=list)
+    available_services: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "source": "pc_service",
+            "supported_device_actions": [dict(action) for action in self.supported_device_actions],
+            "supported_applications": [dict(app) for app in self.supported_applications],
+            "available_status_providers": list(self.available_status_providers),
+            "available_services": list(self.available_services),
+            "safeguards": {
+                "network_access": "not_used",
+                "internet": "disabled",
+                "remote_execution": "disabled",
+                "process_enumeration": "disabled",
+                "hardware_telemetry": "disabled",
+                "arbitrary_shell": "disabled",
+            },
+        }
+
+
 class PCService:
     def lock(self) -> PCServiceResult:
         raise NotImplementedError
@@ -64,6 +91,9 @@ class PCService:
         raise NotImplementedError
 
     def get_status(self) -> PCServiceResult:
+        raise NotImplementedError
+
+    def get_capabilities(self) -> PCServiceResult:
         raise NotImplementedError
 
     def status(self) -> PCServiceResult:
@@ -83,6 +113,10 @@ class WindowsPCService(PCService):
         python_version_provider: Optional[Callable[[], str]] = None,
         uptime_provider: Optional[Callable[[], Optional[float]]] = None,
         available_actions_provider: Optional[AvailableActionsProvider] = None,
+        capability_actions_provider: Optional[CapabilityActionsProvider] = None,
+        applications_provider: Optional[ApplicationsProvider] = None,
+        status_providers_provider: Optional[AvailableActionsProvider] = None,
+        services_provider: Optional[AvailableActionsProvider] = None,
     ):
         self._lock_impl = lock_impl or _lock_windows_session
         self._sleep_impl = sleep_impl or _sleep_windows_session
@@ -94,6 +128,12 @@ class WindowsPCService(PCService):
         self._python_version_provider = python_version_provider or _python_version
         self._uptime_provider = uptime_provider
         self._available_actions_provider = available_actions_provider or (lambda: [])
+        self._capability_actions_provider = capability_actions_provider or (lambda: [])
+        self._applications_provider = applications_provider or (lambda: [])
+        self._status_providers_provider = status_providers_provider or (lambda: ["pc_status"])
+        self._services_provider = services_provider or (
+            lambda: ["pc_service", "windows_pc_service"]
+        )
 
     def lock(self) -> PCServiceResult:
         current_platform = self._current_platform()
@@ -359,6 +399,23 @@ class WindowsPCService(PCService):
             metadata={"safe": True, "source": "pc_service"},
         )
 
+    def get_capabilities(self) -> PCServiceResult:
+        capabilities = PCCapabilities(
+            supported_device_actions=_capability_action_dicts(
+                self._capability_actions_provider(),
+                self._available_actions_provider(),
+            ),
+            supported_applications=_capability_application_dicts(self._applications_provider()),
+            available_status_providers=_unique_action_names(self._status_providers_provider()),
+            available_services=_unique_action_names(self._services_provider()),
+        )
+        return PCServiceResult(
+            success=True,
+            text="PC capabilities discovered.",
+            data=capabilities.to_dict(),
+            metadata={"safe": True, "source": "pc_service"},
+        )
+
     def _current_platform(self) -> str:
         return str(self._platform_system() or "").strip() or "unknown"
 
@@ -405,6 +462,42 @@ def _unique_action_names(action_names: Iterable[str]) -> List[str]:
         if name and name not in seen:
             seen.add(name)
             unique.append(name)
+    return unique
+
+
+def _capability_action_dicts(
+    capability_actions: Iterable[Any],
+    fallback_action_names: Iterable[str],
+) -> List[Dict[str, Any]]:
+    action_dicts = [_action_to_dict(action) for action in capability_actions]
+    if not action_dicts:
+        action_dicts = [{"name": name} for name in _unique_action_names(fallback_action_names)]
+    return _unique_dicts_by_key(action_dicts, "name")
+
+
+def _capability_application_dicts(applications: Iterable[Any]) -> List[Dict[str, Any]]:
+    return _unique_dicts_by_key((_app_to_dict(app) for app in applications), "app_id")
+
+
+def _action_to_dict(action: Any) -> Dict[str, Any]:
+    if hasattr(action, "to_dict") and callable(action.to_dict):
+        data = dict(action.to_dict())
+    elif isinstance(action, Mapping):
+        data = dict(action)
+    else:
+        data = {"name": str(action or "").strip()}
+    data["name"] = str(data.get("name") or "").strip()
+    return data
+
+
+def _unique_dicts_by_key(items: Iterable[Dict[str, Any]], key: str) -> List[Dict[str, Any]]:
+    unique: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        value = str(item.get(key) or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            unique.append(dict(item))
     return unique
 
 

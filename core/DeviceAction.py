@@ -358,6 +358,8 @@ class LocalDeviceActionAdapter:
             app_resolver=self._app_allowlist.get,
             platform_system=platform_system,
             available_actions_provider=self._available_action_names,
+            capability_actions_provider=self._action_capabilities,
+            applications_provider=self._application_capabilities,
         )
         if registry is None:
             self._register_safe_builtins()
@@ -377,6 +379,12 @@ class LocalDeviceActionAdapter:
 
     def _available_action_names(self) -> List[str]:
         return [action.name for action in self.registry.list_actions()]
+
+    def _action_capabilities(self) -> List[Dict[str, Any]]:
+        return [action.to_dict() for action in self.registry.list_actions()]
+
+    def _application_capabilities(self) -> List[Dict[str, Any]]:
+        return [app.to_dict() for app in self.list_apps()]
 
     def _register_safe_builtins(self) -> None:
         self.registry.register(
@@ -401,14 +409,14 @@ class LocalDeviceActionAdapter:
                 name="list_actions",
                 description="List available safe local device actions.",
             ),
-            lambda parameters: _list_actions_action(self.registry),
+            lambda parameters: _list_actions_action(self._pc_service),
         )
         self.registry.register(
             DeviceAction(
                 name="list_apps",
                 description="List allowlisted local apps without launching them.",
             ),
-            lambda parameters: _list_apps_action(self.list_apps()),
+            lambda parameters: _list_apps_action(self._pc_service),
         )
 
     def _register_confirmation_builtins(self) -> None:
@@ -488,19 +496,35 @@ def _device_action_result(action_name: str, service_result: PCServiceResult) -> 
     )
 
 
-def _list_actions_action(registry: DeviceActionRegistry) -> DeviceActionResult:
-    actions = [action.to_dict() for action in registry.list_actions()]
+def _list_actions_action(pc_service: PCService) -> DeviceActionResult:
+    capability_result = pc_service.get_capabilities()
+    if not capability_result.success:
+        return _device_action_result("list_actions", capability_result)
+
+    actions = [
+        dict(action)
+        for action in capability_result.data.get("supported_device_actions", [])
+        if isinstance(action, Mapping)
+    ]
     return DeviceActionResult(
         action_name="list_actions",
         success=True,
         text=f"Available device actions: {', '.join(action['name'] for action in actions)}.",
-        data={"actions": actions},
+        data={"actions": actions, "capabilities": dict(capability_result.data)},
         metadata={"safe": True},
     )
 
 
-def _list_apps_action(apps: Iterable[AppLaunchConfig]) -> DeviceActionResult:
-    app_dicts = [app.to_dict() for app in apps]
+def _list_apps_action(pc_service: PCService) -> DeviceActionResult:
+    capability_result = pc_service.get_capabilities()
+    if not capability_result.success:
+        return _device_action_result("list_apps", capability_result)
+
+    app_dicts = [
+        dict(app)
+        for app in capability_result.data.get("supported_applications", [])
+        if isinstance(app, Mapping)
+    ]
     labels = [
         app["app_id"] if app["enabled"] else f"{app['app_id']} (disabled)"
         for app in app_dicts
@@ -509,7 +533,7 @@ def _list_apps_action(apps: Iterable[AppLaunchConfig]) -> DeviceActionResult:
         action_name="list_apps",
         success=True,
         text=f"Allowlisted apps: {', '.join(labels)}.",
-        data={"apps": app_dicts},
+        data={"apps": app_dicts, "capabilities": dict(capability_result.data)},
         metadata={"safe": True, "allowlist_only": True},
     )
 

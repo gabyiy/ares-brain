@@ -115,6 +115,47 @@ class FakePCService:
             metadata={"safe": True, "source": "pc_service"},
         )
 
+    def get_capabilities(self):
+        self.calls.append(("get_capabilities", None))
+        return PCServiceResult(
+            success=True,
+            text="PC capabilities discovered.",
+            data={
+                "source": "pc_service",
+                "supported_device_actions": [
+                    {
+                        "name": "echo",
+                        "description": "Return the provided message without executing commands.",
+                        "danger_classification": "safe",
+                        "requires_confirmation": False,
+                        "dangerous": False,
+                        "metadata": {},
+                    }
+                ],
+                "supported_applications": [
+                    {
+                        "app_id": "calculator",
+                        "display_name": "Calculator",
+                        "command_placeholder": "C:\\Allowed\\calculator.exe",
+                        "enabled": True,
+                        "requires_confirmation": True,
+                        "metadata": {"source": "test_allowlist", "platform": "windows"},
+                    }
+                ],
+                "available_status_providers": ["pc_status"],
+                "available_services": ["pc_service", "windows_pc_service"],
+                "safeguards": {
+                    "network_access": "not_used",
+                    "internet": "disabled",
+                    "remote_execution": "disabled",
+                    "process_enumeration": "disabled",
+                    "hardware_telemetry": "disabled",
+                    "arbitrary_shell": "disabled",
+                },
+            },
+            metadata={"safe": True, "source": "pc_service"},
+        )
+
     def status(self):
         raise AssertionError("DeviceAction status must call PCService.get_status()")
 
@@ -212,10 +253,28 @@ def test_list_available_device_actions_works():
     assert result.success is True
     assert result.action_name == "list_actions"
     assert [action["name"] for action in result.data["actions"]] == EXPECTED_DEVICE_ACTIONS
+    assert [action["name"] for action in result.data["capabilities"]["supported_device_actions"]] == (
+        EXPECTED_DEVICE_ACTIONS
+    )
+    assert result.data["capabilities"]["available_status_providers"] == ["pc_status"]
+    assert "network_access" in result.data["capabilities"]["safeguards"]
     assert (
         "Available device actions: echo, system_status_mock, list_actions, list_apps, "
         "lock_pc, sleep_pc, open_app."
     ) == result.text
+
+
+def test_list_available_device_actions_uses_pc_service_capabilities():
+    pc_service = FakePCService()
+
+    result = LocalDeviceActionAdapter(pc_service=pc_service).execute("list available actions")
+
+    assert result.success is True
+    assert result.action_name == "list_actions"
+    assert result.text == "Available device actions: echo."
+    assert result.data["actions"][0]["name"] == "echo"
+    assert result.data["capabilities"]["source"] == "pc_service"
+    assert pc_service.calls == [("get_capabilities", None)]
 
 
 def test_list_allowlisted_apps_works():
@@ -236,7 +295,29 @@ def test_list_allowlisted_apps_works():
     assert apps["calculator"]["enabled"] is True
     assert apps["calculator"]["requires_confirmation"] is True
     assert apps["browser"]["enabled"] is False
+    assert [app["app_id"] for app in result.data["capabilities"]["supported_applications"]] == [
+        "notepad",
+        "calculator",
+        "browser",
+    ]
+    assert result.data["capabilities"]["available_services"] == [
+        "pc_service",
+        "windows_pc_service",
+    ]
     assert result.metadata == {"safe": True, "allowlist_only": True}
+
+
+def test_list_allowlisted_apps_uses_pc_service_capabilities():
+    pc_service = FakePCService()
+
+    result = LocalDeviceActionAdapter(pc_service=pc_service).execute("list apps")
+
+    assert result.success is True
+    assert result.action_name == "list_apps"
+    assert result.text == "Allowlisted apps: calculator."
+    assert result.data["apps"][0]["app_id"] == "calculator"
+    assert result.data["capabilities"]["source"] == "pc_service"
+    assert pc_service.calls == [("get_capabilities", None)]
 
 
 def test_loaded_config_enables_only_calculator():
@@ -574,6 +655,68 @@ def test_pc_service_status_wrapper_uses_get_status():
     assert result.text == "System status: ok."
     assert result.data["operating_system"] == "Linux"
     assert result.data["available_actions"] == ["echo"]
+
+
+def test_pc_service_get_capabilities_returns_safe_structured_data():
+    service = WindowsPCService(
+        platform_system=lambda: "Windows",
+        capability_actions_provider=lambda: [
+            {
+                "name": "echo",
+                "description": "Echo text",
+                "danger_classification": "safe",
+                "requires_confirmation": False,
+            },
+            {
+                "name": "echo",
+                "description": "Duplicate echo",
+                "danger_classification": "safe",
+                "requires_confirmation": False,
+            },
+        ],
+        applications_provider=lambda: [_enabled_app_config()],
+        status_providers_provider=lambda: ["pc_status", "pc_status"],
+        services_provider=lambda: ["pc_service", "windows_pc_service", "pc_service"],
+    )
+
+    result = service.get_capabilities()
+
+    assert result.success is True
+    assert result.text == "PC capabilities discovered."
+    assert result.data == {
+        "source": "pc_service",
+        "supported_device_actions": [
+            {
+                "name": "echo",
+                "description": "Echo text",
+                "danger_classification": "safe",
+                "requires_confirmation": False,
+            }
+        ],
+        "supported_applications": [
+            {
+                "app_id": "calculator",
+                "display_name": "Calculator",
+                "command_placeholder": "C:\\Allowed\\calculator.exe",
+                "enabled": True,
+                "requires_confirmation": True,
+                "metadata": {"source": "test_allowlist", "platform": "windows"},
+            }
+        ],
+        "available_status_providers": ["pc_status"],
+        "available_services": ["pc_service", "windows_pc_service"],
+        "safeguards": {
+            "network_access": "not_used",
+            "internet": "disabled",
+            "remote_execution": "disabled",
+            "process_enumeration": "disabled",
+            "hardware_telemetry": "disabled",
+            "arbitrary_shell": "disabled",
+        },
+    }
+    assert result.metadata == {"safe": True, "source": "pc_service"}
+    assert "processes" not in result.data
+    assert "network" not in result.data
 
 
 def test_system_status_action_returns_safe_structured_data():
