@@ -4,7 +4,7 @@ Last Updated: 2026-07-08
 
 Current Version
 
-ARES v1.37 - PCService Capability Discovery
+ARES v1.38 - CoreService Orchestration Layer
 
 ---
 
@@ -91,6 +91,7 @@ New test coverage:
 - CalendarSkill
 - DeviceAction framework
 - DeviceActionSkill
+- CoreService
 - Confirmed Windows lock device action
 - Confirmed Windows sleep device action
 - Device app launcher skeleton
@@ -609,6 +610,25 @@ Capability discovery behavior:
 - Tests cover direct PCService capability structure, DeviceAction action discovery through PCService, and DeviceAction app discovery through PCService.
 - No internet, GPT, network, remote execution, process enumeration, hardware telemetry, or new device actions were added.
 
+CoreService orchestration layer has been added.
+
+New orchestration modules:
+
+- `core.CoreService`
+- `core.CoreServiceResult`
+
+CoreService behavior:
+
+- Owns local/external service registration.
+- Registers `PCService` as the `pc` service by default.
+- Exposes `get_service(name)` for service lookup.
+- Exposes `list_services()` for stable service metadata.
+- Exposes `get_capabilities()` to aggregate capability data from every registered service.
+- `SkillManager` carries the active CoreService for device action paths.
+- `LocalDeviceActionAdapter` obtains PCService through CoreService where practical.
+- Tests cover default PCService registration, service lookup, service listing, capability aggregation, capability failure reporting, DeviceAction discovery through CoreService, and SkillManager/CoreService handoff.
+- No behavior changes, GPT, internet, network calls, remote execution, hardware additions, or new device actions were added.
+
 External Adapter Config and SecretsGuard foundation has been added.
 
 New config modules and files:
@@ -923,6 +943,7 @@ The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSk
 The REPL priority skill path currently covers profile memory recall, calculator arithmetic, goal commands, note commands, task commands, weather commands, stock/market commands, calendar/schedule commands, and safe device action commands.
 `SkillManager` parses text into `core.Intent` before `ToolSelector` selects a local skill.
 `ToolSelector` builds a `core.Plan` or `core.MultiStepPlan` before selection, and its Planner can use safe injected store interfaces for local context.
+`SkillManager` owns a `CoreService` for local/external service registration and capability aggregation where practical.
 `SkillManager` handles confirmation decisions through `core.ConfirmationManager` before normal intent parsing.
 `SkillManager` validates executable plan steps through `core.ToolChain`, and accepted chains execute through `core.ExecutionPipeline`.
 `ExecutionPipeline` can execute weather skill PlanSteps, market skill PlanSteps, calendar skill PlanSteps, device action PlanSteps, and explicit `tool_adapter` PlanSteps through `core.ToolAdapterRegistry`.
@@ -979,7 +1000,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 285 tests.
+- Current pytest collection: 292 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -996,9 +1017,9 @@ Verification Notes
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
-- DeviceAction tests cover registry registration/listing, app allowlist config loading, calculator enabled state, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, structured PCService status, structured PCService capability discovery, stable result formatting, PCService delegation for status/lock/sleep/open-app calls, PCService-backed action/app discovery, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows calculator launch through a mocked launcher, unknown/disabled app rejection, notepad/browser disabled handling, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
+- DeviceAction tests cover registry registration/listing, app allowlist config loading, calculator enabled state, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, structured PCService status, structured PCService capability discovery, CoreService-backed service registration/capability aggregation, stable result formatting, PCService delegation for status/lock/sleep/open-app calls, CoreService-backed action/app discovery, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows calculator launch through a mocked launcher, unknown/disabled app rejection, notepad/browser disabled handling, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
 - Manual calculator launch verification tests cover refusal without exact confirmation, the exact open_app device action path with mocked adapter, and safe adapter failure reporting without opening Calculator.
-- DeviceActionSkill tests cover echo, list actions, list apps, structured system status, shutdown/restart confirmation-required responses, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed `lock_pc`/`sleep_pc`/`open_app` through SkillManager, run command/delete forbidden responses, unknown action safe failure, ToolSelector routing, Planner routing, SkillManager/ExecutionPipeline confirmation-required handling, and text REPL display.
+- DeviceActionSkill tests cover echo, list actions, list apps, structured system status, shutdown/restart confirmation-required responses, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed `lock_pc`/`sleep_pc`/`open_app` through SkillManager, run command/delete forbidden responses, unknown action safe failure, ToolSelector routing, Planner routing, SkillManager/CoreService handoff, SkillManager/ExecutionPipeline confirmation-required handling, and text REPL display.
 - Adapter config guard tests cover mock mode, real-mode missing-env failure, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility.
 - RealWeatherAdapter tests cover default mock weather behavior, real adapter instantiation, real-mode missing-env failure, mocked HTTP success, timeout safe errors, bad API response safe errors, HTTP status safe errors, normalized output stability, env-key-name-only config, raw env value non-exposure, safe WeatherSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
 - RealMarketAdapter tests cover default mock market behavior, real adapter instantiation, real-mode missing-env failure, mocked HTTP success, timeout safe errors, bad API response safe errors, HTTP status safe errors, normalized output stability, env-key-name-only config, raw env value non-exposure, safe MarketSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
@@ -1020,7 +1041,10 @@ Verification Notes
 
 Latest Commits
 
+- `78ced08` Add core service orchestration layer
+- `9740e6d` Document PC service capability discovery
 - `aa281b7` Add PC service capability discovery
+- `44f7289` Document PC service status provider
 - `b4af64d` Add structured PC service status provider
 - `ab9ea2f` Add PC service abstraction for device actions
 - `0af1e5c` Add manual calculator launch verification script

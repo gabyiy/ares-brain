@@ -12,7 +12,7 @@ Current System Flow
 6. The REPL creates `NotesStore` for persistent local notes.
 7. The REPL creates `TasksStore` for persistent offline tasks.
 8. The REPL creates the shared in-memory `ConversationContextManager`.
-9. The REPL creates `SkillManager`, which owns an offline `ToolAdapterRegistry` with `MockWeatherAdapter`, `MockMarketAdapter`, and `MockCalendarAdapter`, can enforce future adapter config through `ExternalAdapterConfig` and `SecretsGuard`, leaves `RealWeatherAdapter` and `RealMarketAdapter` opt-in only, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
+9. The REPL creates `SkillManager`, which owns an offline `ToolAdapterRegistry` with `MockWeatherAdapter`, `MockMarketAdapter`, and `MockCalendarAdapter`, can enforce future adapter config through `ExternalAdapterConfig` and `SecretsGuard`, leaves `RealWeatherAdapter` and `RealMarketAdapter` opt-in only, owns a `CoreService` for service registration and capability aggregation where practical, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
 10. User input is sent to `IntentRouter`.
 11. `IntentRouter` publishes input lifecycle events.
 12. When a skill path is checked, `SkillManager` parses user text into `core.Intent` with `core.IntentParser`.
@@ -296,7 +296,7 @@ Current boundaries:
 
 Device Action Framework
 
-`core.DeviceAction` defines the foundation for local device actions without arbitrary shell execution. `core.PCService` is the dedicated entry point for current and future PC operations. `LocalDeviceActionAdapter` delegates status, lock, sleep, open-app behavior, and capability discovery through PCService instead of calling Windows helpers directly. `PCService.get_status()` returns structured safe local PC information through `PCStatus`. `PCService.get_capabilities()` returns structured safe local capability data through `PCCapabilities`. `skills.builtin.DeviceActionSkill` exposes this foundation through the live skill routing path for safe mock actions, structured `system status`, capability-backed action/app listing, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated Windows app-launch requests, and stable not-executed responses for dangerous placeholders.
+`core.DeviceAction` defines the foundation for local device actions without arbitrary shell execution. `core.CoreService` is the service orchestration layer between the Brain and registered local/external services where practical. `CoreService` initially registers `PCService` as `pc`, exposes service lookup/listing, and aggregates capability data from every registered service. `core.PCService` remains the dedicated entry point for current and future PC operations. `LocalDeviceActionAdapter` obtains PCService through CoreService and delegates status, lock, sleep, open-app behavior, and capability discovery through PCService instead of calling Windows helpers directly. `PCService.get_status()` returns structured safe local PC information through `PCStatus`. `PCService.get_capabilities()` returns structured safe local capability data through `PCCapabilities`. `skills.builtin.DeviceActionSkill` exposes this foundation through the live skill routing path for safe mock actions, structured `system status`, capability-backed action/app listing, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated Windows app-launch requests, and stable not-executed responses for dangerous placeholders.
 
 Current device action objects:
 
@@ -305,6 +305,8 @@ Current device action objects:
 - `AppAllowlistLoader`
 - `AppAllowlistConfigError`
 - `DeviceActionResult`
+- `CoreService`
+- `CoreServiceResult`
 - `PCService`
 - `PCServiceResult`
 - `PCStatus`
@@ -338,6 +340,11 @@ Current responsibilities:
 
 - Represent local device action metadata in a stable model.
 - Return stable execution result dictionaries with action name, success, text, data, error message, and metadata.
+- Register local/external service boundaries through `CoreService`.
+- Retrieve registered services through `CoreService.get_service(name)`.
+- List registered service metadata through `CoreService.list_services()`.
+- Aggregate registered service capabilities through `CoreService.get_capabilities()`.
+- Initially register `PCService` as the `pc` service.
 - Expose PC operations through `PCService.lock()`, `PCService.sleep()`, `PCService.open_app(app_id)`, and `PCService.get_status()`.
 - Keep `PCService.status()` as a compatibility wrapper around `get_status()`.
 - Return structured safe status fields through `PCStatus`: operating system, hostname, current user, Python version, optional uptime, and available actions.
@@ -365,7 +372,8 @@ Current responsibilities:
 Current boundaries:
 
 - No shutdown or restart action exists.
-- DeviceAction does not call Windows helpers directly; PC operations are routed through `PCService`.
+- DeviceAction does not call Windows helpers directly; PC operations are routed through `CoreService` to `PCService`.
+- `CoreService` currently registers only local service boundaries and does not add GPT, internet, network calls, remote execution, hardware access, or background automation.
 - `open_app` never accepts arbitrary user-provided paths or shell-like app ids.
 - No arbitrary shell command execution exists.
 - `system_status_mock` obtains status data only from `PCService.get_status()`.
@@ -886,5 +894,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 285 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.PCService`, `core.PCServiceResult`, `core.PCStatus`, `core.PCCapabilities`, `core.WindowsPCService`, `core.AppLaunchConfig`, `core.AppAllowlistLoader`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.
+- Pytest collection: 292 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.CoreService`, `core.CoreServiceResult`, `core.PCService`, `core.PCServiceResult`, `core.PCStatus`, `core.PCCapabilities`, `core.WindowsPCService`, `core.AppLaunchConfig`, `core.AppAllowlistLoader`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.
