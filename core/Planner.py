@@ -1214,6 +1214,8 @@ def _device_action_command(action_name: str, parameters: Dict[str, Any], fallbac
         return "system status"
     if action_name == "lock_pc":
         return "lock pc"
+    if action_name == "sleep_pc":
+        return "sleep pc"
     return fallback_text
 
 
@@ -1234,7 +1236,9 @@ def _device_action_description(action_name: str, parameters: Dict[str, Any], cla
 def _dangerous_device_action_name(normalized_text: str) -> str:
     if normalized_text in {"lock", "lock pc", "lock computer", "lock session", "lock windows", "lock windows session"}:
         return "lock_pc"
-    if normalized_text in {"shutdown", "restart", "sleep"}:
+    if normalized_text in {"sleep", "sleep pc", "sleep computer", "sleep session", "sleep windows", "sleep windows pc"}:
+        return "sleep_pc"
+    if normalized_text in {"shutdown", "restart"}:
         return normalized_text
     if normalized_text.startswith("run command"):
         return "run_command"

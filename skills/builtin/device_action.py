@@ -13,7 +13,7 @@ from skills.base import Skill, SkillContext, SkillResponse
 
 class DeviceActionSkill(Skill):
     name = "device_action"
-    description = "Runs safe mock-only local device actions."
+    description = "Runs safe or explicitly confirmed local device actions."
     version = "0.1"
     intent_names = ("device_action",)
     run_before_intents = True
@@ -81,8 +81,8 @@ class DeviceActionSkill(Skill):
         return self._response(
             result.text,
             action_name=result.action_name,
-            danger_classification=DANGER_SAFE,
-            executed=True,
+            danger_classification=result.metadata.get("danger_classification", DANGER_SAFE),
+            executed=result.metadata.get("executed", True),
             data=dict(result.data),
             action_metadata=dict(result.metadata),
         )
@@ -243,7 +243,9 @@ def _normalize_parsed_device_action(entities: Dict[str, object], fallback_text: 
 def _dangerous_action_name(normalized_text: str) -> str:
     if normalized_text in {"lock", "lock pc", "lock computer", "lock session", "lock windows", "lock windows session"}:
         return "lock_pc"
-    if normalized_text in {"shutdown", "restart", "sleep"}:
+    if normalized_text in {"sleep", "sleep pc", "sleep computer", "sleep session", "sleep windows", "sleep windows pc"}:
+        return "sleep_pc"
+    if normalized_text in {"shutdown", "restart"}:
         return normalized_text
     if normalized_text.startswith("run command"):
         return "run_command"

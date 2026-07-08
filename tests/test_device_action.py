@@ -50,8 +50,9 @@ def test_list_available_device_actions_works():
         "system_status_mock",
         "list_actions",
         "lock_pc",
+        "sleep_pc",
     ]
-    assert "Available device actions: echo, system_status_mock, list_actions, lock_pc." == result.text
+    assert "Available device actions: echo, system_status_mock, list_actions, lock_pc, sleep_pc." == result.text
 
 
 def test_system_status_mock_action_is_deterministic():
@@ -198,6 +199,90 @@ def test_confirmed_lock_pc_fails_safely_on_non_windows_platform():
     assert result.metadata["supported"] is False
     assert result.metadata["platform"] == "Linux"
     assert calls == []
+
+
+def test_sleep_pc_is_confirmation_required_by_default():
+    result = LocalDeviceActionAdapter().execute("sleep pc")
+
+    assert result.success is False
+    assert result.text == 'Confirmation required for device action "sleep_pc". Device action was not executed.'
+    assert result.error_message == "confirmation_required"
+    assert result.metadata["danger_classification"] == "confirmation_required"
+    assert result.metadata["confirmation_required"] is True
+    assert result.metadata["executed"] is False
+    assert result.metadata["confirmation_request"] == {
+        "token": "device-action-confirmation:sleep_pc",
+        "action_name": "sleep_pc",
+        "classification": "confirmation_required",
+        "reason": "sleep_pc requires explicit confirmation before putting Windows to sleep",
+        "prompt": (
+            'Confirmation required for device action "sleep_pc". '
+            "This will put the Windows PC to sleep if confirmed."
+        ),
+    }
+
+
+def test_sleep_pc_does_not_execute_without_confirmation():
+    calls = []
+    adapter = LocalDeviceActionAdapter(
+        sleep_impl=lambda: calls.append("slept") or True,
+        platform_system=lambda: "Windows",
+    )
+
+    result = adapter.execute("sleep_pc")
+
+    assert result.success is False
+    assert result.error_message == "confirmation_required"
+    assert calls == []
+
+
+def test_confirmed_sleep_pc_calls_mocked_windows_sleep_implementation():
+    calls = []
+    adapter = LocalDeviceActionAdapter(
+        sleep_impl=lambda: calls.append("slept") or True,
+        platform_system=lambda: "Windows",
+    )
+
+    result = adapter.execute("sleep_pc", {"confirmation_approved": True})
+
+    assert result.success is True
+    assert result.text == "Windows sleep requested."
+    assert result.data == {"action": "sleep_pc"}
+    assert result.metadata["executed"] is True
+    assert result.metadata["platform"] == "Windows"
+    assert calls == ["slept"]
+
+
+def test_confirmed_sleep_pc_fails_safely_on_non_windows_platform():
+    calls = []
+    adapter = LocalDeviceActionAdapter(
+        sleep_impl=lambda: calls.append("slept") or True,
+        platform_system=lambda: "Linux",
+    )
+
+    result = adapter.execute("sleep_pc", {"confirmation_approved": True})
+
+    assert result.success is False
+    assert result.text == "Windows sleep is unsupported on this platform."
+    assert result.error_message == "unsupported_platform"
+    assert result.metadata["executed"] is False
+    assert result.metadata["supported"] is False
+    assert result.metadata["platform"] == "Linux"
+    assert calls == []
+
+
+def test_shutdown_and_restart_remain_not_executable():
+    adapter = LocalDeviceActionAdapter()
+    action_names = [action.name for action in adapter.list_actions()]
+
+    assert "shutdown" not in action_names
+    assert "restart" not in action_names
+    assert adapter.execute("shutdown").metadata["confirmation_request"]["prompt"].endswith(
+        "This placeholder cannot execute real OS commands yet."
+    )
+    assert adapter.execute("restart").metadata["confirmation_request"]["prompt"].endswith(
+        "This placeholder cannot execute real OS commands yet."
+    )
 
 
 def test_forbidden_device_action_result_is_stable_and_not_executed():
