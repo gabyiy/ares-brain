@@ -632,10 +632,19 @@ class Planner:
         action = entities.get("action") or "execute"
         action_name = entities.get("action_name") or _device_action_name(raw_text)
         parameters = dict(entities.get("parameters") or {})
+        if action_name == "open_app":
+            app_id = _normalize_action_name(str(entities.get("app_id") or parameters.get("app_id") or ""))
+            if app_id:
+                parameters["app_id"] = app_id
+                entities = {**entities, "app_id": app_id}
         safety = classify_device_action(action_name)
         classification = entities.get("danger_classification") or safety.classification
         reason = entities.get("reason") or ""
         can_execute = bool(action_name)
+        skip_reason = "" if can_execute else "Missing device action name."
+        if action_name == "open_app" and not parameters.get("app_id"):
+            can_execute = False
+            skip_reason = "Missing app id."
 
         clean_entities = {
             **entities,
@@ -657,7 +666,7 @@ class Planner:
             intent_name="device_action",
             entities=clean_entities,
             can_execute=can_execute,
-            skip_reason="" if can_execute else "Missing device action name.",
+            skip_reason=skip_reason,
             description=_device_action_description(action_name, parameters, classification),
         )
 
@@ -1142,6 +1151,28 @@ def _device_action_entities(text: str):
     if not lowered:
         return None
 
+    if lowered in {"list apps", "show apps", "list available apps"}:
+        return {
+            "action": "list",
+            "action_name": "list_apps",
+            "parameters": {},
+            "danger_classification": DANGER_SAFE,
+        }
+
+    if lowered.startswith("open app"):
+        app_id = _normalize_action_name(clean_text[len("open app") :])
+        safety = classify_device_action("open_app")
+        return {
+            "action": safety.classification,
+            "action_name": safety.action_name,
+            "app_id": app_id,
+            "parameters": {"app_id": app_id} if app_id else {},
+            "danger_classification": safety.classification,
+            "confirmation_required": safety.requires_confirmation,
+            "forbidden": safety.forbidden,
+            "reason": safety.reason,
+        }
+
     dangerous_action_name = _dangerous_device_action_name(lowered)
     if dangerous_action_name:
         safety = classify_device_action(dangerous_action_name)
@@ -1210,6 +1241,11 @@ def _device_action_command(action_name: str, parameters: Dict[str, Any], fallbac
         return f"echo {parameters.get('message') or ''}".strip()
     if action_name == "list_actions":
         return "list device actions"
+    if action_name == "list_apps":
+        return "list apps"
+    if action_name == "open_app":
+        app_id = parameters.get("app_id") or ""
+        return f"open app {app_id}".strip()
     if action_name == "system_status_mock":
         return "system status"
     if action_name == "lock_pc":
@@ -1228,6 +1264,11 @@ def _device_action_description(action_name: str, parameters: Dict[str, Any], cla
         return f"Run safe echo action: {parameters.get('message') or ''}"
     if action_name == "list_actions":
         return "List safe local device actions."
+    if action_name == "list_apps":
+        return "List allowlisted local apps."
+    if action_name == "open_app":
+        app_id = parameters.get("app_id") or "requested app"
+        return f"Require confirmation to request mocked app launch: {app_id}."
     if action_name == "system_status_mock":
         return "Return mock system status."
     return f"Run safe device action: {action_name}."

@@ -180,7 +180,7 @@ def requires_confirmation(step: PlanStep) -> bool:
 
     if step.target == "device_action":
         action_name = str(step.entities.get("action_name") or step.action or "").strip().lower()
-        if action_name in {"lock_pc", "sleep_pc"} and bool(step.entities.get("confirmation_required")):
+        if action_name in {"lock_pc", "open_app", "sleep_pc"} and bool(step.entities.get("confirmation_required")):
             return True
 
     return False
@@ -208,6 +208,11 @@ def confirmation_action_label(step: PlanStep) -> str:
 
     if step.target == "device_action" and (step.entities.get("action_name") or step.action) == "lock_pc":
         return "lock Windows session"
+
+    if step.target == "device_action" and (step.entities.get("action_name") or step.action) == "open_app":
+        parameters = dict(step.entities.get("parameters") or {})
+        app_id = step.entities.get("app_id") or parameters.get("app_id") or _last_token(step.input_text)
+        return f"open app {app_id}" if app_id else "open allowlisted app"
 
     if step.target == "device_action" and (step.entities.get("action_name") or step.action) == "sleep_pc":
         return "put Windows PC to sleep"

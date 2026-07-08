@@ -20,6 +20,7 @@ class DeviceActionSkill(Skill):
     triggers = (
         "echo",
         "list device actions",
+        "list apps",
         "device actions",
         "system status",
         "device status",
@@ -132,6 +133,31 @@ def _parse_device_action_text(text: str) -> Dict[str, object]:
     if not normalized:
         return {}
 
+    if normalized in {"list apps", "show apps", "list available apps"}:
+        return {
+            "action": "list",
+            "action_name": "list_apps",
+            "parameters": {},
+            "danger_classification": DANGER_SAFE,
+            "confirmation_required": False,
+            "forbidden": False,
+            "reason": "",
+        }
+
+    if normalized.startswith("open app"):
+        app_id = _normalize_action_name(normalized[len("open app") :])
+        safety = classify_device_action("open_app")
+        return {
+            "action": safety.classification,
+            "action_name": safety.action_name,
+            "app_id": app_id,
+            "parameters": {"app_id": app_id} if app_id else {},
+            "danger_classification": safety.classification,
+            "confirmation_required": safety.requires_confirmation,
+            "forbidden": safety.forbidden,
+            "reason": safety.reason,
+        }
+
     action_name = _dangerous_action_name(normalized)
     safety = classify_device_action(action_name) if action_name else None
     if safety and not safety.is_safe:
@@ -211,6 +237,11 @@ def _normalize_parsed_device_action(entities: Dict[str, object], fallback_text: 
 
     action_name = str(entities.get("action_name") or "").strip()
     parameters = dict(entities.get("parameters") or {})
+    app_id = ""
+    if action_name == "open_app":
+        app_id = _normalize_action_name(str(entities.get("app_id") or parameters.get("app_id") or ""))
+        if app_id:
+            parameters["app_id"] = app_id
     confirmation_approved = bool(entities.get("confirmation_approved"))
     confirmation_id = str(entities.get("confirmation_id") or "")
     classification = str(entities.get("danger_classification") or "").strip()
@@ -237,6 +268,7 @@ def _normalize_parsed_device_action(entities: Dict[str, object], fallback_text: 
         "reason": str(entities.get("reason") or safety.reason),
         "confirmation_approved": confirmation_approved,
         "confirmation_id": confirmation_id,
+        "app_id": app_id,
     }
 
 

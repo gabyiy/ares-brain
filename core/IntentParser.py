@@ -166,6 +166,35 @@ class IntentParser:
         return None
 
     def _parse_device_action(self, text: ParsedText) -> Optional[Intent]:
+        if text.is_exact("list apps", "show apps", "list available apps"):
+            return self._intent(
+                "device_action",
+                0.96,
+                text.raw_text,
+                action="list",
+                action_name="list_apps",
+                parameters={},
+                danger_classification=DANGER_SAFE,
+            )
+
+        if text.starts_with("open app"):
+            app_id = _normalize_action_name(text.after("open app"))
+            safety = classify_device_action("open_app")
+            parameters = {"app_id": app_id} if app_id else {}
+            return self._intent(
+                "device_action",
+                0.96,
+                text.raw_text,
+                action=safety.classification,
+                action_name=safety.action_name,
+                app_id=app_id,
+                parameters=parameters,
+                danger_classification=safety.classification,
+                confirmation_required=safety.requires_confirmation,
+                forbidden=safety.forbidden,
+                reason=safety.reason,
+            )
+
         dangerous_action_name = _dangerous_device_action_name(text.normalized)
         if dangerous_action_name:
             safety = classify_device_action(dangerous_action_name)

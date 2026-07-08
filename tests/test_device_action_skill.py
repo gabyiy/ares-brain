@@ -8,6 +8,17 @@ from skills import SkillContext, SkillManager, ToolSelector
 from skills.builtin.device_action import DeviceActionSkill
 
 
+EXPECTED_DEVICE_ACTIONS = [
+    "echo",
+    "system_status_mock",
+    "list_actions",
+    "list_apps",
+    "lock_pc",
+    "sleep_pc",
+    "open_app",
+]
+
+
 def test_device_action_skill_echo_works():
     response = DeviceActionSkill().handle(
         "echo hello device",
@@ -27,13 +38,25 @@ def test_device_action_skill_lists_actions():
     )
 
     assert response.skill == "device_action"
-    assert response.text == "Available device actions: echo, system_status_mock, list_actions, lock_pc, sleep_pc."
-    assert [action["name"] for action in response.metadata["data"]["actions"]] == [
-        "echo",
-        "system_status_mock",
-        "list_actions",
-        "lock_pc",
-        "sleep_pc",
+    assert (
+        response.text
+        == "Available device actions: echo, system_status_mock, list_actions, list_apps, lock_pc, sleep_pc, open_app."
+    )
+    assert [action["name"] for action in response.metadata["data"]["actions"]] == EXPECTED_DEVICE_ACTIONS
+
+
+def test_device_action_skill_lists_apps():
+    response = DeviceActionSkill().handle(
+        "list apps",
+        SkillContext(device_action_adapter=LocalDeviceActionAdapter()),
+    )
+
+    assert response.skill == "device_action"
+    assert response.text == "Allowlisted apps: calculator, notepad, disabled_demo (disabled)."
+    assert [app["app_id"] for app in response.metadata["data"]["apps"]] == [
+        "calculator",
+        "notepad",
+        "disabled_demo",
     ]
 
 
@@ -120,6 +143,25 @@ def test_device_action_skill_returns_confirmation_required_for_sleep_pc_without_
     assert calls == []
 
 
+def test_device_action_skill_returns_confirmation_required_for_open_app_without_execution():
+    calls = []
+    adapter = LocalDeviceActionAdapter(app_launcher=lambda app: calls.append(app.app_id) or True)
+
+    response = DeviceActionSkill().handle(
+        "open app calculator",
+        SkillContext(device_action_adapter=adapter),
+    )
+
+    assert response.skill == "device_action"
+    assert response.text == 'Confirmation required for device action "open_app". Device action was not executed.'
+    assert response.metadata["error"] == "confirmation_required"
+    assert response.metadata["danger_classification"] == "confirmation_required"
+    assert response.metadata["confirmation_required"] is True
+    assert response.metadata["executed"] is False
+    assert response.metadata["confirmation_request"]["token"] == "device-action-confirmation:open_app"
+    assert calls == []
+
+
 def test_device_action_skill_forbids_run_command_without_execution():
     response = DeviceActionSkill().handle(
         "run command del important-file.txt",
@@ -188,6 +230,21 @@ def test_planner_preserves_confirmation_required_device_action():
     assert plan.steps[0].target == "device_action"
     assert plan.steps[0].action == "lock_pc"
     assert plan.steps[0].entities["danger_classification"] == "confirmation_required"
+    assert plan.steps[0].entities["confirmation_required"] is True
+
+
+def test_planner_preserves_open_app_confirmation_and_app_id():
+    intent = IntentParser().parse("open app calculator")
+    plan = Planner().plan(intent)
+
+    assert intent.intent_name == "device_action"
+    assert intent.extracted_entities["app_id"] == "calculator"
+    assert plan.errors == []
+    assert len(plan.steps) == 1
+    assert plan.steps[0].target == "device_action"
+    assert plan.steps[0].action == "open_app"
+    assert plan.steps[0].input_text == "open app calculator"
+    assert plan.steps[0].entities["parameters"] == {"app_id": "calculator"}
     assert plan.steps[0].entities["confirmation_required"] is True
 
 
@@ -271,6 +328,29 @@ def test_skill_manager_confirms_sleep_pc_before_execution():
     assert manager.last_execution.step_results[0].returned_data["metadata"]["executed"] is True
 
 
+def test_skill_manager_confirms_open_app_before_mock_launch():
+    calls = []
+    adapter = LocalDeviceActionAdapter(app_launcher=lambda app: calls.append(app.app_id) or True)
+    manager = SkillManager(event_bus=get_global_bus(), device_action_adapter=adapter)
+    manager.register(DeviceActionSkill())
+
+    response = manager.handle("open app calculator", run_before_intents=True)
+
+    assert response.skill == "confirmation"
+    assert "Confirmation required to open app calculator" in response.text
+    assert manager.confirmation_manager.pending() is not None
+    assert calls == []
+
+    confirmed = manager.handle("yes")
+
+    assert confirmed.skill == "device_action"
+    assert confirmed.text == "Mock app launch requested: Calculator."
+    assert calls == ["calculator"]
+    assert manager.confirmation_manager.pending() is None
+    assert manager.last_execution.step_results[0].success is True
+    assert manager.last_execution.step_results[0].returned_data["metadata"]["executed"] is True
+
+
 def test_text_repl_executes_safe_device_action(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(memory_v1, "SHORT_MEMORY_FILE", tmp_path / "short.json")
     monkeypatch.setattr(memory_v1, "LONG_MEMORY_FILE", tmp_path / "long.json")
@@ -278,7 +358,7 @@ def test_text_repl_executes_safe_device_action(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("ARES_NOTES_PATH", str(tmp_path / "notes.json"))
     monkeypatch.setenv("ARES_TASKS_PATH", str(tmp_path / "tasks.json"))
     monkeypatch.setenv("ARES_GOALS_PATH", str(tmp_path / "goals.json"))
-    monkeypatch.setattr("sys.stdin", io.StringIO("hello\nlist device actions\nquit\n"))
+    monkeypatch.setattr("sys.stdin", io.StringIO("hello\nlist device actions\nlist apps\nquit\n"))
 
     event_bus = get_global_bus()
     event_bus.clear_history()
@@ -292,7 +372,11 @@ def test_text_repl_executes_safe_device_action(monkeypatch, tmp_path, capsys):
         if event.payload.get("skill") == "device_action"
     ]
 
-    assert "Available device actions: echo, system_status_mock, list_actions, lock_pc, sleep_pc." in output
+    assert (
+        "Available device actions: echo, system_status_mock, list_actions, list_apps, "
+        "lock_pc, sleep_pc, open_app."
+    ) in output
+    assert "Allowlisted apps: calculator, notepad, disabled_demo (disabled)." in output
     assert detected
 
 
