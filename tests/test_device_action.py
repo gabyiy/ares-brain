@@ -9,6 +9,7 @@ from core import (
     DeviceAction,
     DeviceActionRegistry,
     DeviceActionResult,
+    CoreService,
     LocalDeviceActionAdapter,
     PCServiceResult,
     WindowsPCService,
@@ -274,6 +275,20 @@ def test_list_available_device_actions_uses_pc_service_capabilities():
     assert result.text == "Available device actions: echo."
     assert result.data["actions"][0]["name"] == "echo"
     assert result.data["capabilities"]["source"] == "pc_service"
+    assert pc_service.calls == [("get_capabilities", None)]
+
+
+def test_list_available_device_actions_uses_core_service_registry():
+    pc_service = FakePCService()
+    core_service = CoreService(pc_service=pc_service)
+
+    adapter = LocalDeviceActionAdapter(core_service=core_service)
+    result = adapter.execute("list available actions")
+
+    assert result.success is True
+    assert result.text == "Available device actions: echo."
+    assert adapter.core_service is core_service
+    assert adapter.core_service.get_service("pc") is pc_service
     assert pc_service.calls == [("get_capabilities", None)]
 
 

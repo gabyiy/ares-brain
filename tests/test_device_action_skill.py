@@ -1,6 +1,6 @@
 import io
 
-from core import AppLaunchConfig, IntentParser, LocalDeviceActionAdapter, Planner
+from core import AppLaunchConfig, CoreService, IntentParser, LocalDeviceActionAdapter, Planner
 from events import get_global_bus
 from interfaces import text_repl
 import memory.v1 as memory_v1
@@ -284,6 +284,19 @@ def test_skill_manager_executes_device_action_through_pipeline():
     assert step_result.success is True
     assert step_result.returned_data["metadata"]["data"]["source"] == "pc_service"
     assert step_result.returned_data["metadata"]["data"]["checks"]["network_access"] == "not_used"
+
+
+def test_skill_manager_exposes_core_service_for_device_actions():
+    core_service = CoreService(register_default_pc=False)
+    manager = SkillManager(event_bus=get_global_bus(), core_service=core_service)
+    manager.register(DeviceActionSkill())
+
+    response = manager.handle("list device actions", run_before_intents=True)
+
+    assert response.skill == "device_action"
+    assert manager.core_service is core_service
+    assert manager.core_service.get_service("pc") is not None
+    assert response.text.startswith("Available device actions:")
 
 
 def test_skill_manager_reports_confirmation_required_without_execution():

@@ -27,6 +27,7 @@ from core.AdapterConfig import (
     load_adapter_configs,
 )
 from core.Confirmation import ConfirmationDecision, ConfirmationManager, ConfirmationRequest
+from core.CoreService import CoreService, CoreServiceResult
 from core.ExecutionPipeline import ExecutionPipeline, ExecutionResult, RollbackHook, StepResult
 from core.Intent import Intent
 from core.IntentParser import IntentParser
@@ -63,6 +64,8 @@ __all__ = [
     "ConfirmationDecision",
     "ConfirmationManager",
     "ConfirmationRequest",
+    "CoreService",
+    "CoreServiceResult",
     "ExecutionPipeline",
     "ExecutionResult",
     "ExternalAdapterConfig",

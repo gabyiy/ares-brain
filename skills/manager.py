@@ -30,6 +30,7 @@ class SkillManager:
         conversation_context=None,
         intent_parser=None,
         confirmation_manager=None,
+        core_service=None,
     ):
         self.registry = registry or SkillRegistry()
         self.event_bus = event_bus or get_global_bus()
@@ -41,7 +42,10 @@ class SkillManager:
         self.tool_adapter_registry = tool_adapter_registry or ToolAdapterRegistry(
             [MockWeatherAdapter(), MockMarketAdapter(), MockCalendarAdapter()]
         )
-        self.device_action_adapter = device_action_adapter or LocalDeviceActionAdapter()
+        self.device_action_adapter = device_action_adapter or LocalDeviceActionAdapter(
+            core_service=core_service
+        )
+        self.core_service = getattr(self.device_action_adapter, "core_service", core_service)
         self.conversation_context = conversation_context or ConversationContextManager()
         self.intent_parser = intent_parser or IntentParser()
         self.confirmation_manager = confirmation_manager or ConfirmationManager()

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
+from core.CoreService import CoreService
 from core.PCService import PCService, PCServiceResult, WindowsPCService
 
 
@@ -342,6 +343,7 @@ class LocalDeviceActionAdapter:
         app_allowlist: Optional[Iterable[Any]] = None,
         app_allowlist_path: Optional[Any] = None,
         platform_system: Optional[Callable[[], str]] = None,
+        core_service: Optional[CoreService] = None,
         pc_service: Optional[PCService] = None,
     ):
         self.registry = registry or DeviceActionRegistry()
@@ -351,7 +353,7 @@ class LocalDeviceActionAdapter:
             else AppAllowlistLoader(app_allowlist_path).load()
         )
         self._app_allowlist = _build_app_allowlist(loaded_allowlist)
-        self._pc_service = pc_service or WindowsPCService(
+        configured_pc_service = pc_service or WindowsPCService(
             lock_impl=lock_impl,
             sleep_impl=sleep_impl,
             app_launcher=app_launcher,
@@ -361,9 +363,19 @@ class LocalDeviceActionAdapter:
             capability_actions_provider=self._action_capabilities,
             applications_provider=self._application_capabilities,
         )
+        if core_service is None:
+            self._core_service = CoreService(pc_service=configured_pc_service)
+        else:
+            self._core_service = core_service
+            if pc_service is not None or self._core_service.get_service("pc") is None:
+                self._core_service.register_service("pc", configured_pc_service)
         if registry is None:
             self._register_safe_builtins()
             self._register_confirmation_builtins()
+
+    @property
+    def core_service(self) -> CoreService:
+        return self._core_service
 
     def execute(self, action_name: str, parameters: Optional[Mapping[str, Any]] = None) -> DeviceActionResult:
         return self.registry.execute(_adapter_action_alias(action_name), parameters)
@@ -386,6 +398,12 @@ class LocalDeviceActionAdapter:
     def _application_capabilities(self) -> List[Dict[str, Any]]:
         return [app.to_dict() for app in self.list_apps()]
 
+    def _pc_service(self) -> PCService:
+        service = self._core_service.get_service("pc")
+        if service is None:
+            raise RuntimeError("PC service is not registered")
+        return service
+
     def _register_safe_builtins(self) -> None:
         self.registry.register(
             DeviceAction(
@@ -401,7 +419,7 @@ class LocalDeviceActionAdapter:
             ),
             lambda parameters: _device_action_result(
                 "system_status_mock",
-                self._pc_service.get_status(),
+                self._pc_service().get_status(),
             ),
         )
         self.registry.register(
@@ -409,14 +427,14 @@ class LocalDeviceActionAdapter:
                 name="list_actions",
                 description="List available safe local device actions.",
             ),
-            lambda parameters: _list_actions_action(self._pc_service),
+            lambda parameters: _list_actions_action(self._core_service),
         )
         self.registry.register(
             DeviceAction(
                 name="list_apps",
                 description="List allowlisted local apps without launching them.",
             ),
-            lambda parameters: _list_apps_action(self._pc_service),
+            lambda parameters: _list_apps_action(self._core_service),
         )
 
     def _register_confirmation_builtins(self) -> None:
@@ -458,20 +476,20 @@ class LocalDeviceActionAdapter:
         if not bool(parameters.get("confirmation_approved")):
             return _confirmation_required_result(classify_device_action("lock_pc"))
 
-        return _device_action_result("lock_pc", self._pc_service.lock())
+        return _device_action_result("lock_pc", self._pc_service().lock())
 
     def _sleep_pc_action(self, parameters: Mapping[str, Any]) -> DeviceActionResult:
         if not bool(parameters.get("confirmation_approved")):
             return _confirmation_required_result(classify_device_action("sleep_pc"))
 
-        return _device_action_result("sleep_pc", self._pc_service.sleep())
+        return _device_action_result("sleep_pc", self._pc_service().sleep())
 
     def _open_app_action(self, parameters: Mapping[str, Any]) -> DeviceActionResult:
         if not bool(parameters.get("confirmation_approved")):
             return _confirmation_required_result(classify_device_action("open_app"))
 
         raw_app_id = parameters.get("app_id") or parameters.get("app") or parameters.get("name")
-        return _device_action_result("open_app", self._pc_service.open_app(raw_app_id))
+        return _device_action_result("open_app", self._pc_service().open_app(raw_app_id))
 
 
 def _echo_action(parameters: Mapping[str, Any]) -> DeviceActionResult:
@@ -496,33 +514,39 @@ def _device_action_result(action_name: str, service_result: PCServiceResult) -> 
     )
 
 
-def _list_actions_action(pc_service: PCService) -> DeviceActionResult:
-    capability_result = pc_service.get_capabilities()
+def _list_actions_action(core_service: CoreService) -> DeviceActionResult:
+    capability_result = core_service.get_capabilities()
     if not capability_result.success:
         return _device_action_result("list_actions", capability_result)
 
+    pc_capabilities = _pc_capabilities(capability_result.data)
     actions = [
         dict(action)
-        for action in capability_result.data.get("supported_device_actions", [])
+        for action in pc_capabilities.get("supported_device_actions", [])
         if isinstance(action, Mapping)
     ]
     return DeviceActionResult(
         action_name="list_actions",
         success=True,
         text=f"Available device actions: {', '.join(action['name'] for action in actions)}.",
-        data={"actions": actions, "capabilities": dict(capability_result.data)},
+        data={
+            "actions": actions,
+            "capabilities": dict(pc_capabilities),
+            "core_capabilities": dict(capability_result.data),
+        },
         metadata={"safe": True},
     )
 
 
-def _list_apps_action(pc_service: PCService) -> DeviceActionResult:
-    capability_result = pc_service.get_capabilities()
+def _list_apps_action(core_service: CoreService) -> DeviceActionResult:
+    capability_result = core_service.get_capabilities()
     if not capability_result.success:
         return _device_action_result("list_apps", capability_result)
 
+    pc_capabilities = _pc_capabilities(capability_result.data)
     app_dicts = [
         dict(app)
-        for app in capability_result.data.get("supported_applications", [])
+        for app in pc_capabilities.get("supported_applications", [])
         if isinstance(app, Mapping)
     ]
     labels = [
@@ -533,9 +557,22 @@ def _list_apps_action(pc_service: PCService) -> DeviceActionResult:
         action_name="list_apps",
         success=True,
         text=f"Allowlisted apps: {', '.join(labels)}.",
-        data={"apps": app_dicts, "capabilities": dict(capability_result.data)},
+        data={
+            "apps": app_dicts,
+            "capabilities": dict(pc_capabilities),
+            "core_capabilities": dict(capability_result.data),
+        },
         metadata={"safe": True, "allowlist_only": True},
     )
+
+
+def _pc_capabilities(core_capabilities: Mapping[str, Any]) -> Dict[str, Any]:
+    capabilities_by_service = core_capabilities.get("capabilities_by_service") or {}
+    if isinstance(capabilities_by_service, Mapping):
+        pc_capabilities = capabilities_by_service.get("pc")
+        if isinstance(pc_capabilities, Mapping):
+            return dict(pc_capabilities)
+    return {}
 
 
 def classify_device_action(action_name: str) -> DeviceActionSafetyDecision:
