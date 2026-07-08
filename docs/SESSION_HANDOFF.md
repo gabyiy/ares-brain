@@ -4,7 +4,7 @@ Last Updated: 2026-07-08
 
 Current Version
 
-ARES v1.33 - Calculator App Allowlist Enablement
+ARES v1.34 - Manual Calculator Launch Verification
 
 ---
 
@@ -95,6 +95,7 @@ New test coverage:
 - Confirmed Windows sleep device action
 - Device app launcher skeleton
 - Confirmed Windows app launcher
+- Manual calculator launch verification script
 - ToolSelector structured intent routing
 - Text REPL profile recall flow
 
@@ -559,6 +560,19 @@ Calculator app behavior:
 - Tests mock the launcher and do not open Calculator during verification.
 - No shutdown, restart, delete, Telegram, voice, GPT, internet, remote access, notifications, arbitrary shell commands, or arbitrary app launching was added.
 
+Manual calculator launch verification has been added.
+
+Manual verification behavior:
+
+- New script: `scripts/manual_verify_calculator_launch.py`.
+- The script prints a warning before any action.
+- The script shows `App id: calculator`.
+- It requires the exact typed confirmation `YES_OPEN_CALCULATOR`.
+- It refuses every other input and does not build the device action adapter on refusal.
+- After exact confirmation, it calls `LocalDeviceActionAdapter.execute("open_app", {"app_id": "calculator", "confirmation_approved": True})`.
+- Tests inject a fake adapter and never open Calculator.
+- No new apps, shutdown, restart, delete, shell commands, Telegram, voice, GPT, internet, remote access, or notifications were added.
+
 External Adapter Config and SecretsGuard foundation has been added.
 
 New config modules and files:
@@ -929,7 +943,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 273 tests.
+- Current pytest collection: 276 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -947,6 +961,7 @@ Verification Notes
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
 - DeviceAction tests cover registry registration/listing, app allowlist config loading, calculator enabled state, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, deterministic system status mock, stable result formatting, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows calculator launch through a mocked launcher, unknown/disabled app rejection, notepad/browser disabled handling, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
+- Manual calculator launch verification tests cover refusal without exact confirmation, the exact open_app device action path with mocked adapter, and safe adapter failure reporting without opening Calculator.
 - DeviceActionSkill tests cover echo, list actions, list apps, system status mock, shutdown/restart confirmation-required responses, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed `lock_pc`/`sleep_pc`/`open_app` through SkillManager, run command/delete forbidden responses, unknown action safe failure, ToolSelector routing, Planner routing, SkillManager/ExecutionPipeline confirmation-required handling, and text REPL display.
 - Adapter config guard tests cover mock mode, real-mode missing-env failure, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility.
 - RealWeatherAdapter tests cover default mock weather behavior, real adapter instantiation, real-mode missing-env failure, mocked HTTP success, timeout safe errors, bad API response safe errors, HTTP status safe errors, normalized output stability, env-key-name-only config, raw env value non-exposure, safe WeatherSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
@@ -969,6 +984,7 @@ Verification Notes
 
 Latest Commits
 
+- `0af1e5c` Add manual calculator launch verification script
 - `090043e` Enable calculator app allowlist entry
 - `3486663` Add config-backed app allowlist loader
 - `d15a528` Add confirmed Windows app launcher

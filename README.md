@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.33 - Calculator App Allowlist Enablement
+ARES v1.34 - Manual Calculator Launch Verification
 
 ---
 
@@ -132,6 +132,7 @@ Completed
 - Confirmed Windows app launcher
 - App launcher allowlist config
 - Calculator app allowlist enablement
+- Manual calculator launch verification script
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -226,6 +227,7 @@ Implemented Features
 - Confirmed Windows-only `lock_pc` action after explicit user approval
 - Confirmed Windows-only `sleep_pc` action after explicit user approval
 - Config-backed allowlist-only Windows app launcher with `AppLaunchConfig`, `AppAllowlistLoader`, one enabled calculator entry in `config/apps.json`, disabled notepad/browser entries, `list_apps`, and confirmation-gated `open_app`
+- Owner-run manual calculator launch verification script with exact typed confirmation
 - External adapter config model with enabled, mode, env-key name, base URL, timeout, placeholder detection, and secret validation
 - RealWeatherAdapter HTTP logic gated by `mode=real`, env-key lookup, timeout handling, safe errors, and normalized ARES weather output
 - RealMarketAdapter HTTP logic gated by `mode=real`, env-key lookup, timeout handling, safe errors, and normalized ARES market output
@@ -242,7 +244,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 273 tests across core Phase 2-34 modules
+- Pytest automated coverage for 276 tests across core Phase 2-35 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -261,7 +263,17 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `273 tests`.
+Current pytest collection: `276 tests`.
+
+Manual Calculator Launch Verification
+
+The calculator launch verification script is owner-run only and is not executed by automated tests:
+
+```powershell
+py scripts\manual_verify_calculator_launch.py
+```
+
+The script prints a warning, shows `App id: calculator`, requires the exact typed confirmation `YES_OPEN_CALCULATOR`, and then calls the same `LocalDeviceActionAdapter.execute("open_app", ...)` path used by ARES. Any other input refuses the launch. Tests mock this path and do not open Calculator.
 
 Continuous Integration
 
@@ -811,19 +823,30 @@ Phase 34
 
 Phase 35
 
+- Manual calculator launch verification script
+- `scripts/manual_verify_calculator_launch.py` can be run only by the owner
+- The script prints a warning and shows `App id: calculator`
+- It requires the exact typed confirmation `YES_OPEN_CALCULATOR`
+- Only after that confirmation does it call the existing `LocalDeviceActionAdapter.execute("open_app", ...)` path
+- Any other input refuses the launch
+- Tests mock the adapter path and do not open Calculator
+- No new apps, shell commands, shutdown/restart/delete, Telegram, voice, GPT, internet, remote access, or notifications were added
+
+Phase 36
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 36
+Phase 37
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 37
+Phase 38
 
 - Robotics
 - ROS2
