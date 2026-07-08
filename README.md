@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.31 - Confirmed Windows App Launcher
+ARES v1.32 - App Launcher Allowlist Config
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.DeviceAction`, `DeviceActionRegistry`, `AppLaunchConfig`, and `LocalDeviceActionAdapter` for local device action foundations with `safe`, `confirmation_required`, and `forbidden` classifications, confirmed Windows-only `lock_pc` and `sleep_pc`, an allowlist-only Windows app launcher with disabled-by-default `notepad`, `calculator`, and `browser` examples, `list_apps`, confirmation-gated `open_app`, no arbitrary user paths, and no shell commands, `skills.builtin.DeviceActionSkill` for safe live routing of `echo`, `list device actions`, `list apps`, and `system status` plus confirmation-gated `lock_pc`/`sleep_pc`/`open_app` and stable forbidden responses for dangerous placeholders, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.DeviceAction`, `DeviceActionRegistry`, `AppLaunchConfig`, `AppAllowlistLoader`, and `LocalDeviceActionAdapter` for local device action foundations with `safe`, `confirmation_required`, and `forbidden` classifications, confirmed Windows-only `lock_pc` and `sleep_pc`, a config-backed allowlist-only Windows app launcher with disabled-by-default `notepad`, `calculator`, and `browser` entries in `config/apps.json`, `list_apps`, confirmation-gated `open_app`, no arbitrary user paths, and no shell commands, `skills.builtin.DeviceActionSkill` for safe live routing of `echo`, `list device actions`, `list apps`, and `system status` plus confirmation-gated `lock_pc`/`sleep_pc`/`open_app` and stable forbidden responses for dangerous placeholders, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 Long-Term City Model
 
@@ -130,8 +130,7 @@ Completed
 - Confirmed Windows sleep device action
 - Device app launcher skeleton
 - Confirmed Windows app launcher
-- Device app launcher skeleton
-- Confirmed Windows app launcher
+- App launcher allowlist config
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -225,7 +224,7 @@ Implemented Features
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
 - Confirmed Windows-only `lock_pc` action after explicit user approval
 - Confirmed Windows-only `sleep_pc` action after explicit user approval
-- Allowlist-only Windows app launcher with `AppLaunchConfig`, disabled-by-default app examples, `list_apps`, and confirmation-gated `open_app`
+- Config-backed allowlist-only Windows app launcher with `AppLaunchConfig`, `AppAllowlistLoader`, disabled-by-default examples in `config/apps.json`, `list_apps`, and confirmation-gated `open_app`
 - External adapter config model with enabled, mode, env-key name, base URL, timeout, placeholder detection, and secret validation
 - RealWeatherAdapter HTTP logic gated by `mode=real`, env-key lookup, timeout handling, safe errors, and normalized ARES weather output
 - RealMarketAdapter HTTP logic gated by `mode=real`, env-key lookup, timeout handling, safe errors, and normalized ARES market output
@@ -242,7 +241,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 264 tests across core Phase 2-32 modules
+- Pytest automated coverage for 270 tests across core Phase 2-33 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -261,7 +260,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `264 tests`.
+Current pytest collection: `270 tests`.
 
 Continuous Integration
 
@@ -319,14 +318,14 @@ Latest Architecture Status
 - ToolAdapterRegistry can enforce `ExternalAdapterConfig` for enabled state, mock/local/real mode, env-key names, base URLs, and timeouts.
 - DeviceAction defines safe local action metadata and stable execution result formatting.
 - DeviceActionRegistry registers named local actions, blocks unapproved confirmation-required actions, rejects forbidden placeholders, and returns safe failures for unknown actions.
-- LocalDeviceActionAdapter exposes `echo`, `system_status_mock`, `list_actions`, `list_apps`, confirmation-gated `lock_pc`/`sleep_pc`, and confirmation-gated Windows `open_app`; it does not run arbitrary shell commands or accept user-provided paths.
+- LocalDeviceActionAdapter exposes `echo`, `system_status_mock`, `list_actions`, `list_apps`, confirmation-gated `lock_pc`/`sleep_pc`, and confirmation-gated Windows `open_app`; it loads app definitions through `AppAllowlistLoader` from `config/apps.json`, does not run arbitrary shell commands, and does not accept user-provided paths.
 - DeviceActionSkill routes safe device commands through IntentParser, ToolSelector, Planner, ExecutionPipeline, SkillManager, and the text REPL.
 - DeviceActionSkill supports `echo <text>`, `list device actions`, `list apps`, `system status`, and confirmation-gated `lock_pc`/`sleep_pc`/`open_app`.
 - DeviceActionSkill returns stable confirmation-required responses for shutdown, restart, and unapproved `lock_pc`/`sleep_pc`/`open_app` requests.
 - Confirmed `lock_pc` and `sleep_pc` call narrow Windows implementations only after `yes` or `confirm`; non-Windows platforms return safe unsupported responses. Confirmed `open_app` calls only the narrow Windows launcher for enabled allowlisted apps, and tests mock that launcher.
 - DeviceActionSkill returns stable forbidden responses for run command, delete, and arbitrary shell placeholders.
 - DeviceActionSkill never executes unapproved confirmation-required actions or forbidden actions directly.
-- DeviceAction app launcher tests verify app listing, unknown app rejection, disabled app rejection, confirmation gating, confirmed Windows launch through a mocked launcher, arbitrary path rejection, shell-like input rejection, non-Windows unsupported handling, and no arbitrary command execution.
+- DeviceAction app launcher tests verify config loading, invalid config rejection, duplicate app id rejection, app listing, unknown app rejection, disabled app rejection, confirmation gating, confirmed Windows launch through a mocked launcher, arbitrary path rejection, shell-like input rejection, non-Windows unsupported handling, and no arbitrary command execution.
 - SecretsGuard rejects raw-looking secrets and validates that adapter config files reference environment variable names instead of storing keys.
 - Real adapter mode fails closed when an env key is missing, when the env-key name is only a placeholder, or when real execution is not implemented for an adapter.
 - `config/adapters.example.json` contains fake placeholder config only; local/private adapter config files are ignored by git.
@@ -788,19 +787,30 @@ Phase 32
 
 Phase 33
 
+- App launcher allowlist config
+- `config/apps.json` stores approved app definitions outside runtime code
+- `AppAllowlistLoader` validates required app id, display name, command/path, enabled flag, and confirmation flag
+- Invalid config, duplicate app ids, disabled apps, unknown apps, user-provided paths, and shell-like app ids fail safely
+- The example apps remain disabled by default: `notepad`, `calculator`, and `browser`
+- `open_app` still requires explicit confirmation and only uses the configured allowlist command
+- Tests mock the launcher and do not open real apps
+- No arbitrary shell commands, shutdown/restart/delete, Telegram, voice, GPT, internet, remote access, notifications, or background jobs were added
+
+Phase 34
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 34
+Phase 35
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 35
+Phase 36
 
 - Robotics
 - ROS2

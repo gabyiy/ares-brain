@@ -4,7 +4,7 @@ Last Updated: 2026-07-08
 
 Current Version
 
-ARES v1.31 - Confirmed Windows App Launcher
+ARES v1.32 - App Launcher Allowlist Config
 
 ---
 
@@ -419,6 +419,8 @@ New device action modules:
 
 - `core.DeviceAction`
 - `core.AppLaunchConfig`
+- `core.AppAllowlistLoader`
+- `core.AppAllowlistConfigError`
 - `core.DeviceActionResult`
 - `core.DeviceActionSafetyDecision`
 - `core.DeviceActionConfirmationRequest`
@@ -528,6 +530,19 @@ Confirmed app launcher behavior:
 - The Windows launcher uses the configured allowlist command with `shell=False`.
 - Non-Windows platforms return a safe unsupported response.
 - Tests mock the Windows launcher and do not open real apps.
+- No shutdown, restart, delete, Telegram, voice, GPT, internet, remote access, notifications, arbitrary shell commands, or arbitrary app launching was added.
+
+App launcher allowlist config has been added.
+
+Allowlist config behavior:
+
+- `config/apps.json` stores approved app definitions outside runtime code.
+- The tracked examples remain disabled by default: `notepad`, `calculator`, and `browser`.
+- `AppAllowlistLoader` validates required `app_id`, `display_name`, command/path, `enabled`, and `requires_confirmation` fields.
+- Invalid config, missing required fields, non-boolean flags, and duplicate normalized app ids fail safely before the adapter builds its runtime allowlist.
+- `LocalDeviceActionAdapter` loads the config-backed allowlist by default and still accepts injected test allowlists for isolated tests.
+- Confirmed `open_app` uses only the configured allowlist command; user-supplied command or path parameters are ignored and never become launch commands.
+- Tests cover valid config loading, invalid config rejection, duplicate app id rejection, disabled and unknown app rejection, confirmed enabled launch through a mocked launcher, and user-supplied path isolation.
 - No shutdown, restart, delete, Telegram, voice, GPT, internet, remote access, notifications, arbitrary shell commands, or arbitrary app launching was added.
 
 External Adapter Config and SecretsGuard foundation has been added.
@@ -900,7 +915,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 264 tests.
+- Current pytest collection: 270 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -917,7 +932,7 @@ Verification Notes
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
-- DeviceAction tests cover registry registration/listing, unknown action safe failure, echo, list actions, list apps, deterministic system status mock, stable result formatting, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows app launch through a mocked launcher, unknown/disabled app rejection, arbitrary path rejection, shell-like input rejection, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
+- DeviceAction tests cover registry registration/listing, app allowlist config loading, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, deterministic system status mock, stable result formatting, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows app launch through a mocked launcher, unknown/disabled app rejection, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
 - DeviceActionSkill tests cover echo, list actions, list apps, system status mock, shutdown/restart confirmation-required responses, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed `lock_pc`/`sleep_pc`/`open_app` through SkillManager, run command/delete forbidden responses, unknown action safe failure, ToolSelector routing, Planner routing, SkillManager/ExecutionPipeline confirmation-required handling, and text REPL display.
 - Adapter config guard tests cover mock mode, real-mode missing-env failure, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility.
 - RealWeatherAdapter tests cover default mock weather behavior, real adapter instantiation, real-mode missing-env failure, mocked HTTP success, timeout safe errors, bad API response safe errors, HTTP status safe errors, normalized output stability, env-key-name-only config, raw env value non-exposure, safe WeatherSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
@@ -940,6 +955,7 @@ Verification Notes
 
 Latest Commits
 
+- `3486663` Add config-backed app allowlist loader
 - `d15a528` Add confirmed Windows app launcher
 - `8b6e7fc` Add safe device app launcher skeleton
 - `6bab5a2` Add confirmed Windows sleep device action

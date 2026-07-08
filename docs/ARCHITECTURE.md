@@ -302,6 +302,8 @@ Current device action objects:
 
 - `DeviceAction`
 - `AppLaunchConfig`
+- `AppAllowlistLoader`
+- `AppAllowlistConfigError`
 - `DeviceActionResult`
 - `DeviceActionSafetyDecision`
 - `DeviceActionConfirmationRequest`
@@ -333,9 +335,11 @@ Current responsibilities:
 - Return stable execution result dictionaries with action name, success, text, data, error message, and metadata.
 - Register named safe local actions.
 - List available local device actions with their classifications.
-- List allowlisted local apps without launching them. The default examples are disabled: `notepad`, `calculator`, and `browser`.
+- Load app allowlist definitions from `config/apps.json` with strict validation before building the runtime allowlist.
+- List allowlisted local apps without launching them. The default config examples are disabled: `notepad`, `calculator`, and `browser`.
 - Return safe failures for unknown actions.
 - Reject unknown or disabled app ids before any launch callback is called.
+- Reject invalid app launcher config and duplicate normalized app ids before any app launcher path can execute.
 - Classify dangerous placeholders before any adapter execution.
 - Route `echo <text>`, `list device actions`, `list apps`, `system status`, `lock pc`, `sleep pc`, and `open app <app_id>` through `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL.
 - Require explicit confirmation before `lock_pc`, `sleep_pc`, or `open_app` executes.
@@ -356,7 +360,8 @@ Current boundaries:
 - No Telegram, voice, internet, GPT, remote control, notifications, or background device automation was added.
 - `system_status_mock` returns deterministic mock data and does not inspect the host system.
 - `open_app` returns unsupported safely on non-Windows platforms.
-- `open_app` launches only enabled apps from the allowlist config and uses `subprocess.Popen([configured_command], shell=False)`.
+- `open_app` launches only enabled apps from `config/apps.json` or an injected test allowlist and uses `subprocess.Popen([configured_command], shell=False)`.
+- User input can select only an app id; user-supplied command/path values are ignored and never become launch commands.
 - Future dangerous actions must require explicit confirmation before execution.
 - The live REPL path exposes the safe mock actions listed above, confirmation-gated `lock_pc`/`sleep_pc`, and confirmation-gated allowlisted `open_app`.
 
@@ -730,7 +735,7 @@ Current built-in skills:
 
 `CalendarSkill` answers calendar/schedule requests through `ToolAdapterRegistry` and the offline `MockCalendarAdapter`. It supports `what is on my calendar today`, `calendar tomorrow`, `schedule today`, and `do I have anything tomorrow`. It does not call Google Calendar, real APIs, require API keys, use internet access, or run background automation.
 
-`DeviceActionSkill` answers local device action requests through `LocalDeviceActionAdapter`. It supports `echo <text>`, `list device actions`, `list apps`, `system status`, and confirmation-gated `lock_pc`/`sleep_pc`/`open_app`. Confirmed `lock_pc` can call the Windows lock implementation, confirmed `sleep_pc` can call the Windows sleep implementation, and confirmed `open_app` can call only the narrow Windows launcher for enabled allowlisted apps; unconfirmed requests pause through the confirmation layer, and non-Windows platforms return safe unsupported responses for Windows actions. It returns confirmation-required responses for shutdown, restart, and unapproved app launch requests. It returns forbidden responses for run command, delete, arbitrary shell, and unknown device actions safely. It does not run shutdown/restart actions, arbitrary shell commands, arbitrary app paths, remote control, Telegram, voice, internet, GPT, notifications, or background jobs.
+`DeviceActionSkill` answers local device action requests through `LocalDeviceActionAdapter`. It supports `echo <text>`, `list device actions`, `list apps`, `system status`, and confirmation-gated `lock_pc`/`sleep_pc`/`open_app`. Confirmed `lock_pc` can call the Windows lock implementation, confirmed `sleep_pc` can call the Windows sleep implementation, and confirmed `open_app` can call only the narrow Windows launcher for enabled apps loaded from `config/apps.json`; unconfirmed requests pause through the confirmation layer, and non-Windows platforms return safe unsupported responses for Windows actions. It returns confirmation-required responses for shutdown, restart, and unapproved app launch requests. It returns forbidden responses for run command, delete, arbitrary shell, and unknown device actions safely. It does not run shutdown/restart actions, arbitrary shell commands, arbitrary app paths, remote control, Telegram, voice, internet, GPT, notifications, or background jobs.
 
 No notifications, voice, default real weather/market API mode, Google Calendar integration, real calendar APIs, external write API, or GPT integration has been added as part of the current local skill milestones.
 
@@ -864,5 +869,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 264 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.AppLaunchConfig`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.
+- Pytest collection: 270 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.AppLaunchConfig`, `core.AppAllowlistLoader`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.
