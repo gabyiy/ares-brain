@@ -1,11 +1,10 @@
-import ctypes
 import json
-import platform
 import re
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+
+from core.PCService import PCService, PCServiceResult, WindowsPCService
 
 
 DeviceActionHandler = Callable[[Mapping[str, Any]], "DeviceActionResult"]
@@ -343,18 +342,22 @@ class LocalDeviceActionAdapter:
         app_allowlist: Optional[Iterable[Any]] = None,
         app_allowlist_path: Optional[Any] = None,
         platform_system: Optional[Callable[[], str]] = None,
+        pc_service: Optional[PCService] = None,
     ):
         self.registry = registry or DeviceActionRegistry()
-        self._lock_impl = lock_impl or _lock_windows_session
-        self._sleep_impl = sleep_impl or _sleep_windows_session
-        self._app_launcher = app_launcher or _launch_windows_app
         loaded_allowlist = (
             app_allowlist
             if app_allowlist is not None
             else AppAllowlistLoader(app_allowlist_path).load()
         )
         self._app_allowlist = _build_app_allowlist(loaded_allowlist)
-        self._platform_system = platform_system or platform.system
+        self._pc_service = pc_service or WindowsPCService(
+            lock_impl=lock_impl,
+            sleep_impl=sleep_impl,
+            app_launcher=app_launcher,
+            app_resolver=self._app_allowlist.get,
+            platform_system=platform_system,
+        )
         if registry is None:
             self._register_safe_builtins()
             self._register_confirmation_builtins()
@@ -384,7 +387,10 @@ class LocalDeviceActionAdapter:
                 name="system_status_mock",
                 description="Return deterministic mock system status without inspecting the host.",
             ),
-            _system_status_mock_action,
+            lambda parameters: _device_action_result(
+                "system_status_mock",
+                self._pc_service.status(),
+            ),
         )
         self.registry.register(
             DeviceAction(
@@ -440,272 +446,20 @@ class LocalDeviceActionAdapter:
         if not bool(parameters.get("confirmation_approved")):
             return _confirmation_required_result(classify_device_action("lock_pc"))
 
-        current_platform = str(self._platform_system() or "").strip() or "unknown"
-        if current_platform.lower() != "windows":
-            return DeviceActionResult(
-                action_name="lock_pc",
-                success=False,
-                text="Windows session lock is unsupported on this platform.",
-                error_message="unsupported_platform",
-                metadata={
-                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                    "confirmation_required": True,
-                    "executed": False,
-                    "platform": current_platform,
-                    "supported": False,
-                },
-            )
-
-        try:
-            locked = bool(self._lock_impl())
-        except (AttributeError, OSError, RuntimeError) as error:
-            return DeviceActionResult(
-                action_name="lock_pc",
-                success=False,
-                text="Windows session lock failed safely.",
-                error_message=f"{type(error).__name__}: {error}",
-                metadata={
-                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                    "confirmation_required": True,
-                    "executed": False,
-                    "platform": current_platform,
-                    "supported": True,
-                },
-            )
-
-        if not locked:
-            return DeviceActionResult(
-                action_name="lock_pc",
-                success=False,
-                text="Windows session lock failed safely.",
-                error_message="lock_failed",
-                metadata={
-                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                    "confirmation_required": True,
-                    "executed": False,
-                    "platform": current_platform,
-                    "supported": True,
-                },
-            )
-
-        return DeviceActionResult(
-            action_name="lock_pc",
-            success=True,
-            text="Windows session lock requested.",
-            data={"action": "lock_pc"},
-            metadata={
-                "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                "confirmation_required": True,
-                "executed": True,
-                "platform": current_platform,
-                "supported": True,
-            },
-        )
+        return _device_action_result("lock_pc", self._pc_service.lock())
 
     def _sleep_pc_action(self, parameters: Mapping[str, Any]) -> DeviceActionResult:
         if not bool(parameters.get("confirmation_approved")):
             return _confirmation_required_result(classify_device_action("sleep_pc"))
 
-        current_platform = str(self._platform_system() or "").strip() or "unknown"
-        if current_platform.lower() != "windows":
-            return DeviceActionResult(
-                action_name="sleep_pc",
-                success=False,
-                text="Windows sleep is unsupported on this platform.",
-                error_message="unsupported_platform",
-                metadata={
-                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                    "confirmation_required": True,
-                    "executed": False,
-                    "platform": current_platform,
-                    "supported": False,
-                },
-            )
-
-        try:
-            slept = bool(self._sleep_impl())
-        except (AttributeError, OSError, RuntimeError) as error:
-            return DeviceActionResult(
-                action_name="sleep_pc",
-                success=False,
-                text="Windows sleep failed safely.",
-                error_message=f"{type(error).__name__}: {error}",
-                metadata={
-                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                    "confirmation_required": True,
-                    "executed": False,
-                    "platform": current_platform,
-                    "supported": True,
-                },
-            )
-
-        if not slept:
-            return DeviceActionResult(
-                action_name="sleep_pc",
-                success=False,
-                text="Windows sleep failed safely.",
-                error_message="sleep_failed",
-                metadata={
-                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                    "confirmation_required": True,
-                    "executed": False,
-                    "platform": current_platform,
-                    "supported": True,
-                },
-            )
-
-        return DeviceActionResult(
-            action_name="sleep_pc",
-            success=True,
-            text="Windows sleep requested.",
-            data={"action": "sleep_pc"},
-            metadata={
-                "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                "confirmation_required": True,
-                "executed": True,
-                "platform": current_platform,
-                "supported": True,
-            },
-        )
+        return _device_action_result("sleep_pc", self._pc_service.sleep())
 
     def _open_app_action(self, parameters: Mapping[str, Any]) -> DeviceActionResult:
         if not bool(parameters.get("confirmation_approved")):
             return _confirmation_required_result(classify_device_action("open_app"))
 
         raw_app_id = parameters.get("app_id") or parameters.get("app") or parameters.get("name")
-        if _unsafe_app_id_input(raw_app_id):
-            return DeviceActionResult(
-                action_name="open_app",
-                success=False,
-                text="App id is not allowed for open_app.",
-                error_message="invalid_app_id",
-                metadata={
-                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                    "confirmation_required": True,
-                    "executed": False,
-                    "allowlist_only": True,
-                },
-            )
-
-        app_id = _normalize_app_id(raw_app_id)
-        if not app_id:
-            return DeviceActionResult(
-                action_name="open_app",
-                success=False,
-                text="App id is required for open_app.",
-                error_message="missing_app_id",
-                metadata={
-                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                    "confirmation_required": True,
-                    "executed": False,
-                    "allowlist_only": True,
-                },
-            )
-
-        app = self._app_allowlist.get(app_id)
-        if not app:
-            return DeviceActionResult(
-                action_name="open_app",
-                success=False,
-                text=f"App is not allowlisted: {app_id}",
-                error_message="unknown_app",
-                metadata={
-                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                    "confirmation_required": True,
-                    "executed": False,
-                    "app_id": app_id,
-                    "allowlist_only": True,
-                },
-            )
-
-        if not app.enabled:
-            return DeviceActionResult(
-                action_name="open_app",
-                success=False,
-                text=f"App is disabled: {app_id}",
-                error_message="disabled_app",
-                data={"app": app.to_dict()},
-                metadata={
-                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                    "confirmation_required": True,
-                    "executed": False,
-                    "app_id": app_id,
-                    "allowlist_only": True,
-                },
-            )
-
-        current_platform = str(self._platform_system() or "").strip() or "unknown"
-        if current_platform.lower() != "windows":
-            return DeviceActionResult(
-                action_name="open_app",
-                success=False,
-                text="Windows app launch is unsupported on this platform.",
-                error_message="unsupported_platform",
-                data={"app": app.to_dict()},
-                metadata={
-                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                    "confirmation_required": True,
-                    "executed": False,
-                    "app_id": app_id,
-                    "allowlist_only": True,
-                    "platform": current_platform,
-                    "supported": False,
-                },
-            )
-
-        try:
-            launched = bool(self._app_launcher(app))
-        except (OSError, RuntimeError, ValueError) as error:
-            return DeviceActionResult(
-                action_name="open_app",
-                success=False,
-                text=f"Windows app launch failed safely: {app.display_name}.",
-                error_message=f"{type(error).__name__}: {error}",
-                data={"app": app.to_dict()},
-                metadata={
-                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                    "confirmation_required": True,
-                    "executed": False,
-                    "app_id": app_id,
-                    "allowlist_only": True,
-                    "platform": current_platform,
-                    "supported": True,
-                },
-            )
-
-        if not launched:
-            return DeviceActionResult(
-                action_name="open_app",
-                success=False,
-                text=f"Windows app launch failed safely: {app.display_name}.",
-                error_message="launch_failed",
-                data={"app": app.to_dict()},
-                metadata={
-                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                    "confirmation_required": True,
-                    "executed": False,
-                    "app_id": app_id,
-                    "allowlist_only": True,
-                    "platform": current_platform,
-                    "supported": True,
-                },
-            )
-
-        return DeviceActionResult(
-            action_name="open_app",
-            success=True,
-            text=f"Windows app launch requested: {app.display_name}.",
-            data={"app": app.to_dict()},
-            metadata={
-                "danger_classification": DANGER_CONFIRMATION_REQUIRED,
-                "confirmation_required": True,
-                "executed": True,
-                "app_id": app_id,
-                "allowlist_only": True,
-                "platform": current_platform,
-                "supported": True,
-            },
-        )
+        return _device_action_result("open_app", self._pc_service.open_app(raw_app_id))
 
 
 def _echo_action(parameters: Mapping[str, Any]) -> DeviceActionResult:
@@ -719,22 +473,14 @@ def _echo_action(parameters: Mapping[str, Any]) -> DeviceActionResult:
     )
 
 
-def _system_status_mock_action(parameters: Mapping[str, Any]) -> DeviceActionResult:
-    data = {
-        "status": "ok",
-        "source": "mock",
-        "checks": {
-            "device_actions": "safe",
-            "shell_execution": "disabled",
-            "remote_control": "disabled",
-        },
-    }
+def _device_action_result(action_name: str, service_result: PCServiceResult) -> DeviceActionResult:
     return DeviceActionResult(
-        action_name="system_status_mock",
-        success=True,
-        text="System status mock: ok.",
-        data=data,
-        metadata={"safe": True, "mock": True},
+        action_name=action_name,
+        success=service_result.success,
+        text=service_result.text,
+        data=dict(service_result.data),
+        error_message=service_result.error_message,
+        metadata=dict(service_result.metadata),
     )
 
 
@@ -945,32 +691,3 @@ def _coerce_app_config(item: Any) -> AppLaunchConfig:
             metadata=dict(item.get("metadata") or {}),
         )
     raise TypeError("App allowlist entries must be AppLaunchConfig or mapping objects")
-
-
-def _unsafe_app_id_input(value: Any) -> bool:
-    text = str(value or "")
-    return bool(re.search(r"[\\/:;&|<>`$\r\n]", text) or ".." in text)
-
-
-def _launch_windows_app(app: AppLaunchConfig) -> bool:
-    command = str(app.command_placeholder or "").strip()
-    _validate_windows_launch_command(command)
-    subprocess.Popen([command], shell=False, close_fds=True)
-    return True
-
-
-def _validate_windows_launch_command(command: str) -> None:
-    if not command:
-        raise ValueError("missing_windows_launch_command")
-    if command.startswith("placeholder://"):
-        raise ValueError("missing_windows_launch_command")
-    if re.search(r"[;&|<>`$\r\n]", command):
-        raise ValueError("unsafe_windows_launch_command")
-
-
-def _lock_windows_session() -> bool:
-    return bool(ctypes.windll.user32.LockWorkStation())
-
-
-def _sleep_windows_session() -> bool:
-    return bool(ctypes.windll.powrprof.SetSuspendState(False, True, False))

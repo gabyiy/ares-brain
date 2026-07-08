@@ -10,6 +10,7 @@ from core import (
     DeviceActionRegistry,
     DeviceActionResult,
     LocalDeviceActionAdapter,
+    PCServiceResult,
 )
 
 
@@ -54,6 +55,47 @@ def _app_config(
         "requires_confirmation": requires_confirmation,
         "metadata": {"source": "test_config", "platform": "windows"},
     }
+
+
+class FakePCService:
+    def __init__(self):
+        self.calls = []
+
+    def lock(self):
+        self.calls.append(("lock", None))
+        return PCServiceResult(
+            success=True,
+            text="Windows session lock requested.",
+            data={"action": "lock_pc"},
+            metadata={"executed": True, "platform": "Windows"},
+        )
+
+    def sleep(self):
+        self.calls.append(("sleep", None))
+        return PCServiceResult(
+            success=True,
+            text="Windows sleep requested.",
+            data={"action": "sleep_pc"},
+            metadata={"executed": True, "platform": "Windows"},
+        )
+
+    def open_app(self, app_id):
+        self.calls.append(("open_app", app_id))
+        return PCServiceResult(
+            success=True,
+            text="Windows app launch requested: Calculator.",
+            data={"app": {"app_id": "calculator"}},
+            metadata={"executed": True, "app_id": "calculator"},
+        )
+
+    def status(self):
+        self.calls.append(("status", None))
+        return PCServiceResult(
+            success=True,
+            text="System status mock: ok.",
+            data={"status": "ok"},
+            metadata={"safe": True, "mock": True},
+        )
 
 
 def test_app_allowlist_loader_loads_valid_config(tmp_path):
@@ -445,6 +487,20 @@ def test_confirmed_open_app_returns_unsupported_on_non_windows_without_launching
     assert calls == []
 
 
+def test_confirmed_open_app_uses_pc_service_entrypoint():
+    pc_service = FakePCService()
+
+    result = LocalDeviceActionAdapter(pc_service=pc_service).execute(
+        "open_app",
+        {"app_id": "calculator", "confirmation_approved": True},
+    )
+
+    assert result.success is True
+    assert result.text == "Windows app launch requested: Calculator."
+    assert result.data == {"app": {"app_id": "calculator"}}
+    assert pc_service.calls == [("open_app", "calculator")]
+
+
 def test_system_status_mock_action_is_deterministic():
     result = LocalDeviceActionAdapter().execute("system status")
 
@@ -459,6 +515,18 @@ def test_system_status_mock_action_is_deterministic():
             "remote_control": "disabled",
         },
     }
+
+
+def test_system_status_uses_pc_service_entrypoint():
+    pc_service = FakePCService()
+
+    result = LocalDeviceActionAdapter(pc_service=pc_service).execute("system status")
+
+    assert result.success is True
+    assert result.action_name == "system_status_mock"
+    assert result.text == "System status mock: ok."
+    assert result.data == {"status": "ok"}
+    assert pc_service.calls == [("status", None)]
 
 
 def test_device_action_execution_result_format_is_stable():
@@ -573,6 +641,20 @@ def test_confirmed_lock_pc_calls_mocked_windows_lock_implementation():
     assert calls == ["locked"]
 
 
+def test_confirmed_lock_pc_uses_pc_service_entrypoint():
+    pc_service = FakePCService()
+
+    result = LocalDeviceActionAdapter(pc_service=pc_service).execute(
+        "lock_pc",
+        {"confirmation_approved": True},
+    )
+
+    assert result.success is True
+    assert result.text == "Windows session lock requested."
+    assert result.data == {"action": "lock_pc"}
+    assert pc_service.calls == [("lock", None)]
+
+
 def test_confirmed_lock_pc_fails_safely_on_non_windows_platform():
     calls = []
     adapter = LocalDeviceActionAdapter(
@@ -641,6 +723,20 @@ def test_confirmed_sleep_pc_calls_mocked_windows_sleep_implementation():
     assert result.metadata["executed"] is True
     assert result.metadata["platform"] == "Windows"
     assert calls == ["slept"]
+
+
+def test_confirmed_sleep_pc_uses_pc_service_entrypoint():
+    pc_service = FakePCService()
+
+    result = LocalDeviceActionAdapter(pc_service=pc_service).execute(
+        "sleep_pc",
+        {"confirmation_approved": True},
+    )
+
+    assert result.success is True
+    assert result.text == "Windows sleep requested."
+    assert result.data == {"action": "sleep_pc"}
+    assert pc_service.calls == [("sleep", None)]
 
 
 def test_confirmed_sleep_pc_fails_safely_on_non_windows_platform():

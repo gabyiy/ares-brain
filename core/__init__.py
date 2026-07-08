@@ -31,6 +31,7 @@ from core.ExecutionPipeline import ExecutionPipeline, ExecutionResult, RollbackH
 from core.Intent import Intent
 from core.IntentParser import IntentParser
 from core.Planner import MultiStepPlan, Plan, Planner, PlanStep
+from core.PCService import PCService, PCServiceResult, WindowsPCService
 from core.ToolAdapter import (
     MockCalendarAdapter,
     MockMarketAdapter,
@@ -68,6 +69,8 @@ __all__ = [
     "Intent",
     "IntentParser",
     "MultiStepPlan",
+    "PCService",
+    "PCServiceResult",
     "Plan",
     "Planner",
     "PlanStep",
@@ -81,6 +84,7 @@ __all__ = [
     "MockWeatherAdapter",
     "RealMarketAdapter",
     "RealWeatherAdapter",
+    "WindowsPCService",
     "MAX_CHAIN_DEPTH",
     "ToolAdapter",
     "ToolAdapterRegistry",
