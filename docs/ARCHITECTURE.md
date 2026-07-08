@@ -296,7 +296,7 @@ Current boundaries:
 
 Device Action Framework
 
-`core.DeviceAction` defines the foundation for local device actions without arbitrary shell execution. `core.PCService` is the dedicated entry point for current and future PC operations. `LocalDeviceActionAdapter` delegates status, lock, sleep, and open-app behavior through PCService instead of calling Windows helpers directly. `PCService.get_status()` returns structured safe local PC information through `PCStatus`. `skills.builtin.DeviceActionSkill` exposes this foundation through the live skill routing path for safe mock actions, structured `system status`, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated Windows app-launch requests, and stable not-executed responses for dangerous placeholders.
+`core.DeviceAction` defines the foundation for local device actions without arbitrary shell execution. `core.PCService` is the dedicated entry point for current and future PC operations. `LocalDeviceActionAdapter` delegates status, lock, sleep, open-app behavior, and capability discovery through PCService instead of calling Windows helpers directly. `PCService.get_status()` returns structured safe local PC information through `PCStatus`. `PCService.get_capabilities()` returns structured safe local capability data through `PCCapabilities`. `skills.builtin.DeviceActionSkill` exposes this foundation through the live skill routing path for safe mock actions, structured `system status`, capability-backed action/app listing, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated Windows app-launch requests, and stable not-executed responses for dangerous placeholders.
 
 Current device action objects:
 
@@ -308,6 +308,7 @@ Current device action objects:
 - `PCService`
 - `PCServiceResult`
 - `PCStatus`
+- `PCCapabilities`
 - `WindowsPCService`
 - `DeviceActionSafetyDecision`
 - `DeviceActionConfirmationRequest`
@@ -340,12 +341,14 @@ Current responsibilities:
 - Expose PC operations through `PCService.lock()`, `PCService.sleep()`, `PCService.open_app(app_id)`, and `PCService.get_status()`.
 - Keep `PCService.status()` as a compatibility wrapper around `get_status()`.
 - Return structured safe status fields through `PCStatus`: operating system, hostname, current user, Python version, optional uptime, and available actions.
+- Expose local capability discovery through `PCService.get_capabilities()`.
+- Return structured safe capability fields through `PCCapabilities`: supported device actions, supported applications, available status providers, available services, and safeguards.
 - Keep the Windows implementation behind `WindowsPCService`.
 - Convert `PCServiceResult` values into stable `DeviceActionResult` payloads at the device-action boundary.
 - Register named safe local actions.
-- List available local device actions with their classifications.
+- List available local device actions with their classifications through PCService capability discovery.
 - Load app allowlist definitions from `config/apps.json` with strict validation before building the runtime allowlist.
-- List allowlisted local apps without launching them. The current config enables only `calculator`; `notepad` and `browser` remain disabled.
+- List allowlisted local apps without launching them through PCService capability discovery. The current config enables only `calculator`; `notepad` and `browser` remain disabled.
 - Return safe failures for unknown actions.
 - Reject unknown or disabled app ids before any launch callback is called.
 - Reject invalid app launcher config and duplicate normalized app ids before any app launcher path can execute.
@@ -366,7 +369,9 @@ Current boundaries:
 - `open_app` never accepts arbitrary user-provided paths or shell-like app ids.
 - No arbitrary shell command execution exists.
 - `system_status_mock` obtains status data only from `PCService.get_status()`.
+- `list_actions` and `list_apps` obtain discovery data only from `PCService.get_capabilities()`.
 - PC status does not perform network access, hardware telemetry, process enumeration, remote control, or internet calls.
+- PC capability discovery does not perform network access, hardware telemetry, process enumeration, remote execution, or internet calls.
 - Confirmation-required actions are never executed directly unless they are explicitly implemented and confirmed; currently `lock_pc`, `sleep_pc`, and allowlisted Windows `open_app` meet that rule.
 - Forbidden device actions are never executed.
 - No Telegram, voice, internet, GPT, remote control, notifications, or background device automation was added.
@@ -881,5 +886,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 282 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.PCService`, `core.PCServiceResult`, `core.PCStatus`, `core.WindowsPCService`, `core.AppLaunchConfig`, `core.AppAllowlistLoader`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.
+- Pytest collection: 285 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.PCService`, `core.PCServiceResult`, `core.PCStatus`, `core.PCCapabilities`, `core.WindowsPCService`, `core.AppLaunchConfig`, `core.AppAllowlistLoader`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.

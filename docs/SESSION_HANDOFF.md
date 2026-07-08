@@ -4,7 +4,7 @@ Last Updated: 2026-07-08
 
 Current Version
 
-ARES v1.36 - PCService Status Provider
+ARES v1.37 - PCService Capability Discovery
 
 ---
 
@@ -581,6 +581,7 @@ PC service behavior:
 - `PCService` defines the dedicated interface for future PC operations: `lock()`, `sleep()`, `open_app(app_id)`, and `status()`.
 - `PCServiceResult` defines the service-layer result shape.
 - `PCStatus` defines the structured safe status object.
+- `PCCapabilities` defines the structured safe capability object.
 - `WindowsPCService` contains the Windows-specific implementation behind the service boundary.
 - `LocalDeviceActionAdapter` delegates status, lock, sleep, and open-app behavior through PCService instead of directly calling Windows helpers.
 - Existing lock, sleep, app launcher, confirmation, app allowlist, and test injection behavior remains compatible.
@@ -597,6 +598,16 @@ Status provider behavior:
 - DeviceAction `system status` obtains status data only through PCService.
 - Tests cover direct PCService status structure, the compatibility wrapper, DeviceAction status routing, and SkillManager pipeline status output.
 - No network access, hardware telemetry, process enumeration, remote control, internet, GPT, voice, or new device actions were added.
+
+PCService capability discovery has been added.
+
+Capability discovery behavior:
+
+- `PCService.get_capabilities()` returns structured safe capability data through `PCCapabilities`.
+- Capability data includes supported device actions, supported applications, available status providers, available services, and explicit safeguards.
+- DeviceAction `list device actions` and `list apps` obtain discovery data through PCService instead of direct hardcoded lists.
+- Tests cover direct PCService capability structure, DeviceAction action discovery through PCService, and DeviceAction app discovery through PCService.
+- No internet, GPT, network, remote execution, process enumeration, hardware telemetry, or new device actions were added.
 
 External Adapter Config and SecretsGuard foundation has been added.
 
@@ -968,7 +979,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 282 tests.
+- Current pytest collection: 285 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -985,7 +996,7 @@ Verification Notes
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
-- DeviceAction tests cover registry registration/listing, app allowlist config loading, calculator enabled state, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, structured PCService status, stable result formatting, PCService delegation for status/lock/sleep/open-app calls, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows calculator launch through a mocked launcher, unknown/disabled app rejection, notepad/browser disabled handling, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
+- DeviceAction tests cover registry registration/listing, app allowlist config loading, calculator enabled state, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, structured PCService status, structured PCService capability discovery, stable result formatting, PCService delegation for status/lock/sleep/open-app calls, PCService-backed action/app discovery, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows calculator launch through a mocked launcher, unknown/disabled app rejection, notepad/browser disabled handling, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
 - Manual calculator launch verification tests cover refusal without exact confirmation, the exact open_app device action path with mocked adapter, and safe adapter failure reporting without opening Calculator.
 - DeviceActionSkill tests cover echo, list actions, list apps, structured system status, shutdown/restart confirmation-required responses, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed `lock_pc`/`sleep_pc`/`open_app` through SkillManager, run command/delete forbidden responses, unknown action safe failure, ToolSelector routing, Planner routing, SkillManager/ExecutionPipeline confirmation-required handling, and text REPL display.
 - Adapter config guard tests cover mock mode, real-mode missing-env failure, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility.
@@ -1009,6 +1020,7 @@ Verification Notes
 
 Latest Commits
 
+- `aa281b7` Add PC service capability discovery
 - `b4af64d` Add structured PC service status provider
 - `ab9ea2f` Add PC service abstraction for device actions
 - `0af1e5c` Add manual calculator launch verification script
