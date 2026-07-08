@@ -1268,7 +1268,7 @@ def _device_action_description(action_name: str, parameters: Dict[str, Any], cla
         return "List allowlisted local apps."
     if action_name == "open_app":
         app_id = parameters.get("app_id") or "requested app"
-        return f"Require confirmation to request mocked app launch: {app_id}."
+        return f"Require confirmation to open allowlisted Windows app: {app_id}."
     if action_name == "system_status_mock":
         return "Return mock system status."
     return f"Run safe device action: {action_name}."

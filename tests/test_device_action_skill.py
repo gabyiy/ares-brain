@@ -1,6 +1,6 @@
 import io
 
-from core import IntentParser, LocalDeviceActionAdapter, Planner
+from core import AppLaunchConfig, IntentParser, LocalDeviceActionAdapter, Planner
 from events import get_global_bus
 from interfaces import text_repl
 import memory.v1 as memory_v1
@@ -17,6 +17,16 @@ EXPECTED_DEVICE_ACTIONS = [
     "sleep_pc",
     "open_app",
 ]
+
+
+def _enabled_app_config(app_id="calculator", display_name="Calculator"):
+    return AppLaunchConfig(
+        app_id=app_id,
+        display_name=display_name,
+        command_placeholder=f"C:\\Allowed\\{app_id}.exe",
+        enabled=True,
+        metadata={"source": "test_allowlist", "platform": "windows"},
+    )
 
 
 def test_device_action_skill_echo_works():
@@ -52,11 +62,11 @@ def test_device_action_skill_lists_apps():
     )
 
     assert response.skill == "device_action"
-    assert response.text == "Allowlisted apps: calculator, notepad, disabled_demo (disabled)."
+    assert response.text == "Allowlisted apps: notepad (disabled), calculator (disabled), browser (disabled)."
     assert [app["app_id"] for app in response.metadata["data"]["apps"]] == [
-        "calculator",
         "notepad",
-        "disabled_demo",
+        "calculator",
+        "browser",
     ]
 
 
@@ -328,9 +338,13 @@ def test_skill_manager_confirms_sleep_pc_before_execution():
     assert manager.last_execution.step_results[0].returned_data["metadata"]["executed"] is True
 
 
-def test_skill_manager_confirms_open_app_before_mock_launch():
+def test_skill_manager_confirms_open_app_before_mocked_windows_launch():
     calls = []
-    adapter = LocalDeviceActionAdapter(app_launcher=lambda app: calls.append(app.app_id) or True)
+    adapter = LocalDeviceActionAdapter(
+        app_allowlist=[_enabled_app_config()],
+        app_launcher=lambda app: calls.append(app.app_id) or True,
+        platform_system=lambda: "Windows",
+    )
     manager = SkillManager(event_bus=get_global_bus(), device_action_adapter=adapter)
     manager.register(DeviceActionSkill())
 
@@ -344,7 +358,7 @@ def test_skill_manager_confirms_open_app_before_mock_launch():
     confirmed = manager.handle("yes")
 
     assert confirmed.skill == "device_action"
-    assert confirmed.text == "Mock app launch requested: Calculator."
+    assert confirmed.text == "Windows app launch requested: Calculator."
     assert calls == ["calculator"]
     assert manager.confirmation_manager.pending() is None
     assert manager.last_execution.step_results[0].success is True
@@ -376,7 +390,7 @@ def test_text_repl_executes_safe_device_action(monkeypatch, tmp_path, capsys):
         "Available device actions: echo, system_status_mock, list_actions, list_apps, "
         "lock_pc, sleep_pc, open_app."
     ) in output
-    assert "Allowlisted apps: calculator, notepad, disabled_demo (disabled)." in output
+    assert "Allowlisted apps: notepad (disabled), calculator (disabled), browser (disabled)." in output
     assert detected
 
 

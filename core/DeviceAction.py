@@ -1,6 +1,7 @@
 import ctypes
 import platform
 import re
+import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
@@ -59,7 +60,7 @@ class AppLaunchConfig:
     app_id: str
     display_name: str
     command_placeholder: str
-    enabled: bool = True
+    enabled: bool = False
     requires_confirmation: bool = True
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -76,23 +77,25 @@ class AppLaunchConfig:
 
 _DEFAULT_APP_ALLOWLIST = (
     AppLaunchConfig(
-        app_id="calculator",
-        display_name="Calculator",
-        command_placeholder="placeholder://calculator",
-        metadata={"source": "default_allowlist"},
-    ),
-    AppLaunchConfig(
         app_id="notepad",
         display_name="Notepad",
-        command_placeholder="placeholder://notepad",
-        metadata={"source": "default_allowlist"},
+        command_placeholder="C:\\Windows\\System32\\notepad.exe",
+        enabled=False,
+        metadata={"source": "default_allowlist", "platform": "windows"},
     ),
     AppLaunchConfig(
-        app_id="disabled_demo",
-        display_name="Disabled Demo",
-        command_placeholder="placeholder://disabled-demo",
+        app_id="calculator",
+        display_name="Calculator",
+        command_placeholder="C:\\Windows\\System32\\calc.exe",
         enabled=False,
-        metadata={"source": "default_allowlist"},
+        metadata={"source": "default_allowlist", "platform": "windows"},
+    ),
+    AppLaunchConfig(
+        app_id="browser",
+        display_name="Browser",
+        command_placeholder="placeholder://browser",
+        enabled=False,
+        metadata={"source": "default_allowlist", "platform": "windows"},
     ),
 )
 
@@ -273,7 +276,7 @@ class LocalDeviceActionAdapter:
         self.registry = registry or DeviceActionRegistry()
         self._lock_impl = lock_impl or _lock_windows_session
         self._sleep_impl = sleep_impl or _sleep_windows_session
-        self._app_launcher = app_launcher or _mock_app_launcher
+        self._app_launcher = app_launcher or _launch_windows_app
         self._app_allowlist = _build_app_allowlist(app_allowlist)
         self._platform_system = platform_system or platform.system
         if registry is None:
@@ -348,11 +351,11 @@ class LocalDeviceActionAdapter:
         self.registry.register(
             DeviceAction(
                 name="open_app",
-                description="Request a mocked allowlisted app launch after explicit confirmation.",
+                description="Open an enabled allowlisted Windows app after explicit confirmation.",
                 danger_classification=DANGER_CONFIRMATION_REQUIRED,
                 requires_confirmation=True,
                 dangerous=True,
-                metadata={"allowlist_only": True, "mock": True},
+                metadata={"allowlist_only": True, "platform": "windows"},
             ),
             self._open_app_action,
         )
@@ -493,7 +496,22 @@ class LocalDeviceActionAdapter:
         if not bool(parameters.get("confirmation_approved")):
             return _confirmation_required_result(classify_device_action("open_app"))
 
-        app_id = _normalize_app_id(parameters.get("app_id") or parameters.get("app") or parameters.get("name"))
+        raw_app_id = parameters.get("app_id") or parameters.get("app") or parameters.get("name")
+        if _unsafe_app_id_input(raw_app_id):
+            return DeviceActionResult(
+                action_name="open_app",
+                success=False,
+                text="App id is not allowed for open_app.",
+                error_message="invalid_app_id",
+                metadata={
+                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
+                    "confirmation_required": True,
+                    "executed": False,
+                    "allowlist_only": True,
+                },
+            )
+
+        app_id = _normalize_app_id(raw_app_id)
         if not app_id:
             return DeviceActionResult(
                 action_name="open_app",
@@ -504,7 +522,6 @@ class LocalDeviceActionAdapter:
                     "danger_classification": DANGER_CONFIRMATION_REQUIRED,
                     "confirmation_required": True,
                     "executed": False,
-                    "mock": True,
                     "allowlist_only": True,
                 },
             )
@@ -521,7 +538,6 @@ class LocalDeviceActionAdapter:
                     "confirmation_required": True,
                     "executed": False,
                     "app_id": app_id,
-                    "mock": True,
                     "allowlist_only": True,
                 },
             )
@@ -538,8 +554,26 @@ class LocalDeviceActionAdapter:
                     "confirmation_required": True,
                     "executed": False,
                     "app_id": app_id,
-                    "mock": True,
                     "allowlist_only": True,
+                },
+            )
+
+        current_platform = str(self._platform_system() or "").strip() or "unknown"
+        if current_platform.lower() != "windows":
+            return DeviceActionResult(
+                action_name="open_app",
+                success=False,
+                text="Windows app launch is unsupported on this platform.",
+                error_message="unsupported_platform",
+                data={"app": app.to_dict()},
+                metadata={
+                    "danger_classification": DANGER_CONFIRMATION_REQUIRED,
+                    "confirmation_required": True,
+                    "executed": False,
+                    "app_id": app_id,
+                    "allowlist_only": True,
+                    "platform": current_platform,
+                    "supported": False,
                 },
             )
 
@@ -549,7 +583,7 @@ class LocalDeviceActionAdapter:
             return DeviceActionResult(
                 action_name="open_app",
                 success=False,
-                text=f"Mock app launch failed safely: {app.display_name}.",
+                text=f"Windows app launch failed safely: {app.display_name}.",
                 error_message=f"{type(error).__name__}: {error}",
                 data={"app": app.to_dict()},
                 metadata={
@@ -557,8 +591,9 @@ class LocalDeviceActionAdapter:
                     "confirmation_required": True,
                     "executed": False,
                     "app_id": app_id,
-                    "mock": True,
                     "allowlist_only": True,
+                    "platform": current_platform,
+                    "supported": True,
                 },
             )
 
@@ -566,7 +601,7 @@ class LocalDeviceActionAdapter:
             return DeviceActionResult(
                 action_name="open_app",
                 success=False,
-                text=f"Mock app launch failed safely: {app.display_name}.",
+                text=f"Windows app launch failed safely: {app.display_name}.",
                 error_message="launch_failed",
                 data={"app": app.to_dict()},
                 metadata={
@@ -574,23 +609,25 @@ class LocalDeviceActionAdapter:
                     "confirmation_required": True,
                     "executed": False,
                     "app_id": app_id,
-                    "mock": True,
                     "allowlist_only": True,
+                    "platform": current_platform,
+                    "supported": True,
                 },
             )
 
         return DeviceActionResult(
             action_name="open_app",
             success=True,
-            text=f"Mock app launch requested: {app.display_name}.",
+            text=f"Windows app launch requested: {app.display_name}.",
             data={"app": app.to_dict()},
             metadata={
                 "danger_classification": DANGER_CONFIRMATION_REQUIRED,
                 "confirmation_required": True,
                 "executed": True,
                 "app_id": app_id,
-                "mock": True,
                 "allowlist_only": True,
+                "platform": current_platform,
+                "supported": True,
             },
         )
 
@@ -647,7 +684,7 @@ def _list_apps_action(apps: Iterable[AppLaunchConfig]) -> DeviceActionResult:
         success=True,
         text=f"Allowlisted apps: {', '.join(labels)}.",
         data={"apps": app_dicts},
-        metadata={"safe": True, "mock": True, "allowlist_only": True},
+        metadata={"safe": True, "allowlist_only": True},
     )
 
 
@@ -738,7 +775,7 @@ def _confirmation_reason(action_name: str) -> str:
     if action_name == "lock_pc":
         return "lock_pc requires explicit confirmation before locking the Windows session"
     if action_name == "open_app":
-        return "open_app requires explicit confirmation before requesting a mocked allowlisted app launch"
+        return "open_app requires explicit confirmation before opening an allowlisted Windows app"
     if action_name == "sleep_pc":
         return "sleep_pc requires explicit confirmation before putting Windows to sleep"
     return f"{action_name} requires explicit confirmation and is not implemented"
@@ -753,7 +790,7 @@ def _confirmation_prompt(action_name: str) -> str:
     if action_name == "open_app":
         return (
             'Confirmation required for device action "open_app". '
-            "This will request a mocked allowlisted app launch if confirmed."
+            "This will open an enabled allowlisted Windows app if confirmed."
         )
     if action_name == "sleep_pc":
         return (
@@ -824,15 +861,32 @@ def _coerce_app_config(item: Any) -> AppLaunchConfig:
                 or item.get("path_placeholder")
                 or "placeholder://missing"
             ),
-            enabled=bool(item.get("enabled", True)),
+            enabled=bool(item.get("enabled", False)),
             requires_confirmation=True,
             metadata=dict(item.get("metadata") or {}),
         )
     raise TypeError("App allowlist entries must be AppLaunchConfig or mapping objects")
 
 
-def _mock_app_launcher(app: AppLaunchConfig) -> bool:
-    return bool(app.enabled)
+def _unsafe_app_id_input(value: Any) -> bool:
+    text = str(value or "")
+    return bool(re.search(r"[\\/:;&|<>`$\r\n]", text) or ".." in text)
+
+
+def _launch_windows_app(app: AppLaunchConfig) -> bool:
+    command = str(app.command_placeholder or "").strip()
+    _validate_windows_launch_command(command)
+    subprocess.Popen([command], shell=False, close_fds=True)
+    return True
+
+
+def _validate_windows_launch_command(command: str) -> None:
+    if not command:
+        raise ValueError("missing_windows_launch_command")
+    if command.startswith("placeholder://"):
+        raise ValueError("missing_windows_launch_command")
+    if re.search(r"[;&|<>`$\r\n]", command):
+        raise ValueError("unsafe_windows_launch_command")
 
 
 def _lock_windows_session() -> bool:

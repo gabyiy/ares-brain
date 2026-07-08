@@ -14,6 +14,16 @@ EXPECTED_DEVICE_ACTIONS = [
 ]
 
 
+def _enabled_app_config(app_id="calculator", display_name="Calculator"):
+    return AppLaunchConfig(
+        app_id=app_id,
+        display_name=display_name,
+        command_placeholder=f"C:\\Allowed\\{app_id}.exe",
+        enabled=True,
+        metadata={"source": "test_allowlist", "platform": "windows"},
+    )
+
+
 def test_device_action_registry_registers_and_lists_actions():
     registry = DeviceActionRegistry()
     action = registry.register(
@@ -68,23 +78,28 @@ def test_list_allowlisted_apps_works():
 
     assert result.success is True
     assert result.action_name == "list_apps"
-    assert result.text == "Allowlisted apps: calculator, notepad, disabled_demo (disabled)."
+    assert result.text == "Allowlisted apps: notepad (disabled), calculator (disabled), browser (disabled)."
     apps = {app["app_id"]: app for app in result.data["apps"]}
-    assert apps["calculator"] == {
-        "app_id": "calculator",
-        "display_name": "Calculator",
-        "command_placeholder": "placeholder://calculator",
-        "enabled": True,
+    assert apps["notepad"] == {
+        "app_id": "notepad",
+        "display_name": "Notepad",
+        "command_placeholder": "C:\\Windows\\System32\\notepad.exe",
+        "enabled": False,
         "requires_confirmation": True,
-        "metadata": {"source": "default_allowlist"},
+        "metadata": {"source": "default_allowlist", "platform": "windows"},
     }
-    assert apps["disabled_demo"]["enabled"] is False
-    assert result.metadata == {"safe": True, "mock": True, "allowlist_only": True}
+    assert apps["calculator"]["enabled"] is False
+    assert apps["browser"]["enabled"] is False
+    assert result.metadata == {"safe": True, "allowlist_only": True}
 
 
 def test_unknown_app_is_rejected_without_launching():
     calls = []
-    adapter = LocalDeviceActionAdapter(app_launcher=lambda app: calls.append(app.app_id) or True)
+    adapter = LocalDeviceActionAdapter(
+        app_allowlist=[_enabled_app_config()],
+        app_launcher=lambda app: calls.append(app.app_id) or True,
+        platform_system=lambda: "Windows",
+    )
 
     result = adapter.execute(
         "open_app",
@@ -105,13 +120,13 @@ def test_disabled_app_is_rejected_without_launching():
 
     result = adapter.execute(
         "open_app",
-        {"app_id": "disabled_demo", "confirmation_approved": True},
+        {"app_id": "calculator", "confirmation_approved": True},
     )
 
     assert result.success is False
-    assert result.text == "App is disabled: disabled_demo"
+    assert result.text == "App is disabled: calculator"
     assert result.error_message == "disabled_app"
-    assert result.data["app"]["app_id"] == "disabled_demo"
+    assert result.data["app"]["app_id"] == "calculator"
     assert result.metadata["executed"] is False
     assert calls == []
 
@@ -131,23 +146,27 @@ def test_open_app_requires_confirmation_before_mock_launch():
         "token": "device-action-confirmation:open_app",
         "action_name": "open_app",
         "classification": "confirmation_required",
-        "reason": "open_app requires explicit confirmation before requesting a mocked allowlisted app launch",
+        "reason": "open_app requires explicit confirmation before opening an allowlisted Windows app",
         "prompt": (
             'Confirmation required for device action "open_app". '
-            "This will request a mocked allowlisted app launch if confirmed."
+            "This will open an enabled allowlisted Windows app if confirmed."
         ),
     }
     assert calls == []
 
 
-def test_confirmed_open_app_calls_mocked_launcher_only():
+def test_confirmed_enabled_open_app_calls_mocked_windows_launcher():
     calls = []
 
     def launch(app: AppLaunchConfig):
         calls.append(app.to_dict())
         return True
 
-    adapter = LocalDeviceActionAdapter(app_launcher=launch)
+    adapter = LocalDeviceActionAdapter(
+        app_allowlist=[_enabled_app_config()],
+        app_launcher=launch,
+        platform_system=lambda: "Windows",
+    )
 
     result = adapter.execute(
         "open_app",
@@ -155,29 +174,74 @@ def test_confirmed_open_app_calls_mocked_launcher_only():
     )
 
     assert result.success is True
-    assert result.text == "Mock app launch requested: Calculator."
+    assert result.text == "Windows app launch requested: Calculator."
     assert result.data["app"]["app_id"] == "calculator"
-    assert result.data["app"]["command_placeholder"] == "placeholder://calculator"
+    assert result.data["app"]["command_placeholder"] == "C:\\Allowed\\calculator.exe"
     assert result.metadata["executed"] is True
-    assert result.metadata["mock"] is True
+    assert result.metadata["platform"] == "Windows"
     assert calls == [result.data["app"]]
 
 
-def test_arbitrary_app_command_is_not_executed():
+def test_arbitrary_app_path_is_rejected_without_launching():
     calls = []
-    adapter = LocalDeviceActionAdapter(app_launcher=lambda app: calls.append(app.app_id) or True)
+    adapter = LocalDeviceActionAdapter(
+        app_allowlist=[_enabled_app_config()],
+        app_launcher=lambda app: calls.append(app.app_id) or True,
+        platform_system=lambda: "Windows",
+    )
 
     result = adapter.execute(
         "open_app",
-        {"app_id": "calculator.exe && del C:\\important", "confirmation_approved": True},
+        {"app_id": "C:\\Windows\\System32\\notepad.exe", "confirmation_approved": True},
+    )
+
+    assert result.success is False
+    assert result.error_message == "invalid_app_id"
+    assert result.metadata["executed"] is False
+    assert calls == []
+
+
+def test_shell_like_app_input_is_rejected_without_launching():
+    calls = []
+    adapter = LocalDeviceActionAdapter(
+        app_allowlist=[_enabled_app_config()],
+        app_launcher=lambda app: calls.append(app.app_id) or True,
+        platform_system=lambda: "Windows",
+    )
+
+    result = adapter.execute(
+        "open_app",
+        {"app_id": "calculator && del C:\\important", "confirmation_approved": True},
     )
     forbidden = adapter.execute("run command open app calculator", {"confirmation_approved": True})
 
     assert result.success is False
-    assert result.error_message == "unknown_app"
+    assert result.error_message == "invalid_app_id"
     assert result.metadata["executed"] is False
     assert forbidden.success is False
     assert forbidden.error_message == "forbidden"
+    assert calls == []
+
+
+def test_confirmed_open_app_returns_unsupported_on_non_windows_without_launching():
+    calls = []
+    adapter = LocalDeviceActionAdapter(
+        app_allowlist=[_enabled_app_config()],
+        app_launcher=lambda app: calls.append(app.app_id) or True,
+        platform_system=lambda: "Linux",
+    )
+
+    result = adapter.execute(
+        "open_app",
+        {"app_id": "calculator", "confirmation_approved": True},
+    )
+
+    assert result.success is False
+    assert result.text == "Windows app launch is unsupported on this platform."
+    assert result.error_message == "unsupported_platform"
+    assert result.metadata["platform"] == "Linux"
+    assert result.metadata["supported"] is False
+    assert result.metadata["executed"] is False
     assert calls == []
 
 
