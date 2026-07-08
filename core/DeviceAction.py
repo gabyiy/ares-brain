@@ -1,13 +1,16 @@
 import ctypes
+import json
 import platform
 import re
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 
 DeviceActionHandler = Callable[[Mapping[str, Any]], "DeviceActionResult"]
 AppLauncherHandler = Callable[["AppLaunchConfig"], bool]
+APP_ALLOWLIST_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "apps.json"
 
 DANGER_SAFE = "safe"
 DANGER_CONFIRMATION_REQUIRED = "confirmation_required"
@@ -75,29 +78,96 @@ class AppLaunchConfig:
         }
 
 
-_DEFAULT_APP_ALLOWLIST = (
-    AppLaunchConfig(
-        app_id="notepad",
-        display_name="Notepad",
-        command_placeholder="C:\\Windows\\System32\\notepad.exe",
-        enabled=False,
-        metadata={"source": "default_allowlist", "platform": "windows"},
-    ),
-    AppLaunchConfig(
-        app_id="calculator",
-        display_name="Calculator",
-        command_placeholder="C:\\Windows\\System32\\calc.exe",
-        enabled=False,
-        metadata={"source": "default_allowlist", "platform": "windows"},
-    ),
-    AppLaunchConfig(
-        app_id="browser",
-        display_name="Browser",
-        command_placeholder="placeholder://browser",
-        enabled=False,
-        metadata={"source": "default_allowlist", "platform": "windows"},
-    ),
-)
+class AppAllowlistConfigError(ValueError):
+    """Raised when app launcher allowlist config is invalid."""
+
+
+class AppAllowlistLoader:
+    def __init__(self, path: Optional[Any] = None):
+        self.path = Path(path) if path is not None else APP_ALLOWLIST_CONFIG_PATH
+
+    def load(self) -> List[AppLaunchConfig]:
+        try:
+            raw_config = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError as error:
+            raise AppAllowlistConfigError(f"App allowlist config not found: {self.path}") from error
+        except OSError as error:
+            raise AppAllowlistConfigError(f"App allowlist config could not be read: {self.path}") from error
+        except json.JSONDecodeError as error:
+            raise AppAllowlistConfigError(f"App allowlist config is not valid JSON: {self.path}") from error
+
+        if not isinstance(raw_config, Mapping):
+            raise AppAllowlistConfigError("App allowlist config must be a JSON object")
+        apps = raw_config.get("apps")
+        if not isinstance(apps, list):
+            raise AppAllowlistConfigError("App allowlist config requires an apps list")
+
+        configs: List[AppLaunchConfig] = []
+        seen_ids: set[str] = set()
+        for index, item in enumerate(apps):
+            config = self._parse_app(item, index)
+            app_id = _normalize_app_id(config.app_id)
+            if app_id in seen_ids:
+                raise AppAllowlistConfigError(f"Duplicate app_id in app allowlist: {app_id}")
+            seen_ids.add(app_id)
+            configs.append(config)
+        return configs
+
+    def _parse_app(self, item: Any, index: int) -> AppLaunchConfig:
+        if not isinstance(item, Mapping):
+            raise AppAllowlistConfigError(f"App allowlist entry {index} must be an object")
+
+        app_id = self._required_text(item, "app_id", index)
+        normalized_app_id = _normalize_app_id(app_id)
+        if not normalized_app_id:
+            raise AppAllowlistConfigError(f"App allowlist entry {index} requires a valid app_id")
+
+        display_name = self._required_text(item, "display_name", index)
+        command_placeholder = self._required_command(item, index)
+        enabled = self._required_bool(item, "enabled", index)
+        requires_confirmation = self._required_bool(item, "requires_confirmation", index)
+        if not requires_confirmation:
+            raise AppAllowlistConfigError(
+                f"App allowlist entry {index} must require confirmation"
+            )
+
+        metadata = item.get("metadata") or {}
+        if not isinstance(metadata, Mapping):
+            raise AppAllowlistConfigError(f"App allowlist entry {index} metadata must be an object")
+
+        return AppLaunchConfig(
+            app_id=normalized_app_id,
+            display_name=display_name,
+            command_placeholder=command_placeholder,
+            enabled=enabled,
+            requires_confirmation=True,
+            metadata=dict(metadata),
+        )
+
+    def _required_text(self, item: Mapping[str, Any], key: str, index: int) -> str:
+        value = item.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise AppAllowlistConfigError(f"App allowlist entry {index} requires {key}")
+        return value.strip()
+
+    def _required_bool(self, item: Mapping[str, Any], key: str, index: int) -> bool:
+        if key not in item or not isinstance(item.get(key), bool):
+            raise AppAllowlistConfigError(f"App allowlist entry {index} requires boolean {key}")
+        return bool(item[key])
+
+    def _required_command(self, item: Mapping[str, Any], index: int) -> str:
+        command_keys = (
+            "command",
+            "path",
+            "command_placeholder",
+            "command_path_placeholder",
+            "path_placeholder",
+        )
+        for key in command_keys:
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        raise AppAllowlistConfigError(f"App allowlist entry {index} requires command/path")
 
 
 @dataclass(frozen=True)
@@ -271,13 +341,19 @@ class LocalDeviceActionAdapter:
         sleep_impl: Optional[Callable[[], bool]] = None,
         app_launcher: Optional[AppLauncherHandler] = None,
         app_allowlist: Optional[Iterable[Any]] = None,
+        app_allowlist_path: Optional[Any] = None,
         platform_system: Optional[Callable[[], str]] = None,
     ):
         self.registry = registry or DeviceActionRegistry()
         self._lock_impl = lock_impl or _lock_windows_session
         self._sleep_impl = sleep_impl or _sleep_windows_session
         self._app_launcher = app_launcher or _launch_windows_app
-        self._app_allowlist = _build_app_allowlist(app_allowlist)
+        loaded_allowlist = (
+            app_allowlist
+            if app_allowlist is not None
+            else AppAllowlistLoader(app_allowlist_path).load()
+        )
+        self._app_allowlist = _build_app_allowlist(loaded_allowlist)
         self._platform_system = platform_system or platform.system
         if registry is None:
             self._register_safe_builtins()
@@ -828,14 +904,15 @@ def _normalize_app_id(value: Any) -> str:
     return "_".join(re.findall(r"[a-z0-9]+", str(value or "").lower()))
 
 
-def _build_app_allowlist(app_allowlist: Optional[Iterable[Any]]) -> Dict[str, AppLaunchConfig]:
+def _build_app_allowlist(app_allowlist: Iterable[Any]) -> Dict[str, AppLaunchConfig]:
     configs: Dict[str, AppLaunchConfig] = {}
-    source = app_allowlist if app_allowlist is not None else _DEFAULT_APP_ALLOWLIST
-    for item in source:
+    for item in app_allowlist:
         config = _coerce_app_config(item)
         app_id = _normalize_app_id(config.app_id)
         if not app_id:
             raise ValueError("App allowlist entries require an app_id")
+        if app_id in configs:
+            raise ValueError(f"Duplicate app_id in app allowlist: {app_id}")
         configs[app_id] = AppLaunchConfig(
             app_id=app_id,
             display_name=config.display_name.strip() or app_id,
@@ -859,6 +936,8 @@ def _coerce_app_config(item: Any) -> AppLaunchConfig:
                 item.get("command_placeholder")
                 or item.get("command_path_placeholder")
                 or item.get("path_placeholder")
+                or item.get("command")
+                or item.get("path")
                 or "placeholder://missing"
             ),
             enabled=bool(item.get("enabled", False)),

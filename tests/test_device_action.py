@@ -1,6 +1,16 @@
+import json
+
 import pytest
 
-from core import AppLaunchConfig, DeviceAction, DeviceActionRegistry, DeviceActionResult, LocalDeviceActionAdapter
+from core import (
+    AppAllowlistConfigError,
+    AppAllowlistLoader,
+    AppLaunchConfig,
+    DeviceAction,
+    DeviceActionRegistry,
+    DeviceActionResult,
+    LocalDeviceActionAdapter,
+)
 
 
 EXPECTED_DEVICE_ACTIONS = [
@@ -22,6 +32,78 @@ def _enabled_app_config(app_id="calculator", display_name="Calculator"):
         enabled=True,
         metadata={"source": "test_allowlist", "platform": "windows"},
     )
+
+
+def _write_apps_config(path, apps):
+    path.write_text(json.dumps({"apps": apps}), encoding="utf-8")
+    return path
+
+
+def _app_config(
+    app_id="calculator",
+    display_name="Calculator",
+    command="C:\\Allowed\\calculator.exe",
+    enabled=True,
+    requires_confirmation=True,
+):
+    return {
+        "app_id": app_id,
+        "display_name": display_name,
+        "command": command,
+        "enabled": enabled,
+        "requires_confirmation": requires_confirmation,
+        "metadata": {"source": "test_config", "platform": "windows"},
+    }
+
+
+def test_app_allowlist_loader_loads_valid_config(tmp_path):
+    config_path = _write_apps_config(
+        tmp_path / "apps.json",
+        [_app_config(app_id="Calculator", display_name="Calculator")],
+    )
+
+    configs = AppAllowlistLoader(config_path).load()
+
+    assert [config.to_dict() for config in configs] == [
+        {
+            "app_id": "calculator",
+            "display_name": "Calculator",
+            "command_placeholder": "C:\\Allowed\\calculator.exe",
+            "enabled": True,
+            "requires_confirmation": True,
+            "metadata": {"source": "test_config", "platform": "windows"},
+        }
+    ]
+
+
+def test_app_allowlist_loader_rejects_invalid_config(tmp_path):
+    invalid_app = _app_config()
+    del invalid_app["display_name"]
+    config_path = _write_apps_config(tmp_path / "apps.json", [invalid_app])
+
+    with pytest.raises(AppAllowlistConfigError, match="requires display_name"):
+        AppAllowlistLoader(config_path).load()
+
+
+def test_app_allowlist_loader_rejects_non_boolean_flags(tmp_path):
+    invalid_app = _app_config(enabled="yes")
+    config_path = _write_apps_config(tmp_path / "apps.json", [invalid_app])
+
+    with pytest.raises(AppAllowlistConfigError, match="requires boolean enabled"):
+        AppAllowlistLoader(config_path).load()
+
+
+def test_app_allowlist_loader_rejects_duplicate_app_id(tmp_path):
+    config_path = _write_apps_config(
+        tmp_path / "apps.json",
+        [
+            _app_config(app_id="calculator"),
+            _app_config(app_id="Calculator", display_name="Calculator Duplicate"),
+        ],
+    )
+
+    with pytest.raises(AppAllowlistConfigError, match="Duplicate app_id"):
+        AppAllowlistLoader(config_path).load()
 
 
 def test_device_action_registry_registers_and_lists_actions():
@@ -86,7 +168,7 @@ def test_list_allowlisted_apps_works():
         "command_placeholder": "C:\\Windows\\System32\\notepad.exe",
         "enabled": False,
         "requires_confirmation": True,
-        "metadata": {"source": "default_allowlist", "platform": "windows"},
+        "metadata": {"source": "config_allowlist", "platform": "windows"},
     }
     assert apps["calculator"]["enabled"] is False
     assert apps["browser"]["enabled"] is False
@@ -179,6 +261,71 @@ def test_confirmed_enabled_open_app_calls_mocked_windows_launcher():
     assert result.data["app"]["command_placeholder"] == "C:\\Allowed\\calculator.exe"
     assert result.metadata["executed"] is True
     assert result.metadata["platform"] == "Windows"
+    assert calls == [result.data["app"]]
+
+
+def test_confirmed_enabled_open_app_uses_loaded_config_with_mocked_launcher(tmp_path):
+    config_path = _write_apps_config(
+        tmp_path / "apps.json",
+        [_app_config(command="C:\\Allowed\\from-config.exe")],
+    )
+    calls = []
+
+    def launch(app: AppLaunchConfig):
+        calls.append(app.to_dict())
+        return True
+
+    adapter = LocalDeviceActionAdapter(
+        app_allowlist_path=config_path,
+        app_launcher=launch,
+        platform_system=lambda: "Windows",
+    )
+
+    result = adapter.execute(
+        "open_app",
+        {"app_id": "calculator", "confirmation_approved": True},
+    )
+
+    assert result.success is True
+    assert result.data["app"]["command_placeholder"] == "C:\\Allowed\\from-config.exe"
+    assert calls == [result.data["app"]]
+
+
+def test_open_app_uses_configured_command_not_user_supplied_path(tmp_path):
+    config_path = _write_apps_config(
+        tmp_path / "apps.json",
+        [
+            _app_config(
+                app_id="safe_app",
+                display_name="Safe App",
+                command="C:\\Allowed\\safe.exe",
+            )
+        ],
+    )
+    calls = []
+
+    def launch(app: AppLaunchConfig):
+        calls.append(app.to_dict())
+        return True
+
+    adapter = LocalDeviceActionAdapter(
+        app_allowlist_path=config_path,
+        app_launcher=launch,
+        platform_system=lambda: "Windows",
+    )
+
+    result = adapter.execute(
+        "open_app",
+        {
+            "app_id": "safe_app",
+            "command": "C:\\Windows\\System32\\cmd.exe",
+            "path": "C:\\Windows\\System32\\cmd.exe",
+            "confirmation_approved": True,
+        },
+    )
+
+    assert result.success is True
+    assert result.data["app"]["command_placeholder"] == "C:\\Allowed\\safe.exe"
     assert calls == [result.data["app"]]
 
 

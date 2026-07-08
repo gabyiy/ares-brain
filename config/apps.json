@@ -1,0 +1,37 @@
+{
+  "apps": [
+    {
+      "app_id": "notepad",
+      "display_name": "Notepad",
+      "command": "C:\\Windows\\System32\\notepad.exe",
+      "enabled": false,
+      "requires_confirmation": true,
+      "metadata": {
+        "source": "config_allowlist",
+        "platform": "windows"
+      }
+    },
+    {
+      "app_id": "calculator",
+      "display_name": "Calculator",
+      "command": "C:\\Windows\\System32\\calc.exe",
+      "enabled": false,
+      "requires_confirmation": true,
+      "metadata": {
+        "source": "config_allowlist",
+        "platform": "windows"
+      }
+    },
+    {
+      "app_id": "browser",
+      "display_name": "Browser",
+      "command": "placeholder://browser",
+      "enabled": false,
+      "requires_confirmation": true,
+      "metadata": {
+        "source": "config_allowlist",
+        "platform": "windows"
+      }
+    }
+  ]
+}

@@ -4,6 +4,8 @@ from core.ConversationContext import (
     get_global_conversation_context,
 )
 from core.DeviceAction import (
+    AppAllowlistConfigError,
+    AppAllowlistLoader,
     AppLaunchConfig,
     DANGER_CONFIRMATION_REQUIRED,
     DANGER_FORBIDDEN,
@@ -46,6 +48,8 @@ __all__ = [
     "ConversationContextManager",
     "ConversationTurn",
     "AdapterConfigError",
+    "AppAllowlistConfigError",
+    "AppAllowlistLoader",
     "AppLaunchConfig",
     "DANGER_CONFIRMATION_REQUIRED",
     "DANGER_FORBIDDEN",
