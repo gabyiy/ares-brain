@@ -4,7 +4,7 @@ Last Updated: 2026-07-08
 
 Current Version
 
-ARES v1.32 - App Launcher Allowlist Config
+ARES v1.33 - Calculator App Allowlist Enablement
 
 ---
 
@@ -524,7 +524,7 @@ Confirmed Windows app launcher has been added.
 Confirmed app launcher behavior:
 
 - `open_app <app_id>` still requires explicit confirmation through `core.ConfirmationManager`.
-- Built-in allowlist examples are disabled by default: `notepad`, `calculator`, and `browser`.
+- Built-in allowlist examples originally started disabled by default: `notepad`, `calculator`, and `browser`.
 - Confirmed `open_app` launches only enabled apps from the allowlist config.
 - User input can only select an allowlisted `app_id`; user-provided paths and shell-like app ids are rejected.
 - The Windows launcher uses the configured allowlist command with `shell=False`.
@@ -537,12 +537,26 @@ App launcher allowlist config has been added.
 Allowlist config behavior:
 
 - `config/apps.json` stores approved app definitions outside runtime code.
-- The tracked examples remain disabled by default: `notepad`, `calculator`, and `browser`.
+- The tracked examples originally started disabled by default: `notepad`, `calculator`, and `browser`.
 - `AppAllowlistLoader` validates required `app_id`, `display_name`, command/path, `enabled`, and `requires_confirmation` fields.
 - Invalid config, missing required fields, non-boolean flags, and duplicate normalized app ids fail safely before the adapter builds its runtime allowlist.
 - `LocalDeviceActionAdapter` loads the config-backed allowlist by default and still accepts injected test allowlists for isolated tests.
 - Confirmed `open_app` uses only the configured allowlist command; user-supplied command or path parameters are ignored and never become launch commands.
 - Tests cover valid config loading, invalid config rejection, duplicate app id rejection, disabled and unknown app rejection, confirmed enabled launch through a mocked launcher, and user-supplied path isolation.
+- No shutdown, restart, delete, Telegram, voice, GPT, internet, remote access, notifications, arbitrary shell commands, or arbitrary app launching was added.
+
+Calculator app allowlist enablement has been added.
+
+Calculator app behavior:
+
+- `calculator` is the only enabled app in `config/apps.json`.
+- `notepad` and `browser` remain disabled and fail safely before launch.
+- `open_app calculator` still requires explicit confirmation through `core.ConfirmationManager`.
+- Confirmed calculator launch uses only the existing safe Windows launcher path and configured allowlist command.
+- User-supplied paths and shell-like app ids remain rejected.
+- Unknown apps and disabled apps fail safely.
+- Non-Windows platforms return unsupported safely.
+- Tests mock the launcher and do not open Calculator during verification.
 - No shutdown, restart, delete, Telegram, voice, GPT, internet, remote access, notifications, arbitrary shell commands, or arbitrary app launching was added.
 
 External Adapter Config and SecretsGuard foundation has been added.
@@ -915,7 +929,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 270 tests.
+- Current pytest collection: 273 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -932,7 +946,7 @@ Verification Notes
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
-- DeviceAction tests cover registry registration/listing, app allowlist config loading, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, deterministic system status mock, stable result formatting, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows app launch through a mocked launcher, unknown/disabled app rejection, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
+- DeviceAction tests cover registry registration/listing, app allowlist config loading, calculator enabled state, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, deterministic system status mock, stable result formatting, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows calculator launch through a mocked launcher, unknown/disabled app rejection, notepad/browser disabled handling, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
 - DeviceActionSkill tests cover echo, list actions, list apps, system status mock, shutdown/restart confirmation-required responses, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed `lock_pc`/`sleep_pc`/`open_app` through SkillManager, run command/delete forbidden responses, unknown action safe failure, ToolSelector routing, Planner routing, SkillManager/ExecutionPipeline confirmation-required handling, and text REPL display.
 - Adapter config guard tests cover mock mode, real-mode missing-env failure, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility.
 - RealWeatherAdapter tests cover default mock weather behavior, real adapter instantiation, real-mode missing-env failure, mocked HTTP success, timeout safe errors, bad API response safe errors, HTTP status safe errors, normalized output stability, env-key-name-only config, raw env value non-exposure, safe WeatherSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
@@ -955,6 +969,7 @@ Verification Notes
 
 Latest Commits
 
+- `090043e` Enable calculator app allowlist entry
 - `3486663` Add config-backed app allowlist loader
 - `d15a528` Add confirmed Windows app launcher
 - `8b6e7fc` Add safe device app launcher skeleton

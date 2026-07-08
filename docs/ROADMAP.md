@@ -400,7 +400,7 @@ Phase 31: Device App Launcher Skeleton
 Phase 32: Confirmed Windows App Launcher
 
 - `open_app <app_id>` remains confirmation-gated through `ExecutionPipeline`.
-- Default allowlist examples are disabled: `notepad`, `calculator`, and `browser`.
+- At this phase, default allowlist examples were disabled: `notepad`, `calculator`, and `browser`.
 - Confirmed app launches run only for enabled allowlisted app ids.
 - The Windows launcher uses the configured allowlist command with `shell=False`.
 - User-provided paths, shell-like input, unknown apps, and disabled apps fail safely before launch.
@@ -413,14 +413,26 @@ Phase 33: App Launcher Allowlist Config
 - `config/apps.json` stores approved app definitions outside runtime code.
 - `core.AppAllowlistLoader` validates app id, display name, command/path, enabled flag, and confirmation flag before `LocalDeviceActionAdapter` builds the allowlist.
 - Invalid config and duplicate normalized app ids fail closed.
-- The tracked example config keeps `notepad`, `calculator`, and `browser` disabled by default.
+- The tracked example config initially kept `notepad`, `calculator`, and `browser` disabled by default.
 - `open_app <app_id>` still requires confirmation and can only use configured allowlist commands, never user-supplied paths.
 - Tests cover valid config loading, invalid config rejection, duplicate app id rejection, disabled and unknown app rejection, confirmed enabled launch through a mocked launcher, and user-supplied path isolation.
 - No shutdown, restart, delete, Telegram, voice, GPT, internet, notifications, remote access, arbitrary shell commands, or arbitrary app launching was added.
 
+Phase 34: Calculator App Allowlist Enablement
+
+- `calculator` is the only enabled app in `config/apps.json`.
+- `notepad` and `browser` remain disabled.
+- `open_app calculator` still requires confirmation.
+- Confirmed calculator launch uses only the existing safe Windows launcher path and configured allowlist command.
+- User-supplied paths and shell-like app ids remain rejected.
+- Unknown apps and disabled apps fail safely before launch.
+- Non-Windows platforms return unsupported safely.
+- Tests cover loaded config state, confirmation-required behavior, confirmed calculator launch through a mocked launcher, disabled notepad/browser rejection, arbitrary path rejection, and the full suite.
+- No shutdown, restart, delete, Telegram, voice, GPT, internet, notifications, remote access, arbitrary shell commands, or arbitrary app launching was added.
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed allowlisted Windows app launcher, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -435,7 +447,7 @@ The current deterministic answer paths are:
 - `DeviceActionRegistry`, `LocalDeviceActionAdapter`, `AppLaunchConfig`, `AppAllowlistLoader`, and `DeviceActionSkill` for safe local Device/PC City action foundations, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated config-backed allowlisted Windows `open_app`, safe live routing, and stable confirmation-required/forbidden responses
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 270 tests.
+The current pytest collection is 273 tests.
 
 The current memory paths are:
 

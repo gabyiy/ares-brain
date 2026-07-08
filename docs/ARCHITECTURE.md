@@ -336,7 +336,7 @@ Current responsibilities:
 - Register named safe local actions.
 - List available local device actions with their classifications.
 - Load app allowlist definitions from `config/apps.json` with strict validation before building the runtime allowlist.
-- List allowlisted local apps without launching them. The default config examples are disabled: `notepad`, `calculator`, and `browser`.
+- List allowlisted local apps without launching them. The current config enables only `calculator`; `notepad` and `browser` remain disabled.
 - Return safe failures for unknown actions.
 - Reject unknown or disabled app ids before any launch callback is called.
 - Reject invalid app launcher config and duplicate normalized app ids before any app launcher path can execute.
@@ -362,6 +362,7 @@ Current boundaries:
 - `open_app` returns unsupported safely on non-Windows platforms.
 - `open_app` launches only enabled apps from `config/apps.json` or an injected test allowlist and uses `subprocess.Popen([configured_command], shell=False)`.
 - User input can select only an app id; user-supplied command/path values are ignored and never become launch commands.
+- `calculator` is the only enabled app in the tracked allowlist; `notepad` and `browser` fail safely as disabled apps.
 - Future dangerous actions must require explicit confirmation before execution.
 - The live REPL path exposes the safe mock actions listed above, confirmation-gated `lock_pc`/`sleep_pc`, and confirmation-gated allowlisted `open_app`.
 
@@ -869,5 +870,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 270 tests.
+- Pytest collection: 273 tests.
 - Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.AppLaunchConfig`, `core.AppAllowlistLoader`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.
