@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.30 - Device App Launcher Skeleton
+ARES v1.31 - Confirmed Windows App Launcher
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.DeviceAction`, `DeviceActionRegistry`, `AppLaunchConfig`, and `LocalDeviceActionAdapter` for local device action foundations with `safe`, `confirmation_required`, and `forbidden` classifications, confirmed Windows-only `lock_pc` and `sleep_pc`, an allowlist-only mocked app launcher with `list_apps` and confirmation-gated `open_app`, and no arbitrary shell execution or real app launching, `skills.builtin.DeviceActionSkill` for safe live routing of `echo`, `list device actions`, `list apps`, and `system status` plus confirmation-gated `lock_pc`/`sleep_pc`/`open_app` and stable forbidden responses for dangerous placeholders, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.DeviceAction`, `DeviceActionRegistry`, `AppLaunchConfig`, and `LocalDeviceActionAdapter` for local device action foundations with `safe`, `confirmation_required`, and `forbidden` classifications, confirmed Windows-only `lock_pc` and `sleep_pc`, an allowlist-only Windows app launcher with disabled-by-default `notepad`, `calculator`, and `browser` examples, `list_apps`, confirmation-gated `open_app`, no arbitrary user paths, and no shell commands, `skills.builtin.DeviceActionSkill` for safe live routing of `echo`, `list device actions`, `list apps`, and `system status` plus confirmation-gated `lock_pc`/`sleep_pc`/`open_app` and stable forbidden responses for dangerous placeholders, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 Long-Term City Model
 
@@ -129,6 +129,9 @@ Completed
 - Confirmed Windows lock device action
 - Confirmed Windows sleep device action
 - Device app launcher skeleton
+- Confirmed Windows app launcher
+- Device app launcher skeleton
+- Confirmed Windows app launcher
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -222,7 +225,7 @@ Implemented Features
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
 - Confirmed Windows-only `lock_pc` action after explicit user approval
 - Confirmed Windows-only `sleep_pc` action after explicit user approval
-- Allowlist-only app launcher skeleton with `AppLaunchConfig`, `list_apps`, and confirmation-gated mocked `open_app`
+- Allowlist-only Windows app launcher with `AppLaunchConfig`, disabled-by-default app examples, `list_apps`, and confirmation-gated `open_app`
 - External adapter config model with enabled, mode, env-key name, base URL, timeout, placeholder detection, and secret validation
 - RealWeatherAdapter HTTP logic gated by `mode=real`, env-key lookup, timeout handling, safe errors, and normalized ARES weather output
 - RealMarketAdapter HTTP logic gated by `mode=real`, env-key lookup, timeout handling, safe errors, and normalized ARES market output
@@ -239,7 +242,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 262 tests across core Phase 2-31 modules
+- Pytest automated coverage for 264 tests across core Phase 2-32 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -258,7 +261,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `262 tests`.
+Current pytest collection: `264 tests`.
 
 Continuous Integration
 
@@ -316,14 +319,14 @@ Latest Architecture Status
 - ToolAdapterRegistry can enforce `ExternalAdapterConfig` for enabled state, mock/local/real mode, env-key names, base URLs, and timeouts.
 - DeviceAction defines safe local action metadata and stable execution result formatting.
 - DeviceActionRegistry registers named local actions, blocks unapproved confirmation-required actions, rejects forbidden placeholders, and returns safe failures for unknown actions.
-- LocalDeviceActionAdapter exposes `echo`, `system_status_mock`, `list_actions`, `list_apps`, confirmation-gated `lock_pc`/`sleep_pc`, and confirmation-gated mocked `open_app`; it does not run arbitrary shell commands or launch real apps.
+- LocalDeviceActionAdapter exposes `echo`, `system_status_mock`, `list_actions`, `list_apps`, confirmation-gated `lock_pc`/`sleep_pc`, and confirmation-gated Windows `open_app`; it does not run arbitrary shell commands or accept user-provided paths.
 - DeviceActionSkill routes safe device commands through IntentParser, ToolSelector, Planner, ExecutionPipeline, SkillManager, and the text REPL.
 - DeviceActionSkill supports `echo <text>`, `list device actions`, `list apps`, `system status`, and confirmation-gated `lock_pc`/`sleep_pc`/`open_app`.
 - DeviceActionSkill returns stable confirmation-required responses for shutdown, restart, and unapproved `lock_pc`/`sleep_pc`/`open_app` requests.
-- Confirmed `lock_pc` and `sleep_pc` call narrow Windows implementations only after `yes` or `confirm`; non-Windows platforms return safe unsupported responses. Confirmed `open_app` calls only the mocked launcher for allowlisted enabled apps.
+- Confirmed `lock_pc` and `sleep_pc` call narrow Windows implementations only after `yes` or `confirm`; non-Windows platforms return safe unsupported responses. Confirmed `open_app` calls only the narrow Windows launcher for enabled allowlisted apps, and tests mock that launcher.
 - DeviceActionSkill returns stable forbidden responses for run command, delete, and arbitrary shell placeholders.
 - DeviceActionSkill never executes unapproved confirmation-required actions or forbidden actions directly.
-- DeviceAction app launcher tests verify app listing, unknown app rejection, disabled app rejection, confirmation gating, mocked confirmed launch, and no arbitrary command execution.
+- DeviceAction app launcher tests verify app listing, unknown app rejection, disabled app rejection, confirmation gating, confirmed Windows launch through a mocked launcher, arbitrary path rejection, shell-like input rejection, non-Windows unsupported handling, and no arbitrary command execution.
 - SecretsGuard rejects raw-looking secrets and validates that adapter config files reference environment variable names instead of storing keys.
 - Real adapter mode fails closed when an env key is missing, when the env-key name is only a placeholder, or when real execution is not implemented for an adapter.
 - `config/adapters.example.json` contains fake placeholder config only; local/private adapter config files are ignored by git.
@@ -730,13 +733,13 @@ Phase 27
 - ToolSelector and Planner route safe device actions to `device_action` plan steps.
 - ExecutionPipeline executes safe device actions through the registered DeviceActionSkill and LocalDeviceActionAdapter.
 - Text REPL can execute safe device actions through the normal router flow.
-- Dangerous requests including shutdown, restart, sleep, run command, open app, delete, and arbitrary shell return safe rejection or confirmation-required responses; lock requests now route to Phase 29 `lock_pc` and sleep requests now route to Phase 30 `sleep_pc`.
+- Dangerous requests including shutdown, restart, sleep, run command, open app, delete, and arbitrary shell return safe rejection or confirmation-required responses; lock requests now route to Phase 29 `lock_pc`, sleep requests now route to Phase 30 `sleep_pc`, and open-app requests now route to the Phase 32 confirmed Windows allowlist launcher.
 - No real OS commands, shutdown/restart, Telegram, voice, internet, GPT, remote access, notifications, or background jobs were added.
 
 Phase 28
 
 - Device actions now have `safe`, `confirmation_required`, and `forbidden` classifications.
-- Shutdown, restart, sleep, and open app were classified as confirmation-required placeholders; lock requests now route to Phase 29 `lock_pc`, sleep requests now route to Phase 30 `sleep_pc`, and open-app requests now route to the Phase 31 mocked allowlist launcher.
+- Shutdown, restart, sleep, and open app were classified as confirmation-required placeholders; lock requests now route to Phase 29 `lock_pc`, sleep requests now route to Phase 30 `sleep_pc`, and open-app requests now route to the Phase 32 confirmed Windows allowlist launcher.
 - Run command, delete, and arbitrary shell are forbidden placeholders.
 - DeviceActionSkill returns stable confirmation-required or forbidden responses without executing those actions.
 - Confirmation-required responses include a stable device action confirmation request token.
@@ -750,7 +753,7 @@ Phase 29
 - The Windows lock implementation is called only after a confirmed request.
 - Non-Windows platforms return a safe unsupported response.
 - Tests mock the Windows lock implementation; no test locks the workstation.
-- Shutdown, restart, real app execution, run command, delete, arbitrary shell, Telegram, voice, GPT, internet, notifications, remote access, and background jobs were not added; sleep arrived later in Phase 30 as `sleep_pc`, and mocked app launcher support arrived later in Phase 31.
+- Shutdown, restart, arbitrary app execution, run command, delete, arbitrary shell, Telegram, voice, GPT, internet, notifications, remote access, and background jobs were not added; sleep arrived later in Phase 30 as `sleep_pc`, the mocked app launcher skeleton arrived later in Phase 31, and confirmed allowlisted Windows app launching arrived later in Phase 32.
 
 Phase 30
 
@@ -759,7 +762,7 @@ Phase 30
 - The Windows sleep implementation is called only after a confirmed request.
 - Non-Windows platforms return a safe unsupported response.
 - Tests mock the Windows sleep implementation; no test puts the workstation to sleep.
-- Shutdown, restart, real app execution, run command, delete, arbitrary shell, Telegram, voice, GPT, internet, notifications, remote access, and background jobs were not added; the mocked app launcher arrived later in Phase 31.
+- Shutdown, restart, arbitrary app execution, run command, delete, arbitrary shell, Telegram, voice, GPT, internet, notifications, remote access, and background jobs were not added; the mocked app launcher skeleton arrived later in Phase 31, and confirmed allowlisted Windows app launching arrived later in Phase 32.
 
 Phase 31
 
@@ -769,23 +772,35 @@ Phase 31
 - `open_app <app_id>` confirmation-gated mock action
 - Unknown and disabled apps are rejected safely
 - Confirmed `open_app` calls only the mocked launcher and does not launch real apps
-- No arbitrary app names, arbitrary shell commands, shutdown/restart/delete, Telegram, voice, GPT, internet, remote access, notifications, or real app execution was added
+- No arbitrary app names, arbitrary shell commands, shutdown/restart/delete, Telegram, voice, GPT, internet, remote access, notifications, or real app execution was added in Phase 31
 
 Phase 32
+
+- Confirmed Windows app launcher
+- Default allowlist examples are disabled: `notepad`, `calculator`, and `browser`
+- `open_app <app_id>` requires explicit confirmation
+- Confirmed `open_app` launches only enabled allowlisted Windows apps
+- User-provided paths and shell-like app ids are rejected safely
+- Unknown and disabled apps fail safely before launcher execution
+- Non-Windows platforms return unsupported safely
+- Tests mock the Windows launcher; no tests open real apps
+- No arbitrary shell commands, shutdown/restart/delete, Telegram, voice, GPT, internet, remote access, notifications, or background jobs were added
+
+Phase 33
 
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 33
+Phase 34
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 34
+Phase 35
 
 - Robotics
 - ROS2

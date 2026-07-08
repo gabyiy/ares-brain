@@ -136,7 +136,7 @@ Current entity extraction examples:
 - `echo hello ARES` becomes a `device_action` intent with action `echo`.
 - `list device actions` becomes a `device_action` intent with action `list`.
 - `system status` becomes a `device_action` intent with action `status`.
-- `shutdown`, `restart`, `run command`, `open app`, `delete`, and arbitrary shell requests become safe rejected `device_action` intents; lock and sleep requests route to confirmed Windows actions.
+- `shutdown`, `restart`, `run command`, `delete`, and arbitrary shell requests become safe rejected `device_action` intents; lock, sleep, and open-app requests route to confirmed Windows action paths with explicit gates.
 
 The parser is deterministic and offline. It does not use AI, GPT, embeddings, external APIs, or a broad regex-only dispatcher.
 
@@ -296,7 +296,7 @@ Current boundaries:
 
 Device Action Framework
 
-`core.DeviceAction` defines the foundation for local device actions without arbitrary shell execution. `skills.builtin.DeviceActionSkill` exposes this foundation through the live skill routing path for safe mock actions, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated mocked app-launch requests, and stable not-executed responses for dangerous placeholders.
+`core.DeviceAction` defines the foundation for local device actions without arbitrary shell execution. `skills.builtin.DeviceActionSkill` exposes this foundation through the live skill routing path for safe mock actions, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated Windows app-launch requests, and stable not-executed responses for dangerous placeholders.
 
 Current device action objects:
 
@@ -333,14 +333,14 @@ Current responsibilities:
 - Return stable execution result dictionaries with action name, success, text, data, error message, and metadata.
 - Register named safe local actions.
 - List available local device actions with their classifications.
-- List allowlisted local apps without launching them.
+- List allowlisted local apps without launching them. The default examples are disabled: `notepad`, `calculator`, and `browser`.
 - Return safe failures for unknown actions.
 - Reject unknown or disabled app ids before any launch callback is called.
 - Classify dangerous placeholders before any adapter execution.
 - Route `echo <text>`, `list device actions`, `list apps`, `system status`, `lock pc`, `sleep pc`, and `open app <app_id>` through `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL.
 - Require explicit confirmation before `lock_pc`, `sleep_pc`, or `open_app` executes.
 - Call the Windows lock/sleep implementations only after confirmation approval.
-- Call only the mocked app launcher for confirmed allowlisted `open_app` requests.
+- Call the narrow Windows app launcher only for confirmed, enabled, allowlisted `open_app` requests.
 - Return a safe unsupported response for `lock_pc` and `sleep_pc` on non-Windows platforms.
 - Return stable confirmation-required responses for shutdown, restart, and unapproved `lock_pc`/`sleep_pc`/`open_app` requests.
 - Return stable forbidden responses for run command, delete, and arbitrary shell placeholders.
@@ -349,15 +349,16 @@ Current responsibilities:
 Current boundaries:
 
 - No shutdown or restart action exists.
-- No real open-app action exists; `open_app` is a mocked allowlist skeleton only.
+- `open_app` never accepts arbitrary user-provided paths or shell-like app ids.
 - No arbitrary shell command execution exists.
-- Confirmation-required actions are never executed directly unless they are explicitly implemented and confirmed; currently `lock_pc`, `sleep_pc`, and mocked `open_app` meet that rule.
+- Confirmation-required actions are never executed directly unless they are explicitly implemented and confirmed; currently `lock_pc`, `sleep_pc`, and allowlisted Windows `open_app` meet that rule.
 - Forbidden device actions are never executed.
 - No Telegram, voice, internet, GPT, remote control, notifications, or background device automation was added.
 - `system_status_mock` returns deterministic mock data and does not inspect the host system.
-- `open_app` never launches real apps and never accepts arbitrary app names outside the allowlist.
+- `open_app` returns unsupported safely on non-Windows platforms.
+- `open_app` launches only enabled apps from the allowlist config and uses `subprocess.Popen([configured_command], shell=False)`.
 - Future dangerous actions must require explicit confirmation before execution.
-- The live REPL path exposes the safe mock actions listed above, confirmation-gated `lock_pc`/`sleep_pc`, and confirmation-gated mocked `open_app`.
+- The live REPL path exposes the safe mock actions listed above, confirmation-gated `lock_pc`/`sleep_pc`, and confirmation-gated allowlisted `open_app`.
 
 Confirmation
 
@@ -729,7 +730,7 @@ Current built-in skills:
 
 `CalendarSkill` answers calendar/schedule requests through `ToolAdapterRegistry` and the offline `MockCalendarAdapter`. It supports `what is on my calendar today`, `calendar tomorrow`, `schedule today`, and `do I have anything tomorrow`. It does not call Google Calendar, real APIs, require API keys, use internet access, or run background automation.
 
-`DeviceActionSkill` answers local device action requests through `LocalDeviceActionAdapter`. It supports `echo <text>`, `list device actions`, `list apps`, `system status`, and confirmation-gated `lock_pc`/`sleep_pc`/`open_app`. Confirmed `lock_pc` can call the Windows lock implementation, confirmed `sleep_pc` can call the Windows sleep implementation, and confirmed `open_app` can call only the mocked launcher for enabled allowlisted apps; unconfirmed requests pause through the confirmation layer, and non-Windows platforms return safe unsupported responses for Windows actions. It returns confirmation-required responses for shutdown, restart, and unapproved app launch requests. It returns forbidden responses for run command, delete, arbitrary shell, and unknown device actions safely. It does not run shutdown/restart actions, arbitrary shell commands, real app launches, remote control, Telegram, voice, internet, GPT, notifications, or background jobs.
+`DeviceActionSkill` answers local device action requests through `LocalDeviceActionAdapter`. It supports `echo <text>`, `list device actions`, `list apps`, `system status`, and confirmation-gated `lock_pc`/`sleep_pc`/`open_app`. Confirmed `lock_pc` can call the Windows lock implementation, confirmed `sleep_pc` can call the Windows sleep implementation, and confirmed `open_app` can call only the narrow Windows launcher for enabled allowlisted apps; unconfirmed requests pause through the confirmation layer, and non-Windows platforms return safe unsupported responses for Windows actions. It returns confirmation-required responses for shutdown, restart, and unapproved app launch requests. It returns forbidden responses for run command, delete, arbitrary shell, and unknown device actions safely. It does not run shutdown/restart actions, arbitrary shell commands, arbitrary app paths, remote control, Telegram, voice, internet, GPT, notifications, or background jobs.
 
 No notifications, voice, default real weather/market API mode, Google Calendar integration, real calendar APIs, external write API, or GPT integration has been added as part of the current local skill milestones.
 
@@ -863,5 +864,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 262 tests.
+- Pytest collection: 264 tests.
 - Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.AppLaunchConfig`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.
