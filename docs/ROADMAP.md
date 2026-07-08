@@ -354,14 +354,14 @@ Phase 27: DeviceActionSkill Safe Live Path
 - Live routing for safe device actions through `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL
 - Supported commands: `echo <text>`, `list device actions`, and `system status`
 - Unknown device actions fail safely
-- Dangerous actions such as shutdown, restart, sleep, run command, open app, delete, and arbitrary shell requests are rejected safely; lock requests now route to Phase 29 `lock_pc`
+- Dangerous actions such as shutdown, restart, run command, open app, delete, and arbitrary shell requests are rejected safely; lock requests now route to Phase 29 `lock_pc`, and sleep requests now route to Phase 30 `sleep_pc`
 - No real OS commands, shutdown/restart, Telegram, voice, internet, GPT, remote access, notifications, or background jobs
 - Future dangerous actions must require explicit confirmation
 
 Phase 28: Device Dangerous-Action Confirmation Gate
 
 - Device actions now carry `safe`, `confirmation_required`, or `forbidden` classifications.
-- Shutdown, restart, sleep, and open app are confirmation-required placeholders; lock requests now route to Phase 29 `lock_pc`.
+- Shutdown, restart, and open app are confirmation-required placeholders; lock requests now route to Phase 29 `lock_pc`, and sleep requests now route to Phase 30 `sleep_pc`.
 - Run command, delete, and arbitrary shell are forbidden placeholders.
 - `DeviceActionSkill` never executes confirmation-required or forbidden actions directly.
 - Confirmation-required responses include a stable device action confirmation request token.
@@ -376,11 +376,20 @@ Phase 29: Confirmed Windows Lock Device Action
 - Confirmed `lock_pc` calls the Windows lock implementation through `LocalDeviceActionAdapter`.
 - Non-Windows platforms return a safe unsupported response.
 - Tests mock the Windows lock implementation and do not lock the workstation.
-- Shutdown, restart, sleep, open app, run command, delete, arbitrary shell, Telegram, voice, internet, GPT, remote access, notifications, and background jobs were not added.
+- Shutdown, restart, open app, run command, delete, arbitrary shell, Telegram, voice, internet, GPT, remote access, notifications, and background jobs were not added; sleep arrived later in Phase 30 as `sleep_pc`.
+
+Phase 30: Confirmed Windows Sleep Device Action
+
+- `sleep_pc` is the second real OS-backed local device action.
+- `sleep_pc` requires explicit confirmation before execution.
+- Confirmed `sleep_pc` calls the Windows sleep implementation through `LocalDeviceActionAdapter`.
+- Non-Windows platforms return a safe unsupported response.
+- Tests mock the Windows sleep implementation and do not put the workstation to sleep.
+- Shutdown, restart, open app, run command, delete, arbitrary shell, Telegram, voice, internet, GPT, remote access, notifications, and background jobs were not added.
 
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, and confirmed Windows-only `lock_pc`, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, and confirmed Windows-only `lock_pc`/`sleep_pc`, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -392,10 +401,10 @@ The current deterministic answer paths are:
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, and calendar
 - `Planner`, `MultiStepPlan`, `ConfirmationManager`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, context responses, confirmations, and conversation memory plan execution
 - `ToolAdapterRegistry`, `ExternalAdapterConfig`, `SecretsGuard`, `RealWeatherAdapter`, and `RealMarketAdapter` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
-- `DeviceActionRegistry`, `LocalDeviceActionAdapter`, and `DeviceActionSkill` for safe local Device/PC City action foundations, confirmation-gated `lock_pc`, safe live routing, and stable confirmation-required/forbidden responses
+- `DeviceActionRegistry`, `LocalDeviceActionAdapter`, and `DeviceActionSkill` for safe local Device/PC City action foundations, confirmation-gated `lock_pc`/`sleep_pc`, safe live routing, and stable confirmation-required/forbidden responses
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 244 tests.
+The current pytest collection is 252 tests.
 
 The current memory paths are:
 
@@ -448,7 +457,7 @@ What Must Not Be Started Yet
 - No AI parser or regex-only parser rewrite.
 - No robotics or movement integration.
 - No vision integration.
-- No shutdown/restart/sleep/open-app, arbitrary shell command execution, Telegram, remote control, or unconfirmed/non-lock dangerous device action execution.
+- No shutdown/restart/open-app, arbitrary shell command execution, Telegram, remote control, or unconfirmed/non-lock/non-sleep dangerous device action execution.
 - No broad refactors of the router, memory, or skill system.
 
 Testing Rules Before Each Phase
