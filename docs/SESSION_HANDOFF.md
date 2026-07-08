@@ -1,10 +1,10 @@
 ARES Session Handoff
 
-Last Updated: 2026-07-07
+Last Updated: 2026-07-08
 
 Current Version
 
-ARES v1.29 - Confirmed Windows Sleep Device Action
+ARES v1.30 - Device App Launcher Skeleton
 
 ---
 
@@ -93,6 +93,7 @@ New test coverage:
 - DeviceActionSkill
 - Confirmed Windows lock device action
 - Confirmed Windows sleep device action
+- Device app launcher skeleton
 - ToolSelector structured intent routing
 - Text REPL profile recall flow
 
@@ -416,6 +417,7 @@ Device Action Framework skeleton has been added.
 New device action modules:
 
 - `core.DeviceAction`
+- `core.AppLaunchConfig`
 - `core.DeviceActionResult`
 - `core.DeviceActionSafetyDecision`
 - `core.DeviceActionConfirmationRequest`
@@ -427,17 +429,19 @@ Device action behavior:
 - Provides stable local action metadata and execution result models.
 - Registers safe local actions by name.
 - Returns safe failures for unknown actions.
-- Exposes safe built-in actions: `echo`, `system_status_mock`, and `list_actions`.
+- Exposes safe built-in actions: `echo`, `system_status_mock`, `list_actions`, and `list_apps`.
 - Exposes confirmation-gated real actions: `lock_pc` and `sleep_pc`.
+- Exposes confirmation-gated mocked app launcher action: `open_app`.
 - Classifies device actions as `safe`, `confirmation_required`, or `forbidden`.
-- Marks shutdown, restart, and open app as confirmation-required placeholders.
+- Marks shutdown and restart as confirmation-required placeholders.
 - Marks `lock_pc` as confirmation-required and implemented only after approval.
 - Marks `sleep_pc` as confirmation-required and implemented only after approval.
+- Marks `open_app` as confirmation-required and implemented only as a mocked allowlist launcher after approval.
 - Marks run command, delete, and arbitrary shell as forbidden placeholders.
 - Returns stable confirmation-required or forbidden results without executing those actions.
 - `system_status_mock` returns deterministic mock data and does not inspect the host.
 - Future dangerous actions must require explicit confirmation before execution.
-- No shutdown/restart/open-app, arbitrary shell command execution, Telegram, voice, internet, GPT, remote control, notifications, or dangerous device automation was added.
+- No shutdown/restart, real app launching, arbitrary shell command execution, Telegram, voice, internet, GPT, remote control, notifications, or dangerous device automation was added.
 
 DeviceActionSkill safe live path has been added.
 
@@ -453,12 +457,12 @@ Live path behavior:
 - ExecutionPipeline executes the plan through the registered DeviceActionSkill.
 - SkillManager carries `LocalDeviceActionAdapter` through SkillContext.
 - Text REPL can execute safe device actions through the normal router flow.
-- Supported commands are `echo <text>`, `list device actions`, `system status`, and confirmation-gated `lock pc`/`sleep pc`.
-- Shutdown, restart, open app, and unapproved `lock_pc`/`sleep_pc` return stable confirmation-required responses.
+- Supported commands are `echo <text>`, `list device actions`, `list apps`, `system status`, and confirmation-gated `lock pc`/`sleep pc`/`open app <app_id>`.
+- Shutdown, restart, and unapproved `lock_pc`/`sleep_pc`/`open_app` return stable confirmation-required responses.
 - Run command, delete, and arbitrary shell return stable forbidden responses.
-- Confirmation-required device actions are never executed directly unless they are explicitly implemented and confirmed; currently only `lock_pc` and `sleep_pc` meet that rule.
+- Confirmation-required device actions are never executed directly unless they are explicitly implemented and confirmed; currently `lock_pc`, `sleep_pc`, and mocked `open_app` meet that rule.
 - Forbidden device actions are never executed.
-- No shutdown/restart/open-app, arbitrary shell, Telegram, voice, internet, GPT, remote access, notifications, or background jobs were added.
+- No shutdown/restart, real app launching, arbitrary shell, Telegram, voice, internet, GPT, remote access, notifications, or background jobs were added.
 
 Device dangerous-action confirmation gate has been added.
 
@@ -484,7 +488,7 @@ Lock behavior:
 - `LocalDeviceActionAdapter` calls the Windows lock implementation only after confirmation approval.
 - Non-Windows platforms return a safe unsupported response.
 - Tests mock the Windows lock implementation; no test locks the workstation.
-- Shutdown, restart, open app, run command, delete, arbitrary shell, Telegram, voice, GPT, internet, notifications, remote access, and background jobs were not added.
+- Shutdown, restart, real app launching, run command, delete, arbitrary shell, Telegram, voice, GPT, internet, notifications, remote access, and background jobs were not added; mocked app launching arrived later in v1.30.
 
 Confirmed Windows sleep device action has been added.
 
@@ -497,7 +501,20 @@ Sleep behavior:
 - `LocalDeviceActionAdapter` calls the Windows sleep implementation only after confirmation approval.
 - Non-Windows platforms return a safe unsupported response.
 - Tests mock the Windows sleep implementation; no test puts the workstation to sleep.
-- Shutdown, restart, open app, run command, delete, arbitrary shell, Telegram, voice, GPT, internet, notifications, remote access, and background jobs were not added.
+- Shutdown, restart, real app launching, run command, delete, arbitrary shell, Telegram, voice, GPT, internet, notifications, remote access, and background jobs were not added; mocked app launching arrived later in v1.30.
+
+Device app launcher skeleton has been added.
+
+App launcher behavior:
+
+- `AppLaunchConfig` models app allowlist entries with `app_id`, `display_name`, `command_placeholder`, `enabled`, and `requires_confirmation`.
+- `LocalDeviceActionAdapter` lists allowlisted apps with the safe `list_apps` action.
+- `open_app <app_id>` requires explicit confirmation before execution.
+- Confirmed `open_app` calls only the injected mocked launcher for enabled allowlisted apps.
+- Unknown app ids and disabled app ids are rejected before the launcher callback is called.
+- Command-like app ids are normalized and rejected if they are not allowlisted.
+- IntentParser, Planner, ExecutionPipeline, SkillManager, DeviceActionSkill, and the text REPL all preserve the app id and confirmation gate.
+- No real apps, arbitrary shell commands, shutdown/restart/delete, Telegram, voice, GPT, internet, remote access, notifications, or background jobs were added.
 
 External Adapter Config and SecretsGuard foundation has been added.
 
@@ -869,7 +886,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 252 tests.
+- Current pytest collection: 262 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -886,8 +903,8 @@ Verification Notes
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
-- DeviceAction tests cover registry registration/listing, unknown action safe failure, echo, list actions, deterministic system status mock, stable result formatting, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`, confirmed mocked Windows lock/sleep, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
-- DeviceActionSkill tests cover echo, list actions, system status mock, shutdown/restart confirmation-required responses, unapproved `lock_pc`/`sleep_pc`, confirmed `lock_pc`/`sleep_pc` through SkillManager, run command/delete forbidden responses, unknown action safe failure, ToolSelector routing, Planner routing, SkillManager/ExecutionPipeline confirmation-required handling, and text REPL display.
+- DeviceAction tests cover registry registration/listing, unknown action safe failure, echo, list actions, list apps, deterministic system status mock, stable result formatting, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed mocked app launch, unknown/disabled app rejection, no arbitrary app command execution, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
+- DeviceActionSkill tests cover echo, list actions, list apps, system status mock, shutdown/restart confirmation-required responses, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed `lock_pc`/`sleep_pc`/`open_app` through SkillManager, run command/delete forbidden responses, unknown action safe failure, ToolSelector routing, Planner routing, SkillManager/ExecutionPipeline confirmation-required handling, and text REPL display.
 - Adapter config guard tests cover mock mode, real-mode missing-env failure, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility.
 - RealWeatherAdapter tests cover default mock weather behavior, real adapter instantiation, real-mode missing-env failure, mocked HTTP success, timeout safe errors, bad API response safe errors, HTTP status safe errors, normalized output stability, env-key-name-only config, raw env value non-exposure, safe WeatherSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
 - RealMarketAdapter tests cover default mock market behavior, real adapter instantiation, real-mode missing-env failure, mocked HTTP success, timeout safe errors, bad API response safe errors, HTTP status safe errors, normalized output stability, env-key-name-only config, raw env value non-exposure, safe MarketSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
@@ -909,6 +926,7 @@ Verification Notes
 
 Latest Commits
 
+- `8b6e7fc` Add safe device app launcher skeleton
 - `6bab5a2` Add confirmed Windows sleep device action
 - `65660aa` Add confirmed Windows lock device action
 - `5a789bf` Add device action danger confirmation gate
