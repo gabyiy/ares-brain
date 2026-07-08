@@ -15,7 +15,7 @@
       "app_id": "calculator",
       "display_name": "Calculator",
       "command": "C:\\Windows\\System32\\calc.exe",
-      "enabled": false,
+      "enabled": true,
       "requires_confirmation": true,
       "metadata": {
         "source": "config_allowlist",

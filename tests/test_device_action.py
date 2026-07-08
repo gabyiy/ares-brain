@@ -160,7 +160,7 @@ def test_list_allowlisted_apps_works():
 
     assert result.success is True
     assert result.action_name == "list_apps"
-    assert result.text == "Allowlisted apps: notepad (disabled), calculator (disabled), browser (disabled)."
+    assert result.text == "Allowlisted apps: notepad (disabled), calculator, browser (disabled)."
     apps = {app["app_id"]: app for app in result.data["apps"]}
     assert apps["notepad"] == {
         "app_id": "notepad",
@@ -170,9 +170,20 @@ def test_list_allowlisted_apps_works():
         "requires_confirmation": True,
         "metadata": {"source": "config_allowlist", "platform": "windows"},
     }
-    assert apps["calculator"]["enabled"] is False
+    assert apps["calculator"]["enabled"] is True
+    assert apps["calculator"]["requires_confirmation"] is True
     assert apps["browser"]["enabled"] is False
     assert result.metadata == {"safe": True, "allowlist_only": True}
+
+
+def test_loaded_config_enables_only_calculator():
+    apps = {app.app_id: app for app in AppAllowlistLoader().load()}
+
+    assert apps["calculator"].enabled is True
+    assert apps["calculator"].requires_confirmation is True
+    assert apps["calculator"].command_placeholder == "C:\\Windows\\System32\\calc.exe"
+    assert apps["notepad"].enabled is False
+    assert apps["browser"].enabled is False
 
 
 def test_unknown_app_is_rejected_without_launching():
@@ -196,19 +207,36 @@ def test_unknown_app_is_rejected_without_launching():
     assert calls == []
 
 
-def test_disabled_app_is_rejected_without_launching():
+def test_disabled_notepad_is_rejected_without_launching():
     calls = []
     adapter = LocalDeviceActionAdapter(app_launcher=lambda app: calls.append(app.app_id) or True)
 
     result = adapter.execute(
         "open_app",
-        {"app_id": "calculator", "confirmation_approved": True},
+        {"app_id": "notepad", "confirmation_approved": True},
     )
 
     assert result.success is False
-    assert result.text == "App is disabled: calculator"
+    assert result.text == "App is disabled: notepad"
     assert result.error_message == "disabled_app"
-    assert result.data["app"]["app_id"] == "calculator"
+    assert result.data["app"]["app_id"] == "notepad"
+    assert result.metadata["executed"] is False
+    assert calls == []
+
+
+def test_disabled_browser_is_rejected_without_launching():
+    calls = []
+    adapter = LocalDeviceActionAdapter(app_launcher=lambda app: calls.append(app.app_id) or True)
+
+    result = adapter.execute(
+        "open_app",
+        {"app_id": "browser", "confirmation_approved": True},
+    )
+
+    assert result.success is False
+    assert result.text == "App is disabled: browser"
+    assert result.error_message == "disabled_app"
+    assert result.data["app"]["app_id"] == "browser"
     assert result.metadata["executed"] is False
     assert calls == []
 
@@ -235,6 +263,31 @@ def test_open_app_requires_confirmation_before_mock_launch():
         ),
     }
     assert calls == []
+
+
+def test_confirmed_calculator_from_loaded_config_calls_mocked_windows_launcher():
+    calls = []
+
+    def launch(app: AppLaunchConfig):
+        calls.append(app.to_dict())
+        return True
+
+    adapter = LocalDeviceActionAdapter(
+        app_launcher=launch,
+        platform_system=lambda: "Windows",
+    )
+
+    result = adapter.execute(
+        "open_app",
+        {"app_id": "calculator", "confirmation_approved": True},
+    )
+
+    assert result.success is True
+    assert result.text == "Windows app launch requested: Calculator."
+    assert result.data["app"]["app_id"] == "calculator"
+    assert result.data["app"]["command_placeholder"] == "C:\\Windows\\System32\\calc.exe"
+    assert result.metadata["executed"] is True
+    assert calls == [result.data["app"]]
 
 
 def test_confirmed_enabled_open_app_calls_mocked_windows_launcher():

@@ -62,12 +62,17 @@ def test_device_action_skill_lists_apps():
     )
 
     assert response.skill == "device_action"
-    assert response.text == "Allowlisted apps: notepad (disabled), calculator (disabled), browser (disabled)."
+    assert response.text == "Allowlisted apps: notepad (disabled), calculator, browser (disabled)."
     assert [app["app_id"] for app in response.metadata["data"]["apps"]] == [
         "notepad",
         "calculator",
         "browser",
     ]
+    apps = {app["app_id"]: app for app in response.metadata["data"]["apps"]}
+    assert apps["calculator"]["enabled"] is True
+    assert apps["calculator"]["requires_confirmation"] is True
+    assert apps["notepad"]["enabled"] is False
+    assert apps["browser"]["enabled"] is False
 
 
 def test_device_action_skill_system_status_mock_works():
@@ -390,7 +395,7 @@ def test_text_repl_executes_safe_device_action(monkeypatch, tmp_path, capsys):
         "Available device actions: echo, system_status_mock, list_actions, list_apps, "
         "lock_pc, sleep_pc, open_app."
     ) in output
-    assert "Allowlisted apps: notepad (disabled), calculator (disabled), browser (disabled)." in output
+    assert "Allowlisted apps: notepad (disabled), calculator, browser (disabled)." in output
     assert detected
 
 
