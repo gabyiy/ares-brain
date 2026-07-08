@@ -357,6 +357,7 @@ class LocalDeviceActionAdapter:
             app_launcher=app_launcher,
             app_resolver=self._app_allowlist.get,
             platform_system=platform_system,
+            available_actions_provider=self._available_action_names,
         )
         if registry is None:
             self._register_safe_builtins()
@@ -374,6 +375,9 @@ class LocalDeviceActionAdapter:
     def classify(self, action_name: str) -> DeviceActionSafetyDecision:
         return classify_device_action(_adapter_action_alias(action_name))
 
+    def _available_action_names(self) -> List[str]:
+        return [action.name for action in self.registry.list_actions()]
+
     def _register_safe_builtins(self) -> None:
         self.registry.register(
             DeviceAction(
@@ -385,11 +389,11 @@ class LocalDeviceActionAdapter:
         self.registry.register(
             DeviceAction(
                 name="system_status_mock",
-                description="Return deterministic mock system status without inspecting the host.",
+                description="Return safe structured system status through PCService.",
             ),
             lambda parameters: _device_action_result(
                 "system_status_mock",
-                self._pc_service.status(),
+                self._pc_service.get_status(),
             ),
         )
         self.registry.register(

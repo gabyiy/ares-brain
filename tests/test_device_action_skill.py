@@ -82,9 +82,16 @@ def test_device_action_skill_system_status_mock_works():
     )
 
     assert response.skill == "device_action"
-    assert response.text == "System status mock: ok."
-    assert response.metadata["data"]["source"] == "mock"
+    assert response.text == "System status: ok."
+    assert response.metadata["data"]["source"] == "pc_service"
+    assert response.metadata["data"]["status"] == "ok"
+    assert isinstance(response.metadata["data"]["operating_system"], str)
+    assert isinstance(response.metadata["data"]["hostname"], str)
+    assert isinstance(response.metadata["data"]["current_user"], str)
+    assert isinstance(response.metadata["data"]["python_version"], str)
+    assert response.metadata["data"]["available_actions"] == EXPECTED_DEVICE_ACTIONS
     assert response.metadata["data"]["checks"]["shell_execution"] == "disabled"
+    assert response.metadata["data"]["checks"]["network_access"] == "not_used"
 
 
 def test_device_action_skill_returns_confirmation_required_for_shutdown():
@@ -268,12 +275,15 @@ def test_skill_manager_executes_device_action_through_pipeline():
     manager.register(DeviceActionSkill())
 
     response = manager.handle("system status", run_before_intents=True)
+    step_result = manager.last_execution.step_results[0]
 
     assert response.skill == "device_action"
-    assert response.text == "System status mock: ok."
+    assert response.text == "System status: ok."
     assert manager.last_plan.steps[0].target == "device_action"
-    assert manager.last_execution.step_results[0].target == "device_action"
-    assert manager.last_execution.step_results[0].success is True
+    assert step_result.target == "device_action"
+    assert step_result.success is True
+    assert step_result.returned_data["metadata"]["data"]["source"] == "pc_service"
+    assert step_result.returned_data["metadata"]["data"]["checks"]["network_access"] == "not_used"
 
 
 def test_skill_manager_reports_confirmation_required_without_execution():

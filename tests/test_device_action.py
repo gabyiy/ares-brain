@@ -11,6 +11,7 @@ from core import (
     DeviceActionResult,
     LocalDeviceActionAdapter,
     PCServiceResult,
+    WindowsPCService,
 )
 
 
@@ -88,14 +89,34 @@ class FakePCService:
             metadata={"executed": True, "app_id": "calculator"},
         )
 
-    def status(self):
-        self.calls.append(("status", None))
+    def get_status(self):
+        self.calls.append(("get_status", None))
         return PCServiceResult(
             success=True,
-            text="System status mock: ok.",
-            data={"status": "ok"},
-            metadata={"safe": True, "mock": True},
+            text="System status: ok.",
+            data={
+                "status": "ok",
+                "source": "pc_service",
+                "operating_system": "Windows",
+                "hostname": "ARES-PC",
+                "current_user": "gabyi",
+                "python_version": "3.13.14",
+                "uptime_seconds": 42.0,
+                "available_actions": ["echo"],
+                "checks": {
+                    "device_actions": "safe",
+                    "shell_execution": "disabled",
+                    "remote_control": "disabled",
+                    "network_access": "not_used",
+                    "process_enumeration": "disabled",
+                    "hardware_telemetry": "disabled",
+                },
+            },
+            metadata={"safe": True, "source": "pc_service"},
         )
+
+    def status(self):
+        raise AssertionError("DeviceAction status must call PCService.get_status()")
 
 
 def test_app_allowlist_loader_loads_valid_config(tmp_path):
@@ -501,20 +522,85 @@ def test_confirmed_open_app_uses_pc_service_entrypoint():
     assert pc_service.calls == [("open_app", "calculator")]
 
 
-def test_system_status_mock_action_is_deterministic():
-    result = LocalDeviceActionAdapter().execute("system status")
+def test_pc_service_get_status_returns_safe_structured_data():
+    service = WindowsPCService(
+        platform_system=lambda: "Windows",
+        hostname_provider=lambda: "ARES-PC",
+        current_user_provider=lambda: "gabyi",
+        python_version_provider=lambda: "3.13.14",
+        uptime_provider=lambda: 123.456,
+        available_actions_provider=lambda: ["echo", "echo", "system_status_mock"],
+    )
+
+    result = service.get_status()
 
     assert result.success is True
-    assert result.text == "System status mock: ok."
+    assert result.text == "System status: ok."
     assert result.data == {
         "status": "ok",
-        "source": "mock",
+        "source": "pc_service",
+        "operating_system": "Windows",
+        "hostname": "ARES-PC",
+        "current_user": "gabyi",
+        "python_version": "3.13.14",
+        "uptime_seconds": 123.456,
+        "available_actions": ["echo", "system_status_mock"],
         "checks": {
             "device_actions": "safe",
             "shell_execution": "disabled",
             "remote_control": "disabled",
+            "network_access": "not_used",
+            "process_enumeration": "disabled",
+            "hardware_telemetry": "disabled",
         },
     }
+    assert result.metadata == {"safe": True, "source": "pc_service"}
+    assert "processes" not in result.data
+    assert "hardware" not in result.data
+
+
+def test_pc_service_status_wrapper_uses_get_status():
+    service = WindowsPCService(
+        platform_system=lambda: "Linux",
+        hostname_provider=lambda: "ARES-PC",
+        current_user_provider=lambda: "gabyi",
+        python_version_provider=lambda: "3.13.14",
+        uptime_provider=lambda: None,
+        available_actions_provider=lambda: ["echo"],
+    )
+
+    result = service.status()
+
+    assert result.text == "System status: ok."
+    assert result.data["operating_system"] == "Linux"
+    assert result.data["available_actions"] == ["echo"]
+
+
+def test_system_status_action_returns_safe_structured_data():
+    result = LocalDeviceActionAdapter().execute("system status")
+
+    assert result.success is True
+    assert result.text == "System status: ok."
+    assert result.data["status"] == "ok"
+    assert result.data["source"] == "pc_service"
+    assert isinstance(result.data["operating_system"], str)
+    assert isinstance(result.data["hostname"], str)
+    assert isinstance(result.data["current_user"], str)
+    assert isinstance(result.data["python_version"], str)
+    assert result.data["uptime_seconds"] is None or isinstance(
+        result.data["uptime_seconds"], (int, float)
+    )
+    assert result.data["available_actions"] == EXPECTED_DEVICE_ACTIONS
+    assert result.data["checks"] == {
+        "device_actions": "safe",
+        "shell_execution": "disabled",
+        "remote_control": "disabled",
+        "network_access": "not_used",
+        "process_enumeration": "disabled",
+        "hardware_telemetry": "disabled",
+    }
+    assert result.metadata == {"safe": True, "source": "pc_service"}
+    assert "processes" not in result.data
 
 
 def test_system_status_uses_pc_service_entrypoint():
@@ -524,9 +610,9 @@ def test_system_status_uses_pc_service_entrypoint():
 
     assert result.success is True
     assert result.action_name == "system_status_mock"
-    assert result.text == "System status mock: ok."
-    assert result.data == {"status": "ok"}
-    assert pc_service.calls == [("status", None)]
+    assert result.text == "System status: ok."
+    assert result.data["source"] == "pc_service"
+    assert pc_service.calls == [("get_status", None)]
 
 
 def test_device_action_execution_result_format_is_stable():
