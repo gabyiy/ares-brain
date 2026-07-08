@@ -430,9 +430,27 @@ Phase 34: Calculator App Allowlist Enablement
 - Tests cover loaded config state, confirmation-required behavior, confirmed calculator launch through a mocked launcher, disabled notepad/browser rejection, arbitrary path rejection, and the full suite.
 - No shutdown, restart, delete, Telegram, voice, GPT, internet, notifications, remote access, arbitrary shell commands, or arbitrary app launching was added.
 
+Phase 35: Manual Calculator Launch Verification
+
+- `scripts/manual_verify_calculator_launch.py` is owner-run only.
+- The script prints a warning and shows `App id: calculator`.
+- The script requires the exact typed confirmation `YES_OPEN_CALCULATOR`.
+- Only after that confirmation does it call the existing `LocalDeviceActionAdapter.execute("open_app", ...)` path.
+- Automated tests mock this path and do not open Calculator.
+- No new apps, shell commands, shutdown/restart/delete, Telegram, voice, GPT, internet, remote access, or notifications were added.
+
+Phase 36: PCService Abstraction
+
+- `core.PCService` defines the dedicated interface for future PC operations: `lock()`, `sleep()`, `open_app(app_id)`, and `status()`.
+- `core.PCServiceResult` provides the service-layer result shape.
+- `core.WindowsPCService` holds the Windows-specific implementation behind the PC service boundary.
+- `LocalDeviceActionAdapter` delegates status, lock, sleep, and open-app behavior through PCService instead of directly calling Windows helpers.
+- Existing device-action behavior, confirmation gates, app allowlist rules, and tests remain compatible.
+- No new device actions, shutdown, restart, delete, Telegram, voice, GPT, internet, remote access, arbitrary shell commands, or behavior changes were added.
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a PCService boundary for all current PC operations, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -444,10 +462,10 @@ The current deterministic answer paths are:
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, and calendar
 - `Planner`, `MultiStepPlan`, `ConfirmationManager`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, context responses, confirmations, and conversation memory plan execution
 - `ToolAdapterRegistry`, `ExternalAdapterConfig`, `SecretsGuard`, `RealWeatherAdapter`, and `RealMarketAdapter` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
-- `DeviceActionRegistry`, `LocalDeviceActionAdapter`, `AppLaunchConfig`, `AppAllowlistLoader`, and `DeviceActionSkill` for safe local Device/PC City action foundations, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated config-backed allowlisted Windows `open_app`, safe live routing, and stable confirmation-required/forbidden responses
+- `DeviceActionRegistry`, `LocalDeviceActionAdapter`, `PCService`, `WindowsPCService`, `AppLaunchConfig`, `AppAllowlistLoader`, and `DeviceActionSkill` for safe local Device/PC City action foundations, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated config-backed allowlisted Windows `open_app`, safe live routing, and stable confirmation-required/forbidden responses
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 273 tests.
+The current pytest collection is 280 tests.
 
 The current memory paths are:
 

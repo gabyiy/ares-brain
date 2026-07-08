@@ -10,13 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.34 - Manual Calculator Launch Verification
+ARES v1.35 - PCService Abstraction
 
 ---
 
 Current Architecture
 
-The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.DeviceAction`, `DeviceActionRegistry`, `AppLaunchConfig`, `AppAllowlistLoader`, and `LocalDeviceActionAdapter` for local device action foundations with `safe`, `confirmation_required`, and `forbidden` classifications, confirmed Windows-only `lock_pc` and `sleep_pc`, a config-backed allowlist-only Windows app launcher with only `calculator` enabled in `config/apps.json`, disabled `notepad` and `browser` entries, `list_apps`, confirmation-gated `open_app`, no arbitrary user paths, and no shell commands, `skills.builtin.DeviceActionSkill` for safe live routing of `echo`, `list device actions`, `list apps`, and `system status` plus confirmation-gated `lock_pc`/`sleep_pc`/`open_app` and stable forbidden responses for dangerous placeholders, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.DeviceAction`, `DeviceActionRegistry`, `AppLaunchConfig`, `AppAllowlistLoader`, `core.PCService`, `PCServiceResult`, `WindowsPCService`, and `LocalDeviceActionAdapter` for local device action foundations with `safe`, `confirmation_required`, and `forbidden` classifications, confirmed Windows-only `lock_pc` and `sleep_pc`, a config-backed allowlist-only Windows app launcher with only `calculator` enabled in `config/apps.json`, disabled `notepad` and `browser` entries, `list_apps`, confirmation-gated `open_app`, no arbitrary user paths, no shell commands, and all PC operations routed through PCService as the dedicated entry point, `skills.builtin.DeviceActionSkill` for safe live routing of `echo`, `list device actions`, `list apps`, and `system status` plus confirmation-gated `lock_pc`/`sleep_pc`/`open_app` and stable forbidden responses for dangerous placeholders, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 Long-Term City Model
 
@@ -133,6 +133,7 @@ Completed
 - App launcher allowlist config
 - Calculator app allowlist enablement
 - Manual calculator launch verification script
+- PCService abstraction for Windows operations
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -223,6 +224,7 @@ Implemented Features
 - Execution pipeline for ordered plan step execution, confirmation pauses, aggregated final responses, partial-result reporting, execution results, logging, and rollback hooks
 - External ToolAdapter foundation with `ToolRequest`, `ToolResponse`, `ToolAdapterRegistry`, and offline mock weather/market adapters
 - DeviceAction foundation with `DeviceAction`, `DeviceActionResult`, `DeviceActionRegistry`, and `LocalDeviceActionAdapter`
+- PCService abstraction with `PCServiceResult` and `WindowsPCService` as the single DeviceAction entry point for `lock`, `sleep`, `open_app`, and `status`
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
 - Confirmed Windows-only `lock_pc` action after explicit user approval
 - Confirmed Windows-only `sleep_pc` action after explicit user approval
@@ -244,7 +246,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 276 tests across core Phase 2-35 modules
+- Pytest automated coverage for 280 tests across core Phase 2-36 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -263,7 +265,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `276 tests`.
+Current pytest collection: `280 tests`.
 
 Manual Calculator Launch Verification
 
@@ -428,6 +430,12 @@ Completed:
 - Device dangerous-action confirmation gate
 - Confirmed Windows lock device action
 - Confirmed Windows sleep device action
+- Device app launcher skeleton
+- Confirmed Windows app launcher
+- App launcher allowlist config
+- Calculator app allowlist enablement
+- Manual calculator launch verification script
+- PCService abstraction for Windows operations
 
 Next:
 
@@ -834,19 +842,28 @@ Phase 35
 
 Phase 36
 
+- PCService abstraction
+- `core.PCService` defines the dedicated interface for future PC operations: `lock()`, `sleep()`, `open_app(app_id)`, and `status()`
+- `core.WindowsPCService` holds the Windows-specific implementation behind that interface
+- `LocalDeviceActionAdapter` delegates lock, sleep, open app, and status behavior through PCService instead of calling Windows helpers directly
+- Existing injection points and behavior remain compatible for tests and runtime
+- No new device actions, shutdown/restart/delete, Telegram, voice, GPT, internet, remote access, or behavior changes were added
+
+Phase 37
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 37
+Phase 38
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 38
+Phase 39
 
 - Robotics
 - ROS2
