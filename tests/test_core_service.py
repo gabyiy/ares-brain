@@ -6,6 +6,7 @@ from core import (
     CITY_STATE_FAILED,
     CITY_STATE_IDLE,
     EVENT_DECISION_ESCALATED,
+    EVENT_DECISION_FAILED,
     EVENT_DECISION_IGNORED,
     EVENT_DECISION_RECORDED,
     PC_SERVICE_NAME,
@@ -20,6 +21,7 @@ from core import (
     PlaceholderVoiceService,
     WindowsPCService,
 )
+from events import EventHistoryStore
 
 
 class FakeCapabilityService:
@@ -466,3 +468,155 @@ def test_core_service_ignores_disabled_source_event_safely():
     assert result.data["escalated"] is False
     assert result.data["city_statuses"] == {"vision": CITY_STATE_DISABLED}
     assert core_service.event_decisions() == []
+
+
+def test_core_service_stores_recorded_low_event_history(tmp_path):
+    history_store = EventHistoryStore(path=tmp_path / "event_history.json")
+    core_service = CoreService(
+        event_history_store=history_store,
+        register_default_pc=False,
+        register_default_voice=False,
+    )
+    core_service.register_service("voice", FakeCapabilityService())
+    event = Event(
+        source="voice",
+        type="voice.placeholder",
+        priority=PRIORITY_LOW,
+        payload={"message": "no input"},
+    )
+
+    result = core_service.handle_event(event)
+
+    assert result.decision == EVENT_DECISION_RECORDED
+    assert history_store.list()[0].decision == EVENT_DECISION_RECORDED
+    assert history_store.list()[0].source == "voice"
+    assert history_store.list()[0].type == "voice.placeholder"
+    assert history_store.list()[0].priority == PRIORITY_LOW
+    assert history_store.list()[0].result["decision"] == EVENT_DECISION_RECORDED
+
+
+def test_core_service_stores_recorded_normal_event_history(tmp_path):
+    history_store = EventHistoryStore(path=tmp_path / "event_history.json")
+    core_service = CoreService(
+        event_history_store=history_store,
+        register_default_pc=False,
+        register_default_voice=False,
+    )
+    core_service.register_service("pc", FakeCapabilityService())
+    event = Event(
+        source="pc",
+        type="device.status",
+        priority=PRIORITY_NORMAL,
+        payload={"status": "ok"},
+    )
+
+    result = core_service.handle_event(event)
+
+    assert result.decision == EVENT_DECISION_RECORDED
+    assert history_store.recent(source="pc") == history_store.list()
+    assert history_store.list()[0].decision == EVENT_DECISION_RECORDED
+    assert history_store.list()[0].priority == PRIORITY_NORMAL
+
+
+def test_core_service_stores_escalated_high_event_history(tmp_path):
+    history_store = EventHistoryStore(path=tmp_path / "event_history.json")
+    core_service = CoreService(
+        event_history_store=history_store,
+        register_default_pc=False,
+        register_default_voice=False,
+    )
+    core_service.register_service("pc", FakeCapabilityService())
+    event = Event(
+        source="pc",
+        type="device.warning",
+        priority=PRIORITY_HIGH,
+        payload={"warning": "confirmation needed"},
+    )
+
+    result = core_service.handle_event(event)
+
+    assert result.decision == EVENT_DECISION_ESCALATED
+    assert history_store.list()[0].decision == EVENT_DECISION_ESCALATED
+    assert history_store.list()[0].result["data"]["escalated"] is True
+    assert history_store.list()[0].priority == PRIORITY_HIGH
+
+
+def test_core_service_stores_escalated_critical_event_history(tmp_path):
+    history_store = EventHistoryStore(path=tmp_path / "event_history.json")
+    core_service = CoreService(
+        event_history_store=history_store,
+        register_default_pc=False,
+        register_default_voice=False,
+    )
+    core_service.register_service("pc", FakeCapabilityService())
+    event = Event(
+        source="pc",
+        type="device.safety",
+        priority=PRIORITY_CRITICAL,
+        payload={"safety": "critical"},
+    )
+
+    result = core_service.handle_event(event)
+
+    assert result.decision == EVENT_DECISION_ESCALATED
+    assert history_store.list()[0].decision == EVENT_DECISION_ESCALATED
+    assert history_store.list()[0].result["data"]["escalated"] is True
+    assert history_store.list()[0].priority == PRIORITY_CRITICAL
+
+
+def test_core_service_stores_unknown_source_event_history_as_ignored(tmp_path):
+    history_store = EventHistoryStore(path=tmp_path / "event_history.json")
+    core_service = CoreService(
+        event_history_store=history_store,
+        register_default_pc=False,
+        register_default_voice=False,
+    )
+    core_service.register_service("pc", FakeCapabilityService())
+    event = Event(
+        source="vision",
+        type="vision.object",
+        priority=PRIORITY_HIGH,
+        payload={"object": "door"},
+    )
+
+    result = core_service.handle_event(event)
+
+    assert result.success is False
+    assert result.decision == EVENT_DECISION_IGNORED
+    assert result.error_message == "unknown_event_source"
+    assert history_store.list()[0].decision == EVENT_DECISION_IGNORED
+    assert history_store.list()[0].result["error_message"] == "unknown_event_source"
+    assert history_store.list()[0].source == "vision"
+
+
+def test_core_service_stores_disabled_source_event_history_as_ignored(tmp_path):
+    history_store = EventHistoryStore(path=tmp_path / "event_history.json")
+    core_service = CoreService(
+        event_history_store=history_store,
+        register_default_pc=False,
+        register_default_voice=False,
+    )
+    core_service.register_service(
+        "vision",
+        FakeCapabilityService(),
+        city_status=CITY_STATE_DISABLED,
+    )
+    event = Event(
+        source="vision",
+        type="vision.object",
+        priority=PRIORITY_CRITICAL,
+        payload={"object": "door"},
+    )
+
+    result = core_service.handle_event(event)
+
+    assert result.success is False
+    assert result.decision == EVENT_DECISION_IGNORED
+    assert result.error_message == "disabled_event_source"
+    assert history_store.list()[0].decision == EVENT_DECISION_IGNORED
+    assert history_store.list()[0].result["error_message"] == "disabled_event_source"
+    assert history_store.list()[0].source == "vision"
+
+
+def test_core_service_event_decision_values_include_failed():
+    assert EVENT_DECISION_FAILED == "failed"

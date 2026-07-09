@@ -10,16 +10,19 @@ from core.EventBus import (
 )
 from core.PCService import PCService, WindowsPCService
 from core.VoiceService import PlaceholderVoiceService, VoiceService
+from events.EventHistoryStore import EventHistoryStore
 
 PC_SERVICE_NAME = "pc"
 VOICE_SERVICE_NAME = "voice"
 EVENT_DECISION_IGNORED = "ignored"
 EVENT_DECISION_RECORDED = "recorded"
 EVENT_DECISION_ESCALATED = "escalated"
+EVENT_DECISION_FAILED = "failed"
 EVENT_DECISIONS = {
     EVENT_DECISION_IGNORED,
     EVENT_DECISION_RECORDED,
     EVENT_DECISION_ESCALATED,
+    EVENT_DECISION_FAILED,
 }
 CITY_STATE_IDLE = "idle"
 CITY_STATE_ACTIVE = "active"
@@ -62,12 +65,14 @@ class CoreService:
         services: Optional[Mapping[str, Any]] = None,
         pc_service: Optional[PCService] = None,
         voice_service: Optional[VoiceService] = None,
+        event_history_store: Optional[EventHistoryStore] = None,
         register_default_pc: bool = True,
         register_default_voice: bool = True,
     ):
         self._services: Dict[str, Any] = {}
         self._service_metadata: Dict[str, Dict[str, Any]] = {}
         self._event_decisions: List[CoreEventDecisionResult] = []
+        self._event_history_store = event_history_store
         for name, service in (services or {}).items():
             self.register_service(name, service)
 
@@ -234,19 +239,23 @@ class CoreService:
 
         event_source = _normalize_service_name(event.source)
         if event_source not in self._services:
-            return self._ignored_event_result(
+            result = self._ignored_event_result(
                 event,
                 "unknown_event_source",
                 f"Event ignored safely because source is not registered: {event.source}",
             )
+            self._store_event_history(event, result)
+            return result
 
         city_status = self._city_status(event_source)
         if city_status == CITY_STATE_DISABLED:
-            return self._ignored_event_result(
+            result = self._ignored_event_result(
                 event,
                 "disabled_event_source",
                 f"Event ignored safely because source is disabled: {event_source}",
             )
+            self._store_event_history(event, result)
+            return result
 
         if event.priority in {PRIORITY_HIGH, PRIORITY_CRITICAL}:
             result = self._event_result(
@@ -265,13 +274,16 @@ class CoreService:
                 escalated=False,
             )
         else:
-            return self._ignored_event_result(
+            result = self._ignored_event_result(
                 event,
                 "invalid_event_priority",
                 f"Event ignored safely because priority is invalid: {event.priority}",
             )
+            self._store_event_history(event, result)
+            return result
 
         self._event_decisions.append(result)
+        self._store_event_history(event, result)
         return result
 
     def event_decisions(self, decision: Optional[str] = None) -> List[CoreEventDecisionResult]:
@@ -429,6 +441,10 @@ class CoreService:
             },
             metadata={"safe": True, "source": "core_service"},
         )
+
+    def _store_event_history(self, event: Event, result: CoreEventDecisionResult) -> None:
+        if self._event_history_store is not None:
+            self._event_history_store.add(event, result)
 
 
 def _service_capability_method(service: Any) -> Optional[CapabilityMethod]:
