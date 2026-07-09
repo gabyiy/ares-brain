@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.48 - CoreService Event Decision Routing
+ARES v1.49 - Local Event History Store
 
 ---
 
@@ -25,6 +25,8 @@ The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the
 `core.EventBus` now provides an internal future city event skeleton with `Event` records shaped as source, type, priority, payload, and timestamp. Supported priorities are `low`, `normal`, `high`, and `critical`. This is future-use infrastructure only; it does not start background listeners, notifications, camera loops, internet access, GPT, or any daemon.
 
 CoreService can now receive internal city events through `handle_event(event)` and return a stable decision result: `recorded`, `ignored`, or `escalated`. Low and normal events are recorded only, high and critical events are marked escalated, and disabled or unknown event sources fail safely. This is internal routing only; it does not send notifications, start listeners, call devices, access the internet, or use GPT.
+
+`events.EventHistoryStore` now persists internal event decisions/results to local JSON history with safe size limits. It can query recent events by source, type, and priority. This is internal memory/logging only; it does not send notifications, call devices, start a daemon, access the internet, or use GPT.
 
 `core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It owns `VoiceInput` and `VoiceOutput` components, currently implemented as `NullVoiceInput` and `NullVoiceOutput`. These expose `listen_once()`, `speak(text)`, `get_capabilities()`, and `get_status()` contracts with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled. `core.VoiceLoop` adds a one-shot text loop foundation: it calls `VoiceInput.listen_once()`, ignores empty input safely, passes recognized text to an injected existing text/planner/execution handler, and sends the final response text to `VoiceOutput.speak()`.
 
@@ -222,6 +224,7 @@ Completed
 - City lifecycle states and lazy capability routing
 - Internal Core EventBus skeleton
 - CoreService internal event decision routing
+- Local EventHistoryStore for internal event decisions/results
 - Phase 2 architecture stabilization
 - Voice City service skeleton
 - Voice City input/output contracts
@@ -322,6 +325,7 @@ Implemented Features
 - CoreService orchestration layer with service registration, default `PCService` registration as `pc`, `get_service(name)`, `list_services()`, aggregate `get_capabilities()` over registered services, city lifecycle metadata, and lazy `route_by_capability()` execution
 - Internal `core.EventBus` skeleton with event source, type, priority, payload, timestamp, publish/subscribe, and priority-ordered history
 - CoreService internal event handling with `ignored`, `recorded`, and `escalated` decisions for city events
+- Local `events.EventHistoryStore` for persisted internal event decisions/results with source/type/priority queries and bounded history size
 - Phase 2 architecture cleanup with centralized `PC_SERVICE_NAME`, CoreService carried through `SkillContext`, and focused service registration/capability contract tests
 - Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceInput`, `VoiceOutput`, `NullVoiceInput`, `NullVoiceOutput`, `VoiceStatus`, `VoiceCapabilities`, `VoiceLoop`, `VoiceLoopResult`, default CoreService registration as `voice`, safe placeholder status, a one-shot placeholder text loop, and no audio hardware access
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
@@ -346,7 +350,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 331 tests across core Phase 2-46 modules
+- Pytest automated coverage for 338 tests across core Phase 2-47 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -365,7 +369,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `331 tests`.
+Current pytest collection: `338 tests`.
 
 Manual Calculator Launch Verification
 
@@ -1066,19 +1070,28 @@ Phase 46
 
 Phase 47
 
+- Local Event History Store
+- `events.EventHistoryStore` persists internal event decisions/results in `data/event_history.json`
+- Stored history is bounded by a safe max-record limit
+- Recent events can be queried by source, type, and priority
+- `data/event_history.json` is ignored by git because it can contain local internal history
+- This is internal memory/logging only and does not add notifications, devices, background daemons, internet, GPT, or external calls
+
+Phase 48
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 48
+Phase 49
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 49
+Phase 50
 
 - Robotics
 - ROS2
