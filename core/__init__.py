@@ -56,6 +56,7 @@ from core.VoiceService import (
     VoiceServiceResult,
     VoiceStatus,
 )
+from core.VoiceLoop import VoiceLoop, VoiceLoopResult
 
 __all__ = [
     "ConversationContextManager",
@@ -112,6 +113,8 @@ __all__ = [
     "VoiceService",
     "VoiceServiceResult",
     "VoiceStatus",
+    "VoiceLoop",
+    "VoiceLoopResult",
     "MAX_CHAIN_DEPTH",
     "ToolAdapter",
     "ToolAdapterRegistry",

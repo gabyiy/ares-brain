@@ -1,0 +1,227 @@
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, Optional
+
+from core.VoiceService import (
+    NullVoiceInput,
+    NullVoiceOutput,
+    PlaceholderVoiceService,
+    VoiceInput,
+    VoiceOutput,
+    VoiceService,
+    VoiceServiceResult,
+)
+
+
+TextHandler = Callable[[str], Any]
+
+
+@dataclass(frozen=True)
+class VoiceLoopResult:
+    success: bool
+    status: str
+    text: str = ""
+    input_text: str = ""
+    response_text: str = ""
+    error_message: str = ""
+    data: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "status": self.status,
+            "text": self.text,
+            "input_text": self.input_text,
+            "response_text": self.response_text,
+            "error_message": self.error_message,
+            "data": dict(self.data),
+            "metadata": dict(self.metadata),
+        }
+
+
+class VoiceLoop:
+    """One-shot Voice City text loop with no audio hardware access."""
+
+    def __init__(
+        self,
+        voice_service: Optional[VoiceService] = None,
+        text_handler: Optional[TextHandler] = None,
+        voice_input: Optional[VoiceInput] = None,
+        voice_output: Optional[VoiceOutput] = None,
+        logger: Optional[logging.Logger] = None,
+    ):
+        self.voice_service = voice_service or PlaceholderVoiceService()
+        self.voice_input = voice_input or getattr(self.voice_service, "voice_input", None) or NullVoiceInput()
+        self.voice_output = voice_output or getattr(self.voice_service, "voice_output", None) or NullVoiceOutput()
+        self.text_handler = text_handler
+        self.logger = logger or logging.getLogger("ares.voice_loop")
+
+    def run_once(self) -> VoiceLoopResult:
+        input_result = self._listen_once()
+        if not input_result.success:
+            return input_result
+
+        voice_input = input_result.data["voice_input"]
+        transcript = _extract_transcript(voice_input)
+        if not transcript:
+            return VoiceLoopResult(
+                success=True,
+                status="no_input",
+                text="No voice input detected.",
+                data={"voice_input": voice_input},
+                metadata={
+                    "safe": True,
+                    "source": "voice_loop",
+                    "audio_hardware_access": "disabled",
+                    "background_loop": "disabled",
+                },
+            )
+
+        if not self.text_handler:
+            return VoiceLoopResult(
+                success=False,
+                status="missing_text_handler",
+                text="Voice loop cannot process text because no text handler is configured.",
+                input_text=transcript,
+                error_message="missing_text_handler",
+                data={"voice_input": voice_input},
+                metadata={"safe": True, "source": "voice_loop"},
+            )
+
+        handled = self._handle_text(transcript, voice_input)
+        if not handled.success:
+            return handled
+
+        return self._speak_response(handled)
+
+    def _listen_once(self) -> VoiceLoopResult:
+        try:
+            voice_input = self.voice_input.listen_once()
+        except Exception as error:
+            return self._safe_error("input_error", error)
+
+        return VoiceLoopResult(
+            success=True,
+            status="input_received",
+            text="Voice input was checked.",
+            data={"voice_input": _voice_result_to_dict(voice_input)},
+            metadata={"safe": True, "source": "voice_loop"},
+        )
+
+    def _handle_text(self, transcript: str, voice_input: Dict[str, Any]) -> VoiceLoopResult:
+        try:
+            response = self.text_handler(transcript)
+        except Exception as error:
+            return self._safe_error(
+                "handler_error",
+                error,
+                input_text=transcript,
+                data={"voice_input": voice_input},
+            )
+
+        response_text = _extract_response_text(response)
+        return VoiceLoopResult(
+            success=True,
+            status="text_handled",
+            text=response_text,
+            input_text=transcript,
+            response_text=response_text,
+            data={
+                "voice_input": voice_input,
+                "handler_response": _handler_response_to_data(response),
+            },
+            metadata={"safe": True, "source": "voice_loop"},
+        )
+
+    def _speak_response(self, handled: VoiceLoopResult) -> VoiceLoopResult:
+        try:
+            output_result = self.voice_output.speak(handled.response_text)
+        except Exception as error:
+            return self._safe_error(
+                "output_error",
+                error,
+                input_text=handled.input_text,
+                response_text=handled.response_text,
+                data=dict(handled.data),
+            )
+
+        output_data = _voice_result_to_dict(output_result)
+        if not output_result.success:
+            return VoiceLoopResult(
+                success=False,
+                status="output_error",
+                text=output_result.text,
+                input_text=handled.input_text,
+                response_text=handled.response_text,
+                error_message=output_result.error_message or "voice_output_failed",
+                data={**dict(handled.data), "voice_output": output_data},
+                metadata={"safe": True, "source": "voice_loop"},
+            )
+
+        return VoiceLoopResult(
+            success=True,
+            status="completed",
+            text=handled.response_text,
+            input_text=handled.input_text,
+            response_text=handled.response_text,
+            data={**dict(handled.data), "voice_output": output_data},
+            metadata={
+                "safe": True,
+                "source": "voice_loop",
+                "audio_hardware_access": "disabled",
+                "background_loop": "disabled",
+            },
+        )
+
+    def _safe_error(
+        self,
+        status: str,
+        error: Exception,
+        input_text: str = "",
+        response_text: str = "",
+        data: Optional[Dict[str, Any]] = None,
+    ) -> VoiceLoopResult:
+        message = f"{type(error).__name__}: {error}"
+        self.logger.error("Voice loop %s: %s", status, message)
+        return VoiceLoopResult(
+            success=False,
+            status=status,
+            text=f"Voice loop failed safely: {message}",
+            input_text=input_text,
+            response_text=response_text,
+            error_message=message,
+            data=dict(data or {}),
+            metadata={"safe": True, "source": "voice_loop"},
+        )
+
+
+def _extract_transcript(result: Dict[str, Any]) -> str:
+    data = dict(result.get("data", {}) or {})
+    return str(data.get("transcript") or data.get("recognized_text") or "").strip()
+
+
+def _extract_response_text(response: Any) -> str:
+    if isinstance(response, str):
+        return response
+    return str(getattr(response, "text", "") or "")
+
+
+def _handler_response_to_data(response: Any) -> Dict[str, Any]:
+    if isinstance(response, str):
+        return {"text": response}
+    return {
+        "text": getattr(response, "text", ""),
+        "skill": getattr(response, "skill", ""),
+        "metadata": dict(getattr(response, "metadata", {}) or {}),
+    }
+
+
+def _voice_result_to_dict(result: VoiceServiceResult) -> Dict[str, Any]:
+    return {
+        "success": result.success,
+        "text": result.text,
+        "data": dict(result.data),
+        "error_message": result.error_message,
+        "metadata": dict(result.metadata),
+    }

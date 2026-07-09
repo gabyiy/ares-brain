@@ -5,7 +5,76 @@ from core import (
     NullVoiceInput,
     NullVoiceOutput,
     PlaceholderVoiceService,
+    VoiceLoop,
+    VoiceOutput,
+    VoiceServiceResult,
 )
+from skills.base import SkillResponse
+
+
+class StaticVoiceInput(NullVoiceInput):
+    def __init__(self, transcript: str):
+        super().__init__()
+        self.transcript = transcript
+        self.listen_count = 0
+
+    def listen_once(self) -> VoiceServiceResult:
+        self.listen_count += 1
+        return VoiceServiceResult(
+            success=True,
+            text="Static test voice input.",
+            data={
+                "source": "static_voice_input",
+                "transcript": self.transcript,
+                "microphone": "disabled",
+                "stt": "disabled",
+                "audio_hardware_access": "disabled",
+            },
+            metadata={
+                "safe": True,
+                "audio_hardware_accessed": self.audio_hardware_accessed,
+            },
+        )
+
+
+class RaisingVoiceInput(NullVoiceInput):
+    def listen_once(self) -> VoiceServiceResult:
+        raise RuntimeError("input failure")
+
+
+class RecordingVoiceOutput(VoiceOutput):
+    def __init__(self, fail=False):
+        self.spoken_texts = []
+        self.fail = fail
+        self.audio_hardware_accessed = False
+
+    def speak(self, text: str) -> VoiceServiceResult:
+        self.spoken_texts.append(text)
+        if self.fail:
+            return VoiceServiceResult(
+                success=False,
+                text="Voice output failed safely.",
+                error_message="output failure",
+                data={"speaker": "disabled"},
+                metadata={"safe": True, "audio_hardware_accessed": False},
+            )
+        return VoiceServiceResult(
+            success=True,
+            text="Recorded output without audio.",
+            data={
+                "accepted_text": text,
+                "speaker": "disabled",
+                "tts": "disabled",
+                "audio_hardware_access": "disabled",
+            },
+            metadata={"safe": True, "audio_hardware_accessed": False},
+        )
+
+    def get_status(self) -> VoiceServiceResult:
+        return VoiceServiceResult(success=True, data={"status": "recording_test"})
+
+    def get_capabilities(self) -> VoiceServiceResult:
+        return VoiceServiceResult(success=True, data={"voice_output": "recording_test"})
 
 
 def test_voice_service_registers_through_core_service():
@@ -146,3 +215,133 @@ def test_voice_service_does_not_access_audio_hardware():
     assert voice_service.audio_hardware_accessed is False
     assert status.metadata["audio_hardware_accessed"] is False
     assert capabilities.metadata["audio_hardware_accessed"] is False
+
+
+def test_voice_loop_defaults_to_null_voice_components():
+    loop = VoiceLoop(text_handler=lambda text: f"handled {text}")
+
+    assert isinstance(loop.voice_input, NullVoiceInput)
+    assert isinstance(loop.voice_output, NullVoiceOutput)
+
+
+def test_voice_loop_empty_input_does_nothing_safely():
+    calls = []
+    voice_input = StaticVoiceInput("")
+    voice_output = RecordingVoiceOutput()
+    loop = VoiceLoop(
+        voice_input=voice_input,
+        voice_output=voice_output,
+        text_handler=lambda text: calls.append(text),
+    )
+
+    result = loop.run_once()
+
+    assert result.success is True
+    assert result.status == "no_input"
+    assert result.text == "No voice input detected."
+    assert voice_input.listen_count == 1
+    assert calls == []
+    assert voice_output.spoken_texts == []
+    assert result.data["voice_input"]["data"]["transcript"] == ""
+
+
+def test_voice_loop_routes_recognized_text_to_text_handler():
+    handled_texts = []
+
+    def handle_text(text):
+        handled_texts.append(text)
+        return SkillResponse(text="Result: 4", skill="calculator")
+
+    voice_input = StaticVoiceInput("calculate 2 + 2")
+    voice_output = RecordingVoiceOutput()
+    loop = VoiceLoop(
+        voice_input=voice_input,
+        voice_output=voice_output,
+        text_handler=handle_text,
+    )
+
+    result = loop.run_once()
+
+    assert result.success is True
+    assert result.status == "completed"
+    assert result.input_text == "calculate 2 + 2"
+    assert result.response_text == "Result: 4"
+    assert handled_texts == ["calculate 2 + 2"]
+    assert voice_output.spoken_texts == ["Result: 4"]
+    assert result.data["handler_response"]["skill"] == "calculator"
+
+
+def test_voice_loop_sends_response_text_to_null_voice_output():
+    voice_input = StaticVoiceInput("what time is it")
+    loop = VoiceLoop(
+        voice_input=voice_input,
+        voice_output=NullVoiceOutput(),
+        text_handler=lambda text: "It is placeholder time.",
+    )
+
+    result = loop.run_once()
+
+    assert result.success is True
+    assert result.status == "completed"
+    assert result.response_text == "It is placeholder time."
+    assert result.data["voice_output"]["success"] is True
+    assert result.data["voice_output"]["data"]["accepted_text"] == "It is placeholder time."
+    assert result.data["voice_output"]["data"]["speaker"] == "disabled"
+    assert result.data["voice_output"]["data"]["tts"] == "disabled"
+
+
+def test_voice_loop_input_error_fails_safely():
+    calls = []
+    voice_output = RecordingVoiceOutput()
+    loop = VoiceLoop(
+        voice_input=RaisingVoiceInput(),
+        voice_output=voice_output,
+        text_handler=lambda text: calls.append(text),
+    )
+
+    result = loop.run_once()
+
+    assert result.success is False
+    assert result.status == "input_error"
+    assert result.error_message == "RuntimeError: input failure"
+    assert calls == []
+    assert voice_output.spoken_texts == []
+
+
+def test_voice_loop_handler_error_fails_safely():
+    voice_output = RecordingVoiceOutput()
+
+    def failing_handler(text):
+        raise ValueError("handler failure")
+
+    loop = VoiceLoop(
+        voice_input=StaticVoiceInput("hello"),
+        voice_output=voice_output,
+        text_handler=failing_handler,
+    )
+
+    result = loop.run_once()
+
+    assert result.success is False
+    assert result.status == "handler_error"
+    assert result.input_text == "hello"
+    assert result.error_message == "ValueError: handler failure"
+    assert voice_output.spoken_texts == []
+
+
+def test_voice_loop_output_error_fails_safely():
+    voice_output = RecordingVoiceOutput(fail=True)
+    loop = VoiceLoop(
+        voice_input=StaticVoiceInput("hello"),
+        voice_output=voice_output,
+        text_handler=lambda text: "Hello.",
+    )
+
+    result = loop.run_once()
+
+    assert result.success is False
+    assert result.status == "output_error"
+    assert result.input_text == "hello"
+    assert result.response_text == "Hello."
+    assert result.error_message == "output failure"
+    assert voice_output.spoken_texts == ["Hello."]
