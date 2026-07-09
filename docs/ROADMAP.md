@@ -478,9 +478,19 @@ Phase 39: CoreService Orchestration Layer
 - Tests cover default PCService registration, service lookup, service listing, capability aggregation, capability failure reporting, and DeviceAction/SkillManager CoreService integration.
 - No behavior changes, GPT, internet, network calls, remote execution, hardware additions, or new device actions were added.
 
+Phase 40: Phase 2 Complete Architecture Cleanup
+
+- Phase 2 is stabilized as the architecture baseline before adding new cities.
+- `PC_SERVICE_NAME` centralizes the CoreService PC registration key.
+- `SkillContext` carries `core_service` so the Brain-to-skill path has one consistent service boundary.
+- `CoreService` has clearer registration, lookup, listing, and capability aggregation documentation.
+- CoreService capability aggregation fails safely when a registered service does not expose `get_capabilities()`.
+- Tests verify default PCService status/capability interfaces, safe missing-capability reporting, and SkillManager context propagation.
+- No behavior changes, new functionality, new cities, GPT, internet, network calls, remote execution, hardware additions, or new device actions were added.
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a CoreService orchestration boundary for service registration and capability aggregation, a PCService boundary for all current PC operations, structured safe PC status responses, dynamic safe PC capability discovery, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a CoreService orchestration boundary for service registration and capability aggregation, `SkillContext` access to that CoreService boundary, a PCService boundary for all current PC operations, structured safe PC status responses, dynamic safe PC capability discovery, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -495,7 +505,7 @@ The current deterministic answer paths are:
 - `CoreService`, `DeviceActionRegistry`, `LocalDeviceActionAdapter`, `PCService`, `PCStatus`, `PCCapabilities`, `WindowsPCService`, `AppLaunchConfig`, `AppAllowlistLoader`, and `DeviceActionSkill` for safe local Device/PC City action foundations, service registration and capability aggregation, structured local `system status`, dynamic local action/app discovery, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated config-backed allowlisted Windows `open_app`, safe live routing, and stable confirmation-required/forbidden responses
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 292 tests.
+The current pytest collection is 294 tests.
 
 The current memory paths are:
 

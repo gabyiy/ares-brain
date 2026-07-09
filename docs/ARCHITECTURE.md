@@ -32,6 +32,23 @@ Current System Flow
 26. The REPL stores each conversation turn in `MemoryStore`.
 27. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
 
+Phase 2 Complete Architecture Baseline
+
+Phase 2 is considered complete as the stabilized baseline for future city work. The foundation now has one consistent Brain-to-service path: `SkillManager` owns the active `CoreService`, `SkillContext` carries that same `core_service` reference to skills, `CoreService` owns service registration and capability aggregation, and `PCService` remains the dedicated PC operation/status/capability boundary.
+
+Current service conventions:
+
+- `CoreService.register_service(name, service)` is the service registration pattern.
+- `CoreService.get_service(name)` is the service lookup path.
+- `CoreService.list_services()` returns stable registered service metadata.
+- `CoreService.get_capabilities()` aggregates service capability data.
+- `PC_SERVICE_NAME` centralizes the default `pc` service key.
+- Registered services must expose `get_capabilities()` to participate in capability aggregation.
+- PC services expose `get_status()` and the compatibility `status()` wrapper.
+- Services that do not expose `get_capabilities()` fail safely in CoreService capability aggregation.
+
+This cleanup did not add new runtime behavior, new functionality, GPT, internet access, remote execution, hardware access, new cities, or new device actions.
+
 Event Bus
 
 `events.EventBus` is the in-process publish/subscribe layer.
@@ -305,6 +322,7 @@ Current device action objects:
 - `AppAllowlistLoader`
 - `AppAllowlistConfigError`
 - `DeviceActionResult`
+- `PC_SERVICE_NAME`
 - `CoreService`
 - `CoreServiceResult`
 - `PCService`
@@ -344,7 +362,8 @@ Current responsibilities:
 - Retrieve registered services through `CoreService.get_service(name)`.
 - List registered service metadata through `CoreService.list_services()`.
 - Aggregate registered service capabilities through `CoreService.get_capabilities()`.
-- Initially register `PCService` as the `pc` service.
+- Initially register `PCService` as the `pc` service through the centralized `PC_SERVICE_NAME`.
+- Carry `core_service` through `SkillContext` for consistent service access from the Brain-to-skill path.
 - Expose PC operations through `PCService.lock()`, `PCService.sleep()`, `PCService.open_app(app_id)`, and `PCService.get_status()`.
 - Keep `PCService.status()` as a compatibility wrapper around `get_status()`.
 - Return structured safe status fields through `PCStatus`: operating system, hostname, current user, Python version, optional uptime, and available actions.
@@ -894,5 +913,5 @@ py scripts\verify_phase2_events_memory.py
 
 Current verification snapshot:
 
-- Pytest collection: 292 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.CoreService`, `core.CoreServiceResult`, `core.PCService`, `core.PCServiceResult`, `core.PCStatus`, `core.PCCapabilities`, `core.WindowsPCService`, `core.AppLaunchConfig`, `core.AppAllowlistLoader`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.
+- Pytest collection: 294 tests.
+- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.PC_SERVICE_NAME`, `core.CoreService`, `core.CoreServiceResult`, `core.PCService`, `core.PCServiceResult`, `core.PCStatus`, `core.PCCapabilities`, `core.WindowsPCService`, `core.AppLaunchConfig`, `core.AppAllowlistLoader`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.

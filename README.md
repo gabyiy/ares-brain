@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.38 - CoreService Orchestration Layer
+ARES v1.39 - Phase 2 Complete Architecture Cleanup
 
 ---
 
@@ -19,6 +19,10 @@ Current Architecture
 The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.DeviceAction`, `DeviceActionRegistry`, `AppLaunchConfig`, `AppAllowlistLoader`, `core.PCService`, `PCServiceResult`, `PCStatus`, `PCCapabilities`, `WindowsPCService`, and `LocalDeviceActionAdapter` for local device action foundations with `safe`, `confirmation_required`, and `forbidden` classifications, confirmed Windows-only `lock_pc` and `sleep_pc`, a config-backed allowlist-only Windows app launcher with only `calculator` enabled in `config/apps.json`, disabled `notepad` and `browser` entries, `list_apps`, confirmation-gated `open_app`, no arbitrary user paths, no shell commands, all PC operations routed through PCService as the dedicated entry point, structured local `get_status()` responses for safe PC information, and dynamic local `get_capabilities()` responses for supported actions, apps, status providers, and services, `skills.builtin.DeviceActionSkill` for safe live routing of `echo`, `list device actions`, `list apps`, and `system status` plus confirmation-gated `lock_pc`/`sleep_pc`/`open_app` and stable forbidden responses for dangerous placeholders, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
 `core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, and `get_capabilities()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior.
+
+Phase 2 Complete
+
+Phase 2 is now stabilized as the architecture baseline for future city work. The current foundation has a consistent Brain-to-service path: `SkillManager` carries `CoreService`, `SkillContext` exposes that same service boundary, `CoreService` owns service registration and capability aggregation, and `PCService` remains the dedicated status/capability/action boundary for local PC operations. The `pc` service name is centralized through `PC_SERVICE_NAME`, services expose `get_capabilities()`, and PC services expose `get_status()`/`status()` where applicable. This cleanup did not add new runtime behavior.
 
 Long-Term City Model
 
@@ -139,6 +143,7 @@ Completed
 - PCService structured status provider
 - PCService capability discovery
 - CoreService orchestration layer
+- Phase 2 architecture stabilization
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -233,6 +238,7 @@ Implemented Features
 - Structured PCService status provider with `PCStatus` and safe local `get_status()` fields for operating system, hostname, current user, Python version, optional uptime, and available actions
 - Dynamic PCService capability discovery with `PCCapabilities` and safe local `get_capabilities()` fields for supported device actions, supported applications, available status providers, and available services
 - CoreService orchestration layer with service registration, default `PCService` registration as `pc`, `get_service(name)`, `list_services()`, and aggregate `get_capabilities()` over registered services
+- Phase 2 architecture cleanup with centralized `PC_SERVICE_NAME`, CoreService carried through `SkillContext`, and focused service registration/capability contract tests
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
 - Confirmed Windows-only `lock_pc` action after explicit user approval
 - Confirmed Windows-only `sleep_pc` action after explicit user approval
@@ -254,7 +260,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 292 tests across core Phase 2-39 modules
+- Pytest automated coverage for 294 tests across core Phase 2-40 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -273,7 +279,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `292 tests`.
+Current pytest collection: `294 tests`.
 
 Manual Calculator Launch Verification
 
@@ -447,6 +453,7 @@ Completed:
 - PCService structured status provider
 - PCService capability discovery
 - CoreService orchestration layer
+- Phase 2 architecture stabilization
 
 Next:
 
@@ -890,19 +897,28 @@ Phase 39
 
 Phase 40
 
+- Phase 2 complete architecture cleanup
+- `PC_SERVICE_NAME` centralizes the CoreService PC registration key
+- `SkillContext` carries `core_service` for consistent Brain-to-service access
+- `CoreService` has clearer service registration and capability aggregation documentation
+- Tests verify default PC service interfaces and safe missing-capability reporting
+- No behavior changes, new functionality, new cities, GPT, internet, remote execution, hardware additions, or new device actions were added
+
+Phase 41
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 41
+Phase 42
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 42
+Phase 43
 
 - Robotics
 - ROS2
