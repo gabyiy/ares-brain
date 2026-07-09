@@ -138,6 +138,7 @@ Current responsibilities:
 - provide `list_services()` metadata
 - aggregate capabilities with `get_capabilities()`
 - route a request to one matching city with `route_by_capability()`
+- receive internal city events with `handle_event(event)`
 - track city lifecycle states: `idle`, `active`, `failed`, and `disabled`
 - register PCService as the default `pc` service
 - register the Voice City placeholder service as the default `voice` service
@@ -286,6 +287,14 @@ Supported priority levels are:
 - `critical`
 
 The internal bus supports in-process publish/subscribe and priority-ordered history. It is not a daemon, scheduler, notification runner, camera listener, microphone listener, GPT loop, or internet client.
+
+CoreService integrates with this skeleton through `CoreService.handle_event(event)`. The method accepts internal `core.Event` objects from registered city sources and returns a stable event decision:
+
+- `recorded`
+- `ignored`
+- `escalated`
+
+Low and normal priority events are recorded only. High and critical priority events are marked escalated. Disabled or unknown event sources fail safely with an ignored decision. This is internal routing metadata only. An escalated decision does not send a notification, trigger a device action, wake a city, start a daemon, call the internet, or invoke GPT.
 
 Current boundary:
 
