@@ -508,9 +508,20 @@ Phase 42: Voice City STT/TTS Contracts
 - Tests cover VoiceService ownership, NullVoiceInput placeholder behavior, NullVoiceOutput placeholder behavior, status aggregation, CoreService capability aggregation, and no audio hardware access.
 - No microphone, speaker, Whisper, Vosk, Piper, real STT, real TTS, wake word, GPT, internet, or background listening was added.
 
+Phase 43: Voice City Text Loop Foundation
+
+- `core.VoiceLoop` provides a one-shot text bridge for Voice City.
+- `VoiceLoop.run_once()` calls `VoiceInput.listen_once()` once.
+- Empty or missing input is ignored safely.
+- Recognized text is passed to an injected existing text/planner/execution handler.
+- Final response text is sent to `VoiceOutput.speak(text)`.
+- Default components remain `NullVoiceInput` and `NullVoiceOutput`.
+- Tests cover empty input, recognized text reaching the mocked planner/execution handler, output text reaching `NullVoiceOutput`, and safe input/handler/output error responses.
+- No microphone, speaker, wake word, background loop, real STT, real TTS, GPT, internet, new skills, or behavior changes outside Voice City were added.
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a CoreService orchestration boundary for service registration and capability aggregation, `SkillContext` access to that CoreService boundary, a PCService boundary for all current PC operations, a VoiceService placeholder boundary for Voice City, explicit VoiceInput/VoiceOutput contracts with null implementations, structured safe PC status responses, dynamic safe PC capability discovery, structured safe Voice City placeholder status/capability discovery, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a CoreService orchestration boundary for service registration and capability aggregation, `SkillContext` access to that CoreService boundary, a PCService boundary for all current PC operations, a VoiceService placeholder boundary for Voice City, explicit VoiceInput/VoiceOutput contracts with null implementations, a one-shot VoiceLoop text bridge, structured safe PC status responses, dynamic safe PC capability discovery, structured safe Voice City placeholder status/capability discovery, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -522,10 +533,10 @@ The current deterministic answer paths are:
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, and calendar
 - `Planner`, `MultiStepPlan`, `ConfirmationManager`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, context responses, confirmations, and conversation memory plan execution
 - `ToolAdapterRegistry`, `ExternalAdapterConfig`, `SecretsGuard`, `RealWeatherAdapter`, and `RealMarketAdapter` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
-- `CoreService`, `VoiceService`, `VoiceInput`, `VoiceOutput`, `NullVoiceInput`, `NullVoiceOutput`, `PlaceholderVoiceService`, `DeviceActionRegistry`, `LocalDeviceActionAdapter`, `PCService`, `PCStatus`, `PCCapabilities`, `WindowsPCService`, `AppLaunchConfig`, `AppAllowlistLoader`, and `DeviceActionSkill` for safe local Device/PC City and Voice City foundations, service registration and capability aggregation, structured local `system status`, structured placeholder voice status, dynamic local action/app/voice discovery, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated config-backed allowlisted Windows `open_app`, safe live routing, and stable confirmation-required/forbidden responses
+- `CoreService`, `VoiceService`, `VoiceInput`, `VoiceOutput`, `NullVoiceInput`, `NullVoiceOutput`, `PlaceholderVoiceService`, `VoiceLoop`, `DeviceActionRegistry`, `LocalDeviceActionAdapter`, `PCService`, `PCStatus`, `PCCapabilities`, `WindowsPCService`, `AppLaunchConfig`, `AppAllowlistLoader`, and `DeviceActionSkill` for safe local Device/PC City and Voice City foundations, service registration and capability aggregation, structured local `system status`, structured placeholder voice status, one-shot placeholder voice text routing, dynamic local action/app/voice discovery, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated config-backed allowlisted Windows `open_app`, safe live routing, and stable confirmation-required/forbidden responses
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 303 tests.
+The current pytest collection is 310 tests.
 
 The current memory paths are:
 
@@ -557,18 +568,18 @@ Core Services City is a shared infrastructure city for scheduler, permissions, l
 
 Codex City is a future maintenance city. It should check the ARES GitHub repository, pull latest code, run tests, check compile, check docs freshness, report problems, and suggest fixes. Codex City must never auto-edit without owner approval.
 
-This roadmap entry is planning documentation plus the current safe VoiceService skeleton only. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, real voice/audio implementation, internet access, real APIs, or notifications.
+This roadmap entry is planning documentation plus the current safe VoiceService skeleton, VoiceInput/VoiceOutput contracts, and one-shot VoiceLoop text bridge only. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, real voice/audio implementation, internet access, real APIs, or notifications.
 
 Next Priorities
 
-1. Voice input/output planning.
+1. Voice wake word/STT/TTS planning.
 2. GPT fallback integration.
 3. Raspberry Pi deployment.
 4. Robot body / sensors.
 
 What Must Not Be Started Yet
 
-- No real voice/audio implementation beyond the safe VoiceService placeholder.
+- No real voice/audio implementation beyond the safe VoiceService placeholder, null input/output components, and one-shot VoiceLoop text bridge.
 - No GPT or LLM integration.
 - No embeddings.
 - No notification scheduling or delivery.

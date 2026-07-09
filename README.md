@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.43 - Voice Input Output Contracts
+ARES v1.44 - Voice Text Loop Foundation
 
 ---
 
@@ -22,7 +22,7 @@ The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the
 
 `core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, and `get_capabilities()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior.
 
-`core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It owns `VoiceInput` and `VoiceOutput` components, currently implemented as `NullVoiceInput` and `NullVoiceOutput`. These expose `listen_once()`, `speak(text)`, `get_capabilities()`, and `get_status()` contracts with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled.
+`core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It owns `VoiceInput` and `VoiceOutput` components, currently implemented as `NullVoiceInput` and `NullVoiceOutput`. These expose `listen_once()`, `speak(text)`, `get_capabilities()`, and `get_status()` contracts with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled. `core.VoiceLoop` adds a one-shot text loop foundation: it calls `VoiceInput.listen_once()`, ignores empty input safely, passes recognized text to an injected existing text/planner/execution handler, and sends the final response text to `VoiceOutput.speak()`.
 
 Phase 2 Complete
 
@@ -189,6 +189,7 @@ Completed
 - Phase 2 architecture stabilization
 - Voice City service skeleton
 - Voice City input/output contracts
+- Voice City text loop foundation
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -284,7 +285,7 @@ Implemented Features
 - Dynamic PCService capability discovery with `PCCapabilities` and safe local `get_capabilities()` fields for supported device actions, supported applications, available status providers, and available services
 - CoreService orchestration layer with service registration, default `PCService` registration as `pc`, `get_service(name)`, `list_services()`, and aggregate `get_capabilities()` over registered services
 - Phase 2 architecture cleanup with centralized `PC_SERVICE_NAME`, CoreService carried through `SkillContext`, and focused service registration/capability contract tests
-- Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceInput`, `VoiceOutput`, `NullVoiceInput`, `NullVoiceOutput`, `VoiceStatus`, `VoiceCapabilities`, default CoreService registration as `voice`, safe placeholder status, and no audio hardware access
+- Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceInput`, `VoiceOutput`, `NullVoiceInput`, `NullVoiceOutput`, `VoiceStatus`, `VoiceCapabilities`, `VoiceLoop`, `VoiceLoopResult`, default CoreService registration as `voice`, safe placeholder status, a one-shot placeholder text loop, and no audio hardware access
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
 - Confirmed Windows-only `lock_pc` action after explicit user approval
 - Confirmed Windows-only `sleep_pc` action after explicit user approval
@@ -306,7 +307,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 303 tests across core Phase 2-42 modules
+- Pytest automated coverage for 310 tests across core Phase 2-43 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -325,7 +326,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `303 tests`.
+Current pytest collection: `310 tests`.
 
 Manual Calculator Launch Verification
 
@@ -501,10 +502,12 @@ Completed:
 - CoreService orchestration layer
 - Phase 2 architecture stabilization
 - Voice City foundation
+- Voice City input/output contracts
+- Voice City text loop foundation
 
 Next:
 
-1. Voice input/output planning
+1. Voice wake word/STT/TTS planning
 2. GPT fallback integration
 3. Raspberry Pi deployment
 4. Robot body / sensors
@@ -972,19 +975,29 @@ Phase 42
 
 Phase 43
 
+- Voice City text loop foundation
+- `core.VoiceLoop` calls `VoiceInput.listen_once()` once and never starts background listening
+- Empty or missing input is ignored safely
+- Recognized text is passed to an injected existing text/planner/execution handler
+- Final response text is passed to `VoiceOutput.speak()`
+- Defaults remain `NullVoiceInput` and `NullVoiceOutput`
+- No microphone, speaker, wake word, real STT, real TTS, GPT, internet, new skills, or behavior changes outside Voice City were added
+
+Phase 44
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 44
+Phase 45
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 45
+Phase 46
 
 - Robotics
 - ROS2

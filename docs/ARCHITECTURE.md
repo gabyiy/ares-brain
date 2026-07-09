@@ -129,6 +129,7 @@ Current responsibilities:
 - provide structured placeholder Voice City status data
 - provide structured Voice City capability data
 - expose input/output status and capability data
+- support a one-shot `VoiceLoop` text bridge from voice input to the existing text handler path and back to voice output
 - report that microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled
 - avoid all audio hardware access
 
@@ -145,6 +146,15 @@ Current placeholder implementations:
 
 - `NullVoiceInput` returns a safe placeholder result and does not access a microphone or run STT.
 - `NullVoiceOutput` accepts text as a safe placeholder and does not access speakers or run TTS.
+
+Current voice loop foundation:
+
+- `VoiceLoop.run_once()` calls `VoiceInput.listen_once()` once.
+- Empty or missing input returns a safe no-input result.
+- Recognized text is passed to an injected existing text/planner/execution handler.
+- Final response text is passed to `VoiceOutput.speak(text)`.
+- The loop does not own routing, planning, or skill execution logic.
+- The loop does not start background listening, wake word detection, microphone access, speaker access, GPT, or internet access.
 
 VoiceService is a skeleton only. It does not start microphone access, speaker output, speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
 
