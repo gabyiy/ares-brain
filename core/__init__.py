@@ -39,6 +39,15 @@ from core.CoreService import (
     CoreServiceResult,
 )
 from core.ExecutionPipeline import ExecutionPipeline, ExecutionResult, RollbackHook, StepResult
+from core.EventBus import (
+    EVENT_PRIORITIES,
+    PRIORITY_CRITICAL,
+    PRIORITY_HIGH,
+    PRIORITY_LOW,
+    PRIORITY_NORMAL,
+    Event,
+    EventBus,
+)
 from core.Intent import Intent
 from core.IntentParser import IntentParser
 from core.Planner import MultiStepPlan, Plan, Planner, PlanStep
@@ -97,6 +106,9 @@ __all__ = [
     "VOICE_SERVICE_NAME",
     "ExecutionPipeline",
     "ExecutionResult",
+    "EVENT_PRIORITIES",
+    "Event",
+    "EventBus",
     "ExternalAdapterConfig",
     "Intent",
     "IntentParser",
@@ -108,6 +120,10 @@ __all__ = [
     "Plan",
     "Planner",
     "PlanStep",
+    "PRIORITY_CRITICAL",
+    "PRIORITY_HIGH",
+    "PRIORITY_LOW",
+    "PRIORITY_NORMAL",
     "RollbackHook",
     "SecretScanIssue",
     "SecretValidationError",
