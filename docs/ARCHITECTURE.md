@@ -58,6 +58,7 @@ Current responsibilities:
 - provide `list_services()` metadata
 - aggregate capabilities with `get_capabilities()`
 - register PCService as the default `pc` service
+- register the Voice City placeholder service as the default `voice` service
 - fail safely when a registered service does not expose required capability interfaces
 
 CoreService does not implement device behavior itself. It discovers and routes to registered services.
@@ -75,7 +76,22 @@ Current responsibilities:
 - keep Windows-specific implementations behind the service boundary
 - support only approved and confirmation-gated device actions
 
-PCService is the only current service registered by default. Future services should follow the same registration and capability pattern.
+## VoiceService
+
+`core.VoiceService` is the current Voice City service boundary. `core.PlaceholderVoiceService` is the safe placeholder implementation behind that boundary.
+
+Current responsibilities:
+
+- expose `get_capabilities()`
+- expose `get_status()` and compatibility `status()`
+- provide structured placeholder Voice City status data
+- provide structured Voice City capability data
+- report that microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled
+- avoid all audio hardware access
+
+VoiceService is a skeleton only. It does not start microphone access, speaker output, speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
+
+PCService and VoiceService are the current services registered by default. Future services should follow the same registration and capability pattern.
 
 # Device Action Pipeline
 
@@ -122,7 +138,7 @@ Discovery over assumptions is a core design rule. If a service is missing or inc
 
 ## Voice City
 
-Voice City will own wake word detection, speech-to-text, text-to-speech, microphones, speakers, and voice session state. The Brain should receive structured user text and return structured responses; it should not contain microphone or audio driver code.
+Voice City has started with a safe service skeleton. The current placeholder service exposes status and capability discovery only. Future Voice City work will own wake word detection, speech-to-text, text-to-speech, microphones, speakers, and voice session state. The Brain should receive structured user text and return structured responses; it should not contain microphone or audio driver code.
 
 ## Vision City
 

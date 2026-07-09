@@ -488,9 +488,19 @@ Phase 40: Phase 2 Complete Architecture Cleanup
 - Tests verify default PCService status/capability interfaces, safe missing-capability reporting, and SkillManager context propagation.
 - No behavior changes, new functionality, new cities, GPT, internet, network calls, remote execution, hardware additions, or new device actions were added.
 
+Phase 41: Voice City Foundation
+
+- `core.VoiceService` defines the Voice City service interface.
+- `core.PlaceholderVoiceService` provides safe placeholder status and capability responses.
+- `core.VoiceStatus` returns structured status with audio hardware disabled.
+- `core.VoiceCapabilities` returns structured capability data with microphone, speaker, STT, TTS, wake word, background listening, internet, and GPT disabled.
+- `CoreService` registers the VoiceService skeleton as `voice` by default alongside `pc`.
+- Tests cover CoreService registration, VoiceService capabilities, safe placeholder status, CoreService aggregation of PC and Voice services, and no audio hardware access.
+- No microphone, speaker, Whisper, Vosk, Piper, GPT, internet, wake word, or background listening was added.
+
 Current State
 
-ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a CoreService orchestration boundary for service registration and capability aggregation, `SkillContext` access to that CoreService boundary, a PCService boundary for all current PC operations, structured safe PC status responses, dynamic safe PC capability discovery, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
+ARES is currently a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a CoreService orchestration boundary for service registration and capability aggregation, `SkillContext` access to that CoreService boundary, a PCService boundary for all current PC operations, a VoiceService placeholder boundary for Voice City, structured safe PC status responses, dynamic safe PC capability discovery, structured safe Voice City placeholder status/capability discovery, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -502,10 +512,10 @@ The current deterministic answer paths are:
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, and calendar
 - `Planner`, `MultiStepPlan`, `ConfirmationManager`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, context responses, confirmations, and conversation memory plan execution
 - `ToolAdapterRegistry`, `ExternalAdapterConfig`, `SecretsGuard`, `RealWeatherAdapter`, and `RealMarketAdapter` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
-- `CoreService`, `DeviceActionRegistry`, `LocalDeviceActionAdapter`, `PCService`, `PCStatus`, `PCCapabilities`, `WindowsPCService`, `AppLaunchConfig`, `AppAllowlistLoader`, and `DeviceActionSkill` for safe local Device/PC City action foundations, service registration and capability aggregation, structured local `system status`, dynamic local action/app discovery, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated config-backed allowlisted Windows `open_app`, safe live routing, and stable confirmation-required/forbidden responses
+- `CoreService`, `VoiceService`, `PlaceholderVoiceService`, `DeviceActionRegistry`, `LocalDeviceActionAdapter`, `PCService`, `PCStatus`, `PCCapabilities`, `WindowsPCService`, `AppLaunchConfig`, `AppAllowlistLoader`, and `DeviceActionSkill` for safe local Device/PC City and Voice City foundations, service registration and capability aggregation, structured local `system status`, structured placeholder voice status, dynamic local action/app/voice discovery, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated config-backed allowlisted Windows `open_app`, safe live routing, and stable confirmation-required/forbidden responses
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 294 tests.
+The current pytest collection is 300 tests.
 
 The current memory paths are:
 
@@ -537,18 +547,18 @@ Core Services City is a shared infrastructure city for scheduler, permissions, l
 
 Codex City is a future maintenance city. It should check the ARES GitHub repository, pull latest code, run tests, check compile, check docs freshness, report problems, and suggest fixes. Codex City must never auto-edit without owner approval.
 
-This roadmap entry is planning documentation only. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, voice, internet access, real APIs, or notifications.
+This roadmap entry is planning documentation plus the current safe VoiceService skeleton only. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, real voice/audio implementation, internet access, real APIs, or notifications.
 
 Next Priorities
 
-1. GPT fallback integration.
-2. Voice input/output.
+1. Voice input/output planning.
+2. GPT fallback integration.
 3. Raspberry Pi deployment.
 4. Robot body / sensors.
 
 What Must Not Be Started Yet
 
-- No voice implementation.
+- No real voice/audio implementation beyond the safe VoiceService placeholder.
 - No GPT or LLM integration.
 - No embeddings.
 - No notification scheduling or delivery.

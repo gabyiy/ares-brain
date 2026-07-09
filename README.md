@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.40 - Permanent Architecture Reference
+ARES v1.41 - Voice City Foundation
 
 ---
 
@@ -21,6 +21,8 @@ The active runtime includes `core.IntentParser` for structured local intents, `c
 The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the Brain/CoreService capital city model, current CoreService and PCService boundaries, capability discovery, future cities, upgrade philosophy, design rules, and long-term vision.
 
 `core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, and `get_capabilities()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior.
+
+`core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It exposes `get_capabilities()` and `get_status()` with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled.
 
 Phase 2 Complete
 
@@ -146,6 +148,7 @@ Completed
 - PCService capability discovery
 - CoreService orchestration layer
 - Phase 2 architecture stabilization
+- Voice City service skeleton
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -241,6 +244,7 @@ Implemented Features
 - Dynamic PCService capability discovery with `PCCapabilities` and safe local `get_capabilities()` fields for supported device actions, supported applications, available status providers, and available services
 - CoreService orchestration layer with service registration, default `PCService` registration as `pc`, `get_service(name)`, `list_services()`, and aggregate `get_capabilities()` over registered services
 - Phase 2 architecture cleanup with centralized `PC_SERVICE_NAME`, CoreService carried through `SkillContext`, and focused service registration/capability contract tests
+- Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceStatus`, `VoiceCapabilities`, default CoreService registration as `voice`, safe placeholder status, and no audio hardware access
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
 - Confirmed Windows-only `lock_pc` action after explicit user approval
 - Confirmed Windows-only `sleep_pc` action after explicit user approval
@@ -262,7 +266,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 294 tests across core Phase 2-40 modules
+- Pytest automated coverage for 300 tests across core Phase 2-41 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -281,7 +285,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `294 tests`.
+Current pytest collection: `300 tests`.
 
 Manual Calculator Launch Verification
 
@@ -392,7 +396,7 @@ Latest Architecture Status
 - Supported due phrases include `today`, `tomorrow`, `next week`, `in 10 minutes`, `in 2 hours`, and `at 18:00`.
 - ConversationContextManager keeps only the last 20 skill turns in RAM and does not write to disk.
 - GitHub Actions CI now enforces the local verification suite on `main`.
-- Voice has not started.
+- Voice City has a safe service skeleton only; real microphone, speaker, STT, TTS, wake word, GPT, internet, and background listening have not started.
 
 Engineering Rules
 
@@ -456,11 +460,12 @@ Completed:
 - PCService capability discovery
 - CoreService orchestration layer
 - Phase 2 architecture stabilization
+- Voice City foundation
 
 Next:
 
-1. GPT fallback integration
-2. Voice input/output
+1. Voice input/output planning
+2. GPT fallback integration
 3. Raspberry Pi deployment
 4. Robot body / sensors
 
@@ -522,7 +527,7 @@ Phase 3 Skill Modules
 The text REPL registers the built-in skill plugin and passes `SkillManager` to `IntentRouter`.
 Intent routing still runs first; skills are used only as a fallback when no normal intent matches.
 
-Voice has not started.
+Voice City now has a safe service skeleton only. Real microphone, speaker, STT, TTS, wake word, GPT, internet, and background listening have not started.
 
 Phase 4 Long-Term Memory Recall (Current)
 
@@ -908,19 +913,28 @@ Phase 40
 
 Phase 41
 
+- Voice City foundation
+- `core.VoiceService` defines the Voice City service interface
+- `core.PlaceholderVoiceService` returns safe placeholder status and capabilities
+- CoreService registers the placeholder VoiceService as `voice` by default
+- Voice capabilities explicitly mark microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet as disabled
+- No audio hardware access, real STT, real TTS, wake word, GPT, internet, or background listening was added
+
+Phase 42
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 42
+Phase 43
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 43
+Phase 44
 
 - Robotics
 - ROS2

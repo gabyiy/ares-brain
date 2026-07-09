@@ -4,7 +4,7 @@ Last Updated: 2026-07-09
 
 Current Version
 
-ARES v1.40 - Permanent Architecture Reference
+ARES v1.41 - Voice City Foundation
 
 ---
 
@@ -659,6 +659,19 @@ Architecture reference contents:
 - Long-term Vision for ARES growing from Raspberry Pi into a humanoid robot without losing identity.
 - This was documentation-only and did not add runtime behavior.
 
+Voice City foundation has been added.
+
+Voice City skeleton behavior:
+
+- `core.VoiceService` defines the Voice City service interface.
+- `core.PlaceholderVoiceService` provides safe placeholder status and capability responses.
+- `core.VoiceStatus` reports that audio hardware access, microphone, speaker, background listening, internet, and GPT are disabled, and STT/TTS/wake word are not configured.
+- `core.VoiceCapabilities` reports no supported voice actions, no input modes, no output modes, and explicit safeguards for microphone, speaker, STT, TTS, wake word, background listening, internet, and GPT.
+- `CoreService` registers the placeholder VoiceService as `voice` by default alongside `pc`.
+- CoreService capability aggregation now includes both PCService and VoiceService by default.
+- Tests cover VoiceService registration through CoreService, capabilities, placeholder status, PC plus Voice capability aggregation, and no audio hardware access.
+- No real microphone, speaker, Whisper, Vosk, Piper, STT, TTS, wake word, GPT, internet, or background listening was added.
+
 External Adapter Config and SecretsGuard foundation has been added.
 
 New config modules and files:
@@ -862,7 +875,7 @@ Boundary:
 - No scheduler implementation was added.
 - No GitHub API integration was added.
 - No self-modifying behavior was added.
-- No GPT, voice, internet access, real APIs, or notifications were added.
+- No GPT, real voice/audio implementation, internet access, real APIs, or notifications were added.
 
 Current working intents:
 
@@ -1031,7 +1044,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 294 tests.
+- Current pytest collection: 300 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1048,6 +1061,7 @@ Verification Notes
 - Tasks tests cover add, list, mark done, delete, empty task rejection, persistence after reload, ToolSelector routing, and the REPL routing path.
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
+- VoiceService tests cover CoreService registration, safe placeholder capabilities, safe placeholder status, CoreService aggregation of PCService and VoiceService, and no audio hardware access.
 - DeviceAction tests cover registry registration/listing, app allowlist config loading, calculator enabled state, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, structured PCService status, structured PCService capability discovery, CoreService-backed service registration/capability aggregation, default PCService status/capability interfaces, safe missing-capability reporting, stable result formatting, PCService delegation for status/lock/sleep/open-app calls, CoreService-backed action/app discovery, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows calculator launch through a mocked launcher, unknown/disabled app rejection, notepad/browser disabled handling, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
 - Manual calculator launch verification tests cover refusal without exact confirmation, the exact open_app device action path with mocked adapter, and safe adapter failure reporting without opening Calculator.
 - DeviceActionSkill tests cover echo, list actions, list apps, structured system status, shutdown/restart confirmation-required responses, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed `lock_pc`/`sleep_pc`/`open_app` through SkillManager, run command/delete forbidden responses, unknown action safe failure, ToolSelector routing, Planner routing, SkillManager/CoreService handoff, SkillContext CoreService propagation, SkillManager/ExecutionPipeline confirmation-required handling, and text REPL display.
@@ -1072,6 +1086,8 @@ Verification Notes
 
 Latest Commits
 
+- `6245ef4` Add Voice City service skeleton
+- `432a70a` Create permanent architecture reference
 - `5726813` Document Phase 2 architecture completion
 - `8049fab` Stabilize core service architecture
 - `ade5197` Document core service orchestration layer
