@@ -270,10 +270,29 @@ Capability aggregation through `get_capabilities()` is still an inventory operat
 
 Event-driven city activation is future-only documentation right now. The Event Bus may later publish events such as voice input received, vision frame available, device status changed, or scheduled task due. Cities may later subscribe to those events and activate themselves through explicit capability routes.
 
+`core.EventBus` is the internal skeleton for this future city-event path. It defines an `Event` record with:
+
+- source
+- type
+- priority
+- payload
+- timestamp
+
+Supported priority levels are:
+
+- `low`
+- `normal`
+- `high`
+- `critical`
+
+The internal bus supports in-process publish/subscribe and priority-ordered history. It is not a daemon, scheduler, notification runner, camera listener, microphone listener, GPT loop, or internet client.
+
 Current boundary:
 
 - no background city wakeup runtime
 - no event-driven audio listener
+- no real camera listener
+- no notification sender
 - no GPT or internet activation
 - no new external APIs
 - no notification scheduling

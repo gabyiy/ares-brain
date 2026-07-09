@@ -4,7 +4,7 @@ Last Updated: 2026-07-09
 
 Current Version
 
-ARES v1.46 - City Lifecycle Lazy Routing
+ARES v1.47 - Internal Event Bus Skeleton
 
 ---
 
@@ -734,6 +734,20 @@ City lifecycle behavior:
 - Tests prove unused cities are not called, disabled cities are not routed, and failed routes are reported safely.
 - No real audio, GPT, internet, new APIs, external calls, notifications, or background activation was added.
 
+Internal Core EventBus skeleton has been added.
+
+Internal event bus behavior:
+
+- New module: `core.EventBus`.
+- `core.Event` stores source, type, priority, payload, and timestamp.
+- Supported priorities are `low`, `normal`, `high`, and `critical`.
+- `EventBus.publish()` creates an event and dispatches to subscribers for that event type.
+- `EventBus.subscribe()` registers in-process handlers and returns an unsubscribe callback.
+- Publishing without subscribers is safe.
+- Event history is returned in priority order.
+- This is future-use infrastructure for cities reporting important events without Brain polling.
+- No real camera, notifications, background daemon, internet, GPT, new APIs, or event-driven city activation was added.
+
 ARES Behavior Schematic has been documented in README and `docs/ARCHITECTURE.md`.
 
 Behavior schematic summary:
@@ -1136,7 +1150,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 319 tests.
+- Current pytest collection: 325 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1154,6 +1168,7 @@ Verification Notes
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
 - CoreService tests cover service registration, lifecycle metadata, capability registry metadata, lazy route-by-capability behavior, unused city idle behavior, disabled city routing prevention, and failed route state handling.
+- Core EventBus tests cover event dataclass normalization, publish, subscribe, unsubscribe, no-subscriber safety, priority ordering, invalid priority rejection, and stable priority levels.
 - VoiceService tests cover CoreService registration, safe placeholder capabilities, safe placeholder status, VoiceInput/VoiceOutput ownership, NullVoiceInput listen placeholders, NullVoiceOutput speak placeholders, CoreService aggregation of PCService and VoiceService, VoiceLoop defaults, no-input behavior, recognized text routing to a mocked planner/execution handler, response handoff to NullVoiceOutput, safe input/handler/output failures, and no audio hardware access.
 - DeviceAction tests cover registry registration/listing, app allowlist config loading, calculator enabled state, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, structured PCService status, structured PCService capability discovery, CoreService-backed service registration/capability aggregation, default PCService status/capability interfaces, safe missing-capability reporting, stable result formatting, PCService delegation for status/lock/sleep/open-app calls, CoreService-backed action/app discovery, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows calculator launch through a mocked launcher, unknown/disabled app rejection, notepad/browser disabled handling, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
 - Manual calculator launch verification tests cover refusal without exact confirmation, the exact open_app device action path with mocked adapter, and safe adapter failure reporting without opening Calculator.
@@ -1180,6 +1195,7 @@ Verification Notes
 
 Latest Commits
 
+- `032f132` Add internal core event bus skeleton
 - `16cc8d4` Add city lifecycle lazy routing
 - `9ac2de7` Add manual Voice City text loop simulation
 - `b2b7a48` Add Voice City text loop foundation

@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.46 - City Lifecycle Lazy Routing
+ARES v1.47 - Internal Event Bus Skeleton
 
 ---
 
@@ -21,6 +21,8 @@ The active runtime includes `core.IntentParser` for structured local intents, `c
 The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the Brain/CoreService capital city model, current CoreService and PCService boundaries, capability discovery, future cities, upgrade philosophy, design rules, and long-term vision.
 
 `core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, `get_capabilities()`, and `route_by_capability()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior. CoreService tracks city lifecycle states as `idle`, `active`, `failed`, and `disabled`; lazy capability routing activates only the selected city for a request and leaves unused cities idle.
+
+`core.EventBus` now provides an internal future city event skeleton with `Event` records shaped as source, type, priority, payload, and timestamp. Supported priorities are `low`, `normal`, `high`, and `critical`. This is future-use infrastructure only; it does not start background listeners, notifications, camera loops, internet access, GPT, or any daemon.
 
 `core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It owns `VoiceInput` and `VoiceOutput` components, currently implemented as `NullVoiceInput` and `NullVoiceOutput`. These expose `listen_once()`, `speak(text)`, `get_capabilities()`, and `get_status()` contracts with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled. `core.VoiceLoop` adds a one-shot text loop foundation: it calls `VoiceInput.listen_once()`, ignores empty input safely, passes recognized text to an injected existing text/planner/execution handler, and sends the final response text to `VoiceOutput.speak()`.
 
@@ -216,6 +218,7 @@ Completed
 - PCService capability discovery
 - CoreService orchestration layer
 - City lifecycle states and lazy capability routing
+- Internal Core EventBus skeleton
 - Phase 2 architecture stabilization
 - Voice City service skeleton
 - Voice City input/output contracts
@@ -314,6 +317,7 @@ Implemented Features
 - Structured PCService status provider with `PCStatus` and safe local `get_status()` fields for operating system, hostname, current user, Python version, optional uptime, and available actions
 - Dynamic PCService capability discovery with `PCCapabilities` and safe local `get_capabilities()` fields for supported device actions, supported applications, available status providers, and available services
 - CoreService orchestration layer with service registration, default `PCService` registration as `pc`, `get_service(name)`, `list_services()`, aggregate `get_capabilities()` over registered services, city lifecycle metadata, and lazy `route_by_capability()` execution
+- Internal `core.EventBus` skeleton with event source, type, priority, payload, timestamp, publish/subscribe, and priority-ordered history
 - Phase 2 architecture cleanup with centralized `PC_SERVICE_NAME`, CoreService carried through `SkillContext`, and focused service registration/capability contract tests
 - Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceInput`, `VoiceOutput`, `NullVoiceInput`, `NullVoiceOutput`, `VoiceStatus`, `VoiceCapabilities`, `VoiceLoop`, `VoiceLoopResult`, default CoreService registration as `voice`, safe placeholder status, a one-shot placeholder text loop, and no audio hardware access
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
@@ -338,7 +342,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 319 tests across core Phase 2-44 modules
+- Pytest automated coverage for 325 tests across core Phase 2-45 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -357,7 +361,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `319 tests`.
+Current pytest collection: `325 tests`.
 
 Manual Calculator Launch Verification
 
@@ -1038,19 +1042,29 @@ Phase 44
 
 Phase 45
 
+- Internal Event Bus skeleton
+- `core.EventBus` provides a future city event bus separate from the existing Phase 2 `events.EventBus`
+- `core.Event` stores source, type, priority, payload, and timestamp
+- Supported priorities are `low`, `normal`, `high`, and `critical`
+- Publish/subscribe is in-process only
+- History is returned in priority order
+- No background listener, camera loop, notification sender, internet, GPT, new APIs, or daemon was added
+
+Phase 46
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 46
+Phase 47
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 47
+Phase 48
 
 - Robotics
 - ROS2
