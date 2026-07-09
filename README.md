@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.41 - Voice City Foundation
+ARES v1.42 - Behavior Schematic
 
 ---
 
@@ -31,6 +31,45 @@ Phase 2 is now stabilized as the architecture baseline for future city work. The
 Long-Term City Model
 
 The long-term architecture treats ARES Brain as the capital city. The capital owns identity, memory, profile, goals, planning, decisions, and history with the owner. Specialized cities connect to the capital through explicit bridges instead of bypassing the brain.
+
+ARES Behavior Schematic
+
+ARES behavior uses a Capital City / Cities / Districts / Villages / Houses model:
+
+- Capital = Brain identity
+- City Hall = CoreService
+- Cities = major services
+- Districts = sub-services
+- Villages = adapters
+- Houses = concrete devices, APIs, files, models
+
+The Brain stores only identity-level knowledge:
+
+- long-term memory
+- short-term context
+- user profile
+- known people and friends
+- learned preferences
+- goals
+- personality
+- relationship history
+- decision history
+
+Replaceable services handle implementation details:
+
+- Weather City handles weather APIs.
+- Voice City handles STT, TTS, and wake word.
+- Vision City handles camera and face recognition.
+- PC City handles Windows and device actions.
+- Codex City handles GitHub and testing.
+- Home City handles smart plugs and home devices.
+
+Examples:
+
+- Brain remembers "Gabriel wants morning weather reports"; Weather City decides which API or provider to use.
+- Brain remembers "Andrei is a known friend"; Vision City handles face embeddings and matching.
+
+Design rule: The Brain must never directly know API keys, Windows commands, camera internals, model internals, hardware commands, or provider-specific parsing.
 
 Specialized cities planned around the capital:
 

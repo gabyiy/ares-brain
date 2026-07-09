@@ -4,7 +4,7 @@ Last Updated: 2026-07-09
 
 Current Version
 
-ARES v1.41 - Voice City Foundation
+ARES v1.42 - Behavior Schematic
 
 ---
 
@@ -671,6 +671,22 @@ Voice City skeleton behavior:
 - CoreService capability aggregation now includes both PCService and VoiceService by default.
 - Tests cover VoiceService registration through CoreService, capabilities, placeholder status, PC plus Voice capability aggregation, and no audio hardware access.
 - No real microphone, speaker, Whisper, Vosk, Piper, STT, TTS, wake word, GPT, internet, or background listening was added.
+
+ARES Behavior Schematic has been documented in README and `docs/ARCHITECTURE.md`.
+
+Behavior schematic summary:
+
+- Capital = Brain identity.
+- City Hall = CoreService.
+- Cities = major services.
+- Districts = sub-services.
+- Villages = adapters.
+- Houses = concrete devices, APIs, files, models.
+- Brain stores identity-level knowledge only: long-term memory, short-term context, user profile, known people and friends, learned preferences, goals, personality, relationship history, and decision history.
+- Replaceable services own implementation details, such as Weather City for weather APIs, Voice City for STT/TTS/wake word, Vision City for camera and face recognition, PC City for Windows/device actions, Codex City for GitHub/testing, and Home City for smart plugs and home devices.
+- Examples document that the Brain can remember "Gabriel wants morning weather reports" while Weather City chooses the provider, and the Brain can remember "Andrei is a known friend" while Vision City handles face embeddings and matching.
+- Design rule added: the Brain must never directly know API keys, Windows commands, camera internals, model internals, hardware commands, or provider-specific parsing.
+- This was documentation-only and did not add GPT, internet, voice, camera, notifications, background listening, or runtime behavior.
 
 External Adapter Config and SecretsGuard foundation has been added.
 
