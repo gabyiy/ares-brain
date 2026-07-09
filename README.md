@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.42 - Behavior Schematic
+ARES v1.43 - Voice Input Output Contracts
 
 ---
 
@@ -22,7 +22,7 @@ The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the
 
 `core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, and `get_capabilities()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior.
 
-`core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It exposes `get_capabilities()` and `get_status()` with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled.
+`core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It owns `VoiceInput` and `VoiceOutput` components, currently implemented as `NullVoiceInput` and `NullVoiceOutput`. These expose `listen_once()`, `speak(text)`, `get_capabilities()`, and `get_status()` contracts with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled.
 
 Phase 2 Complete
 
@@ -188,6 +188,7 @@ Completed
 - CoreService orchestration layer
 - Phase 2 architecture stabilization
 - Voice City service skeleton
+- Voice City input/output contracts
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -283,7 +284,7 @@ Implemented Features
 - Dynamic PCService capability discovery with `PCCapabilities` and safe local `get_capabilities()` fields for supported device actions, supported applications, available status providers, and available services
 - CoreService orchestration layer with service registration, default `PCService` registration as `pc`, `get_service(name)`, `list_services()`, and aggregate `get_capabilities()` over registered services
 - Phase 2 architecture cleanup with centralized `PC_SERVICE_NAME`, CoreService carried through `SkillContext`, and focused service registration/capability contract tests
-- Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceStatus`, `VoiceCapabilities`, default CoreService registration as `voice`, safe placeholder status, and no audio hardware access
+- Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceInput`, `VoiceOutput`, `NullVoiceInput`, `NullVoiceOutput`, `VoiceStatus`, `VoiceCapabilities`, default CoreService registration as `voice`, safe placeholder status, and no audio hardware access
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
 - Confirmed Windows-only `lock_pc` action after explicit user approval
 - Confirmed Windows-only `sleep_pc` action after explicit user approval
@@ -305,7 +306,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 300 tests across core Phase 2-41 modules
+- Pytest automated coverage for 303 tests across core Phase 2-42 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -324,7 +325,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `300 tests`.
+Current pytest collection: `303 tests`.
 
 Manual Calculator Launch Verification
 
@@ -961,19 +962,29 @@ Phase 41
 
 Phase 42
 
+- Voice City STT/TTS contracts
+- `core.VoiceInput` defines the input interface with `listen_once()`, `get_status()`, and `get_capabilities()`
+- `core.VoiceOutput` defines the output interface with `speak(text)`, `get_status()`, and `get_capabilities()`
+- `core.NullVoiceInput` returns a safe placeholder result without microphone access or STT
+- `core.NullVoiceOutput` accepts text as a placeholder without speaker access or TTS
+- `PlaceholderVoiceService` owns the input/output components and includes their status and capabilities
+- No microphone, speaker, Whisper, Vosk, Piper, real STT, real TTS, wake word, GPT, internet, or background listening was added
+
+Phase 43
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 43
+Phase 44
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 44
+Phase 45
 
 - Robotics
 - ROS2

@@ -125,10 +125,26 @@ Current responsibilities:
 
 - expose `get_capabilities()`
 - expose `get_status()` and compatibility `status()`
+- own `VoiceInput` and `VoiceOutput` components
 - provide structured placeholder Voice City status data
 - provide structured Voice City capability data
+- expose input/output status and capability data
 - report that microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled
 - avoid all audio hardware access
+
+Current Voice City component contracts:
+
+- `VoiceInput.listen_once()`
+- `VoiceInput.get_status()`
+- `VoiceInput.get_capabilities()`
+- `VoiceOutput.speak(text)`
+- `VoiceOutput.get_status()`
+- `VoiceOutput.get_capabilities()`
+
+Current placeholder implementations:
+
+- `NullVoiceInput` returns a safe placeholder result and does not access a microphone or run STT.
+- `NullVoiceOutput` accepts text as a safe placeholder and does not access speakers or run TTS.
 
 VoiceService is a skeleton only. It does not start microphone access, speaker output, speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
 
