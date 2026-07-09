@@ -13,5 +13,6 @@ config/*.secret.json
 config/*.secrets.json
 data/user_profile.json
 data/goals.json
+data/event_history.json
 data/notes.json
 data/tasks.json
