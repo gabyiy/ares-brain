@@ -295,6 +295,7 @@ def test_skill_manager_exposes_core_service_for_device_actions():
 
     assert response.skill == "device_action"
     assert manager.core_service is core_service
+    assert manager.create_context().core_service is core_service
     assert manager.core_service.get_service("pc") is not None
     assert response.text.startswith("Available device actions:")
 

@@ -13,6 +13,7 @@ class SkillContext:
     goals_store: Any = None
     tool_adapter_registry: Any = None
     device_action_adapter: Any = None
+    core_service: Any = None
     conversation_context: Any = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 

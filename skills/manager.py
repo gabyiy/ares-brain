@@ -182,6 +182,7 @@ class SkillManager:
             goals_store=self.goals_store,
             tool_adapter_registry=self.tool_adapter_registry,
             device_action_adapter=self.device_action_adapter,
+            core_service=self.core_service,
             conversation_context=self.conversation_context,
         )
 
@@ -198,6 +199,7 @@ class SkillManager:
             goals_store=context.goals_store,
             tool_adapter_registry=context.tool_adapter_registry,
             device_action_adapter=context.device_action_adapter,
+            core_service=context.core_service,
             conversation_context=context.conversation_context,
             metadata=metadata,
         )

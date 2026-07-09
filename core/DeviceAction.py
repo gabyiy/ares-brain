@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
-from core.CoreService import CoreService
+from core.CoreService import PC_SERVICE_NAME, CoreService
 from core.PCService import PCService, PCServiceResult, WindowsPCService
 
 
@@ -367,8 +367,8 @@ class LocalDeviceActionAdapter:
             self._core_service = CoreService(pc_service=configured_pc_service)
         else:
             self._core_service = core_service
-            if pc_service is not None or self._core_service.get_service("pc") is None:
-                self._core_service.register_service("pc", configured_pc_service)
+            if pc_service is not None or self._core_service.get_service(PC_SERVICE_NAME) is None:
+                self._core_service.register_service(PC_SERVICE_NAME, configured_pc_service)
         if registry is None:
             self._register_safe_builtins()
             self._register_confirmation_builtins()
@@ -399,7 +399,7 @@ class LocalDeviceActionAdapter:
         return [app.to_dict() for app in self.list_apps()]
 
     def _pc_service(self) -> PCService:
-        service = self._core_service.get_service("pc")
+        service = self._core_service.get_service(PC_SERVICE_NAME)
         if service is None:
             raise RuntimeError("PC service is not registered")
         return service
@@ -569,7 +569,7 @@ def _list_apps_action(core_service: CoreService) -> DeviceActionResult:
 def _pc_capabilities(core_capabilities: Mapping[str, Any]) -> Dict[str, Any]:
     capabilities_by_service = core_capabilities.get("capabilities_by_service") or {}
     if isinstance(capabilities_by_service, Mapping):
-        pc_capabilities = capabilities_by_service.get("pc")
+        pc_capabilities = capabilities_by_service.get(PC_SERVICE_NAME)
         if isinstance(pc_capabilities, Mapping):
             return dict(pc_capabilities)
     return {}

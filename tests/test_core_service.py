@@ -1,6 +1,6 @@
 import pytest
 
-from core import CoreService, PCServiceResult, WindowsPCService
+from core import PC_SERVICE_NAME, CoreService, PCServiceResult, WindowsPCService
 
 
 class FakeCapabilityService:
@@ -25,13 +25,26 @@ class FakeCapabilityService:
         )
 
 
+class ServiceWithoutCapabilities:
+    pass
+
+
 def test_core_service_registers_default_pc_service():
     core_service = CoreService()
 
-    pc_service = core_service.get_service("pc")
+    pc_service = core_service.get_service(PC_SERVICE_NAME)
 
     assert isinstance(pc_service, WindowsPCService)
-    assert core_service.list_services() == [{"name": "pc", "type": "WindowsPCService"}]
+    assert core_service.list_services() == [{"name": PC_SERVICE_NAME, "type": "WindowsPCService"}]
+
+
+def test_core_service_default_pc_service_exposes_required_interfaces():
+    core_service = CoreService()
+    pc_service = core_service.get_service(PC_SERVICE_NAME)
+
+    assert callable(pc_service.get_capabilities)
+    assert callable(pc_service.get_status)
+    assert callable(pc_service.status)
 
 
 def test_core_service_registers_and_looks_up_service():
@@ -108,3 +121,25 @@ def test_core_service_reports_capability_errors_safely():
     assert result.data["errors"] == [{"service": "fake", "error": "fake_failure"}]
     assert result.data["services"][0]["success"] is False
     assert service.calls == ["get_capabilities"]
+
+
+def test_core_service_reports_missing_capability_interface_safely():
+    core_service = CoreService(
+        services={"missing capabilities": ServiceWithoutCapabilities()},
+        register_default_pc=False,
+    )
+
+    result = core_service.get_capabilities()
+
+    assert result.success is False
+    assert result.error_message == "capability_discovery_errors"
+    assert result.data["errors"] == [
+        {"service": "missing_capabilities", "error": "missing_get_capabilities"}
+    ]
+    assert result.data["services"] == [
+        {
+            "name": "missing_capabilities",
+            "type": "ServiceWithoutCapabilities",
+            "success": False,
+        }
+    ]
