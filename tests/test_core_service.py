@@ -5,9 +5,17 @@ from core import (
     CITY_STATE_DISABLED,
     CITY_STATE_FAILED,
     CITY_STATE_IDLE,
+    EVENT_DECISION_ESCALATED,
+    EVENT_DECISION_IGNORED,
+    EVENT_DECISION_RECORDED,
     PC_SERVICE_NAME,
+    PRIORITY_CRITICAL,
+    PRIORITY_HIGH,
+    PRIORITY_LOW,
+    PRIORITY_NORMAL,
     VOICE_SERVICE_NAME,
     CoreService,
+    Event,
     PCServiceResult,
     PlaceholderVoiceService,
     WindowsPCService,
@@ -330,3 +338,131 @@ def test_core_service_failed_route_marks_city_failed_safely():
         "after": CITY_STATE_FAILED,
     }
     assert core_service.get_service_status("weather") == CITY_STATE_FAILED
+
+
+def test_core_service_records_low_priority_city_event():
+    core_service = CoreService(register_default_pc=False, register_default_voice=False)
+    core_service.register_service("voice", FakeCapabilityService())
+    event = Event(
+        source="voice",
+        type="voice.placeholder",
+        priority=PRIORITY_LOW,
+        payload={"message": "no input"},
+    )
+
+    result = core_service.handle_event(event)
+
+    assert result.success is True
+    assert result.decision == EVENT_DECISION_RECORDED
+    assert result.error_message == ""
+    assert result.data["event"] == event.to_dict()
+    assert result.data["event_source"] == "voice"
+    assert result.data["city_status"] == CITY_STATE_IDLE
+    assert result.data["escalated"] is False
+    assert core_service.event_decisions() == [result]
+    assert core_service.event_decisions(EVENT_DECISION_RECORDED) == [result]
+
+
+def test_core_service_records_normal_priority_city_event():
+    core_service = CoreService(register_default_pc=False, register_default_voice=False)
+    core_service.register_service("pc", FakeCapabilityService())
+    event = Event(
+        source="pc",
+        type="device.status",
+        priority=PRIORITY_NORMAL,
+        payload={"status": "ok"},
+    )
+
+    result = core_service.handle_event(event)
+
+    assert result.success is True
+    assert result.decision == EVENT_DECISION_RECORDED
+    assert result.text == "Event recorded by CoreService."
+    assert result.data["event"] == event.to_dict()
+    assert result.data["escalated"] is False
+    assert core_service.event_decisions(EVENT_DECISION_ESCALATED) == []
+
+
+def test_core_service_escalates_high_priority_city_event():
+    core_service = CoreService(register_default_pc=False, register_default_voice=False)
+    core_service.register_service("pc", FakeCapabilityService())
+    event = Event(
+        source="pc",
+        type="device.warning",
+        priority=PRIORITY_HIGH,
+        payload={"warning": "confirmation needed"},
+    )
+
+    result = core_service.handle_event(event)
+
+    assert result.success is True
+    assert result.decision == EVENT_DECISION_ESCALATED
+    assert result.text == "Event escalated by CoreService."
+    assert result.data["event"] == event.to_dict()
+    assert result.data["escalated"] is True
+    assert core_service.event_decisions(EVENT_DECISION_ESCALATED) == [result]
+
+
+def test_core_service_escalates_critical_priority_city_event():
+    core_service = CoreService(register_default_pc=False, register_default_voice=False)
+    core_service.register_service("pc", FakeCapabilityService())
+    event = Event(
+        source="pc",
+        type="device.safety",
+        priority=PRIORITY_CRITICAL,
+        payload={"safety": "critical"},
+    )
+
+    result = core_service.handle_event(event)
+
+    assert result.success is True
+    assert result.decision == EVENT_DECISION_ESCALATED
+    assert result.data["event"] == event.to_dict()
+    assert result.data["escalated"] is True
+    assert core_service.event_decisions() == [result]
+
+
+def test_core_service_ignores_unknown_source_event_safely():
+    core_service = CoreService(register_default_pc=False, register_default_voice=False)
+    core_service.register_service("pc", FakeCapabilityService())
+    event = Event(
+        source="vision",
+        type="vision.object",
+        priority=PRIORITY_HIGH,
+        payload={"object": "door"},
+    )
+
+    result = core_service.handle_event(event)
+
+    assert result.success is False
+    assert result.decision == EVENT_DECISION_IGNORED
+    assert result.error_message == "unknown_event_source"
+    assert result.data["event"] == event.to_dict()
+    assert result.data["escalated"] is False
+    assert result.data["city_statuses"] == {"pc": CITY_STATE_IDLE}
+    assert core_service.event_decisions() == []
+
+
+def test_core_service_ignores_disabled_source_event_safely():
+    core_service = CoreService(register_default_pc=False, register_default_voice=False)
+    core_service.register_service(
+        "vision",
+        FakeCapabilityService(),
+        city_status=CITY_STATE_DISABLED,
+    )
+    event = Event(
+        source="vision",
+        type="vision.object",
+        priority=PRIORITY_CRITICAL,
+        payload={"object": "door"},
+    )
+
+    result = core_service.handle_event(event)
+
+    assert result.success is False
+    assert result.decision == EVENT_DECISION_IGNORED
+    assert result.error_message == "disabled_event_source"
+    assert result.data["event"] == event.to_dict()
+    assert result.data["escalated"] is False
+    assert result.data["city_statuses"] == {"vision": CITY_STATE_DISABLED}
+    assert core_service.event_decisions() == []

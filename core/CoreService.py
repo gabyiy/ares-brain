@@ -1,11 +1,26 @@
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
+from core.EventBus import (
+    PRIORITY_CRITICAL,
+    PRIORITY_HIGH,
+    PRIORITY_LOW,
+    PRIORITY_NORMAL,
+    Event,
+)
 from core.PCService import PCService, WindowsPCService
 from core.VoiceService import PlaceholderVoiceService, VoiceService
 
 PC_SERVICE_NAME = "pc"
 VOICE_SERVICE_NAME = "voice"
+EVENT_DECISION_IGNORED = "ignored"
+EVENT_DECISION_RECORDED = "recorded"
+EVENT_DECISION_ESCALATED = "escalated"
+EVENT_DECISIONS = {
+    EVENT_DECISION_IGNORED,
+    EVENT_DECISION_RECORDED,
+    EVENT_DECISION_ESCALATED,
+}
 CITY_STATE_IDLE = "idle"
 CITY_STATE_ACTIVE = "active"
 CITY_STATE_FAILED = "failed"
@@ -29,6 +44,16 @@ class CoreServiceResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class CoreEventDecisionResult:
+    success: bool
+    decision: str
+    text: str = ""
+    data: Dict[str, Any] = field(default_factory=dict)
+    error_message: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
 class CoreService:
     """Registry and capability aggregator for local/external service boundaries."""
 
@@ -42,6 +67,7 @@ class CoreService:
     ):
         self._services: Dict[str, Any] = {}
         self._service_metadata: Dict[str, Dict[str, Any]] = {}
+        self._event_decisions: List[CoreEventDecisionResult] = []
         for name, service in (services or {}).items():
             self.register_service(name, service)
 
@@ -194,6 +220,71 @@ class CoreService:
             metadata={"safe": True, "source": "core_service"},
         )
 
+    def handle_event(self, event: Event) -> CoreEventDecisionResult:
+        """Decide whether a city event is ignored, recorded, or escalated."""
+        if not isinstance(event, Event):
+            return CoreEventDecisionResult(
+                success=False,
+                decision=EVENT_DECISION_IGNORED,
+                text="Event ignored safely because it is not a core Event.",
+                error_message="invalid_event",
+                data={"source": "core_service", "city_statuses": self._city_statuses()},
+                metadata={"safe": True, "source": "core_service"},
+            )
+
+        event_source = _normalize_service_name(event.source)
+        if event_source not in self._services:
+            return self._ignored_event_result(
+                event,
+                "unknown_event_source",
+                f"Event ignored safely because source is not registered: {event.source}",
+            )
+
+        city_status = self._city_status(event_source)
+        if city_status == CITY_STATE_DISABLED:
+            return self._ignored_event_result(
+                event,
+                "disabled_event_source",
+                f"Event ignored safely because source is disabled: {event_source}",
+            )
+
+        if event.priority in {PRIORITY_HIGH, PRIORITY_CRITICAL}:
+            result = self._event_result(
+                event,
+                event_source,
+                EVENT_DECISION_ESCALATED,
+                "Event escalated by CoreService.",
+                escalated=True,
+            )
+        elif event.priority in {PRIORITY_LOW, PRIORITY_NORMAL}:
+            result = self._event_result(
+                event,
+                event_source,
+                EVENT_DECISION_RECORDED,
+                "Event recorded by CoreService.",
+                escalated=False,
+            )
+        else:
+            return self._ignored_event_result(
+                event,
+                "invalid_event_priority",
+                f"Event ignored safely because priority is invalid: {event.priority}",
+            )
+
+        self._event_decisions.append(result)
+        return result
+
+    def event_decisions(self, decision: Optional[str] = None) -> List[CoreEventDecisionResult]:
+        """Return recorded CoreService event decisions, optionally filtered."""
+        if decision is None:
+            return list(self._event_decisions)
+        clean_decision = _normalize_event_decision(decision)
+        return [
+            event_decision
+            for event_decision in self._event_decisions
+            if event_decision.decision == clean_decision
+        ]
+
     def get_capabilities(self) -> CoreServiceResult:
         capabilities_by_service: Dict[str, Dict[str, Any]] = {}
         services: List[Dict[str, Any]] = []
@@ -296,6 +387,49 @@ class CoreService:
                 return name
         return None
 
+    def _ignored_event_result(
+        self,
+        event: Event,
+        error_message: str,
+        text: str,
+    ) -> CoreEventDecisionResult:
+        return CoreEventDecisionResult(
+            success=False,
+            decision=EVENT_DECISION_IGNORED,
+            text=text,
+            error_message=error_message,
+            data={
+                "source": "core_service",
+                "event": event.to_dict(),
+                "city_statuses": self._city_statuses(),
+                "escalated": False,
+            },
+            metadata={"safe": True, "source": "core_service"},
+        )
+
+    def _event_result(
+        self,
+        event: Event,
+        event_source: str,
+        decision: str,
+        text: str,
+        escalated: bool,
+    ) -> CoreEventDecisionResult:
+        return CoreEventDecisionResult(
+            success=True,
+            decision=decision,
+            text=text,
+            data={
+                "source": "core_service",
+                "event": event.to_dict(),
+                "event_source": event_source,
+                "city_status": self._city_status(event_source),
+                "city_statuses": self._city_statuses(),
+                "escalated": escalated,
+            },
+            metadata={"safe": True, "source": "core_service"},
+        )
+
 
 def _service_capability_method(service: Any) -> Optional[CapabilityMethod]:
     get_capabilities = getattr(service, "get_capabilities", None)
@@ -317,6 +451,13 @@ def _normalize_city_status(city_status: str) -> str:
 
 def _normalize_capability(capability: str) -> str:
     return str(capability or "").strip().lower()
+
+
+def _normalize_event_decision(decision: str) -> str:
+    clean_decision = str(decision or "").strip().lower()
+    if clean_decision not in EVENT_DECISIONS:
+        raise ValueError(f"Invalid event decision: {decision}")
+    return clean_decision
 
 
 def _normalize_capabilities(capabilities: List[str]) -> List[str]:
