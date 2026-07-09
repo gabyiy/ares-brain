@@ -27,7 +27,7 @@ from core.AdapterConfig import (
     load_adapter_configs,
 )
 from core.Confirmation import ConfirmationDecision, ConfirmationManager, ConfirmationRequest
-from core.CoreService import PC_SERVICE_NAME, CoreService, CoreServiceResult
+from core.CoreService import PC_SERVICE_NAME, VOICE_SERVICE_NAME, CoreService, CoreServiceResult
 from core.ExecutionPipeline import ExecutionPipeline, ExecutionResult, RollbackHook, StepResult
 from core.Intent import Intent
 from core.IntentParser import IntentParser
@@ -45,6 +45,13 @@ from core.ToolAdapter import (
     ToolResponse,
 )
 from core.ToolChain import MAX_CHAIN_DEPTH, ToolChain, ToolChainResult, ToolChainTraceStep
+from core.VoiceService import (
+    PlaceholderVoiceService,
+    VoiceCapabilities,
+    VoiceService,
+    VoiceServiceResult,
+    VoiceStatus,
+)
 
 __all__ = [
     "ConversationContextManager",
@@ -67,6 +74,7 @@ __all__ = [
     "CoreService",
     "CoreServiceResult",
     "PC_SERVICE_NAME",
+    "VOICE_SERVICE_NAME",
     "ExecutionPipeline",
     "ExecutionResult",
     "ExternalAdapterConfig",
@@ -91,6 +99,11 @@ __all__ = [
     "RealMarketAdapter",
     "RealWeatherAdapter",
     "WindowsPCService",
+    "PlaceholderVoiceService",
+    "VoiceCapabilities",
+    "VoiceService",
+    "VoiceServiceResult",
+    "VoiceStatus",
     "MAX_CHAIN_DEPTH",
     "ToolAdapter",
     "ToolAdapterRegistry",

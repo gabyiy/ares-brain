@@ -1,6 +1,13 @@
 import pytest
 
-from core import PC_SERVICE_NAME, CoreService, PCServiceResult, WindowsPCService
+from core import (
+    PC_SERVICE_NAME,
+    VOICE_SERVICE_NAME,
+    CoreService,
+    PCServiceResult,
+    PlaceholderVoiceService,
+    WindowsPCService,
+)
 
 
 class FakeCapabilityService:
@@ -35,7 +42,18 @@ def test_core_service_registers_default_pc_service():
     pc_service = core_service.get_service(PC_SERVICE_NAME)
 
     assert isinstance(pc_service, WindowsPCService)
-    assert core_service.list_services() == [{"name": PC_SERVICE_NAME, "type": "WindowsPCService"}]
+    assert core_service.list_services() == [
+        {"name": PC_SERVICE_NAME, "type": "WindowsPCService"},
+        {"name": VOICE_SERVICE_NAME, "type": "PlaceholderVoiceService"},
+    ]
+
+
+def test_core_service_registers_default_voice_service():
+    core_service = CoreService()
+
+    voice_service = core_service.get_service(VOICE_SERVICE_NAME)
+
+    assert isinstance(voice_service, PlaceholderVoiceService)
 
 
 def test_core_service_default_pc_service_exposes_required_interfaces():
@@ -49,7 +67,7 @@ def test_core_service_default_pc_service_exposes_required_interfaces():
 
 def test_core_service_registers_and_looks_up_service():
     service = FakeCapabilityService()
-    core_service = CoreService(register_default_pc=False)
+    core_service = CoreService(register_default_pc=False, register_default_voice=False)
 
     registered = core_service.register_service("Fake Service", service)
 
@@ -60,7 +78,7 @@ def test_core_service_registers_and_looks_up_service():
 
 
 def test_core_service_rejects_invalid_registration():
-    core_service = CoreService(register_default_pc=False)
+    core_service = CoreService(register_default_pc=False, register_default_voice=False)
 
     with pytest.raises(ValueError, match="Service name is required"):
         core_service.register_service("", FakeCapabilityService())
@@ -71,7 +89,11 @@ def test_core_service_rejects_invalid_registration():
 
 def test_core_service_aggregates_registered_capabilities():
     service = FakeCapabilityService()
-    core_service = CoreService(services={"fake": service}, register_default_pc=False)
+    core_service = CoreService(
+        services={"fake": service},
+        register_default_pc=False,
+        register_default_voice=False,
+    )
 
     result = core_service.get_capabilities()
 
@@ -112,7 +134,11 @@ def test_core_service_aggregates_registered_capabilities():
 
 def test_core_service_reports_capability_errors_safely():
     service = FakeCapabilityService(success=False)
-    core_service = CoreService(services={"fake": service}, register_default_pc=False)
+    core_service = CoreService(
+        services={"fake": service},
+        register_default_pc=False,
+        register_default_voice=False,
+    )
 
     result = core_service.get_capabilities()
 
@@ -127,6 +153,7 @@ def test_core_service_reports_missing_capability_interface_safely():
     core_service = CoreService(
         services={"missing capabilities": ServiceWithoutCapabilities()},
         register_default_pc=False,
+        register_default_voice=False,
     )
 
     result = core_service.get_capabilities()

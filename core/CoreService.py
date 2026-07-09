@@ -2,8 +2,10 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from core.PCService import PCService, WindowsPCService
+from core.VoiceService import PlaceholderVoiceService, VoiceService
 
 PC_SERVICE_NAME = "pc"
+VOICE_SERVICE_NAME = "voice"
 CapabilityMethod = Callable[[], Any]
 
 
@@ -23,7 +25,9 @@ class CoreService:
         self,
         services: Optional[Mapping[str, Any]] = None,
         pc_service: Optional[PCService] = None,
+        voice_service: Optional[VoiceService] = None,
         register_default_pc: bool = True,
+        register_default_voice: bool = True,
     ):
         self._services: Dict[str, Any] = {}
         for name, service in (services or {}).items():
@@ -33,6 +37,11 @@ class CoreService:
             self.register_service(PC_SERVICE_NAME, pc_service)
         elif register_default_pc and PC_SERVICE_NAME not in self._services:
             self.register_service(PC_SERVICE_NAME, WindowsPCService())
+
+        if voice_service is not None:
+            self.register_service(VOICE_SERVICE_NAME, voice_service)
+        elif register_default_voice and VOICE_SERVICE_NAME not in self._services:
+            self.register_service(VOICE_SERVICE_NAME, PlaceholderVoiceService())
 
     def register_service(self, name: str, service: Any) -> Any:
         """Register a service by its normalized name and return the service instance."""
