@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.44 - Voice Text Loop Foundation
+ARES v1.45 - Manual Voice Text Simulation
 
 ---
 
@@ -291,6 +291,7 @@ Implemented Features
 - Confirmed Windows-only `sleep_pc` action after explicit user approval
 - Config-backed allowlist-only Windows app launcher with `AppLaunchConfig`, `AppAllowlistLoader`, one enabled calculator entry in `config/apps.json`, disabled notepad/browser entries, `list_apps`, and confirmation-gated `open_app`
 - Owner-run manual calculator launch verification script with exact typed confirmation
+- Owner-run manual Voice City text simulation script using typed input, VoiceLoop, and NullVoiceOutput
 - External adapter config model with enabled, mode, env-key name, base URL, timeout, placeholder detection, and secret validation
 - RealWeatherAdapter HTTP logic gated by `mode=real`, env-key lookup, timeout handling, safe errors, and normalized ARES weather output
 - RealMarketAdapter HTTP logic gated by `mode=real`, env-key lookup, timeout handling, safe errors, and normalized ARES market output
@@ -307,7 +308,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 310 tests across core Phase 2-43 modules
+- Pytest automated coverage for 315 tests across core Phase 2-43 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -326,7 +327,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `310 tests`.
+Current pytest collection: `315 tests`.
 
 Manual Calculator Launch Verification
 
@@ -337,6 +338,16 @@ py scripts\manual_verify_calculator_launch.py
 ```
 
 The script prints a warning, shows `App id: calculator`, requires the exact typed confirmation `YES_OPEN_CALCULATOR`, and then calls the same `LocalDeviceActionAdapter.execute("open_app", ...)` path used by ARES. Any other input refuses the launch. Tests mock this path and do not open Calculator.
+
+Manual Voice Text Simulation
+
+The Voice City text simulation script is owner-run only and is not executed by automated tests:
+
+```powershell
+py scripts\manual_voice_text_loop.py
+```
+
+The script prints a text-only warning, accepts one typed input line, passes it through `VoiceLoop` into the existing local SkillManager planner/execution path, and prints the final response. It uses typed text input plus `NullVoiceOutput`; it does not access a microphone, speaker, wake word, real STT, real TTS, GPT, internet, or a background loop.
 
 Continuous Integration
 
