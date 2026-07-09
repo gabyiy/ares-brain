@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.45 - Manual Voice Text Simulation
+ARES v1.46 - City Lifecycle Lazy Routing
 
 ---
 
@@ -20,7 +20,7 @@ The active runtime includes `core.IntentParser` for structured local intents, `c
 
 The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the Brain/CoreService capital city model, current CoreService and PCService boundaries, capability discovery, future cities, upgrade philosophy, design rules, and long-term vision.
 
-`core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, and `get_capabilities()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior.
+`core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, `get_capabilities()`, and `route_by_capability()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior. CoreService tracks city lifecycle states as `idle`, `active`, `failed`, and `disabled`; lazy capability routing activates only the selected city for a request and leaves unused cities idle.
 
 `core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It owns `VoiceInput` and `VoiceOutput` components, currently implemented as `NullVoiceInput` and `NullVoiceOutput`. These expose `listen_once()`, `speak(text)`, `get_capabilities()`, and `get_status()` contracts with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled. `core.VoiceLoop` adds a one-shot text loop foundation: it calls `VoiceInput.listen_once()`, ignores empty input safely, passes recognized text to an injected existing text/planner/execution handler, and sends the final response text to `VoiceOutput.speak()`.
 
@@ -215,6 +215,7 @@ Completed
 - PCService structured status provider
 - PCService capability discovery
 - CoreService orchestration layer
+- City lifecycle states and lazy capability routing
 - Phase 2 architecture stabilization
 - Voice City service skeleton
 - Voice City input/output contracts
@@ -312,7 +313,7 @@ Implemented Features
 - PCService abstraction with `PCServiceResult` and `WindowsPCService` as the single DeviceAction entry point for `lock`, `sleep`, `open_app`, and `status`
 - Structured PCService status provider with `PCStatus` and safe local `get_status()` fields for operating system, hostname, current user, Python version, optional uptime, and available actions
 - Dynamic PCService capability discovery with `PCCapabilities` and safe local `get_capabilities()` fields for supported device actions, supported applications, available status providers, and available services
-- CoreService orchestration layer with service registration, default `PCService` registration as `pc`, `get_service(name)`, `list_services()`, and aggregate `get_capabilities()` over registered services
+- CoreService orchestration layer with service registration, default `PCService` registration as `pc`, `get_service(name)`, `list_services()`, aggregate `get_capabilities()` over registered services, city lifecycle metadata, and lazy `route_by_capability()` execution
 - Phase 2 architecture cleanup with centralized `PC_SERVICE_NAME`, CoreService carried through `SkillContext`, and focused service registration/capability contract tests
 - Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceInput`, `VoiceOutput`, `NullVoiceInput`, `NullVoiceOutput`, `VoiceStatus`, `VoiceCapabilities`, `VoiceLoop`, `VoiceLoopResult`, default CoreService registration as `voice`, safe placeholder status, a one-shot placeholder text loop, and no audio hardware access
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
@@ -337,7 +338,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 315 tests across core Phase 2-43 modules
+- Pytest automated coverage for 319 tests across core Phase 2-44 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -356,7 +357,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `315 tests`.
+Current pytest collection: `319 tests`.
 
 Manual Calculator Launch Verification
 
@@ -1025,19 +1026,31 @@ Phase 43
 
 Phase 44
 
+- City lifecycle and lazy capability routing
+- CoreService tracks city states: `idle`, `active`, `failed`, and `disabled`
+- CoreService capability registry metadata includes each city's status and registered capabilities
+- `route_by_capability()` activates only the matching idle city for a routed request
+- Unused cities remain idle and are not called
+- Disabled cities are not routed
+- Failed route handlers mark only the selected city as `failed`
+- Event Bus city activation remains future-only documentation; no event-driven city wakeup runtime was added
+- No real audio, GPT, internet, new APIs, or external calls were added
+
+Phase 45
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 45
+Phase 46
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 46
+Phase 47
 
 - Robotics
 - ROS2

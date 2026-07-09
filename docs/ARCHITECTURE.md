@@ -137,6 +137,8 @@ Current responsibilities:
 - provide `get_service(name)` lookup
 - provide `list_services()` metadata
 - aggregate capabilities with `get_capabilities()`
+- route a request to one matching city with `route_by_capability()`
+- track city lifecycle states: `idle`, `active`, `failed`, and `disabled`
 - register PCService as the default `pc` service
 - register the Voice City placeholder service as the default `voice` service
 - fail safely when a registered service does not expose required capability interfaces
@@ -240,6 +242,42 @@ The Brain discovers services dynamically through CoreService instead of assuming
 
 Discovery over assumptions is a core design rule. If a service is missing or incomplete, ARES should report that safely instead of guessing.
 
+# City Lifecycle and Lazy Routing
+
+ARES uses city lifecycle metadata to keep services quiet until they are needed.
+
+Current lifecycle states:
+
+- `idle`: the city is registered and available, but it is not currently handling a request.
+- `active`: the city is handling the current routed request.
+- `failed`: the city failed while handling a routed request and should not be assumed healthy.
+- `disabled`: the city is registered but unavailable for routing.
+
+CoreService stores capability registry metadata for each city:
+
+- service name
+- service type
+- city lifecycle state
+- registered capabilities
+
+`CoreService.route_by_capability(capability, handler)` uses that registry to find the first matching `idle` city and calls only that city. Non-matching cities are not probed, called, or activated. Disabled cities are skipped. If the selected handler fails, only that city is marked `failed`.
+
+This preserves the rule: only the needed city activates; everything else stays idle unless explicitly triggered.
+
+Capability aggregation through `get_capabilities()` is still an inventory operation. It can ask registered services for their advertised capabilities. Lazy request execution should use route-by-capability behavior when the caller needs one city to handle one request.
+
+# Event Bus City Activation
+
+Event-driven city activation is future-only documentation right now. The Event Bus may later publish events such as voice input received, vision frame available, device status changed, or scheduled task due. Cities may later subscribe to those events and activate themselves through explicit capability routes.
+
+Current boundary:
+
+- no background city wakeup runtime
+- no event-driven audio listener
+- no GPT or internet activation
+- no new external APIs
+- no notification scheduling
+
 # Future Cities
 
 ## Voice City
@@ -291,6 +329,8 @@ The Brain remains unchanged because identity, memory, personality, goals, reason
 - Brain never calls Windows directly.
 - Brain communicates through CoreService.
 - Hardware-specific code must never enter the Brain.
+- Only the needed city should activate for a routed request.
+- Unused cities must stay idle unless explicitly triggered.
 - Services hide implementation details.
 - Communication uses structured data.
 - No hardcoded dependencies in the Brain.
