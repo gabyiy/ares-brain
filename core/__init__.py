@@ -46,8 +46,12 @@ from core.ToolAdapter import (
 )
 from core.ToolChain import MAX_CHAIN_DEPTH, ToolChain, ToolChainResult, ToolChainTraceStep
 from core.VoiceService import (
+    NullVoiceInput,
+    NullVoiceOutput,
     PlaceholderVoiceService,
     VoiceCapabilities,
+    VoiceInput,
+    VoiceOutput,
     VoiceService,
     VoiceServiceResult,
     VoiceStatus,
@@ -99,8 +103,12 @@ __all__ = [
     "RealMarketAdapter",
     "RealWeatherAdapter",
     "WindowsPCService",
+    "NullVoiceInput",
+    "NullVoiceOutput",
     "PlaceholderVoiceService",
     "VoiceCapabilities",
+    "VoiceInput",
+    "VoiceOutput",
     "VoiceService",
     "VoiceServiceResult",
     "VoiceStatus",
