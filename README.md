@@ -89,6 +89,35 @@ Codex City is a future maintenance city. Its planned role is to check the ARES G
 
 This city model is documentation only. It does not add scheduler implementation, GitHub API integration, self-modifying behavior, GPT, voice, internet access, real APIs, or notifications.
 
+Future Architecture Vision
+
+The long-term ARES architecture is one modular Brain connected to many replaceable services, adapters, and devices.
+
+Future target roles:
+
+- Brain = identity, memory, reasoning, planning, goals, personality, owner history, and decision history.
+- CoreService = intent and capability router between the Brain and registered services.
+- Cities = major abilities such as Voice, Vision, PC, Weather, Market, Calendar, Home, Robot Body, and Codex.
+- Adapters = hardware or API connectors used by a city, such as speech engines, cameras, weather providers, app launchers, or robot control libraries.
+- Devices = physical bodies and interfaces such as Raspberry Pi, Jetson Orin, Windows PC, phone, robot body, microphone, speaker, camera, and home devices.
+
+This is future vision, not implemented runtime behavior. The current runtime remains local, text-first, and deterministic unless a specific feature has been explicitly implemented and verified.
+
+One Brain, Many Bodies
+
+The long-term deployment model is one ARES Brain that can inhabit or coordinate multiple bodies without losing identity.
+
+Future home-server vision:
+
+- ARES Home Server stores the Brain, master memory, user profile, goals, relationship history, sync service, and backups.
+- Raspberry Pi acts as a small local body for lightweight interaction.
+- Jetson Orin acts as a stronger robot/vision body.
+- Windows PC acts as a desktop/device-control body.
+- Phone acts as a mobile interface body.
+- Other future devices can join as clients only through service boundaries and capability discovery.
+
+Hard rule: hardware-specific code must never enter the Brain. Operating-system commands, camera drivers, microphone and speaker internals, robot motor code, model-specific parsing, provider-specific API formats, and raw secrets belong in services, adapters, or devices. The Brain should communicate through structured data and CoreService capabilities.
+
 ARES
 │
 ├── Event Bus

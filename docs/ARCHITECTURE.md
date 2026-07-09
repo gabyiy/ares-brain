@@ -86,6 +86,45 @@ Examples:
 
 Design rule: The Brain must never directly know API keys, Windows commands, camera internals, model internals, hardware commands, or provider-specific parsing.
 
+# Future Architecture Vision
+
+This section describes long-term architecture vision only. It is not implemented runtime behavior unless a capability is documented elsewhere as current and verified.
+
+Future target roles:
+
+- Brain = identity, memory, reasoning, planning, goals, personality, owner history, and decision history.
+- CoreService = intent and capability router between the Brain and registered services.
+- Cities = major abilities exposed behind service boundaries.
+- Adapters = hardware or API connectors owned by cities.
+- Devices = physical bodies, local interfaces, cloud services, files, models, and hardware endpoints.
+
+In the long-term model, the Brain owns identity-level state and decisions. The Brain does not know how a microphone records audio, how a camera stores frames, how a weather provider formats JSON, how Windows locks a session, or how a robot motor is controlled. Those details belong below the Brain.
+
+CoreService is the routing and discovery layer. Its future role is to route intents and capability requests from the Brain to registered cities and services, then return structured responses. CoreService should expose capabilities without leaking hardware, operating system, provider, or secret details into the Brain.
+
+Cities are replaceable ability modules. Voice City owns speech input and output. Vision City owns cameras and visual recognition. PC City owns local computer actions. Weather City owns weather providers. Market City owns market providers. Calendar City owns schedules. Home City owns smart-home devices. Robot Body City owns movement and sensors. Codex City owns repository maintenance workflows.
+
+Adapters are connectors below cities. They translate city-level requests into provider-specific or hardware-specific calls, such as a speech engine, camera library, app launcher, weather API, market API, calendar provider, home-device protocol, or robot control library.
+
+Devices are the bodies and interfaces ARES can use. A device can be a Raspberry Pi, Jetson Orin, Windows PC, phone, robot body, microphone, speaker, camera, file, local model, or future hardware module. Devices are replaceable and must communicate through services and adapters.
+
+# One Brain, Many Bodies
+
+The future deployment model is one ARES Brain that can coordinate many bodies while keeping one identity.
+
+Future home-server vision:
+
+- ARES Home Server stores the Brain, master memory, user profile, goals, relationship history, sync service, and backups.
+- Raspberry Pi clients act as small local bodies for lightweight interaction.
+- Jetson Orin clients act as stronger robot or vision bodies.
+- Windows PC clients act as desktop and device-control bodies.
+- Phone clients act as mobile interface bodies.
+- Future bodies can join only through service registration, capability discovery, adapter boundaries, and owner-approved permissions.
+
+The Home Server is the continuity point. Clients and bodies can be replaced, upgraded, disconnected, or retired without changing the Brain's identity or master memory.
+
+Hard rule: hardware-specific code must never enter the Brain. Operating-system commands, camera drivers, microphone and speaker internals, robot motor code, model-specific parsing, provider-specific API formats, and raw secrets belong in services, adapters, or devices. The Brain communicates through structured data, CoreService capabilities, and explicit permissions.
+
 # Current Services
 
 ## CoreService
@@ -251,6 +290,7 @@ The Brain remains unchanged because identity, memory, personality, goals, reason
 
 - Brain never calls Windows directly.
 - Brain communicates through CoreService.
+- Hardware-specific code must never enter the Brain.
 - Services hide implementation details.
 - Communication uses structured data.
 - No hardcoded dependencies in the Brain.

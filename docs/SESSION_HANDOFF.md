@@ -931,9 +931,23 @@ City model summary:
 - Codex City is a future maintenance city that can check the ARES GitHub repository, pull latest code, run tests, check compile, check docs freshness, report problems, and suggest fixes.
 - Codex City must never auto-edit without owner approval.
 
+Future ARES home architecture vision has been documented.
+
+Future architecture summary:
+
+- Brain owns identity, memory, reasoning, planning, goals, personality, owner history, and decision history.
+- CoreService is the future intent and capability router between the Brain and registered services.
+- Cities are major ability modules.
+- Adapters are hardware or API connectors owned by cities.
+- Devices are physical bodies and interfaces.
+- ARES Home Server is the future continuity point for the Brain, master memory, user profile, goals, relationship history, sync service, and backups.
+- Raspberry Pi, Jetson Orin, Windows PC, phone, and future robot bodies act as replaceable clients or bodies.
+- Hard rule: hardware-specific code must never enter the Brain.
+
 Boundary:
 
 - Documentation only.
+- The home-server/client-body model is future vision, not implemented runtime behavior.
 - No scheduler implementation was added.
 - No GitHub API integration was added.
 - No self-modifying behavior was added.
