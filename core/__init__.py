@@ -27,7 +27,17 @@ from core.AdapterConfig import (
     load_adapter_configs,
 )
 from core.Confirmation import ConfirmationDecision, ConfirmationManager, ConfirmationRequest
-from core.CoreService import PC_SERVICE_NAME, VOICE_SERVICE_NAME, CoreService, CoreServiceResult
+from core.CoreService import (
+    CITY_LIFECYCLE_STATES,
+    CITY_STATE_ACTIVE,
+    CITY_STATE_DISABLED,
+    CITY_STATE_FAILED,
+    CITY_STATE_IDLE,
+    PC_SERVICE_NAME,
+    VOICE_SERVICE_NAME,
+    CoreService,
+    CoreServiceResult,
+)
 from core.ExecutionPipeline import ExecutionPipeline, ExecutionResult, RollbackHook, StepResult
 from core.Intent import Intent
 from core.IntentParser import IntentParser
@@ -78,6 +88,11 @@ __all__ = [
     "ConfirmationRequest",
     "CoreService",
     "CoreServiceResult",
+    "CITY_LIFECYCLE_STATES",
+    "CITY_STATE_ACTIVE",
+    "CITY_STATE_DISABLED",
+    "CITY_STATE_FAILED",
+    "CITY_STATE_IDLE",
     "PC_SERVICE_NAME",
     "VOICE_SERVICE_NAME",
     "ExecutionPipeline",
