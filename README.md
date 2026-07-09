@@ -10,13 +10,15 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.39 - Phase 2 Complete Architecture Cleanup
+ARES v1.40 - Permanent Architecture Reference
 
 ---
 
 Current Architecture
 
 The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.DeviceAction`, `DeviceActionRegistry`, `AppLaunchConfig`, `AppAllowlistLoader`, `core.PCService`, `PCServiceResult`, `PCStatus`, `PCCapabilities`, `WindowsPCService`, and `LocalDeviceActionAdapter` for local device action foundations with `safe`, `confirmation_required`, and `forbidden` classifications, confirmed Windows-only `lock_pc` and `sleep_pc`, a config-backed allowlist-only Windows app launcher with only `calculator` enabled in `config/apps.json`, disabled `notepad` and `browser` entries, `list_apps`, confirmation-gated `open_app`, no arbitrary user paths, no shell commands, all PC operations routed through PCService as the dedicated entry point, structured local `get_status()` responses for safe PC information, and dynamic local `get_capabilities()` responses for supported actions, apps, status providers, and services, `skills.builtin.DeviceActionSkill` for safe live routing of `echo`, `list device actions`, `list apps`, and `system status` plus confirmation-gated `lock_pc`/`sleep_pc`/`open_app` and stable forbidden responses for dangerous placeholders, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
+
+The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the Brain/CoreService capital city model, current CoreService and PCService boundaries, capability discovery, future cities, upgrade philosophy, design rules, and long-term vision.
 
 `core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, and `get_capabilities()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior.
 
@@ -403,7 +405,7 @@ Engineering Rules
 
 Project Documents
 
-- Architecture: `docs/ARCHITECTURE.md`
+- Permanent architecture reference: `docs/ARCHITECTURE.md`
 - Roadmap: `docs/ROADMAP.md`
 - Engineering rules: `docs/ENGINEERING_RULES.md`
 - Session handoff: `docs/SESSION_HANDOFF.md`

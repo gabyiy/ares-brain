@@ -1,917 +1,186 @@
-ARES Architecture
-
-This document describes the current ARES architecture and the intended integration points for future work. It is a planning document only; it does not introduce new runtime behavior.
-
-Current System Flow
-
-1. The user starts the text REPL with `py interfaces\text_repl.py`.
-2. The REPL creates one shared `EventBus`.
-3. The REPL creates `MemoryStore` for conversation turns.
-4. The REPL creates `UserProfileStore` for persistent user facts.
-5. The REPL creates `GoalsStore` for persistent long-term goals.
-6. The REPL creates `NotesStore` for persistent local notes.
-7. The REPL creates `TasksStore` for persistent offline tasks.
-8. The REPL creates the shared in-memory `ConversationContextManager`.
-9. The REPL creates `SkillManager`, which owns an offline `ToolAdapterRegistry` with `MockWeatherAdapter`, `MockMarketAdapter`, and `MockCalendarAdapter`, can enforce future adapter config through `ExternalAdapterConfig` and `SecretsGuard`, leaves `RealWeatherAdapter` and `RealMarketAdapter` opt-in only, owns a `CoreService` for service registration and capability aggregation where practical, registers the built-in skill plugin, and passes the manager to `IntentRouter`.
-10. User input is sent to `IntentRouter`.
-11. `IntentRouter` publishes input lifecycle events.
-12. When a skill path is checked, `SkillManager` parses user text into `core.Intent` with `core.IntentParser`.
-13. `ToolSelector` asks `core.Planner` to build a local execution plan before skill selection. Planner can read existing store context through safe store interfaces provided by `SkillManager`.
-14. `ToolSelector` scores the structured intent against registered skill `intent_names`.
-15. Priority skills are selected before normal intents only when a skill opts in.
-16. `SkillManager` validates executable plans through `core.ToolChain`.
-17. `ToolChain` enforces chain depth, loop prevention, and execution tracing.
-18. `ToolChain` delegates accepted plans to `core.ExecutionPipeline`.
-19. `ExecutionPipeline` executes each `PlanStep` sequentially and records step results.
-20. When a destructive or important step is reached, `ExecutionPipeline` pauses and returns a `ConfirmationRequest`.
-21. `SkillManager` handles `yes`, `confirm`, `no`, and `cancel` as `ConfirmationDecision` values for the pending request.
-22. Normal intents run next when no priority skill path handles the message.
-23. Non-priority skills are selected by `ToolSelector` as a fallback when no normal intent matches.
-24. Responses are published as events.
-25. `SkillManager` records handled skill turns in `ConversationContextManager`.
-26. The REPL stores each conversation turn in `MemoryStore`.
-27. The REPL scans each user message for profile facts and stores them in `UserProfileStore`.
-
-Phase 2 Complete Architecture Baseline
-
-Phase 2 is considered complete as the stabilized baseline for future city work. The foundation now has one consistent Brain-to-service path: `SkillManager` owns the active `CoreService`, `SkillContext` carries that same `core_service` reference to skills, `CoreService` owns service registration and capability aggregation, and `PCService` remains the dedicated PC operation/status/capability boundary.
-
-Current service conventions:
-
-- `CoreService.register_service(name, service)` is the service registration pattern.
-- `CoreService.get_service(name)` is the service lookup path.
-- `CoreService.list_services()` returns stable registered service metadata.
-- `CoreService.get_capabilities()` aggregates service capability data.
-- `PC_SERVICE_NAME` centralizes the default `pc` service key.
-- Registered services must expose `get_capabilities()` to participate in capability aggregation.
-- PC services expose `get_status()` and the compatibility `status()` wrapper.
-- Services that do not expose `get_capabilities()` fail safely in CoreService capability aggregation.
-
-This cleanup did not add new runtime behavior, new functionality, GPT, internet access, remote execution, hardware access, new cities, or new device actions.
-
-Event Bus
-
-`events.EventBus` is the in-process publish/subscribe layer.
-
-Current responsibilities:
-
-- Publish user input lifecycle events.
-- Publish intent and skill detection events.
-- Publish response generation events.
-- Publish memory and profile write events.
-- Keep a bounded event history for verification and tests.
-
-Current event examples:
-
-- `user_message_received`
-- `intent_detected`
-- `response_generated`
-- `memory.recorded`
-- `memory.promoted`
-- `memory.cleared`
-- `profile.fact_saved`
-- `goals.recorded`
-- `goals.completed`
-- `goals.paused`
-- `goals.deleted`
-- `goals.milestone_added`
-- `notes.recorded`
-- `notes.deleted`
-- `notes.cleared`
-- `tasks.recorded`
-- `tasks.completed`
-- `tasks.deleted`
-- `tasks.completed_cleared`
-- `skill.registered`
-- `skill.plugin_registered`
-- `skill.detected`
-- `skill.response_generated`
-- `execution.started`
-- `execution.step_started`
-- `execution.step_completed`
-- `execution.step_failed`
-- `execution.rollback_requested`
-- `execution.rollback_failed`
-- `execution.completed`
-- `tool_chain.started`
-- `tool_chain.rejected`
-- `tool_chain.completed`
-- `confirmation.requested`
-- `confirmation.decision`
-
-Intent
-
-`core.Intent` is the structured representation of local user intent before skill selection.
-
-Current fields:
-
-- `intent_name`
-- `confidence`
-- `extracted_entities`
-- `raw_text`
-
-The object is intentionally small so deterministic parsers, tests, and future local tools can share one contract.
-
-IntentParser
-
-`core.IntentParser` converts natural language into a structured `Intent` before `ToolSelector` runs.
-
-Current recognized intents:
-
-- `calculate`
-- `goal`
-- `note`
-- `task`
-- `memory_recall`
-- `weather`
-- `market`
-- `calendar`
-- `device_action`
-- `time_date`
-- `unknown`
-
-Current entity extraction examples:
-
-- `remember buy milk tomorrow` becomes a `task` intent with `action`, `text`, and `due`.
-- `remember to buy milk` becomes a `task` intent with task text `buy milk`.
-- `remember this idea: build ARES memory` becomes a `note` intent with note text.
-- `calculate 15*8` becomes a `calculate` intent with an arithmetic `expression`.
-- `add goal build ARES memory` becomes a `goal` intent with an add action and title.
-- `add milestone to goal <id> write tests` becomes a `goal` intent with goal id and milestone text.
-- `show my notes` becomes a `note` intent with a list action.
-- `notes about gym` becomes a `note` intent with a search action and keyword `gym`.
-- `remind me about my main goal tomorrow` becomes a `task` intent with task text `my main goal` and due text `tomorrow`.
-- `what should I do next for my goals` becomes a `goal` intent with a next-step action.
-- `what is my birthday` becomes a `memory_recall` intent for the birthday profile fact.
-- `what did I tell you about my job` becomes a `memory_recall` intent with a recall topic.
-- `weather in Madrid` becomes a `weather` intent with location `Madrid`, adapter `mock_weather`, and capability `weather.current`.
-- `weather tomorrow` becomes a `weather` intent with period `tomorrow` and capability `weather.forecast`.
-- `stock nvidia` becomes a `market` intent with symbol `NVIDIA`, adapter `mock_market`, and capability `market.quote`.
-- `market price for tesla` becomes a `market` intent with symbol `TESLA`.
-- `calendar tomorrow` becomes a `calendar` intent with period `tomorrow`, adapter `mock_calendar`, and capability `calendar.events`.
-- `schedule today` becomes a `calendar` intent with period `today`.
-- `echo hello ARES` becomes a `device_action` intent with action `echo`.
-- `list device actions` becomes a `device_action` intent with action `list`.
-- `system status` becomes a `device_action` intent with action `status`.
-- `shutdown`, `restart`, `run command`, `delete`, and arbitrary shell requests become safe rejected `device_action` intents; lock, sleep, and open-app requests route to confirmed Windows action paths with explicit gates.
-
-The parser is deterministic and offline. It does not use AI, GPT, embeddings, external APIs, or a broad regex-only dispatcher.
-
-Planner
-
-`core.Planner` converts structured intents into local execution plans.
-
-Current planning objects:
-
-- `PlanStep`
-- `Plan`
-- `MultiStepPlan`
-- `Planner`
-
-Current responsibilities:
-
-- Receive an `Intent`.
-- Produce ordered `PlanStep` entries.
-- Return a regular `Plan` for single-step requests.
-- Return a `MultiStepPlan` for compatible requests with more than one executable step.
-- Estimate execution order through the step `order` field.
-- Skip impossible steps and return planning errors.
-- Serialize plans and steps for events, tests, and REPL display.
-- Split compatible compound requests such as `What's the weather tomorrow and remind me to go to the gym`.
-- Split compatible compound requests such as `Show my goals and today's calendar`.
-- Read context through existing `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces when those stores are injected.
-- Resolve context references such as main goal reminders, profile favorite reminders, note topic searches, and next goal actions.
-- Return safe local empty-context responses when required context is missing.
-
-Current supported planner targets:
-
-- `notes`
-- `tasks`
-- `goals`
-- `calculator`
-- `weather`
-- `market`
-- `calendar`
-- `conversation_memory`
-- `planner_context`
-
-Planner boundaries:
-
-- Planner never executes skills.
-- Planner does not write memory, goals, notes, or tasks.
-- Planner does not read data files directly.
-- Planner does not call GPT, voice, notifications, calendar APIs, or external APIs.
-- `ToolChain` validates compatible planner steps before execution.
-- Planner can hold a `ToolAdapterRegistry` for future adapter-aware planning, but it does not create real external API calls.
-
-ToolChain
-
-`core.ToolChain` validates and traces compatible local multi-step requests before execution.
-
-Current chain objects:
-
-- `ToolChainTraceStep`
-- `ToolChainResult`
-- `ToolChain`
-
-Current responsibilities:
-
-- Receive a `Plan`.
-- Enforce max chain depth 5.
-- Reject repeated step signatures to prevent loop-style chains.
-- Record an ordered execution trace.
-- Record bounded chain history for REPL inspection.
-- Publish tool chain lifecycle events.
-- Delegate accepted plans to `ExecutionPipeline`.
-
-Current supported chain examples:
-
-- Memory plus calculator.
-- Note plus memory.
-- Task/reminder plus memory.
-- Goal plus calculator.
-- Goal plus memory.
-
-ToolChain boundaries:
-
-- ToolChain does not plan.
-- ToolChain does not execute skills directly.
-- ToolChain does not write memory, goals, notes, or tasks directly.
-- ToolChain does not call GPT, voice, notifications, calendar APIs, stocks, or external APIs.
-- ToolChain does not change storage formats.
-
-ToolAdapter
-
-`core.ToolAdapter` defines the future adapter contract for external tools without enabling real external integrations yet.
-
-Current adapter objects:
-
-- `ExternalAdapterConfig`
-- `SecretsGuard`
-- `SecretValidationError`
-- `ToolRequest`
-- `ToolResponse`
-- `ToolAdapter`
-- `ToolAdapterRegistry`
-- `MockWeatherAdapter`
-- `RealWeatherAdapter`
-- `MockMarketAdapter`
-- `RealMarketAdapter`
-- `MockCalendarAdapter`
-
-Current metadata fields:
-
-- `name`
-- `description`
-- `capabilities`
-- `requires_network`
-- `requires_auth`
-- `supports_real_mode`
-- optional validated config metadata
-
-Current responsibilities:
-
-- Validate future adapter config before execution.
-- Track adapter enabled state, mode, API key environment variable name, base URL, and timeout.
-- Reject raw-looking secrets in adapter config payloads.
-- Register local adapters.
-- Look up adapters by name.
-- Find adapters by capability.
-- Return clear missing-adapter and unsupported-capability responses.
-- Return clear disabled-adapter and real-mode fail-closed responses.
-- Allow explicit real-mode-capable adapters while keeping default runtime paths on mock/local adapters.
-- Provide offline mock weather, market, and calendar responses for tests.
-
-Current boundaries:
-
-- Mock adapters do not call real APIs.
-- Mock adapters do not require network.
-- Mock adapters do not require authentication.
-- Adapter configs must store environment variable names, not raw API keys.
-- `config/adapters.example.json` contains fake placeholders only.
-- Local/private adapter config files are ignored by git.
-- Real mode fails safely when the env key is missing, when the env-key name is still a placeholder, or when real execution is not implemented.
-- `RealWeatherAdapter` supports the weather adapter contract but is not registered by default in `SkillManager`.
-- `RealWeatherAdapter` reads API keys only from the configured environment variable name and does not expose raw env values in responses.
-- `RealWeatherAdapter` performs HTTP requests only after explicit real-mode config and env-key gates pass.
-- `RealWeatherAdapter` passes configured timeouts to the HTTP client.
-- `RealWeatherAdapter` normalizes supported weather payloads into ARES weather data.
-- `RealWeatherAdapter` returns deterministic safe errors for timeouts, HTTP status errors, invalid JSON, and unrecognized payloads.
-- Real-weather tests mock HTTP and do not make real network calls.
-- `RealMarketAdapter` supports the market adapter contract but is not registered by default in `SkillManager`.
-- `RealMarketAdapter` reads API keys only from the configured environment variable name and does not expose raw env values in responses.
-- `RealMarketAdapter` performs HTTP requests only after explicit real-mode config and env-key gates pass.
-- `RealMarketAdapter` passes configured timeouts to the HTTP client.
-- `RealMarketAdapter` normalizes supported market quote payloads into ARES market data.
-- `RealMarketAdapter` returns deterministic safe errors for timeouts, HTTP status errors, invalid JSON, and unrecognized payloads.
-- Real-market tests mock HTTP and do not make real network calls.
-- No API keys are stored.
-- WeatherSkill uses `MockWeatherAdapter` through this registry for local weather answers.
-- MarketSkill uses `MockMarketAdapter` through this registry for local market quote answers.
-- CalendarSkill uses `MockCalendarAdapter` through this registry for local schedule answers.
-- No real-weather or real-market adapter is registered by default, and no Google Calendar integration, real calendar API, GPT, voice, or web adapter has been added.
-
-Device Action Framework
-
-`core.DeviceAction` defines the foundation for local device actions without arbitrary shell execution. `core.CoreService` is the service orchestration layer between the Brain and registered local/external services where practical. `CoreService` initially registers `PCService` as `pc`, exposes service lookup/listing, and aggregates capability data from every registered service. `core.PCService` remains the dedicated entry point for current and future PC operations. `LocalDeviceActionAdapter` obtains PCService through CoreService and delegates status, lock, sleep, open-app behavior, and capability discovery through PCService instead of calling Windows helpers directly. `PCService.get_status()` returns structured safe local PC information through `PCStatus`. `PCService.get_capabilities()` returns structured safe local capability data through `PCCapabilities`. `skills.builtin.DeviceActionSkill` exposes this foundation through the live skill routing path for safe mock actions, structured `system status`, capability-backed action/app listing, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated Windows app-launch requests, and stable not-executed responses for dangerous placeholders.
-
-Current device action objects:
-
-- `DeviceAction`
-- `AppLaunchConfig`
-- `AppAllowlistLoader`
-- `AppAllowlistConfigError`
-- `DeviceActionResult`
-- `PC_SERVICE_NAME`
-- `CoreService`
-- `CoreServiceResult`
-- `PCService`
-- `PCServiceResult`
-- `PCStatus`
-- `PCCapabilities`
-- `WindowsPCService`
-- `DeviceActionSafetyDecision`
-- `DeviceActionConfirmationRequest`
-- `DeviceActionRegistry`
-- `LocalDeviceActionAdapter`
-
-Current danger classifications:
-
-- `safe`
-- `confirmation_required`
-- `forbidden`
-
-Current safe built-in actions:
-
-- `echo`
-- `system_status_mock`
-- `list_actions`
-- `list_apps`
-
-Current confirmation-gated built-in actions:
-
-- `lock_pc`
-- `open_app`
-- `sleep_pc`
-
-Current responsibilities:
-
-- Represent local device action metadata in a stable model.
-- Return stable execution result dictionaries with action name, success, text, data, error message, and metadata.
-- Register local/external service boundaries through `CoreService`.
-- Retrieve registered services through `CoreService.get_service(name)`.
-- List registered service metadata through `CoreService.list_services()`.
-- Aggregate registered service capabilities through `CoreService.get_capabilities()`.
-- Initially register `PCService` as the `pc` service through the centralized `PC_SERVICE_NAME`.
-- Carry `core_service` through `SkillContext` for consistent service access from the Brain-to-skill path.
-- Expose PC operations through `PCService.lock()`, `PCService.sleep()`, `PCService.open_app(app_id)`, and `PCService.get_status()`.
-- Keep `PCService.status()` as a compatibility wrapper around `get_status()`.
-- Return structured safe status fields through `PCStatus`: operating system, hostname, current user, Python version, optional uptime, and available actions.
-- Expose local capability discovery through `PCService.get_capabilities()`.
-- Return structured safe capability fields through `PCCapabilities`: supported device actions, supported applications, available status providers, available services, and safeguards.
-- Keep the Windows implementation behind `WindowsPCService`.
-- Convert `PCServiceResult` values into stable `DeviceActionResult` payloads at the device-action boundary.
-- Register named safe local actions.
-- List available local device actions with their classifications through PCService capability discovery.
-- Load app allowlist definitions from `config/apps.json` with strict validation before building the runtime allowlist.
-- List allowlisted local apps without launching them through PCService capability discovery. The current config enables only `calculator`; `notepad` and `browser` remain disabled.
-- Return safe failures for unknown actions.
-- Reject unknown or disabled app ids before any launch callback is called.
-- Reject invalid app launcher config and duplicate normalized app ids before any app launcher path can execute.
-- Classify dangerous placeholders before any adapter execution.
-- Route `echo <text>`, `list device actions`, `list apps`, `system status`, `lock pc`, `sleep pc`, and `open app <app_id>` through `IntentParser`, `ToolSelector`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL.
-- Require explicit confirmation before `lock_pc`, `sleep_pc`, or `open_app` executes.
-- Call the Windows lock/sleep implementations through `WindowsPCService` only after confirmation approval.
-- Call the narrow Windows app launcher through `WindowsPCService` only for confirmed, enabled, allowlisted `open_app` requests.
-- Return a safe unsupported response for `lock_pc` and `sleep_pc` on non-Windows platforms.
-- Return stable confirmation-required responses for shutdown, restart, and unapproved `lock_pc`/`sleep_pc`/`open_app` requests.
-- Return stable forbidden responses for run command, delete, and arbitrary shell placeholders.
-- Include a stable device action confirmation request token for confirmation-required placeholders.
-
-Current boundaries:
-
-- No shutdown or restart action exists.
-- DeviceAction does not call Windows helpers directly; PC operations are routed through `CoreService` to `PCService`.
-- `CoreService` currently registers only local service boundaries and does not add GPT, internet, network calls, remote execution, hardware access, or background automation.
-- `open_app` never accepts arbitrary user-provided paths or shell-like app ids.
-- No arbitrary shell command execution exists.
-- `system_status_mock` obtains status data only from `PCService.get_status()`.
-- `list_actions` and `list_apps` obtain discovery data only from `PCService.get_capabilities()`.
-- PC status does not perform network access, hardware telemetry, process enumeration, remote control, or internet calls.
-- PC capability discovery does not perform network access, hardware telemetry, process enumeration, remote execution, or internet calls.
-- Confirmation-required actions are never executed directly unless they are explicitly implemented and confirmed; currently `lock_pc`, `sleep_pc`, and allowlisted Windows `open_app` meet that rule.
-- Forbidden device actions are never executed.
-- No Telegram, voice, internet, GPT, remote control, notifications, or background device automation was added.
-- `open_app` returns unsupported safely on non-Windows platforms.
-- `open_app` launches only enabled apps from `config/apps.json` or an injected test allowlist and uses `subprocess.Popen([configured_command], shell=False)`.
-- User input can select only an app id; user-supplied command/path values are ignored and never become launch commands.
-- `calculator` is the only enabled app in the tracked allowlist; `notepad` and `browser` fail safely as disabled apps.
-- Future dangerous actions must require explicit confirmation before execution.
-- The live REPL path exposes the safe mock actions listed above, confirmation-gated `lock_pc`/`sleep_pc`, and confirmation-gated allowlisted `open_app`.
-
-Confirmation
-
-`core.Confirmation` provides the in-memory confirmation model for destructive and important actions.
-
-Current confirmation objects:
-
-- `ConfirmationRequest`
-- `ConfirmationDecision`
-- `ConfirmationManager`
-
-Current responsibilities:
-
-- Detect destructive local plan steps before skill execution.
-- Create one pending confirmation id for the active runtime.
-- Return a confirmation prompt that accepts `yes` or `confirm`.
-- Cancel pending work when the user says `no` or `cancel`.
-- Fail safely when a confirmation decision arrives without pending context.
-- Mark approved steps so confirmed execution does not request confirmation again.
-
-Current protected actions:
-
-- `notes.delete`
-- `notes.delete_all_request`
-- `notes.delete_all_confirm`
-- `tasks.delete`
-- `tasks.clear_completed`
-- `goals.delete`
-- `goals.pause`
-- `goals.complete`
-- Future explicit `tool_adapter` write/delete actions
-
-Confirmation boundaries:
-
-- Confirmations are stored in memory only.
-- Confirmations do not survive process restart.
-- Confirmation does not call GPT, voice, internet, notifications, or external APIs.
-- Confirmation does not execute skills directly; ExecutionPipeline executes approved steps.
-
-ExecutionPipeline
-
-`core.ExecutionPipeline` executes plans produced by `core.Planner`.
-
-Current execution objects:
-
-- `StepResult`
-- `ExecutionResult`
-- `RollbackHook`
-- `ExecutionPipeline`
-
-Current responsibilities:
-
-- Receive a `Plan`.
-- Execute each `PlanStep` in order.
-- Resolve local skill targets through `SkillManager` and `SkillRegistry`.
-- Pause before destructive or important actions and return a `ConfirmationRequest`.
-- Execute conversation memory steps through `MemoryStore`.
-- Execute internal `planner_context` response steps for deterministic context-only answers.
-- Execute explicit `tool_adapter` steps through an injected `ToolAdapterRegistry`.
-- Stop safely on unrecoverable failures such as missing skills or raised exceptions.
-- Continue after recoverable skill-level failures, such as safe local tool rejection.
-- Continue remaining steps after recoverable failures and report partial success.
-- Aggregate all step outputs into one final response.
-- Record start time, end time, duration, success/failure, returned data, and error messages for every step.
-- Publish execution lifecycle events.
-- Emit standard execution logs through the `ares.execution` logger.
-- Expose a no-op `RollbackHook` extension point for future reversible local actions.
-
-Current integration verification:
-
-- Live REPL tests verify multi-step plan creation.
-- Live REPL tests verify weather plus reminder multi-step execution.
-- Live REPL tests verify goals plus calendar multi-step execution.
-- Live REPL tests verify notes plus calculator execution through ExecutionPipeline.
-- Live REPL tests verify task plus memory execution through ExecutionPipeline.
-- Live REPL tests verify goal add, list, add milestone, pause, complete, and show commands.
-- Live REPL tests verify weather requests through `WeatherSkill` and `MockWeatherAdapter`.
-- Hardened weather live-path tests verify `IntentParser -> Planner -> ExecutionPipeline -> WeatherSkill -> MockWeatherAdapter` through the text REPL.
-- Live REPL tests verify market requests through `MarketSkill` and `MockMarketAdapter`.
-- Live REPL tests verify calendar requests through `CalendarSkill` and `MockCalendarAdapter`.
-- ToolChain tests verify repeated weather steps are rejected before execution to prevent loop-style chains.
-- Live REPL tests verify recoverable partial failure reporting and continued execution.
-- Multi-step planner tests verify single-step compatibility, two-step plans, three-step plans, planner ordering, execution ordering, and partial-result formatting.
-- Context-aware planner tests verify goal context, profile favorite context, note topic context, related task context, missing-context responses, multi-step context plans, partial failure recovery, and REPL integration.
-- Confirmation tests verify delete note/task/goal pauses, confirm executes, cancel does not execute, missing pending confirmation fails safely, weather/market/calendar remain unaffected, future external writes require confirmation, and multi-step plans pause safely.
-- Live REPL tests verify `show execution` and `show last execution`.
-- A live-path spy verifies the active path uses `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill`.
-
-Execution boundaries:
-
-- ExecutionPipeline does not plan.
-- ExecutionPipeline does not create new skills.
-- ExecutionPipeline does not call GPT, voice, notifications, calendar APIs, or external APIs.
-- ExecutionPipeline does not choose external providers; it only executes explicit adapter steps already present in a plan.
-- Rollback hooks are defined, but no real rollback behavior is implemented yet.
-
-Intent Router
-
-`core.intent_router.IntentRouter` remains the main text routing path.
-
-Current order:
-
-1. Empty input handling.
-2. Priority skill fallback path for skills that must run before generic intents.
-3. Normal intent modules.
-4. Non-priority skill fallback path.
-5. Unknown response.
-
-Both skill paths pass through `SkillManager`, which parses text into `Intent` before selection.
-
-Current intent modules:
-
-- Greeting
-- Goodbye
-- Weather
-- News
-- Knowledge
-- Stocks
-
-MemoryStore
-
-`memory.MemoryStore` is the v1 structured memory interface for conversation-style memories.
-
-Current responsibilities:
-
-- Store short-term memories.
-- Store long-term memories.
-- Recall memories by category, tags, text query, and importance.
-- Promote a short-term memory to long-term.
-- Clear memory files when explicitly requested.
-
-Current storage:
-
-- `data/memories_short.json`
-- `data/memories_long.json`
-
-UserProfileStore
-
-`memory.UserProfileStore` stores user facts separately from conversation history.
-
-Current responsibilities:
-
-- Detect profile facts from user text.
-- Store profile facts persistently.
-- Recall profile values for personal memory questions.
-
-Current supported fact patterns:
-
-- `My name is...`
-- `I live in...`
-- `My birthday is...`
-- `My favorite ... is...`
-- `I own...`
-
-Current storage:
-
-- `data/user_profile.json`
-
-The profile file is ignored by git because it can contain personal facts. Tests can override the path with `ARES_USER_PROFILE_PATH`.
-
-GoalsStore
-
-`memory.GoalsStore` stores long-term user goals separately from conversation history, user profile facts, notes, and tasks.
-
-Current responsibilities:
-
-- Add goals with id, title, description, created timestamp, status, priority, and milestones.
-- List all goals.
-- Show one goal by id.
-- Mark one goal completed by id.
-- Pause one goal by id.
-- Delete one goal by id.
-- Add milestones to one goal by id.
-
-Current storage:
-
-- `data/goals.json`
-
-The goals file is ignored by git because it can contain personal goals. Tests can override the path with `ARES_GOALS_PATH`.
-
-NotesStore
-
-`memory.NotesStore` stores user-created notes separately from conversation history, user profile facts, goals, and tasks.
-
-Current responsibilities:
-
-- Add notes with a unique id, timestamp, and text.
-- List all notes.
-- Search notes by keyword.
-- Delete one note by id.
-- Clear all notes only through an explicit confirmation flow in `NotesSkill`.
-
-Current storage:
-
-- `data/notes.json`
-
-The notes file is ignored by git because it can contain personal notes. Tests can override the path with `ARES_NOTES_PATH`.
-
-TasksStore
-
-`memory.TasksStore` stores offline tasks and simple reminders separately from conversation history, user profile facts, goals, and notes.
-
-Current responsibilities:
-
-- Add tasks with an id, text, created timestamp, optional due text, and completed flag.
-- List all tasks.
-- Mark one task completed by id.
-- Delete one task by id.
-- Clear completed tasks.
-
-Current storage:
-
-- `data/tasks.json`
-
-The tasks file is ignored by git because it can contain personal tasks. Tests can override the path with `ARES_TASKS_PATH`.
-
-ReminderScheduler
-
-`memory.ReminderScheduler` is the passive local due-time layer for tasks.
-
-Current responsibilities:
-
-- Parse stored task due text with `parse_due_text(text)`.
-- Support simple due phrases: `today`, `tomorrow`, `next week`, `in 10 minutes`, `in 2 hours`, and `at 18:00`.
-- Return incomplete due tasks with `due_tasks(now)`.
-- Return incomplete upcoming tasks ordered by parsed due time with `upcoming_tasks(now, limit)`.
-- Ignore invalid or unsupported due text safely.
-
-Current boundaries:
-
-- It reads from `TasksStore`.
-- It does not change `data/tasks.json`.
-- It does not schedule jobs.
-- It does not send notifications.
-- It does not call calendar APIs.
-- It does not use GPT or any external API.
-
-ConversationContextManager
-
-`core.ConversationContextManager` stores short-term conversational context in RAM only.
-
-Current responsibilities:
-
-- Keep the last 20 handled skill turns.
-- Store timestamp, user message, assistant response, and detected skill for each turn.
-- Return the latest turn through `last_message()`.
-- Return latest user text, assistant text, and skill through `last_user_message()`, `last_assistant_message()`, and `last_skill()`.
-- Return ordered recent history with `history(limit)`.
-- Clear in-memory state with `clear()`.
-
-Current storage:
-
-- RAM only
-
-Conversation context is not saved to disk. It does not use embeddings, GPT, external APIs, or voice.
-
-SkillRegistry
-
-`skills.SkillRegistry` owns skill registration and lookup.
-
-Current responsibilities:
-
-- Register skills.
-- Reject duplicate skill names.
-- Return all skills.
-- Find matching skills for text input.
-- Filter priority skills with `run_before_intents`.
-
-ToolSelector
-
-`skills.ToolSelector` chooses the best local skill for a user text request.
-
-ToolSelector also builds and attaches a `Plan` before returning a selection. This keeps planning visible before execution while preserving the existing skill scoring rules.
-
-Current scoring rules:
-
-- Matching structured intent name gets priority over trigger scoring.
-- Exact trigger match gets the strongest confidence.
-- Contained trigger phrase gets high confidence.
-- Trigger token overlap gets partial confidence.
-- Skills can add `selection_keywords` without changing selector code.
-- Skills can add `selection_priority` for explicit tie-breaking.
-- Selection can be filtered with `run_before_intents`.
-- Exact and contained trigger fallback paths can still run when the structured intent is `unknown`.
-- Loose token-overlap fallback is disabled for `unknown` structured intents so generic text does not get misrouted to a local skill.
-- `can_handle` fallback remains available for unknown intents and compatibility.
-
-Current supported runtime skills:
-
-- `TimeDateSkill`
-- `MemoryRecallSkill`
-- `CalculatorSkill`
-- `CalendarSkill`
-- `GoalsSkill`
-- `MarketSkill`
-- `NotesSkill`
-- `TasksSkill`
-- `WeatherSkill`
-- `DeviceActionSkill`
-
-Future local skills should define clear triggers and optional `selection_keywords` so they can use the same selector without a giant if/else chain.
-New deterministic skills should also define `intent_names` when they have a parser-recognized intent.
-
-SkillManager
-
-`skills.SkillManager` owns skill detection and execution.
-
-Current responsibilities:
-
-- Register individual skills.
-- Register skill plugins.
-- Parse user text into `Intent` with `IntentParser`.
-- Select the best matching local skill through `ToolSelector`.
-- Validate executable local plans through `ToolChain`.
-- Delegate accepted local plans to `ExecutionPipeline`.
-- Execute a skill with `SkillContext`.
-- Record each handled skill interaction in `ConversationContextManager`.
-- Publish skill lifecycle events.
-
-Skill context currently carries:
-
-- `event_bus`
-- `memory_store`
-- `profile_store`
-- `goals_store`
-- `notes_store`
-- `tasks_store`
-- `tool_adapter_registry`
-- `conversation_context`
-- `metadata`
-
-For handled skills, `metadata` includes the parsed `intent` and extracted `entities`.
-
-Built-In Skills
-
-Current built-in plugin:
-
-- `skills.builtin.create_builtin_plugin`
-
-Current built-in skills:
-
-- `TimeDateSkill`
-- `MemoryRecallSkill`
-- `CalculatorSkill`
-- `CalendarSkill`
-- `GoalsSkill`
-- `MarketSkill`
-- `NotesSkill`
-- `TasksSkill`
-- `WeatherSkill`
-
-`TimeDateSkill` answers local time and date questions.
-
-`MemoryRecallSkill` answers profile questions from `UserProfileStore` without using an LLM. It is a priority skill so questions such as `What is my name?` are answered before the generic knowledge intent.
-
-`CalculatorSkill` answers local arithmetic questions without using an LLM. It supports addition, subtraction, multiplication, division, parentheses, decimals, and bounded powers through AST parsing and explicit operator handling, not `eval()`. It rejects unsupported or unsafe input with a clear response.
-
-`GoalsSkill` stores and manages long-term local goals through `GoalsStore`. It supports `add goal...`, `list goals`, `show goal <id>`, `complete goal <id>`, `pause goal <id>`, `delete goal <id>`, and `add milestone to goal <id> ...`. It does not run autonomous background actions or notifications.
-
-`NotesSkill` stores, lists, searches, and deletes local notes through `NotesStore`. It supports `remember this...`, `save note...`, `take a note...`, `list my notes`, `show my notes`, `delete note <id>`, `delete all notes`, and `search notes <keyword>`. `delete all notes` requires explicit confirmation with `confirm delete all notes`.
-
-`TasksSkill` stores and manages offline reminders/tasks through `TasksStore`. It supports `add task...`, `remind me to...`, `list tasks`, `show tasks`, `mark task <id> done`, `delete task <id>`, and `clear completed tasks`. It stores optional due text but does not notify.
-
-`TasksSkill` can also consume parser-derived entities, so text such as `remember buy milk tomorrow` is stored as task text `buy milk` with due text `tomorrow`.
-
-`WeatherSkill` answers weather requests through `ToolAdapterRegistry` and the offline `MockWeatherAdapter` by default. It supports `weather`, `weather today`, `weather tomorrow`, and `weather in Madrid`. The default path does not call real APIs, require API keys, or use internet access. Explicit tests can provide an intent with adapter `real_weather`; that adapter can make HTTP requests only when real-mode config and the required env key are present.
-
-`MarketSkill` answers stock/market quote requests through `ToolAdapterRegistry` and the offline `MockMarketAdapter` by default. It supports `stock nvidia`, `nvidia stock`, `apple stock`, and `market price for tesla`. The default path does not call real APIs, require API keys, or use internet access. Explicit tests can provide an intent with adapter `real_market`; that adapter can make HTTP requests only when real-mode config and the required env key are present.
-
-`CalendarSkill` answers calendar/schedule requests through `ToolAdapterRegistry` and the offline `MockCalendarAdapter`. It supports `what is on my calendar today`, `calendar tomorrow`, `schedule today`, and `do I have anything tomorrow`. It does not call Google Calendar, real APIs, require API keys, use internet access, or run background automation.
-
-`DeviceActionSkill` answers local device action requests through `LocalDeviceActionAdapter`. It supports `echo <text>`, `list device actions`, `list apps`, `system status`, and confirmation-gated `lock_pc`/`sleep_pc`/`open_app`. Confirmed `lock_pc` can call the Windows lock implementation, confirmed `sleep_pc` can call the Windows sleep implementation, and confirmed `open_app` can call only the narrow Windows launcher for enabled apps loaded from `config/apps.json`; unconfirmed requests pause through the confirmation layer, and non-Windows platforms return safe unsupported responses for Windows actions. It returns confirmation-required responses for shutdown, restart, and unapproved app launch requests. It returns forbidden responses for run command, delete, arbitrary shell, and unknown device actions safely. It does not run shutdown/restart actions, arbitrary shell commands, arbitrary app paths, remote control, Telegram, voice, internet, GPT, notifications, or background jobs.
-
-No notifications, voice, default real weather/market API mode, Google Calendar integration, real calendar APIs, external write API, or GPT integration has been added as part of the current local skill milestones.
-
-Conversation context is not a persistent memory store. It only tracks recent handled skill turns in RAM so local skills and interfaces can inspect short-term context without GPT or embeddings.
-
-REPL Flow
-
-`interfaces.text_repl` is the active user interface.
-
-Current responsibilities:
-
-- Wake on `hello`, `hello ares`, `hi ares`, or `hey ares`.
-- Exit on `goodbye`, `goodbye ares`, `exit`, or `quit`.
-- Share one event bus across router, memory, profile, goals, notes, tasks, conversation context, and skills.
-- Store each user/ARES turn as a conversation memory.
-- Scan each user message for profile facts.
-- Route goal commands to `GoalsSkill` and persist goals in `GoalsStore`.
-- Route note commands to `NotesSkill` and persist notes in `NotesStore`.
-- Route task commands to `TasksSkill` and persist tasks in `TasksStore`.
-- Route weather commands to `WeatherSkill` through `MockWeatherAdapter`.
-- Route stock/market commands to `MarketSkill` through `MockMarketAdapter`.
-- Route calendar/schedule commands to `CalendarSkill` through `MockCalendarAdapter`.
-- Route safe device action commands to `DeviceActionSkill` through `LocalDeviceActionAdapter`.
-- Route parser-recognized local intents through `SkillManager` and `ToolSelector`.
-- Preserve unknown input safety when IntentParser returns `unknown`.
-- Show the last plan with `show plan` or `show steps`.
-- Show the last execution result with `show execution` or `show last execution`.
-- Show the last tool chain with `show chain`.
-- Show chain history with `show chain history`.
-- Share one in-memory conversation context with `SkillManager` for handled skill turns.
-- Print the final ARES response.
-
-Long-Term City Model
-
-The long-term system model treats ARES Brain as the capital city. The capital city is the owner-facing center of gravity and owns the system identity, durable memory, user profile, long-term goals, planning, decisions, and shared history with the owner.
-
-The capital city keeps these responsibilities centralized:
-
-- Identity: what ARES is, whose assistant it is, and what operating boundaries apply.
-- Memory: conversation memory, profile memory, notes, tasks, goals, and future summarized history.
-- Profile: user facts and preferences stored separately from generic conversation history.
-- Goals: long-term local goals and milestones owned by the user.
-- Planning: deterministic plans, multi-step plans, context-aware planning, and future planner upgrades.
-- Decisions: local tool selection, confirmation decisions, permissions checks, and escalation points.
-- History with owner: auditable interaction history and session handoff state.
-
-Specialized cities connect to ARES Brain through explicit bridges. A bridge is an interface, adapter, event contract, or permissioned command path. Specialized cities should not own the user's durable identity, goals, or global decision history.
-
-Planned specialized cities:
-
-- Voice City: speech input, wake word, speech-to-text, and text-to-speech.
-- Vision City: camera input, image understanding, and visual observations.
-- Device/PC City: local device automation and desktop control paths.
-- Weather City: weather providers and weather-specific adapter behavior.
-- Market City: market data providers and market-specific adapter behavior.
-- Calendar City: calendar reads and future permissioned calendar writes.
-- Home City: home automation and smart-home device control.
-- Robot Body City: robot body, sensors, actuators, navigation, and hardware safety.
-- Codex City: repository maintenance, verification, and owner-approved development support.
-
-Core Services City provides shared infrastructure used by ARES Brain and the specialized cities:
-
-- Scheduler
-- Permissions
-- Logging
-- Configuration
-- Health monitoring
-- Plugin manager
-- Secrets guard
-- Confirmation layer
-
-Codex City Future Plan
-
-Codex City is planned as a maintenance and verification city, not as an autonomous self-modification system. Its future responsibilities are:
-
-- Check the ARES GitHub repository.
-- Pull latest code.
-- Run tests.
-- Check compile.
-- Check docs freshness.
-- Report problems.
-- Suggest fixes.
-- Never auto-edit without owner approval.
-
-This city model is architecture documentation only. It does not add scheduler implementation, GitHub API integration, self-modifying behavior, GPT, voice, internet access, real APIs, or notifications.
-
-Future Integration Points
-
-Voice
-
-Voice should connect at the interface layer, beside the text REPL. It should reuse:
-
-- `EventBus`
-- `IntentRouter`
-- `MemoryStore`
-- `UserProfileStore`
-- `GoalsStore`
-- `NotesStore`
-- `TasksStore`
-- `ConversationContextManager`
-- `SkillManager`
-- `ToolChain`
-- `ExecutionPipeline`
-
-Voice must not bypass the existing routing, memory, or verification rules.
-
-Vision
-
-Vision should enter as a separate interface or provider layer. It should publish events and store structured observations only after the data model and safety rules are defined.
-
-LLM Integration
-
-LLM integration is not active.
-
-Future LLM calls should be added only behind clear interfaces. They should not replace deterministic skills for answers already known from memory, such as user profile recall.
-They should also not replace deterministic parser routes for local skills that already have structured intent coverage.
-
-Raspberry Pi Deployment
-
-Deployment scripts already exist, but no new Raspberry Pi deployment work should begin until the roadmap and architecture plan are approved.
-
-Testing Boundary
-
-Every architecture change must keep this suite passing:
-
-```powershell
-py -m pytest
-py -m compileall core interfaces events memory skills scripts
-py scripts\verify_phase2_events_memory.py
+# ARES Philosophy
+
+ARES is built around a central Brain. The Brain is the stable identity of the system and must remain independent from hardware, operating systems, vendor APIs, and replaceable implementation details.
+
+The Brain owns:
+
+- identity
+- long-term memory
+- personality
+- goals
+- reasoning
+- planning
+- history with the owner
+
+The Brain should never contain hardware-specific code. Windows calls, Raspberry Pi details, camera drivers, microphones, speakers, cloud APIs, robot motors, and external service credentials belong behind service boundaries.
+
+This lets ARES grow without changing who ARES is. Hardware, AI models, voice engines, cameras, APIs, and device adapters can be replaced while the Brain keeps its memory, goals, personality, and history.
+
+# Capital City Architecture
+
+ARES uses a capital city model. The Brain is the capital city. Every specialized city connects through explicit bridges instead of bypassing the Brain.
+
+Current target flow:
+
+```text
+Brain
+  |
+  v
+CoreService
+  |
+  v
+Registered Services
+  |
+  v
+Skills
+  |
+  v
+Adapters
+  |
+  v
+Devices
 ```
 
-Current verification snapshot:
+The Brain communicates with external or hardware-facing capabilities through CoreService. CoreService owns service registration, service lookup, and service capability discovery. Registered services hide implementation details behind structured interfaces. Skills translate user intent into local actions. Adapters isolate concrete providers and devices.
 
-- Pytest collection: 294 tests.
-- Current local foundation modules include `core.IntentParser`, `core.Planner`, `core.MultiStepPlan`, `core.Confirmation`, `core.AdapterConfig`, `core.ToolAdapter`, `core.RealWeatherAdapter`, `core.RealMarketAdapter`, `core.DeviceAction`, `core.PC_SERVICE_NAME`, `core.CoreService`, `core.CoreServiceResult`, `core.PCService`, `core.PCServiceResult`, `core.PCStatus`, `core.PCCapabilities`, `core.WindowsPCService`, `core.AppLaunchConfig`, `core.AppAllowlistLoader`, `core.DeviceActionRegistry`, `core.LocalDeviceActionAdapter`, `core.ToolChain`, `core.ExecutionPipeline`, `core.ConversationContextManager`, `memory.GoalsStore`, `memory.TasksStore`, `memory.ReminderScheduler`, `skills.builtin.GoalsSkill`, `skills.builtin.TasksSkill`, `skills.builtin.WeatherSkill`, `skills.builtin.MarketSkill`, `skills.builtin.CalendarSkill`, and `skills.builtin.DeviceActionSkill`.
+The current runtime is still text-first, but the architectural rule is stable: the Brain should communicate through CoreService, not directly with Windows, devices, APIs, or future city implementations.
+
+# Current Services
+
+## CoreService
+
+`core.CoreService` is the orchestration layer between the Brain and registered services.
+
+Current responsibilities:
+
+- register local or external service boundaries
+- provide `get_service(name)` lookup
+- provide `list_services()` metadata
+- aggregate capabilities with `get_capabilities()`
+- register PCService as the default `pc` service
+- fail safely when a registered service does not expose required capability interfaces
+
+CoreService does not implement device behavior itself. It discovers and routes to registered services.
+
+## PCService
+
+`core.PCService` is the current PC service boundary. `core.WindowsPCService` is the Windows-specific implementation behind that boundary.
+
+Current responsibilities:
+
+- expose `get_capabilities()`
+- expose `get_status()` and compatibility `status()`
+- provide structured safe PC status data
+- provide structured PC capability data
+- keep Windows-specific implementations behind the service boundary
+- support only approved and confirmation-gated device actions
+
+PCService is the only current service registered by default. Future services should follow the same registration and capability pattern.
+
+# Device Action Pipeline
+
+Device actions must pass through the service boundary. The Brain must never call Windows directly.
+
+Current device action path:
+
+```text
+Brain
+  |
+  v
+Skill
+  |
+  v
+DeviceAction
+  |
+  v
+PCService
+  |
+  v
+Windows
+```
+
+The live text path routes through `IntentParser`, `Planner`, `ExecutionPipeline`, `SkillManager`, `DeviceActionSkill`, `LocalDeviceActionAdapter`, CoreService, and PCService.
+
+The current device action layer supports safe actions, confirmation-required actions, and forbidden placeholders. Dangerous actions must not execute unless they are explicitly implemented, allowlisted, and confirmed by the owner.
+
+# Capability Discovery
+
+Every service that participates in CoreService discovery exposes:
+
+- `get_capabilities()`
+
+Services that have meaningful status information should also expose:
+
+- `get_status()`
+- `status()` as a compatibility wrapper where applicable
+
+The Brain discovers services dynamically through CoreService instead of assuming hardcoded implementation details. Capability discovery returns structured data, including available actions, services, status providers, applications, safeguards, and safe error details.
+
+Discovery over assumptions is a core design rule. If a service is missing or incomplete, ARES should report that safely instead of guessing.
+
+# Future Cities
+
+## Voice City
+
+Voice City will own wake word detection, speech-to-text, text-to-speech, microphones, speakers, and voice session state. The Brain should receive structured user text and return structured responses; it should not contain microphone or audio driver code.
+
+## Vision City
+
+Vision City will own cameras, image capture, object detection, face recognition, scene understanding, and future visual memory hooks. The Brain should receive structured observations, not raw camera-driver logic.
+
+## Weather City
+
+Weather City will own weather providers, adapter selection, network mode, caching, secrets handling, and weather response normalization. The Brain should ask for weather capability through services and skills, not through hardcoded API calls.
+
+## Stocks City
+
+Stocks City will own market data adapters, symbol lookup, quote normalization, safe API configuration, caching, and future portfolio-related read paths. The Brain should not store provider-specific market API details.
+
+## Codex City
+
+Codex City is a future maintenance city. Its planned role is to check the ARES GitHub repository, pull latest code, run tests, check compilation, check documentation freshness, report problems, and suggest fixes. Codex City must never auto-edit, auto-commit, or self-modify ARES without owner approval.
+
+## Home City
+
+Home City will own smart home integrations, local home devices, permissions, and future home automation policies. It must use explicit allowlists and confirmation gates for important or destructive actions.
+
+## Robot City
+
+Robot City will own robot body capabilities: sensors, motors, navigation, battery state, motion planning, and safety boundaries. The Brain should reason about goals and commands, while Robot City handles physical implementation safely.
+
+# Upgrade Philosophy
+
+Any service can be replaced without changing the Brain.
+
+Examples:
+
+- Replace Raspberry Pi with Jetson.
+- Replace Whisper with another speech engine.
+- Replace one AI model with another.
+- Replace one camera with another.
+- Replace a weather provider.
+- Replace a market data provider.
+- Replace a Windows implementation with a Linux implementation.
+
+The Brain remains unchanged because identity, memory, personality, goals, reasoning, planning, and owner history live above the service boundary.
+
+# Design Rules
+
+- Brain never calls Windows directly.
+- Brain communicates through CoreService.
+- Services hide implementation details.
+- Communication uses structured data.
+- No hardcoded dependencies in the Brain.
+- Discovery over assumptions.
+- Small independent modules.
+- Capability interfaces are explicit.
+- Dangerous actions require confirmation.
+- Secrets are never stored in committed config.
+- Real API integrations stay gated by config and environment variables.
+- Tests must pass before merge.
+
+# Long-Term Vision
+
+ARES is intended to become an extensible personal AI operating system. It starts as a Raspberry Pi assistant, but the architecture should allow it to grow into a larger system, then into a robot body, and eventually into a humanoid robot without losing its identity.
+
+The Brain is the continuity layer. Cities can be added, replaced, upgraded, or retired. The Brain keeps the owner relationship, memory, goals, history, personality, reasoning, and planning stable while the body and tools evolve around it.

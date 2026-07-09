@@ -1,10 +1,10 @@
 ARES Session Handoff
 
-Last Updated: 2026-07-08
+Last Updated: 2026-07-09
 
 Current Version
 
-ARES v1.39 - Phase 2 Complete Architecture Cleanup
+ARES v1.40 - Permanent Architecture Reference
 
 ---
 
@@ -644,6 +644,21 @@ Phase 2 Complete architecture baseline:
 - Tests cover default PCService status/capability interfaces, safe missing-capability reporting, and SkillManager/CoreService context propagation.
 - No behavior changes, new functionality, new cities, GPT, internet, network calls, remote execution, hardware additions, or new device actions were added.
 
+Permanent architecture reference has been created in `docs/ARCHITECTURE.md`.
+
+Architecture reference contents:
+
+- ARES Philosophy centered on the Brain as the stable identity layer.
+- Capital City Architecture with Brain -> CoreService -> Registered Services -> Skills -> Adapters -> Devices.
+- Current Services covering CoreService and PCService responsibilities.
+- Device Action Pipeline from Brain to Skill to DeviceAction to PCService to Windows.
+- Capability Discovery through `get_capabilities()`.
+- Future City placeholders for Voice, Vision, Weather, Stocks, Codex, Home, and Robot cities.
+- Upgrade Philosophy for replacing hardware, speech engines, AI models, cameras, and providers without changing the Brain.
+- Design Rules for service boundaries, structured data, discovery, small modules, and tests before merge.
+- Long-term Vision for ARES growing from Raspberry Pi into a humanoid robot without losing identity.
+- This was documentation-only and did not add runtime behavior.
+
 External Adapter Config and SecretsGuard foundation has been added.
 
 New config modules and files:
@@ -1057,6 +1072,7 @@ Verification Notes
 
 Latest Commits
 
+- `5726813` Document Phase 2 architecture completion
 - `8049fab` Stabilize core service architecture
 - `ade5197` Document core service orchestration layer
 - `78ced08` Add core service orchestration layer
