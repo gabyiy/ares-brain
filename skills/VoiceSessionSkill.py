@@ -1,12 +1,14 @@
 import re
 from typing import Any, Callable, Iterable, Optional
 
+from core.EventBus import PRIORITY_HIGH, PRIORITY_NORMAL
 from core.VoiceLoop import DEFAULT_VOICE_SESSION_MAX_TURNS, VoiceSessionLoop, VoiceSessionResult
-from core.VoiceService import MockVoiceInputAdapter, MockVoiceOutputAdapter
+from core.VoiceService import MockVoiceInputAdapter, MockVoiceOutputAdapter, VoiceInputAdapter, VoiceOutputAdapter
 from skills.base import Skill, SkillContext, SkillResponse
 
 
 MAX_VOICE_SESSION_TURNS = DEFAULT_VOICE_SESSION_MAX_TURNS
+VOICE_SESSION_EVENT_SOURCE = "voice_session_skill"
 
 
 class VoiceSessionSkill(Skill):
@@ -31,10 +33,14 @@ class VoiceSessionSkill(Skill):
         mock_inputs: Optional[Iterable[str]] = None,
         text_handler: Optional[Callable[[str], Any]] = None,
         default_max_turns: int = DEFAULT_VOICE_SESSION_MAX_TURNS,
+        input_adapter: Optional[VoiceInputAdapter] = None,
+        output_adapter: Optional[VoiceOutputAdapter] = None,
     ):
         self.mock_inputs = [str(item or "") for item in (mock_inputs or [])]
         self.text_handler = text_handler or _default_text_handler
         self.default_max_turns = _coerce_max_turns(default_max_turns)
+        self.input_adapter = input_adapter
+        self.output_adapter = output_adapter
 
     def can_handle(self, text: str) -> bool:
         return _looks_like_voice_session(text)
@@ -49,13 +55,13 @@ class VoiceSessionSkill(Skill):
             else list(self.mock_inputs)
         )
 
-        input_adapter = MockVoiceInputAdapter(
+        input_adapter = self.input_adapter or MockVoiceInputAdapter(
             transcripts=transcripts,
-            source="voice_session_skill",
+            source=VOICE_SESSION_EVENT_SOURCE,
             voice_input="mock_voice_session",
         )
-        output_adapter = MockVoiceOutputAdapter(
-            source="voice_session_skill",
+        output_adapter = self.output_adapter or MockVoiceOutputAdapter(
+            source=VOICE_SESSION_EVENT_SOURCE,
             voice_output="mock_voice_session",
         )
         session = VoiceSessionLoop(
@@ -64,7 +70,22 @@ class VoiceSessionSkill(Skill):
             text_handler=self.text_handler,
             max_turns=max_turns,
         )
+        event_records = [
+            _record_voice_session_event(
+                context,
+                "voice_session.started",
+                PRIORITY_NORMAL,
+                {
+                    "command": text,
+                    "max_turns": max_turns,
+                    "mock_input_count": len(transcripts),
+                    "mock_adapters_only": True,
+                    "audio_hardware_access": "disabled",
+                },
+            )
+        ]
         result = session.run()
+        event_records.extend(_record_result_events(context, result))
 
         return SkillResponse(
             text=_format_session_summary(result),
@@ -78,6 +99,9 @@ class VoiceSessionSkill(Skill):
                 "success": result.success,
                 "transcript": [dict(entry) for entry in result.transcript],
                 "result": result.to_dict(),
+                "event_history_records": [
+                    record.to_dict() for record in event_records if record is not None
+                ],
                 "mock_adapters_only": True,
                 "audio_hardware_access": "disabled",
                 "microphone": "disabled",
@@ -104,6 +128,101 @@ class VoiceSessionSkill(Skill):
             "max_turns": _extract_max_turns(text),
             "mock_inputs": None,
         }
+
+
+def _record_result_events(context: SkillContext, result: VoiceSessionResult):
+    events = []
+    if result.status == "stopped":
+        events.append(
+            _record_voice_session_event(
+                context,
+                "voice_session.stopped",
+                PRIORITY_NORMAL,
+                _result_payload(result),
+            )
+        )
+    elif result.status == "max_turns_reached":
+        events.append(
+            _record_voice_session_event(
+                context,
+                "voice_session.max_turns_reached",
+                PRIORITY_NORMAL,
+                _result_payload(result),
+            )
+        )
+
+    if _has_adapter_failure(result):
+        events.append(
+            _record_voice_session_event(
+                context,
+                "voice_session.adapter_failure",
+                PRIORITY_HIGH,
+                {
+                    **_result_payload(result),
+                    "error_message": result.error_message,
+                    "failed_turn_status": _failed_turn_status(result),
+                },
+                decision="escalated",
+            )
+        )
+    return events
+
+
+def _record_voice_session_event(
+    context: SkillContext,
+    event_type: str,
+    priority: str,
+    payload,
+    decision: str = "recorded",
+):
+    store = getattr(context, "event_history_store", None)
+    if not store:
+        return None
+
+    return store.add(
+        {
+            "source": VOICE_SESSION_EVENT_SOURCE,
+            "type": event_type,
+            "priority": priority,
+            "payload": dict(payload or {}),
+        },
+        {
+            "success": decision != "failed",
+            "decision": decision,
+            "text": f"Voice session event recorded: {event_type}",
+            "data": {
+                "event_type": event_type,
+            },
+            "metadata": {
+                "safe": True,
+                "mock_adapters_only": True,
+                "audio_hardware_access": "disabled",
+            },
+        },
+    )
+
+
+def _result_payload(result: VoiceSessionResult):
+    return {
+        "status": result.status,
+        "turn_count": len(result.turns),
+        "stop_reason": result.stop_reason,
+        "max_turns": result.data.get("max_turns"),
+        "success": result.success,
+        "mock_adapters_only": True,
+        "audio_hardware_access": "disabled",
+    }
+
+
+def _has_adapter_failure(result: VoiceSessionResult) -> bool:
+    return any(turn.status in {"input_error", "output_error"} for turn in result.turns)
+
+
+def _failed_turn_status(result: VoiceSessionResult) -> str:
+    for turn in result.turns:
+        if turn.status in {"input_error", "output_error"}:
+            return turn.status
+    return ""
 
 
 def _default_text_handler(text: str) -> str:
