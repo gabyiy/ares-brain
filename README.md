@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.57 - Voice Session Event Logging
+ARES v1.58 - Voice Session Status Query
 
 ---
 
@@ -39,6 +39,8 @@ Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listen
 `skills.VoiceSessionSkill` now exposes the safe mock voice session through the normal text command path. It recognizes "start voice session", "start mock voice", and "run voice test", then uses `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop` with a bounded `max_turns` limit. It returns a transcript summary through the existing IntentParser, Planner, ExecutionPipeline, SkillManager, and REPL path. It does not access a microphone, speaker, wake word, background listener, GPT, internet, or real audio provider.
 
 Voice sessions now write safe local operational events to `events.EventHistoryStore` when a store is available in `SkillContext`. Recorded event types are `voice_session.started`, `voice_session.stopped`, `voice_session.adapter_failure`, and `voice_session.max_turns_reached`. Event payloads store status, turn counts, max-turn metadata, and adapter failure details only; they do not store mock transcript content. `skills.EventHistorySkill` can show these events through "show recent events".
+
+ARES can now answer "what happened in voice session", "show last voice session", and "voice session status". The query reads the latest local `voice_session.*` events and returns a started/stopped/failure/max_turns summary without starting audio hardware or a new voice session.
 
 Phase 3 Foundation Checkpoint
 
@@ -276,6 +278,7 @@ Completed
 - Voice City multi-turn mock session
 - Voice Session Skill
 - Voice Session event logging
+- Voice Session status query
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -348,6 +351,9 @@ ARES currently understands questions such as:
 - start voice session
 - start mock voice
 - run voice test
+- what happened in voice session
+- show last voice session
+- voice session status
 
 Each request is automatically routed to its correct intent.
 
@@ -382,6 +388,7 @@ Implemented Features
 - Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceInput`, `VoiceOutput`, `VoiceInputAdapter`, `VoiceOutputAdapter`, `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, `NullVoiceInput`, `NullVoiceOutput`, `VoiceStatus`, `VoiceCapabilities`, `VoiceTextRequest`, `VoiceLoop`, `VoiceLoopResult`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionResult`, `VoiceSessionTurn`, default CoreService registration as `voice`, safe placeholder status, adapter-backed mock/local input and output, a one-shot placeholder text loop, an adapter-backed single-turn loop, bounded multi-turn mock sessions, and no audio hardware access
 - Built-in `VoiceSessionSkill` for starting bounded mock Voice City sessions from text commands through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path
 - Safe Voice Session event logging to `EventHistoryStore` for session start, stop, adapter failure, and max-turn completion events
+- Read-only Voice Session status queries for the latest mock session event group
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
 - Confirmed Windows-only `lock_pc` action after explicit user approval
 - Confirmed Windows-only `sleep_pc` action after explicit user approval
@@ -404,7 +411,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 384 tests across current core modules
+- Pytest automated coverage for 391 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -423,7 +430,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `384 tests`.
+Current pytest collection: `391 tests`.
 
 Manual Calculator Launch Verification
 
@@ -1206,19 +1213,28 @@ Phase 55
 
 Phase 56
 
+- Voice Session status query
+- Supported phrases: `what happened in voice session`, `show last voice session`, and `voice session status`
+- Reads latest `voice_session.*` events from `EventHistoryStore`
+- Returns started/stopped/failure/max_turns summary
+- Tests cover no-session, stopped session, failed session, max-turn session, parser, planner, and SkillManager paths
+- No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, or internet was added
+
+Phase 57
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 57
+Phase 58
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 58
+Phase 59
 
 - Robotics
 - ROS2

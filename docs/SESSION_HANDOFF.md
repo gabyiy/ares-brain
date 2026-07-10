@@ -4,13 +4,13 @@ Last Updated: 2026-07-10
 
 Current Version
 
-ARES v1.57 - Voice Session Event Logging
+ARES v1.58 - Voice Session Status Query
 
 ---
 
 Current Status
 
-ARES is at the Voice Session Event Logging foundation before any real audio work.
+ARES is at the Voice Session Status Query foundation before any real audio work.
 
 Confirmed Phase 3 foundation:
 
@@ -25,14 +25,17 @@ Confirmed Phase 3 foundation:
 - Voice City multi-turn mock session
 - Voice Session Skill
 - Voice Session event logging
+- Voice Session status query
 
-Current pytest collection: 384 tests.
+Current pytest collection: 391 tests.
 
 Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
 `skills.VoiceSessionSkill` now starts a bounded mock voice session from text commands: "start voice session", "start mock voice", and "run voice test". It uses only `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop`, returns a transcript summary, and is wired through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path.
 
 Voice sessions now write safe operational event records to `EventHistoryStore` when `SkillContext.event_history_store` is configured. The current event types are `voice_session.started`, `voice_session.stopped`, `voice_session.adapter_failure`, and `voice_session.max_turns_reached`. Event payloads avoid mock transcript text and store only operational metadata such as status, turn count, max-turn limit, and adapter failure details.
+
+ARES can now answer "what happened in voice session", "show last voice session", and "voice session status" by reading the latest local voice-session event group. This is read-only and returns started/stopped/failure/max_turns summary lines without starting a new mock session.
 
 The project has been fully reorganized into a modular architecture.
 
@@ -851,7 +854,7 @@ Voice adapter behavior:
 - Manual Voice City text simulation uses `MockVoiceInputAdapter` for typed text and still uses `NullVoiceOutput`.
 - `VoiceLoop` reports adapter failures safely and still ignores empty input safely.
 - Tests cover input capture, output speak, empty input, adapter injection, adapter failure, and no audio hardware access.
-- Current pytest collection: 384 tests.
+- Current pytest collection: 391 tests.
 - Real Whisper, Vosk, Piper, microphone, speaker, wake word, background listener, GPT, internet, and real audio hardware access remain future work.
 
 Voice City adapter-backed single-turn loop has been added.
@@ -915,7 +918,21 @@ Voice session event logging behavior:
 - Event payloads do not store mock transcript content.
 - `EventHistorySkill` can show these events through `show recent events`.
 - Tests cover start logging, stop logging, adapter failure logging, max-turn logging, live SkillManager logging, and EventHistorySkill display.
-- Current pytest collection: 384 tests.
+- Phase pytest collection at this point: 384 tests.
+- No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, internet, notifications, or real audio hardware access was added.
+
+Voice Session status query has been added.
+
+Voice session status behavior:
+
+- Supported phrases: `what happened in voice session`, `show last voice session`, and `voice session status`.
+- `IntentParser` emits a `voice_session` intent with `action=status`.
+- `Planner` creates a `voice_session.status` step.
+- `VoiceSessionSkill` reads the latest local `voice_session.*` event group from `EventHistoryStore`.
+- The response summarizes whether the latest mock voice session started, stopped, failed, or reached max turns.
+- No-session queries return `No voice session events found.`
+- Tests cover no session, normal stopped session, failed session, max-turn session, parser routing, planner routing, and SkillManager live path.
+- Current pytest collection: 391 tests.
 - No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, internet, notifications, or real audio hardware access was added.
 
 ARES Behavior Schematic has been documented in README and `docs/ARCHITECTURE.md`.
@@ -1320,7 +1337,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 384 tests.
+- Current pytest collection: 391 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1344,7 +1361,7 @@ Verification Notes
 - CoreService event-history integration tests cover stored low, normal, high, critical, unknown-source, and disabled-source decisions.
 - EventHistorySkill tests cover recent events, critical events, empty history, parser phrases, planner steps, and SkillManager live path.
 - VoiceService tests cover CoreService registration, safe placeholder capabilities, safe placeholder status, VoiceInput/VoiceOutput ownership, VoiceInputAdapter/VoiceOutputAdapter mock implementations, adapter injection, NullVoiceInput listen placeholders, NullVoiceOutput speak placeholders, mock input capture and capture compatibility, mock output speak, empty mock input, CoreService aggregation of PCService and VoiceService, VoiceTextRequest conversion, VoiceLoop defaults, VoiceSingleTurnLoop normal input/output, VoiceSessionLoop multi-turn flow, stop phrase handling, max-turn limiting, empty no-op turns, input adapter failure, output adapter failure, transcript/history output, no-input behavior, recognized text routing to a mocked planner/execution handler, response handoff to NullVoiceOutput, safe input/handler/output/adapter failures, and no audio hardware access.
-- VoiceSessionSkill tests cover parser phrases, max-turn entity extraction, Planner step creation, ToolSelector routing, direct skill start, stop phrase handling, max-turn limiting, empty session behavior, transcript summaries, mock-adapter-only safeguards, safe local event history records for start/stop/adapter failure/max-turn completion, EventHistorySkill display, and SkillManager live-path execution.
+- VoiceSessionSkill tests cover parser phrases, max-turn entity extraction, status query phrases, Planner step creation, ToolSelector routing, direct skill start, stop phrase handling, max-turn limiting, empty session behavior, transcript summaries, mock-adapter-only safeguards, safe local event history records for start/stop/adapter failure/max-turn completion, latest voice-session status summaries for no-session/stopped/failed/max-turn cases, EventHistorySkill display, and SkillManager live-path execution.
 - DeviceAction tests cover registry registration/listing, app allowlist config loading, calculator enabled state, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, structured PCService status, structured PCService capability discovery, CoreService-backed service registration/capability aggregation, default PCService status/capability interfaces, safe missing-capability reporting, stable result formatting, PCService delegation for status/lock/sleep/open-app calls, CoreService-backed action/app discovery, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows calculator launch through a mocked launcher, unknown/disabled app rejection, notepad/browser disabled handling, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
 - Manual calculator launch verification tests cover refusal without exact confirmation, the exact open_app device action path with mocked adapter, and safe adapter failure reporting without opening Calculator.
 - Manual Voice City text simulation tests cover import safety, typed text reaching VoiceLoop through `MockVoiceInputAdapter`, real local calculator routing through the existing SkillManager planner/execution path, empty input safe exit, and no audio hardware access.
@@ -1370,6 +1387,7 @@ Verification Notes
 
 Latest Commits
 
+- `9315b73` Add Voice Session status query
 - `147248b` Log Voice Session events
 - `31e0baa` Add Voice Session skill
 - `2094bf2` Add Voice City multi-turn mock session

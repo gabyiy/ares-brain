@@ -225,10 +225,12 @@ Current voice loop foundation:
 - When `SkillContext.event_history_store` is available, `VoiceSessionSkill` records safe local operational events for session start, stop phrase, adapter failure, and max-turn completion.
 - Voice session event payloads store status, turn counts, max-turn metadata, and adapter failure details only; they do not store mock transcript content.
 - `EventHistorySkill` can show these Voice City operational records through recent event queries.
+- `VoiceSessionSkill` can also answer "what happened in voice session", "show last voice session", and "voice session status" by reading the latest local `voice_session.*` event group.
+- Voice Session status queries are read-only and return started/stopped/failure/max_turns summaries without starting a new session.
 - The loop does not own routing, planning, or skill execution logic.
 - The loop does not start background listening, wake word detection, microphone access, speaker access, GPT, or internet access.
 
-VoiceService is a skeleton only. Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter, single-turn, multi-turn session, VoiceSessionSkill, and Voice Session event logging layers are mock/local only and do not start microphone access, speaker output, speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
+VoiceService is a skeleton only. Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter, single-turn, multi-turn session, VoiceSessionSkill, Voice Session event logging, and Voice Session status query layers are mock/local only and do not start microphone access, speaker output, speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
 
 PCService and VoiceService are the current services registered by default. Future services should follow the same registration and capability pattern.
 
