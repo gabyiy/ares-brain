@@ -173,6 +173,7 @@ Current responsibilities:
 - provide structured Voice City capability data
 - expose input/output status and capability data
 - support a one-shot `VoiceLoop` text bridge from voice input to the existing text handler path and back to voice output
+- support `VoiceSingleTurnLoop` for one adapter-backed mock input/output turn
 - report that microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled
 - avoid all audio hardware access
 
@@ -187,6 +188,7 @@ Current Voice City component contracts:
 
 Current Voice City adapter contracts:
 
+- `VoiceInputAdapter.capture()`
 - `VoiceInputAdapter.capture_input()`
 - `VoiceInputAdapter.get_status()`
 - `VoiceInputAdapter.get_capabilities()`
@@ -203,15 +205,18 @@ Current placeholder implementations:
 
 Current voice loop foundation:
 
+- `VoiceTextRequest` stores the text request converted from voice adapter input.
 - `VoiceLoop.run_once()` calls `VoiceInput.listen_once()` once.
 - Empty or missing input returns a safe no-input result.
 - Recognized text is passed to an injected existing text/planner/execution handler.
 - Final response text is passed to `VoiceOutput.speak(text)`.
 - Adapter failures are reported as safe input/output errors.
+- `VoiceSingleTurnLoop` wires `MockVoiceInputAdapter` and `MockVoiceOutputAdapter` through the existing `VoiceLoop` path for one safe voice-style turn.
+- The single-turn flow is `MockVoiceInputAdapter.capture()` -> `VoiceTextRequest` -> injected existing text/CoreService handler -> `MockVoiceOutputAdapter.speak(response)`.
 - The loop does not own routing, planning, or skill execution logic.
 - The loop does not start background listening, wake word detection, microphone access, speaker access, GPT, or internet access.
 
-VoiceService is a skeleton only. Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter layer is mock/local only and does not start microphone access, speaker output, speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
+VoiceService is a skeleton only. Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter and single-turn layers are mock/local only and do not start microphone access, speaker output, speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
 
 PCService and VoiceService are the current services registered by default. Future services should follow the same registration and capability pattern.
 
