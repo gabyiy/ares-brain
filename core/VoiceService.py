@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Optional
 
 
 @dataclass(frozen=True)
@@ -9,6 +9,305 @@ class VoiceServiceResult:
     data: Dict[str, Any] = field(default_factory=dict)
     error_message: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class VoiceInputAdapter:
+    """Adapter boundary for future speech-to-text input providers."""
+
+    def capture_input(self) -> VoiceServiceResult:
+        raise NotImplementedError
+
+    def get_status(self) -> VoiceServiceResult:
+        raise NotImplementedError
+
+    def get_capabilities(self) -> VoiceServiceResult:
+        raise NotImplementedError
+
+
+class VoiceOutputAdapter:
+    """Adapter boundary for future text-to-speech output providers."""
+
+    def speak(self, text: str) -> VoiceServiceResult:
+        raise NotImplementedError
+
+    def get_status(self) -> VoiceServiceResult:
+        raise NotImplementedError
+
+    def get_capabilities(self) -> VoiceServiceResult:
+        raise NotImplementedError
+
+
+class MockVoiceInputAdapter(VoiceInputAdapter):
+    """Safe test/local input adapter that never touches microphone hardware."""
+
+    def __init__(
+        self,
+        transcripts: Optional[Iterable[str]] = None,
+        fail: bool = False,
+        failure_message: str = "mock_input_failure",
+        source: str = "mock_voice_input_adapter",
+        voice_input: str = "mock",
+        available: bool = True,
+        placeholder: bool = False,
+    ):
+        self._transcripts = [str(transcript or "") for transcript in (transcripts or [])]
+        self.fail = fail
+        self.failure_message = failure_message
+        self.source = source
+        self.voice_input = voice_input
+        self.available = available
+        self.placeholder = placeholder
+        self.capture_count = 0
+        self.audio_hardware_accessed = False
+
+    def capture_input(self) -> VoiceServiceResult:
+        self.capture_count += 1
+        if self.fail:
+            return VoiceServiceResult(
+                success=False,
+                text="Mock voice input failed safely. No microphone was accessed.",
+                data=self._base_data(transcript=""),
+                error_message=self.failure_message,
+                metadata=self._metadata(),
+            )
+
+        if not self.available:
+            return VoiceServiceResult(
+                success=False,
+                text="Voice input is a placeholder. No microphone was accessed.",
+                data=self._base_data(transcript="", voice_input="placeholder"),
+                error_message="voice_input_unavailable",
+                metadata=self._metadata(placeholder=True),
+            )
+
+        transcript = self._transcripts.pop(0) if self._transcripts else ""
+        return VoiceServiceResult(
+            success=True,
+            text=(
+                "Mock voice input captured text."
+                if transcript
+                else "Mock voice input captured no text."
+            ),
+            data=self._base_data(transcript=transcript),
+            metadata=self._metadata(),
+        )
+
+    def get_status(self) -> VoiceServiceResult:
+        if not self.available:
+            return VoiceServiceResult(
+                success=True,
+                text="Voice input status: placeholder only. Microphone access is disabled.",
+                data={
+                    "status": "placeholder",
+                    "source": self.source,
+                    "voice_input": "placeholder",
+                    "microphone": "disabled",
+                    "stt": "not_configured",
+                    "background_listening": "disabled",
+                    "audio_hardware_access": "disabled",
+                },
+                metadata=self._metadata(placeholder=True),
+            )
+        return VoiceServiceResult(
+            success=True,
+            text="Mock voice input status: ready without microphone access.",
+            data={
+                "status": "mock",
+                "source": self.source,
+                "voice_input": self.voice_input,
+                "queued_inputs": len(self._transcripts),
+                "microphone": "disabled",
+                "stt": "mock",
+                "background_listening": "disabled",
+                "audio_hardware_access": "disabled",
+            },
+            metadata=self._metadata(),
+        )
+
+    def get_capabilities(self) -> VoiceServiceResult:
+        if not self.available:
+            return VoiceServiceResult(
+                success=True,
+                text="Voice input capabilities: placeholder only.",
+                data={
+                    "source": self.source,
+                    "voice_input": "placeholder",
+                    "supported_input_modes": [],
+                    "microphone": "disabled",
+                    "stt": "disabled",
+                    "wake_word": "disabled",
+                    "background_listening": "disabled",
+                    "audio_hardware_access": "disabled",
+                },
+                metadata=self._metadata(placeholder=True),
+            )
+        return VoiceServiceResult(
+            success=True,
+            text="Mock voice input capabilities discovered.",
+            data={
+                "source": self.source,
+                "voice_input": self.voice_input,
+                "supported_input_modes": ["mock_text"],
+                "microphone": "disabled",
+                "stt": "mock",
+                "wake_word": "disabled",
+                "background_listening": "disabled",
+                "audio_hardware_access": "disabled",
+            },
+            metadata=self._metadata(),
+        )
+
+    def _base_data(self, transcript: str, voice_input: Optional[str] = None) -> Dict[str, Any]:
+        return {
+            "source": self.source,
+            "transcript": transcript,
+            "voice_input": voice_input or self.voice_input,
+            "microphone": "disabled",
+            "stt": "disabled" if not self.available else "mock",
+            "wake_word": "disabled",
+            "background_listening": "disabled",
+            "audio_hardware_access": "disabled",
+        }
+
+    def _metadata(self, placeholder: Optional[bool] = None) -> Dict[str, Any]:
+        return {
+            "safe": True,
+            "source": self.source,
+            "mock": True,
+            "placeholder": self.placeholder if placeholder is None else placeholder,
+            "audio_hardware_accessed": self.audio_hardware_accessed,
+        }
+
+
+class MockVoiceOutputAdapter(VoiceOutputAdapter):
+    """Safe test/local output adapter that records text without playing audio."""
+
+    def __init__(
+        self,
+        fail: bool = False,
+        failure_message: str = "mock_output_failure",
+        source: str = "mock_voice_output_adapter",
+        voice_output: str = "mock",
+        available: bool = True,
+        placeholder: bool = False,
+    ):
+        self.fail = fail
+        self.failure_message = failure_message
+        self.source = source
+        self.voice_output = voice_output
+        self.available = available
+        self.placeholder = placeholder
+        self.spoken_texts: List[str] = []
+        self.audio_hardware_accessed = False
+
+    def speak(self, text: str) -> VoiceServiceResult:
+        accepted_text = str(text or "")
+        self.spoken_texts.append(accepted_text)
+        if self.fail:
+            return VoiceServiceResult(
+                success=False,
+                text="Mock voice output failed safely. No speaker audio was played.",
+                data=self._base_data(accepted_text),
+                error_message=self.failure_message,
+                metadata=self._metadata(),
+            )
+
+        if not self.available:
+            return VoiceServiceResult(
+                success=True,
+                text="Voice output accepted as placeholder. No speaker audio was played.",
+                data=self._base_data(accepted_text, voice_output="placeholder"),
+                metadata=self._metadata(placeholder=True),
+            )
+
+        return VoiceServiceResult(
+            success=True,
+            text="Mock voice output accepted text. No speaker audio was played.",
+            data=self._base_data(accepted_text),
+            metadata=self._metadata(),
+        )
+
+    def get_status(self) -> VoiceServiceResult:
+        if not self.available:
+            return VoiceServiceResult(
+                success=True,
+                text="Voice output status: placeholder only. Speaker access is disabled.",
+                data={
+                    "status": "placeholder",
+                    "source": self.source,
+                    "voice_output": "placeholder",
+                    "speaker": "disabled",
+                    "tts": "not_configured",
+                    "audio_hardware_access": "disabled",
+                },
+                metadata=self._metadata(placeholder=True),
+            )
+        return VoiceServiceResult(
+            success=True,
+            text="Mock voice output status: ready without speaker access.",
+            data={
+                "status": "mock",
+                "source": self.source,
+                "voice_output": self.voice_output,
+                "spoken_count": len(self.spoken_texts),
+                "speaker": "disabled",
+                "tts": "mock",
+                "audio_hardware_access": "disabled",
+            },
+            metadata=self._metadata(),
+        )
+
+    def get_capabilities(self) -> VoiceServiceResult:
+        if not self.available:
+            return VoiceServiceResult(
+                success=True,
+                text="Voice output capabilities: placeholder only.",
+                data={
+                    "source": self.source,
+                    "voice_output": "placeholder",
+                    "supported_output_modes": [],
+                    "speaker": "disabled",
+                    "tts": "disabled",
+                    "audio_hardware_access": "disabled",
+                },
+                metadata=self._metadata(placeholder=True),
+            )
+        return VoiceServiceResult(
+            success=True,
+            text="Mock voice output capabilities discovered.",
+            data={
+                "source": self.source,
+                "voice_output": self.voice_output,
+                "supported_output_modes": ["mock_text"],
+                "speaker": "disabled",
+                "tts": "mock",
+                "audio_hardware_access": "disabled",
+            },
+            metadata=self._metadata(),
+        )
+
+    def _base_data(
+        self,
+        accepted_text: str,
+        voice_output: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return {
+            "source": self.source,
+            "accepted_text": accepted_text,
+            "voice_output": voice_output or self.voice_output,
+            "speaker": "disabled",
+            "tts": "disabled" if not self.available else "mock",
+            "audio_hardware_access": "disabled",
+        }
+
+    def _metadata(self, placeholder: Optional[bool] = None) -> Dict[str, Any]:
+        return {
+            "safe": True,
+            "source": self.source,
+            "mock": True,
+            "placeholder": self.placeholder if placeholder is None else placeholder,
+            "audio_hardware_accessed": self.audio_hardware_accessed,
+        }
 
 
 @dataclass(frozen=True)
@@ -106,141 +405,51 @@ class VoiceOutput:
 class NullVoiceInput(VoiceInput):
     """Placeholder voice input that never touches microphone hardware."""
 
-    def __init__(self):
-        self.audio_hardware_accessed = False
+    def __init__(self, adapter: Optional[VoiceInputAdapter] = None):
+        self.adapter = adapter or MockVoiceInputAdapter(
+            source="null_voice_input",
+            voice_input="placeholder",
+            available=False,
+            placeholder=True,
+        )
 
     def listen_once(self) -> VoiceServiceResult:
-        return VoiceServiceResult(
-            success=False,
-            text="Voice input is a placeholder. No microphone was accessed.",
-            data={
-                "source": "null_voice_input",
-                "transcript": "",
-                "voice_input": "placeholder",
-                "microphone": "disabled",
-                "stt": "disabled",
-                "background_listening": "disabled",
-                "audio_hardware_access": "disabled",
-            },
-            error_message="voice_input_unavailable",
-            metadata={
-                "safe": True,
-                "source": "null_voice_input",
-                "placeholder": True,
-                "audio_hardware_accessed": self.audio_hardware_accessed,
-            },
-        )
+        return self.adapter.capture_input()
 
     def get_status(self) -> VoiceServiceResult:
-        return VoiceServiceResult(
-            success=True,
-            text="Voice input status: placeholder only. Microphone access is disabled.",
-            data={
-                "status": "placeholder",
-                "source": "null_voice_input",
-                "voice_input": "placeholder",
-                "microphone": "disabled",
-                "stt": "not_configured",
-                "background_listening": "disabled",
-                "audio_hardware_access": "disabled",
-            },
-            metadata={
-                "safe": True,
-                "source": "null_voice_input",
-                "placeholder": True,
-                "audio_hardware_accessed": self.audio_hardware_accessed,
-            },
-        )
+        return self.adapter.get_status()
 
     def get_capabilities(self) -> VoiceServiceResult:
-        return VoiceServiceResult(
-            success=True,
-            text="Voice input capabilities: placeholder only.",
-            data={
-                "source": "null_voice_input",
-                "voice_input": "placeholder",
-                "supported_input_modes": [],
-                "microphone": "disabled",
-                "stt": "disabled",
-                "wake_word": "disabled",
-                "background_listening": "disabled",
-                "audio_hardware_access": "disabled",
-            },
-            metadata={
-                "safe": True,
-                "source": "null_voice_input",
-                "placeholder": True,
-                "audio_hardware_accessed": self.audio_hardware_accessed,
-            },
-        )
+        return self.adapter.get_capabilities()
+
+    @property
+    def audio_hardware_accessed(self) -> bool:
+        return bool(getattr(self.adapter, "audio_hardware_accessed", False))
 
 
 class NullVoiceOutput(VoiceOutput):
     """Placeholder voice output that never touches speaker hardware."""
 
-    def __init__(self):
-        self.audio_hardware_accessed = False
+    def __init__(self, adapter: Optional[VoiceOutputAdapter] = None):
+        self.adapter = adapter or MockVoiceOutputAdapter(
+            source="null_voice_output",
+            voice_output="placeholder",
+            available=False,
+            placeholder=True,
+        )
 
     def speak(self, text: str) -> VoiceServiceResult:
-        accepted_text = str(text or "")
-        return VoiceServiceResult(
-            success=True,
-            text="Voice output accepted as placeholder. No speaker audio was played.",
-            data={
-                "source": "null_voice_output",
-                "accepted_text": accepted_text,
-                "voice_output": "placeholder",
-                "speaker": "disabled",
-                "tts": "disabled",
-                "audio_hardware_access": "disabled",
-            },
-            metadata={
-                "safe": True,
-                "source": "null_voice_output",
-                "placeholder": True,
-                "audio_hardware_accessed": self.audio_hardware_accessed,
-            },
-        )
+        return self.adapter.speak(text)
 
     def get_status(self) -> VoiceServiceResult:
-        return VoiceServiceResult(
-            success=True,
-            text="Voice output status: placeholder only. Speaker access is disabled.",
-            data={
-                "status": "placeholder",
-                "source": "null_voice_output",
-                "voice_output": "placeholder",
-                "speaker": "disabled",
-                "tts": "not_configured",
-                "audio_hardware_access": "disabled",
-            },
-            metadata={
-                "safe": True,
-                "source": "null_voice_output",
-                "placeholder": True,
-                "audio_hardware_accessed": self.audio_hardware_accessed,
-            },
-        )
+        return self.adapter.get_status()
 
     def get_capabilities(self) -> VoiceServiceResult:
-        return VoiceServiceResult(
-            success=True,
-            text="Voice output capabilities: placeholder only.",
-            data={
-                "source": "null_voice_output",
-                "voice_output": "placeholder",
-                "supported_output_modes": [],
-                "speaker": "disabled",
-                "tts": "disabled",
-                "audio_hardware_access": "disabled",
-            },
-            metadata={
-                "safe": True,
-                "source": "null_voice_output",
-                "placeholder": True,
-                "audio_hardware_accessed": self.audio_hardware_accessed,
-            },
-        )
+        return self.adapter.get_capabilities()
+
+    @property
+    def audio_hardware_accessed(self) -> bool:
+        return bool(getattr(self.adapter, "audio_hardware_accessed", False))
 
 
 class VoiceService:
@@ -261,9 +470,11 @@ class PlaceholderVoiceService(VoiceService):
         self,
         voice_input: VoiceInput | None = None,
         voice_output: VoiceOutput | None = None,
+        input_adapter: VoiceInputAdapter | None = None,
+        output_adapter: VoiceOutputAdapter | None = None,
     ):
-        self.voice_input = voice_input or NullVoiceInput()
-        self.voice_output = voice_output or NullVoiceOutput()
+        self.voice_input = voice_input or NullVoiceInput(adapter=input_adapter)
+        self.voice_output = voice_output or NullVoiceOutput(adapter=output_adapter)
 
     @property
     def audio_hardware_accessed(self) -> bool:

@@ -101,11 +101,22 @@ class VoiceLoop:
         except Exception as error:
             return self._safe_error("input_error", error)
 
+        voice_input_data = _voice_result_to_dict(voice_input)
+        if not voice_input.success and voice_input.error_message != "voice_input_unavailable":
+            return VoiceLoopResult(
+                success=False,
+                status="input_error",
+                text=voice_input.text,
+                error_message=voice_input.error_message or "voice_input_failed",
+                data={"voice_input": voice_input_data},
+                metadata={"safe": True, "source": "voice_loop"},
+            )
+
         return VoiceLoopResult(
             success=True,
             status="input_received",
             text="Voice input was checked.",
-            data={"voice_input": _voice_result_to_dict(voice_input)},
+            data={"voice_input": voice_input_data},
             metadata={"safe": True, "source": "voice_loop"},
         )
 

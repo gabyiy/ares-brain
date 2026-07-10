@@ -7,11 +7,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from core import (  # noqa: E402
+    MockVoiceInputAdapter,
     NullVoiceInput,
     NullVoiceOutput,
     VoiceLoop,
     VoiceOutput,
-    VoiceServiceResult,
     get_global_conversation_context,
 )
 from events import get_global_bus  # noqa: E402
@@ -27,28 +27,12 @@ class TypedTextVoiceInput(NullVoiceInput):
     """Manual text input adapter for VoiceLoop testing without audio hardware."""
 
     def __init__(self, transcript: str):
-        super().__init__()
-        self.transcript = transcript
-
-    def listen_once(self) -> VoiceServiceResult:
-        return VoiceServiceResult(
-            success=True,
-            text="Typed text was provided to the Voice City loop.",
-            data={
-                "source": "manual_voice_text_loop",
-                "transcript": self.transcript,
-                "voice_input": "typed_text",
-                "microphone": "disabled",
-                "stt": "disabled",
-                "wake_word": "disabled",
-                "background_listening": "disabled",
-                "audio_hardware_access": "disabled",
-            },
-            metadata={
-                "safe": True,
-                "source": "manual_voice_text_loop",
-                "audio_hardware_accessed": self.audio_hardware_accessed,
-            },
+        super().__init__(
+            adapter=MockVoiceInputAdapter(
+                transcripts=[transcript],
+                source="manual_voice_text_loop",
+                voice_input="typed_text",
+            )
         )
 
 

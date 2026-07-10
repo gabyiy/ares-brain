@@ -2,6 +2,8 @@ from core import (
     PC_SERVICE_NAME,
     VOICE_SERVICE_NAME,
     CoreService,
+    MockVoiceInputAdapter,
+    MockVoiceOutputAdapter,
     NullVoiceInput,
     NullVoiceOutput,
     PlaceholderVoiceService,
@@ -94,6 +96,30 @@ def test_voice_service_owns_input_and_output_components():
 
     assert isinstance(voice_service.voice_input, NullVoiceInput)
     assert isinstance(voice_service.voice_output, NullVoiceOutput)
+    assert isinstance(voice_service.voice_input.adapter, MockVoiceInputAdapter)
+    assert isinstance(voice_service.voice_output.adapter, MockVoiceOutputAdapter)
+
+
+def test_voice_service_can_use_injected_voice_adapters():
+    input_adapter = MockVoiceInputAdapter(transcripts=["hello adapter"])
+    output_adapter = MockVoiceOutputAdapter()
+    voice_service = PlaceholderVoiceService(
+        input_adapter=input_adapter,
+        output_adapter=output_adapter,
+    )
+
+    input_result = voice_service.voice_input.listen_once()
+    output_result = voice_service.voice_output.speak("adapter response")
+
+    assert voice_service.voice_input.adapter is input_adapter
+    assert voice_service.voice_output.adapter is output_adapter
+    assert input_result.success is True
+    assert input_result.data["transcript"] == "hello adapter"
+    assert input_result.data["microphone"] == "disabled"
+    assert output_result.success is True
+    assert output_result.data["accepted_text"] == "adapter response"
+    assert output_result.data["speaker"] == "disabled"
+    assert output_adapter.spoken_texts == ["adapter response"]
 
 
 def test_null_voice_input_returns_safe_placeholder_result():
@@ -114,6 +140,36 @@ def test_null_voice_input_returns_safe_placeholder_result():
     assert voice_input.audio_hardware_accessed is False
 
 
+def test_mock_voice_input_adapter_captures_text_without_audio():
+    adapter = MockVoiceInputAdapter(transcripts=["calculate 2 + 2"])
+
+    result = adapter.capture_input()
+
+    assert result.success is True
+    assert result.text == "Mock voice input captured text."
+    assert result.data["transcript"] == "calculate 2 + 2"
+    assert result.data["voice_input"] == "mock"
+    assert result.data["microphone"] == "disabled"
+    assert result.data["stt"] == "mock"
+    assert result.data["audio_hardware_access"] == "disabled"
+    assert result.metadata["audio_hardware_accessed"] is False
+    assert adapter.capture_count == 1
+    assert adapter.audio_hardware_accessed is False
+
+
+def test_mock_voice_input_adapter_empty_input_is_safe():
+    adapter = MockVoiceInputAdapter()
+
+    result = adapter.capture_input()
+
+    assert result.success is True
+    assert result.text == "Mock voice input captured no text."
+    assert result.data["transcript"] == ""
+    assert result.data["microphone"] == "disabled"
+    assert adapter.capture_count == 1
+    assert adapter.audio_hardware_accessed is False
+
+
 def test_null_voice_output_accepts_text_without_audio():
     voice_output = NullVoiceOutput()
 
@@ -128,6 +184,23 @@ def test_null_voice_output_accepts_text_without_audio():
     assert result.data["audio_hardware_access"] == "disabled"
     assert result.metadata["audio_hardware_accessed"] is False
     assert voice_output.audio_hardware_accessed is False
+
+
+def test_mock_voice_output_adapter_records_text_without_audio():
+    adapter = MockVoiceOutputAdapter()
+
+    result = adapter.speak("hello through adapter")
+
+    assert result.success is True
+    assert result.text == "Mock voice output accepted text. No speaker audio was played."
+    assert result.data["accepted_text"] == "hello through adapter"
+    assert result.data["voice_output"] == "mock"
+    assert result.data["speaker"] == "disabled"
+    assert result.data["tts"] == "mock"
+    assert result.data["audio_hardware_access"] == "disabled"
+    assert result.metadata["audio_hardware_accessed"] is False
+    assert adapter.spoken_texts == ["hello through adapter"]
+    assert adapter.audio_hardware_accessed is False
 
 
 def test_voice_service_exposes_capabilities():
@@ -308,6 +381,26 @@ def test_voice_loop_input_error_fails_safely():
     assert voice_output.spoken_texts == []
 
 
+def test_voice_loop_input_adapter_failure_fails_safely():
+    calls = []
+    voice_output = RecordingVoiceOutput()
+    voice_input = NullVoiceInput(adapter=MockVoiceInputAdapter(fail=True))
+    loop = VoiceLoop(
+        voice_input=voice_input,
+        voice_output=voice_output,
+        text_handler=lambda text: calls.append(text),
+    )
+
+    result = loop.run_once()
+
+    assert result.success is False
+    assert result.status == "input_error"
+    assert result.error_message == "mock_input_failure"
+    assert result.data["voice_input"]["data"]["microphone"] == "disabled"
+    assert calls == []
+    assert voice_output.spoken_texts == []
+
+
 def test_voice_loop_handler_error_fails_safely():
     voice_output = RecordingVoiceOutput()
 
@@ -345,3 +438,22 @@ def test_voice_loop_output_error_fails_safely():
     assert result.response_text == "Hello."
     assert result.error_message == "output failure"
     assert voice_output.spoken_texts == ["Hello."]
+
+
+def test_voice_loop_output_adapter_failure_fails_safely():
+    output_adapter = MockVoiceOutputAdapter(fail=True)
+    loop = VoiceLoop(
+        voice_input=StaticVoiceInput("hello"),
+        voice_output=NullVoiceOutput(adapter=output_adapter),
+        text_handler=lambda text: "Hello from adapter.",
+    )
+
+    result = loop.run_once()
+
+    assert result.success is False
+    assert result.status == "output_error"
+    assert result.input_text == "hello"
+    assert result.response_text == "Hello from adapter."
+    assert result.error_message == "mock_output_failure"
+    assert output_adapter.spoken_texts == ["Hello from adapter."]
+    assert result.data["voice_output"]["data"]["speaker"] == "disabled"
