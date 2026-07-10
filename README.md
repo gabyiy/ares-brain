@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.51 - Event History Skill
+ARES v1.52 - Phase 3 Foundation Checkpoint
 
 ---
 
@@ -33,6 +33,36 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 `skills.EventHistorySkill` now provides read-only local queries for recent internal events. It supports "what happened recently", "show recent events", and "show critical events" through the existing IntentParser, Planner, ExecutionPipeline, SkillManager, and REPL path. It only reads local `EventHistoryStore` data and does not send notifications, start listeners, call devices, access the internet, or use GPT.
 
 `core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It owns `VoiceInput` and `VoiceOutput` components, currently implemented as `NullVoiceInput` and `NullVoiceOutput`. These expose `listen_once()`, `speak(text)`, `get_capabilities()`, and `get_status()` contracts with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled. `core.VoiceLoop` adds a one-shot text loop foundation: it calls `VoiceInput.listen_once()`, ignores empty input safely, passes recognized text to an injected existing text/planner/execution handler, and sends the final response text to `VoiceOutput.speak()`.
+
+Phase 3 Foundation Checkpoint
+
+The Phase 3 foundation is frozen before adding real audio. This checkpoint confirms the currently implemented foundation:
+
+- Voice City skeleton
+- Manual Voice City text loop simulation
+- Lazy city routing through CoreService capability metadata
+- Internal `core.EventBus`
+- Local `events.EventHistoryStore`
+- Read-only `skills.EventHistorySkill`
+
+Current pytest collection: `351 tests`.
+
+Latest checkpoint baseline commits:
+
+- `8d39403` Document event history query skill
+- `844d4a5` Add event history query skill
+- `bd72981` Document core service event history persistence
+- `d2c8a6c` Persist core service event decisions
+- `8803fb8` Document local event history store
+- `9fe355c` Add local event history store
+- `70c5e04` Document core service event decisions
+- `5c71bb1` Add core service event decisions
+- `1de5e09` Document internal core event bus skeleton
+- `032f132` Add internal core event bus skeleton
+- `78cb4a9` Document city lifecycle lazy routing
+- `16cc8d4` Add city lifecycle lazy routing
+
+No runtime code changed for this checkpoint. Real microphone access, speaker output, wake word detection, real STT, real TTS, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
 Phase 2 Complete
 

@@ -1,14 +1,29 @@
 ARES Session Handoff
 
-Last Updated: 2026-07-09
+Last Updated: 2026-07-10
 
 Current Version
 
-ARES v1.51 - Event History Skill
+ARES v1.52 - Phase 3 Foundation Checkpoint
 
 ---
 
 Current Status
+
+ARES is at the Phase 3 foundation checkpoint before any real audio work.
+
+Confirmed Phase 3 foundation:
+
+- Voice City skeleton
+- Manual Voice City text loop simulation
+- Lazy city routing through CoreService capability metadata
+- Internal `core.EventBus`
+- Local `events.EventHistoryStore`
+- Read-only `skills.EventHistorySkill`
+
+Current pytest collection: 351 tests.
+
+No runtime code changed for this checkpoint. Real microphone access, speaker output, wake word detection, real STT, real TTS, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
 The project has been fully reorganized into a modular architecture.
 
@@ -41,7 +56,7 @@ New Phase 3 skill modules:
 
 The skill layer is minimally wired into the text REPL through `IntentRouter`.
 Normal intents still run first; SkillManager is only a fallback when no intent matches.
-Voice work has not started.
+Real voice/audio work has not started. Voice City currently has only safe placeholder service contracts and a manual text loop simulation.
 
 Phase 4 long-term memory recall has started.
 
@@ -804,6 +819,16 @@ Read-only event history query behavior:
 - Empty history returns a safe local response.
 - No notifications, background daemon, real devices, GPT, internet, new APIs, external calls, or write actions were added.
 
+Phase 3 foundation checkpoint has been documented.
+
+Checkpoint status:
+
+- Current version: ARES v1.52 - Phase 3 Foundation Checkpoint.
+- Current pytest collection: 351 tests.
+- Implemented and verified foundation: Voice City skeleton, manual Voice City text loop simulation, lazy city routing, internal `core.EventBus`, local `events.EventHistoryStore`, and read-only `skills.EventHistorySkill`.
+- This checkpoint is documentation-only and made no runtime changes.
+- Real microphone access, speaker output, wake word detection, real STT, real TTS, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
+
 ARES Behavior Schematic has been documented in README and `docs/ARCHITECTURE.md`.
 
 Behavior schematic summary:
@@ -1255,11 +1280,17 @@ Verification Notes
 
 Latest Commits
 
+- `8d39403` Document event history query skill
 - `844d4a5` Add event history query skill
+- `bd72981` Document core service event history persistence
 - `d2c8a6c` Persist core service event decisions
+- `8803fb8` Document local event history store
 - `9fe355c` Add local event history store
+- `70c5e04` Document core service event decisions
 - `5c71bb1` Add core service event decisions
+- `1de5e09` Document internal core event bus skeleton
 - `032f132` Add internal core event bus skeleton
+- `78cb4a9` Document city lifecycle lazy routing
 - `16cc8d4` Add city lifecycle lazy routing
 - `9ac2de7` Add manual Voice City text loop simulation
 - `b2b7a48` Add Voice City text loop foundation
