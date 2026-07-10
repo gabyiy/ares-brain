@@ -168,7 +168,7 @@ Current responsibilities:
 - expose `get_capabilities()`
 - expose `get_status()` and compatibility `status()`
 - own `VoiceInput` and `VoiceOutput` components
-- keep concrete audio providers behind `MicrophoneAdapter`, `VoiceInputAdapter`, and `VoiceOutputAdapter`
+- keep concrete audio providers behind `MicrophoneAdapter`, `SpeechToTextAdapter`, `VoiceInputAdapter`, and `VoiceOutputAdapter`
 - provide structured placeholder Voice City status data
 - provide structured Voice City capability data
 - expose input/output status and capability data
@@ -195,6 +195,9 @@ Current Voice City adapter contracts:
 - `MicrophoneAdapter.read_chunk(timeout_seconds, cancel_requested)`
 - `MicrophoneAdapter.get_status()`
 - `MicrophoneAdapter.get_capabilities()`
+- `SpeechToTextAdapter.transcribe(audio_chunk)`
+- `SpeechToTextAdapter.get_status()`
+- `SpeechToTextAdapter.get_capabilities()`
 - `VoiceInputAdapter.capture()`
 - `VoiceInputAdapter.capture_input()`
 - `VoiceInputAdapter.get_status()`
@@ -207,11 +210,14 @@ Current placeholder implementations:
 
 - `AudioChunk` stores raw audio chunk metadata for future microphone adapters without binding to a speech engine.
 - `MockMicrophoneAdapter` provides deterministic local/test microphone lifecycle, chunk reads, timeout handling, cancellation support, and safe failure paths without hardware access.
+- `TranscriptionResult` stores transcription text, status, error details, and bounded confidence values.
+- `MockSpeechToTextAdapter` converts `AudioChunk` objects into deterministic test transcriptions, including empty-audio, low-confidence, no-transcription, and failure results without a real speech engine.
 - `NullVoiceInput` is backed by a safe placeholder input adapter and does not access a microphone or run STT.
 - `NullVoiceOutput` is backed by a safe placeholder output adapter and does not access speakers or run TTS.
-- `MockVoiceInputAdapter` provides deterministic local/test text capture without microphone access and accepts an injected microphone adapter for future provider wiring.
+- `MockVoiceInputAdapter` provides deterministic local/test text capture without microphone access and accepts injected microphone and speech-to-text adapters for future provider wiring.
 - `MockVoiceOutputAdapter` records deterministic local/test speech output without speaker access.
 - `PlaceholderVoiceService` and `NullVoiceInput` accept an injected `MicrophoneAdapter` so Voice City can swap microphone implementations later without changing Brain, CoreService, skills, or current text loops.
+- `PlaceholderVoiceService` and `NullVoiceInput` accept an injected `SpeechToTextAdapter` so Voice City can swap transcription implementations later without changing Brain, CoreService, skills, or current text loops.
 
 Current voice loop foundation:
 
@@ -238,7 +244,7 @@ Current voice loop foundation:
 - The loop does not own routing, planning, or skill execution logic.
 - The loop does not start background listening, wake word detection, microphone access, speaker access, GPT, or internet access.
 
-VoiceService is a skeleton only. Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current microphone adapter abstraction, input/output adapter, single-turn, multi-turn session, VoiceSessionSkill, Voice Session event logging, and Voice Session status query layers are mock/local only and do not start microphone access, speaker output, speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
+VoiceService is a skeleton only. Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current microphone adapter abstraction, speech-to-text adapter abstraction, input/output adapter, single-turn, multi-turn session, VoiceSessionSkill, Voice Session event logging, and Voice Session status query layers are mock/local only and do not start microphone access, speaker output, real speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
 
 PCService and VoiceService are the current services registered by default. Future services should follow the same registration and capability pattern.
 
