@@ -302,6 +302,8 @@ CoreService accepts an optional `EventHistoryStore`. When configured, `CoreServi
 
 This is internal memory/logging only; it is not a notification system, device action runner, background listener, daemon, GPT loop, or internet client.
 
+`skills.EventHistorySkill` is the read-only skill interface for this local history. It supports recent-event and critical-event queries through the normal live path: `IntentParser` -> `Planner` -> `ExecutionPipeline` -> `SkillManager` -> `EventHistorySkill`. The skill reads `EventHistoryStore` and formats local history for the user. It cannot mutate history, send notifications, trigger device actions, start listeners, call GPT, or access the internet.
+
 Current boundary:
 
 - no background city wakeup runtime

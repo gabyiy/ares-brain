@@ -4,7 +4,7 @@ Last Updated: 2026-07-09
 
 Current Version
 
-ARES v1.50 - CoreService Event History Persistence
+ARES v1.51 - Event History Skill
 
 ---
 
@@ -790,6 +790,20 @@ Internal event persistence behavior:
 - This is synchronous internal memory/logging only.
 - No notifications, background daemon, real devices, GPT, internet, new APIs, or external calls were added.
 
+Event History Skill has been added.
+
+Read-only event history query behavior:
+
+- New skill: `skills.EventHistorySkill`.
+- Skill name and planner target: `event_history`.
+- Supported phrases are `what happened recently`, `show recent events`, and `show critical events`.
+- `IntentParser` recognizes event-history requests.
+- `Planner` creates read-only `event_history` steps.
+- `SkillManager`, `ExecutionPipeline`, and the text REPL route these requests through the normal live path.
+- The skill reads `EventHistoryStore` through `SkillContext.event_history_store`.
+- Empty history returns a safe local response.
+- No notifications, background daemon, real devices, GPT, internet, new APIs, external calls, or write actions were added.
+
 ARES Behavior Schematic has been documented in README and `docs/ARCHITECTURE.md`.
 
 Behavior schematic summary:
@@ -1192,7 +1206,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 345 tests.
+- Current pytest collection: 351 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1214,6 +1228,7 @@ Verification Notes
 - CoreService event decision tests cover low, normal, high, critical, unknown-source, and disabled-source event handling.
 - EventHistoryStore tests cover add, query by source/type/priority, bounded max size, empty history, persistence after reload, invalid priority rejection, and zero-size history.
 - CoreService event-history integration tests cover stored low, normal, high, critical, unknown-source, and disabled-source decisions.
+- EventHistorySkill tests cover recent events, critical events, empty history, parser phrases, planner steps, and SkillManager live path.
 - VoiceService tests cover CoreService registration, safe placeholder capabilities, safe placeholder status, VoiceInput/VoiceOutput ownership, NullVoiceInput listen placeholders, NullVoiceOutput speak placeholders, CoreService aggregation of PCService and VoiceService, VoiceLoop defaults, no-input behavior, recognized text routing to a mocked planner/execution handler, response handoff to NullVoiceOutput, safe input/handler/output failures, and no audio hardware access.
 - DeviceAction tests cover registry registration/listing, app allowlist config loading, calculator enabled state, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, structured PCService status, structured PCService capability discovery, CoreService-backed service registration/capability aggregation, default PCService status/capability interfaces, safe missing-capability reporting, stable result formatting, PCService delegation for status/lock/sleep/open-app calls, CoreService-backed action/app discovery, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows calculator launch through a mocked launcher, unknown/disabled app rejection, notepad/browser disabled handling, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
 - Manual calculator launch verification tests cover refusal without exact confirmation, the exact open_app device action path with mocked adapter, and safe adapter failure reporting without opening Calculator.
@@ -1240,6 +1255,7 @@ Verification Notes
 
 Latest Commits
 
+- `844d4a5` Add event history query skill
 - `d2c8a6c` Persist core service event decisions
 - `9fe355c` Add local event history store
 - `5c71bb1` Add core service event decisions

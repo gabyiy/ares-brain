@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.50 - CoreService Event History Persistence
+ARES v1.51 - Event History Skill
 
 ---
 
@@ -29,6 +29,8 @@ CoreService can now receive internal city events through `handle_event(event)` a
 `events.EventHistoryStore` now persists internal event decisions/results to local JSON history with safe size limits. It can query recent events by source, type, and priority. This is internal memory/logging only; it does not send notifications, call devices, start a daemon, access the internet, or use GPT.
 
 CoreService now accepts an optional `EventHistoryStore`. When configured, `handle_event(event)` stores each handled internal event decision/result locally, including `recorded`, `escalated`, and safely ignored unknown/disabled source events. The `failed` decision value is reserved for future failed event-handling paths. This is synchronous internal history persistence only; it does not start listeners, send notifications, call devices, access the internet, or use GPT.
+
+`skills.EventHistorySkill` now provides read-only local queries for recent internal events. It supports "what happened recently", "show recent events", and "show critical events" through the existing IntentParser, Planner, ExecutionPipeline, SkillManager, and REPL path. It only reads local `EventHistoryStore` data and does not send notifications, start listeners, call devices, access the internet, or use GPT.
 
 `core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It owns `VoiceInput` and `VoiceOutput` components, currently implemented as `NullVoiceInput` and `NullVoiceOutput`. These expose `listen_once()`, `speak(text)`, `get_capabilities()`, and `get_status()` contracts with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled. `core.VoiceLoop` adds a one-shot text loop foundation: it calls `VoiceInput.listen_once()`, ignores empty input safely, passes recognized text to an injected existing text/planner/execution handler, and sends the final response text to `VoiceOutput.speak()`.
 
@@ -228,6 +230,7 @@ Completed
 - CoreService internal event decision routing
 - Local EventHistoryStore for internal event decisions/results
 - CoreService optional EventHistoryStore persistence
+- EventHistorySkill read-only local event queries
 - Phase 2 architecture stabilization
 - Voice City service skeleton
 - Voice City input/output contracts
@@ -330,6 +333,7 @@ Implemented Features
 - CoreService internal event handling with `ignored`, `recorded`, and `escalated` decisions for city events
 - Local `events.EventHistoryStore` for persisted internal event decisions/results with source/type/priority queries and bounded history size
 - Optional CoreService to EventHistoryStore persistence for handled internal event decisions/results
+- Read-only `skills.EventHistorySkill` for querying recent and critical internal event history
 - Phase 2 architecture cleanup with centralized `PC_SERVICE_NAME`, CoreService carried through `SkillContext`, and focused service registration/capability contract tests
 - Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceInput`, `VoiceOutput`, `NullVoiceInput`, `NullVoiceOutput`, `VoiceStatus`, `VoiceCapabilities`, `VoiceLoop`, `VoiceLoopResult`, default CoreService registration as `voice`, safe placeholder status, a one-shot placeholder text loop, and no audio hardware access
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
@@ -354,7 +358,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 345 tests across core Phase 2-48 modules
+- Pytest automated coverage for 351 tests across core Phase 2-49 modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -373,7 +377,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `345 tests`.
+Current pytest collection: `351 tests`.
 
 Manual Calculator Launch Verification
 
@@ -1094,19 +1098,28 @@ Phase 48
 
 Phase 49
 
+- Event History Skill
+- `skills.EventHistorySkill` reads local `EventHistoryStore` data only
+- Supported phrases: `what happened recently`, `show recent events`, and `show critical events`
+- `IntentParser`, `Planner`, `ExecutionPipeline`, `SkillManager`, and the text REPL route these requests through the normal live path
+- Empty history returns a safe local response
+- This is read-only local querying and does not add notifications, background daemons, real devices, internet, GPT, or external calls
+
+Phase 50
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 50
+Phase 51
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 51
+Phase 52
 
 - Robotics
 - ROS2
