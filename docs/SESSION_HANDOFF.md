@@ -4,13 +4,13 @@ Last Updated: 2026-07-10
 
 Current Version
 
-ARES v1.55 - Voice City Multi-Turn Mock Session
+ARES v1.56 - Voice Session Skill
 
 ---
 
 Current Status
 
-ARES is at the Voice City multi-turn mock session foundation before any real audio work.
+ARES is at the Voice Session Skill foundation before any real audio work.
 
 Confirmed Phase 3 foundation:
 
@@ -23,10 +23,13 @@ Confirmed Phase 3 foundation:
 - Voice City audio adapter contracts
 - Voice City adapter-backed single-turn loop
 - Voice City multi-turn mock session
+- Voice Session Skill
 
-Current pytest collection: 370 tests.
+Current pytest collection: 379 tests.
 
 Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
+
+`skills.VoiceSessionSkill` now starts a bounded mock voice session from text commands: "start voice session", "start mock voice", and "run voice test". It uses only `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop`, returns a transcript summary, and is wired through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path.
 
 The project has been fully reorganized into a modular architecture.
 
@@ -845,7 +848,7 @@ Voice adapter behavior:
 - Manual Voice City text simulation uses `MockVoiceInputAdapter` for typed text and still uses `NullVoiceOutput`.
 - `VoiceLoop` reports adapter failures safely and still ignores empty input safely.
 - Tests cover input capture, output speak, empty input, adapter injection, adapter failure, and no audio hardware access.
-- Current pytest collection: 370 tests.
+- Current pytest collection: 379 tests.
 - Real Whisper, Vosk, Piper, microphone, speaker, wake word, background listener, GPT, internet, and real audio hardware access remain future work.
 
 Voice City adapter-backed single-turn loop has been added.
@@ -861,7 +864,7 @@ Single-turn loop behavior:
 - Input adapter failures fail safely before text handling.
 - Output adapter failures fail safely after response generation.
 - Tests cover normal one-turn input/output, empty input, input adapter failure, output adapter failure, and no real microphone/speaker access.
-- Current pytest collection: 370 tests.
+- Phase pytest collection at this point: 370 tests.
 - No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, internet, or real audio hardware access was added.
 
 Voice City multi-turn mock session has been added.
@@ -879,7 +882,23 @@ Multi-turn session behavior:
 - Input adapter failures stop the session safely before text handling.
 - Output adapter failures stop the session safely after response generation.
 - Tests cover multi-turn flow, stop phrase handling, max-turn limiting, empty input handling, input failure, output failure, and no real microphone/speaker access.
-- Current pytest collection: 370 tests.
+- Phase pytest collection at this point: 370 tests.
+- No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, internet, or real audio hardware access was added.
+
+Voice Session Skill has been added.
+
+Voice session skill behavior:
+
+- New skill: `skills.VoiceSessionSkill`.
+- Supported phrases: `start voice session`, `start mock voice`, and `run voice test`.
+- `IntentParser` emits `voice_session` intents.
+- `Planner` creates `voice_session.start` steps.
+- `ToolSelector`, `ExecutionPipeline`, `SkillManager`, and the text REPL route the command through the normal live skill path.
+- The skill uses only `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop`.
+- Sessions are bounded by `max_turns`, capped at the existing safe session limit.
+- Responses include transcript summaries for normal starts, stop phrases, max-turn limits, and empty sessions.
+- Tests cover parser phrases, max-turn entity extraction, planner steps, ToolSelector routing, direct skill start, stop phrase handling, max-turn limiting, empty session behavior, and SkillManager live-path execution.
+- Current pytest collection: 379 tests.
 - No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, internet, or real audio hardware access was added.
 
 ARES Behavior Schematic has been documented in README and `docs/ARCHITECTURE.md`.
@@ -1284,7 +1303,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 370 tests.
+- Current pytest collection: 379 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1308,6 +1327,7 @@ Verification Notes
 - CoreService event-history integration tests cover stored low, normal, high, critical, unknown-source, and disabled-source decisions.
 - EventHistorySkill tests cover recent events, critical events, empty history, parser phrases, planner steps, and SkillManager live path.
 - VoiceService tests cover CoreService registration, safe placeholder capabilities, safe placeholder status, VoiceInput/VoiceOutput ownership, VoiceInputAdapter/VoiceOutputAdapter mock implementations, adapter injection, NullVoiceInput listen placeholders, NullVoiceOutput speak placeholders, mock input capture and capture compatibility, mock output speak, empty mock input, CoreService aggregation of PCService and VoiceService, VoiceTextRequest conversion, VoiceLoop defaults, VoiceSingleTurnLoop normal input/output, VoiceSessionLoop multi-turn flow, stop phrase handling, max-turn limiting, empty no-op turns, input adapter failure, output adapter failure, transcript/history output, no-input behavior, recognized text routing to a mocked planner/execution handler, response handoff to NullVoiceOutput, safe input/handler/output/adapter failures, and no audio hardware access.
+- VoiceSessionSkill tests cover parser phrases, max-turn entity extraction, Planner step creation, ToolSelector routing, direct skill start, stop phrase handling, max-turn limiting, empty session behavior, transcript summaries, mock-adapter-only safeguards, and SkillManager live-path execution.
 - DeviceAction tests cover registry registration/listing, app allowlist config loading, calculator enabled state, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, structured PCService status, structured PCService capability discovery, CoreService-backed service registration/capability aggregation, default PCService status/capability interfaces, safe missing-capability reporting, stable result formatting, PCService delegation for status/lock/sleep/open-app calls, CoreService-backed action/app discovery, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows calculator launch through a mocked launcher, unknown/disabled app rejection, notepad/browser disabled handling, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
 - Manual calculator launch verification tests cover refusal without exact confirmation, the exact open_app device action path with mocked adapter, and safe adapter failure reporting without opening Calculator.
 - Manual Voice City text simulation tests cover import safety, typed text reaching VoiceLoop through `MockVoiceInputAdapter`, real local calculator routing through the existing SkillManager planner/execution path, empty input safe exit, and no audio hardware access.
@@ -1333,6 +1353,7 @@ Verification Notes
 
 Latest Commits
 
+- `31e0baa` Add Voice Session skill
 - `2094bf2` Add Voice City multi-turn mock session
 - `a0408cc` Document Voice City single-turn loop
 - `ea3bbe2` Add Voice City adapter-backed single-turn loop
