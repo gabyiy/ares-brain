@@ -9,6 +9,7 @@ from core import (
     PlaceholderVoiceService,
     VoiceLoop,
     VoiceOutput,
+    VoiceSingleTurnLoop,
     VoiceServiceResult,
 )
 from skills.base import SkillResponse
@@ -143,7 +144,7 @@ def test_null_voice_input_returns_safe_placeholder_result():
 def test_mock_voice_input_adapter_captures_text_without_audio():
     adapter = MockVoiceInputAdapter(transcripts=["calculate 2 + 2"])
 
-    result = adapter.capture_input()
+    result = adapter.capture()
 
     assert result.success is True
     assert result.text == "Mock voice input captured text."
@@ -155,6 +156,17 @@ def test_mock_voice_input_adapter_captures_text_without_audio():
     assert result.metadata["audio_hardware_accessed"] is False
     assert adapter.capture_count == 1
     assert adapter.audio_hardware_accessed is False
+
+
+def test_mock_voice_input_adapter_capture_input_compatibility():
+    adapter = MockVoiceInputAdapter(transcripts=["hello compatibility"])
+
+    result = adapter.capture_input()
+
+    assert result.success is True
+    assert result.data["transcript"] == "hello compatibility"
+    assert result.data["microphone"] == "disabled"
+    assert adapter.capture_count == 1
 
 
 def test_mock_voice_input_adapter_empty_input_is_safe():
@@ -295,6 +307,122 @@ def test_voice_loop_defaults_to_null_voice_components():
 
     assert isinstance(loop.voice_input, NullVoiceInput)
     assert isinstance(loop.voice_output, NullVoiceOutput)
+
+
+def test_voice_single_turn_loop_runs_adapter_backed_input_output():
+    handled_texts = []
+    input_adapter = MockVoiceInputAdapter(transcripts=["calculate 2 + 2"])
+    output_adapter = MockVoiceOutputAdapter()
+
+    def handle_text(text):
+        handled_texts.append(text)
+        return SkillResponse(text="Result: 4", skill="calculator")
+
+    loop = VoiceSingleTurnLoop(
+        input_adapter=input_adapter,
+        output_adapter=output_adapter,
+        text_handler=handle_text,
+    )
+
+    result = loop.run_once()
+
+    assert result.success is True
+    assert result.status == "completed"
+    assert result.input_text == "calculate 2 + 2"
+    assert result.response_text == "Result: 4"
+    assert handled_texts == ["calculate 2 + 2"]
+    assert input_adapter.capture_count == 1
+    assert output_adapter.spoken_texts == ["Result: 4"]
+    assert result.data["text_request"]["text"] == "calculate 2 + 2"
+    assert result.data["text_request"]["source"] == "mock_voice_input_adapter"
+    assert result.data["handler_response"]["skill"] == "calculator"
+    assert result.data["voice_output"]["data"]["accepted_text"] == "Result: 4"
+    assert result.data["voice_input"]["data"]["microphone"] == "disabled"
+    assert result.data["voice_output"]["data"]["speaker"] == "disabled"
+
+
+def test_voice_single_turn_loop_empty_input_returns_safe_no_op():
+    handled_texts = []
+    input_adapter = MockVoiceInputAdapter(transcripts=["   "])
+    output_adapter = MockVoiceOutputAdapter()
+    loop = VoiceSingleTurnLoop(
+        input_adapter=input_adapter,
+        output_adapter=output_adapter,
+        text_handler=lambda text: handled_texts.append(text),
+    )
+
+    result = loop.run_once()
+
+    assert result.success is True
+    assert result.status == "no_input"
+    assert result.text == "No voice input detected."
+    assert handled_texts == []
+    assert input_adapter.capture_count == 1
+    assert output_adapter.spoken_texts == []
+    assert result.data["voice_input"]["data"]["transcript"] == "   "
+    assert result.data["voice_input"]["data"]["microphone"] == "disabled"
+
+
+def test_voice_single_turn_loop_input_adapter_failure_fails_safely():
+    handled_texts = []
+    input_adapter = MockVoiceInputAdapter(fail=True)
+    output_adapter = MockVoiceOutputAdapter()
+    loop = VoiceSingleTurnLoop(
+        input_adapter=input_adapter,
+        output_adapter=output_adapter,
+        text_handler=lambda text: handled_texts.append(text),
+    )
+
+    result = loop.run_once()
+
+    assert result.success is False
+    assert result.status == "input_error"
+    assert result.error_message == "mock_input_failure"
+    assert handled_texts == []
+    assert input_adapter.capture_count == 1
+    assert output_adapter.spoken_texts == []
+    assert result.data["voice_input"]["data"]["microphone"] == "disabled"
+
+
+def test_voice_single_turn_loop_output_adapter_failure_fails_safely():
+    input_adapter = MockVoiceInputAdapter(transcripts=["hello"])
+    output_adapter = MockVoiceOutputAdapter(fail=True)
+    loop = VoiceSingleTurnLoop(
+        input_adapter=input_adapter,
+        output_adapter=output_adapter,
+        text_handler=lambda text: "Hello safely.",
+    )
+
+    result = loop.run_once()
+
+    assert result.success is False
+    assert result.status == "output_error"
+    assert result.input_text == "hello"
+    assert result.response_text == "Hello safely."
+    assert result.error_message == "mock_output_failure"
+    assert input_adapter.capture_count == 1
+    assert output_adapter.spoken_texts == ["Hello safely."]
+    assert result.data["voice_output"]["data"]["speaker"] == "disabled"
+
+
+def test_voice_single_turn_loop_does_not_access_audio_hardware():
+    input_adapter = MockVoiceInputAdapter(transcripts=["hello"])
+    output_adapter = MockVoiceOutputAdapter()
+    loop = VoiceSingleTurnLoop(
+        input_adapter=input_adapter,
+        output_adapter=output_adapter,
+        text_handler=lambda text: "Hello.",
+    )
+
+    result = loop.run_once()
+
+    assert result.success is True
+    assert loop.audio_hardware_accessed is False
+    assert input_adapter.audio_hardware_accessed is False
+    assert output_adapter.audio_hardware_accessed is False
+    assert result.data["voice_input"]["metadata"]["audio_hardware_accessed"] is False
+    assert result.data["voice_output"]["metadata"]["audio_hardware_accessed"] is False
+    assert result.metadata["audio_hardware_access"] == "disabled"
 
 
 def test_voice_loop_empty_input_does_nothing_safely():

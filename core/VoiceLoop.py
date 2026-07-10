@@ -3,11 +3,15 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
 from core.VoiceService import (
+    MockVoiceInputAdapter,
+    MockVoiceOutputAdapter,
     NullVoiceInput,
     NullVoiceOutput,
     PlaceholderVoiceService,
     VoiceInput,
+    VoiceInputAdapter,
     VoiceOutput,
+    VoiceOutputAdapter,
     VoiceService,
     VoiceServiceResult,
 )
@@ -35,6 +39,22 @@ class VoiceLoopResult:
             "input_text": self.input_text,
             "response_text": self.response_text,
             "error_message": self.error_message,
+            "data": dict(self.data),
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass(frozen=True)
+class VoiceTextRequest:
+    text: str
+    source: str
+    data: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "text": self.text,
+            "source": self.source,
             "data": dict(self.data),
             "metadata": dict(self.metadata),
         }
@@ -78,6 +98,8 @@ class VoiceLoop:
                 },
             )
 
+        text_request = _voice_input_to_text_request(transcript, voice_input)
+
         if not self.text_handler:
             return VoiceLoopResult(
                 success=False,
@@ -85,11 +107,14 @@ class VoiceLoop:
                 text="Voice loop cannot process text because no text handler is configured.",
                 input_text=transcript,
                 error_message="missing_text_handler",
-                data={"voice_input": voice_input},
+                data={
+                    "voice_input": voice_input,
+                    "text_request": text_request.to_dict(),
+                },
                 metadata={"safe": True, "source": "voice_loop"},
             )
 
-        handled = self._handle_text(transcript, voice_input)
+        handled = self._handle_text(text_request, voice_input)
         if not handled.success:
             return handled
 
@@ -120,15 +145,22 @@ class VoiceLoop:
             metadata={"safe": True, "source": "voice_loop"},
         )
 
-    def _handle_text(self, transcript: str, voice_input: Dict[str, Any]) -> VoiceLoopResult:
+    def _handle_text(
+        self,
+        text_request: VoiceTextRequest,
+        voice_input: Dict[str, Any],
+    ) -> VoiceLoopResult:
         try:
-            response = self.text_handler(transcript)
+            response = self.text_handler(text_request.text)
         except Exception as error:
             return self._safe_error(
                 "handler_error",
                 error,
-                input_text=transcript,
-                data={"voice_input": voice_input},
+                input_text=text_request.text,
+                data={
+                    "voice_input": voice_input,
+                    "text_request": text_request.to_dict(),
+                },
             )
 
         response_text = _extract_response_text(response)
@@ -136,10 +168,11 @@ class VoiceLoop:
             success=True,
             status="text_handled",
             text=response_text,
-            input_text=transcript,
+            input_text=text_request.text,
             response_text=response_text,
             data={
                 "voice_input": voice_input,
+                "text_request": text_request.to_dict(),
                 "handler_response": _handler_response_to_data(response),
             },
             metadata={"safe": True, "source": "voice_loop"},
@@ -207,9 +240,57 @@ class VoiceLoop:
         )
 
 
+class VoiceSingleTurnLoop:
+    """Adapter-backed one-turn Voice City loop with no audio hardware access."""
+
+    def __init__(
+        self,
+        input_adapter: Optional[VoiceInputAdapter] = None,
+        output_adapter: Optional[VoiceOutputAdapter] = None,
+        text_handler: Optional[TextHandler] = None,
+        logger: Optional[logging.Logger] = None,
+    ):
+        self.input_adapter = input_adapter or MockVoiceInputAdapter()
+        self.output_adapter = output_adapter or MockVoiceOutputAdapter()
+        self.voice_service = PlaceholderVoiceService(
+            input_adapter=self.input_adapter,
+            output_adapter=self.output_adapter,
+        )
+        self.voice_loop = VoiceLoop(
+            voice_service=self.voice_service,
+            text_handler=text_handler,
+            logger=logger,
+        )
+
+    @property
+    def audio_hardware_accessed(self) -> bool:
+        return bool(
+            getattr(self.input_adapter, "audio_hardware_accessed", False)
+            or getattr(self.output_adapter, "audio_hardware_accessed", False)
+        )
+
+    def run_once(self) -> VoiceLoopResult:
+        return self.voice_loop.run_once()
+
+
 def _extract_transcript(result: Dict[str, Any]) -> str:
     data = dict(result.get("data", {}) or {})
     return str(data.get("transcript") or data.get("recognized_text") or "").strip()
+
+
+def _voice_input_to_text_request(
+    transcript: str,
+    voice_input: Dict[str, Any],
+) -> VoiceTextRequest:
+    data = dict(voice_input.get("data", {}) or {})
+    metadata = dict(voice_input.get("metadata", {}) or {})
+    source = str(data.get("source") or metadata.get("source") or "voice_input")
+    return VoiceTextRequest(
+        text=transcript,
+        source=source,
+        data=data,
+        metadata=metadata,
+    )
 
 
 def _extract_response_text(response: Any) -> str:

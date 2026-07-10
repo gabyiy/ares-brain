@@ -14,6 +14,9 @@ class VoiceServiceResult:
 class VoiceInputAdapter:
     """Adapter boundary for future speech-to-text input providers."""
 
+    def capture(self) -> VoiceServiceResult:
+        return self.capture_input()
+
     def capture_input(self) -> VoiceServiceResult:
         raise NotImplementedError
 
@@ -414,7 +417,7 @@ class NullVoiceInput(VoiceInput):
         )
 
     def listen_once(self) -> VoiceServiceResult:
-        return self.adapter.capture_input()
+        return self.adapter.capture()
 
     def get_status(self) -> VoiceServiceResult:
         return self.adapter.get_status()

@@ -85,7 +85,7 @@ from core.VoiceService import (
     VoiceServiceResult,
     VoiceStatus,
 )
-from core.VoiceLoop import VoiceLoop, VoiceLoopResult
+from core.VoiceLoop import VoiceLoop, VoiceLoopResult, VoiceSingleTurnLoop, VoiceTextRequest
 
 __all__ = [
     "ConversationContextManager",
@@ -166,6 +166,8 @@ __all__ = [
     "VoiceStatus",
     "VoiceLoop",
     "VoiceLoopResult",
+    "VoiceSingleTurnLoop",
+    "VoiceTextRequest",
     "MAX_CHAIN_DEPTH",
     "ToolAdapter",
     "ToolAdapterRegistry",
