@@ -12,6 +12,7 @@ from skills.builtin.notes import NotesSkill
 from skills.builtin.tasks import TasksSkill
 from skills.builtin.weather import WeatherSkill
 from skills.plugin import SkillPlugin
+from skills.VoiceSessionSkill import VoiceSessionSkill
 
 
 class TimeDateSkill(Skill):
@@ -65,6 +66,7 @@ def create_builtin_plugin() -> SkillPlugin:
             NotesSkill(),
             TasksSkill(),
             WeatherSkill(),
+            VoiceSessionSkill(),
             TimeDateSkill(),
         ],
     )

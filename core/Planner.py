@@ -183,6 +183,9 @@ class Planner:
         if intent.intent_name == "event_history":
             return self._event_history_step(intent.raw_text, dict(intent.extracted_entities)), None
 
+        if intent.intent_name == "voice_session":
+            return self._voice_session_step(intent.raw_text, dict(intent.extracted_entities)), None
+
         memory_step = self._memory_step_from_text(intent.raw_text)
         if memory_step:
             return memory_step, None
@@ -229,6 +232,10 @@ class Planner:
         event_history_step = self._event_history_step_from_text(clean_clause)
         if event_history_step:
             return event_history_step, None
+
+        voice_session_step = self._voice_session_step_from_text(clean_clause)
+        if voice_session_step:
+            return voice_session_step, None
 
         device_action_step = self._device_action_step_from_text(clean_clause)
         if device_action_step:
@@ -853,6 +860,34 @@ class Planner:
             entities["priority"] = "critical"
         return self._event_history_step(text, entities)
 
+    def _voice_session_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
+        clean_entities = {
+            **entities,
+            "action": "start",
+            "max_turns": _voice_session_max_turns(raw_text, entities.get("max_turns")),
+        }
+        return PlanStep(
+            order=0,
+            target="voice_session",
+            action="start",
+            input_text=raw_text,
+            intent_name="voice_session",
+            entities=clean_entities,
+            can_execute=True,
+            description="Start a bounded mock Voice City session with no audio hardware access.",
+        )
+
+    def _voice_session_step_from_text(self, text: str):
+        if not _looks_like_voice_session(text):
+            return None
+        return self._voice_session_step(
+            text,
+            {
+                "action": "start",
+                "max_turns": _voice_session_max_turns(text),
+            },
+        )
+
     def _memory_step_from_text(self, text: str):
         content = _memory_content(text)
         if not content:
@@ -1352,6 +1387,25 @@ def _event_history_query_type(text: str) -> str:
     if lowered in {"what happened recently", "show recent events", "recent events"}:
         return "recent"
     return ""
+
+
+def _looks_like_voice_session(text: str) -> bool:
+    normalized = " ".join(_tokens(text or ""))
+    phrases = {
+        "start voice session",
+        "start mock voice",
+        "run voice test",
+    }
+    return any(normalized == phrase or normalized.startswith(f"{phrase} ") for phrase in phrases)
+
+
+def _voice_session_max_turns(text: str, fallback=None):
+    if fallback is not None:
+        return fallback
+    match = re.search(r"\b(?:max\s+turns?|for)\s+(\d+)(?:\s+turns?)?\b", text or "", flags=re.IGNORECASE)
+    if not match:
+        return None
+    return int(match.group(1))
 
 
 def _calendar_period(text: str) -> str:

@@ -42,6 +42,7 @@ class IntentParser:
             IntentRule("task", self._parse_task),
             IntentRule("device_action", self._parse_device_action),
             IntentRule("event_history", self._parse_event_history),
+            IntentRule("voice_session", self._parse_voice_session),
             IntentRule("calculate", self._parse_calculate),
             IntentRule("memory_recall", self._parse_memory_recall),
             IntentRule("weather", self._parse_weather),
@@ -280,6 +281,18 @@ class IntentParser:
             )
 
         return None
+
+    def _parse_voice_session(self, text: ParsedText) -> Optional[Intent]:
+        if not _looks_like_voice_session(text.raw_text):
+            return None
+
+        return self._intent(
+            "voice_session",
+            0.96,
+            text.raw_text,
+            action="start",
+            max_turns=_voice_session_max_turns(text.raw_text),
+        )
 
     def _parse_calculate(self, text: ParsedText) -> Optional[Intent]:
         for phrase in ("calculate", "calculator", "compute", "solve"):
@@ -578,6 +591,23 @@ def _dangerous_device_action_name(normalized_text: str) -> str:
 
 def _normalize_action_name(value: str) -> str:
     return "_".join(re.findall(r"[a-z0-9]+", (value or "").lower()))
+
+
+def _looks_like_voice_session(text: str) -> bool:
+    normalized = _normalize(text)
+    phrases = {
+        "start voice session",
+        "start mock voice",
+        "run voice test",
+    }
+    return any(normalized == phrase or normalized.startswith(f"{phrase} ") for phrase in phrases)
+
+
+def _voice_session_max_turns(text: str):
+    match = re.search(r"\b(?:max\s+turns?|for)\s+(\d+)(?:\s+turns?)?\b", text or "", flags=re.IGNORECASE)
+    if not match:
+        return None
+    return int(match.group(1))
 
 
 def _calendar_period(text: ParsedText) -> str:

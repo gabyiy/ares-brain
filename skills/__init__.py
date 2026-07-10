@@ -4,6 +4,7 @@ from skills.manager import SkillManager
 from skills.plugin import SkillPlugin
 from skills.registry import SkillRegistry
 from skills.selector import ToolSelection, ToolSelector
+from skills.VoiceSessionSkill import VoiceSessionSkill
 
 __all__ = [
     "Skill",
@@ -15,4 +16,5 @@ __all__ = [
     "SkillResponse",
     "ToolSelection",
     "ToolSelector",
+    "VoiceSessionSkill",
 ]

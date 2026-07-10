@@ -9,6 +9,7 @@ from skills.builtin.notes import NotesSkill
 from skills.builtin.tasks import TasksSkill
 from skills.builtin.time_date import TimeDateSkill, create_builtin_plugin
 from skills.builtin.weather import WeatherSkill
+from skills.VoiceSessionSkill import VoiceSessionSkill
 
 __all__ = [
     "CalculatorSkill",
@@ -21,6 +22,7 @@ __all__ = [
     "NotesSkill",
     "TasksSkill",
     "TimeDateSkill",
+    "VoiceSessionSkill",
     "WeatherSkill",
     "create_builtin_plugin",
 ]
