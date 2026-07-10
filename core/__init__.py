@@ -56,6 +56,12 @@ from core.EventBus import (
 )
 from core.Intent import Intent
 from core.IntentParser import IntentParser
+from core.Microphone import (
+    AudioChunk,
+    MicrophoneAdapter,
+    MicrophoneResult,
+    MockMicrophoneAdapter,
+)
 from core.Planner import MultiStepPlan, Plan, Planner, PlanStep
 from core.PCService import PCCapabilities, PCService, PCServiceResult, PCStatus, WindowsPCService
 from core.ToolAdapter import (
@@ -100,6 +106,7 @@ from core.VoiceLoop import (
 __all__ = [
     "ConversationContextManager",
     "ConversationTurn",
+    "AudioChunk",
     "AdapterConfigError",
     "AppAllowlistConfigError",
     "AppAllowlistLoader",
@@ -157,7 +164,10 @@ __all__ = [
     "StepResult",
     "MockCalendarAdapter",
     "MockMarketAdapter",
+    "MockMicrophoneAdapter",
     "MockWeatherAdapter",
+    "MicrophoneAdapter",
+    "MicrophoneResult",
     "RealMarketAdapter",
     "RealWeatherAdapter",
     "WindowsPCService",
