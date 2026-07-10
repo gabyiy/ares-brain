@@ -4,13 +4,13 @@ Last Updated: 2026-07-10
 
 Current Version
 
-ARES v1.59 - Phase 3 Voice Checkpoint
+ARES v1.60 - Microphone Adapter Abstraction
 
 ---
 
 Current Status
 
-ARES is at the Phase 3 Voice Checkpoint before any real audio work.
+ARES is at the Microphone Adapter Abstraction foundation before any real audio work.
 
 Confirmed Phase 3 foundation:
 
@@ -26,8 +26,9 @@ Confirmed Phase 3 foundation:
 - Voice Session Skill
 - Voice Session event logging
 - Voice Session status query
+- Microphone adapter abstraction
 
-Current pytest collection: 391 tests.
+Current pytest collection: 403 tests.
 
 Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
@@ -36,6 +37,21 @@ Real microphone access, speaker output, wake word detection, real STT, real TTS,
 Voice sessions now write safe operational event records to `EventHistoryStore` when `SkillContext.event_history_store` is configured. The current event types are `voice_session.started`, `voice_session.stopped`, `voice_session.adapter_failure`, and `voice_session.max_turns_reached`. Event payloads avoid mock transcript text and store only operational metadata such as status, turn count, max-turn limit, and adapter failure details.
 
 ARES can now answer "what happened in voice session", "show last voice session", and "voice session status" by reading the latest local voice-session event group. This is read-only and returns started/stopped/failure/max_turns summary lines without starting a new mock session.
+
+Microphone adapter abstraction has been added.
+
+Microphone behavior:
+
+- New model: `core.AudioChunk`.
+- New result: `core.MicrophoneResult`.
+- New interface: `core.MicrophoneAdapter`.
+- New safe test adapter: `core.MockMicrophoneAdapter`.
+- `MicrophoneAdapter` defines `start()`, `stop()`, `read_chunk(timeout_seconds, cancel_requested)`, `get_status()`, and `get_capabilities()`.
+- `MockMicrophoneAdapter` covers lifecycle, queued chunk reads, timeout handling, cancellation support, structured status/capability data, and safe failure paths without hardware access.
+- `PlaceholderVoiceService`, `NullVoiceInput`, and `MockVoiceInputAdapter` accept microphone adapters through dependency injection.
+- Voice City can swap a future microphone implementation without changing the Brain, CoreService, skills, or current text loops.
+- Tests cover audio chunk serialization and validation, start/stop, read-before-start, queued chunk reads, timeout handling, cancellation callable/event support, failure modes, structured status/capabilities, and Voice City injection.
+- No Whisper, Vosk, Piper, wake word, hardware-specific code, real microphone access, real STT, speaker access, GPT, internet, or background listener was added.
 
 Phase 3 Voice Checkpoint
 
@@ -871,7 +887,7 @@ Voice adapter behavior:
 - Manual Voice City text simulation uses `MockVoiceInputAdapter` for typed text and still uses `NullVoiceOutput`.
 - `VoiceLoop` reports adapter failures safely and still ignores empty input safely.
 - Tests cover input capture, output speak, empty input, adapter injection, adapter failure, and no audio hardware access.
-- Current pytest collection: 391 tests.
+- Current pytest collection: 403 tests.
 - Real Whisper, Vosk, Piper, microphone, speaker, wake word, background listener, GPT, internet, and real audio hardware access remain future work.
 
 Voice City adapter-backed single-turn loop has been added.
@@ -949,7 +965,7 @@ Voice session status behavior:
 - The response summarizes whether the latest mock voice session started, stopped, failed, or reached max turns.
 - No-session queries return `No voice session events found.`
 - Tests cover no session, normal stopped session, failed session, max-turn session, parser routing, planner routing, and SkillManager live path.
-- Current pytest collection: 391 tests.
+- Current pytest collection: 403 tests.
 - No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, internet, notifications, or real audio hardware access was added.
 
 ARES Behavior Schematic has been documented in README and `docs/ARCHITECTURE.md`.
@@ -1354,7 +1370,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 391 tests.
+- Current pytest collection: 403 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1404,6 +1420,8 @@ Verification Notes
 
 Latest Commits
 
+- `36a534b` Add microphone adapter abstraction
+- `3061509` Document Phase 3 voice checkpoint
 - `9315b73` Add Voice Session status query
 - `147248b` Log Voice Session events
 - `31e0baa` Add Voice Session skill
