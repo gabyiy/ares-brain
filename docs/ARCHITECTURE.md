@@ -174,6 +174,7 @@ Current responsibilities:
 - expose input/output status and capability data
 - support a one-shot `VoiceLoop` text bridge from voice input to the existing text handler path and back to voice output
 - support `VoiceSingleTurnLoop` for one adapter-backed mock input/output turn
+- support `VoiceSessionLoop` for bounded multi-turn mock sessions
 - report that microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled
 - avoid all audio hardware access
 
@@ -213,10 +214,14 @@ Current voice loop foundation:
 - Adapter failures are reported as safe input/output errors.
 - `VoiceSingleTurnLoop` wires `MockVoiceInputAdapter` and `MockVoiceOutputAdapter` through the existing `VoiceLoop` path for one safe voice-style turn.
 - The single-turn flow is `MockVoiceInputAdapter.capture()` -> `VoiceTextRequest` -> injected existing text/CoreService handler -> `MockVoiceOutputAdapter.speak(response)`.
+- `VoiceSessionLoop` repeats the same mock adapter-backed path up to a configured `max_turns` limit.
+- Session stop phrases are `stop`, `exit`, and `goodbye`.
+- Empty input is recorded as a safe no-op turn.
+- Session output includes structured `VoiceSessionTurn` records plus transcript/history lists.
 - The loop does not own routing, planning, or skill execution logic.
 - The loop does not start background listening, wake word detection, microphone access, speaker access, GPT, or internet access.
 
-VoiceService is a skeleton only. Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter and single-turn layers are mock/local only and do not start microphone access, speaker output, speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
+VoiceService is a skeleton only. Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter, single-turn, and multi-turn session layers are mock/local only and do not start microphone access, speaker output, speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
 
 PCService and VoiceService are the current services registered by default. Future services should follow the same registration and capability pattern.
 

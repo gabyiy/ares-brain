@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.54 - Voice City Adapter-Backed Single-Turn Loop
+ARES v1.55 - Voice City Multi-Turn Mock Session
 
 ---
 
@@ -32,7 +32,7 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 
 `skills.EventHistorySkill` now provides read-only local queries for recent internal events. It supports "what happened recently", "show recent events", and "show critical events" through the existing IntentParser, Planner, ExecutionPipeline, SkillManager, and REPL path. It only reads local `EventHistoryStore` data and does not send notifications, start listeners, call devices, access the internet, or use GPT.
 
-`core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It owns `VoiceInput` and `VoiceOutput` components, currently implemented as adapter-backed `NullVoiceInput` and `NullVoiceOutput`. These expose `listen_once()`, `speak(text)`, `get_capabilities()`, and `get_status()` contracts with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled. `VoiceInputAdapter`, `VoiceOutputAdapter`, `MockVoiceInputAdapter`, and `MockVoiceOutputAdapter` now form the safe audio adapter contract layer for future real audio providers. `VoiceTextRequest` and `VoiceSingleTurnLoop` now provide an adapter-backed one-turn Voice City path: mock input capture is converted to a text request, passed to an injected existing text/CoreService handler, and the response is sent to mock output. `core.VoiceLoop` remains the one-shot text loop foundation: it calls `VoiceInput.listen_once()`, ignores empty input safely, passes recognized text to an injected existing text/planner/execution handler, and sends the final response text to `VoiceOutput.speak()`.
+`core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It owns `VoiceInput` and `VoiceOutput` components, currently implemented as adapter-backed `NullVoiceInput` and `NullVoiceOutput`. These expose `listen_once()`, `speak(text)`, `get_capabilities()`, and `get_status()` contracts with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled. `VoiceInputAdapter`, `VoiceOutputAdapter`, `MockVoiceInputAdapter`, and `MockVoiceOutputAdapter` now form the safe audio adapter contract layer for future real audio providers. `VoiceTextRequest`, `VoiceSingleTurnLoop`, and `VoiceSessionLoop` provide adapter-backed Voice City flow foundations: mock input capture is converted to text requests, passed to an injected existing text/CoreService handler, and responses are sent to mock output. `VoiceSessionLoop` supports bounded multi-turn mock sessions with `max_turns`, stop phrases, safe empty-input handling, and transcript/history output. `core.VoiceLoop` remains the one-shot text loop foundation: it calls `VoiceInput.listen_once()`, ignores empty input safely, passes recognized text to an injected existing text/planner/execution handler, and sends the final response text to `VoiceOutput.speak()`.
 
 Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter layer is mock/local only and does not access audio hardware.
 
@@ -269,6 +269,7 @@ Completed
 - Voice City text loop foundation
 - Voice City audio adapter contracts
 - Voice City adapter-backed single-turn loop
+- Voice City multi-turn mock session
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -369,7 +370,7 @@ Implemented Features
 - Optional CoreService to EventHistoryStore persistence for handled internal event decisions/results
 - Read-only `skills.EventHistorySkill` for querying recent and critical internal event history
 - Phase 2 architecture cleanup with centralized `PC_SERVICE_NAME`, CoreService carried through `SkillContext`, and focused service registration/capability contract tests
-- Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceInput`, `VoiceOutput`, `VoiceInputAdapter`, `VoiceOutputAdapter`, `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, `NullVoiceInput`, `NullVoiceOutput`, `VoiceStatus`, `VoiceCapabilities`, `VoiceTextRequest`, `VoiceLoop`, `VoiceLoopResult`, `VoiceSingleTurnLoop`, default CoreService registration as `voice`, safe placeholder status, adapter-backed mock/local input and output, a one-shot placeholder text loop, an adapter-backed single-turn loop, and no audio hardware access
+- Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceInput`, `VoiceOutput`, `VoiceInputAdapter`, `VoiceOutputAdapter`, `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, `NullVoiceInput`, `NullVoiceOutput`, `VoiceStatus`, `VoiceCapabilities`, `VoiceTextRequest`, `VoiceLoop`, `VoiceLoopResult`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionResult`, `VoiceSessionTurn`, default CoreService registration as `voice`, safe placeholder status, adapter-backed mock/local input and output, a one-shot placeholder text loop, an adapter-backed single-turn loop, bounded multi-turn mock sessions, and no audio hardware access
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
 - Confirmed Windows-only `lock_pc` action after explicit user approval
 - Confirmed Windows-only `sleep_pc` action after explicit user approval
@@ -392,7 +393,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 363 tests across current core modules
+- Pytest automated coverage for 370 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -411,7 +412,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `363 tests`.
+Current pytest collection: `370 tests`.
 
 Manual Calculator Launch Verification
 
@@ -1166,19 +1167,29 @@ Phase 52
 
 Phase 53
 
+- Voice City multi-turn mock session
+- `VoiceSessionLoop` processes multiple queued mock inputs with a `max_turns` limit
+- Stop phrases are `stop`, `exit`, and `goodbye`
+- Empty inputs are recorded as safe no-op turns
+- Session results include structured turns, transcript, and history output
+- Tests cover multi-turn flow, stop phrase handling, max-turn limiting, input failure, output failure, empty input, and no audio hardware access
+- No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, or internet was added
+
+Phase 54
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 54
+Phase 55
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 55
+Phase 56
 
 - Robotics
 - ROS2
