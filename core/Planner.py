@@ -180,6 +180,9 @@ class Planner:
         if intent.intent_name == "calendar":
             return self._calendar_step(intent.raw_text, dict(intent.extracted_entities)), None
 
+        if intent.intent_name == "event_history":
+            return self._event_history_step(intent.raw_text, dict(intent.extracted_entities)), None
+
         memory_step = self._memory_step_from_text(intent.raw_text)
         if memory_step:
             return memory_step, None
@@ -222,6 +225,10 @@ class Planner:
         calendar_step = self._calendar_step_from_text(clean_clause)
         if calendar_step:
             return calendar_step, None
+
+        event_history_step = self._event_history_step_from_text(clean_clause)
+        if event_history_step:
+            return event_history_step, None
 
         device_action_step = self._device_action_step_from_text(clean_clause)
         if device_action_step:
@@ -811,6 +818,41 @@ class Planner:
             },
         )
 
+    def _event_history_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
+        query_type = entities.get("query_type") or _event_history_query_type(raw_text) or "recent"
+        clean_entities = {
+            **entities,
+            "action": query_type,
+            "query_type": query_type,
+        }
+        if query_type == "critical":
+            clean_entities["priority"] = "critical"
+            command = "show critical events"
+            description = "Show recent critical internal events."
+        else:
+            command = "show recent events"
+            description = "Show recent internal events."
+
+        return PlanStep(
+            order=0,
+            target="event_history",
+            action=query_type,
+            input_text=command,
+            intent_name="event_history",
+            entities=clean_entities,
+            can_execute=True,
+            description=description,
+        )
+
+    def _event_history_step_from_text(self, text: str):
+        query_type = _event_history_query_type(text)
+        if not query_type:
+            return None
+        entities = {"action": query_type, "query_type": query_type}
+        if query_type == "critical":
+            entities["priority"] = "critical"
+        return self._event_history_step(text, entities)
+
     def _memory_step_from_text(self, text: str):
         content = _memory_content(text)
         if not content:
@@ -1301,6 +1343,15 @@ def _looks_like_calendar(text: str) -> bool:
     if re.search(r"\b(calendar|schedule)\b", lowered):
         return True
     return lowered.startswith("do i have anything")
+
+
+def _event_history_query_type(text: str) -> str:
+    lowered = " ".join(_tokens(text or ""))
+    if lowered in {"show critical events", "critical events"}:
+        return "critical"
+    if lowered in {"what happened recently", "show recent events", "recent events"}:
+        return "recent"
+    return ""
 
 
 def _calendar_period(text: str) -> str:

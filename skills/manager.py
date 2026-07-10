@@ -27,6 +27,7 @@ class SkillManager:
         goals_store=None,
         tool_adapter_registry=None,
         device_action_adapter=None,
+        event_history_store=None,
         conversation_context=None,
         intent_parser=None,
         confirmation_manager=None,
@@ -45,6 +46,7 @@ class SkillManager:
         self.device_action_adapter = device_action_adapter or LocalDeviceActionAdapter(
             core_service=core_service
         )
+        self.event_history_store = event_history_store
         self.core_service = getattr(self.device_action_adapter, "core_service", core_service)
         self.conversation_context = conversation_context or ConversationContextManager()
         self.intent_parser = intent_parser or IntentParser()
@@ -183,6 +185,7 @@ class SkillManager:
             tool_adapter_registry=self.tool_adapter_registry,
             device_action_adapter=self.device_action_adapter,
             core_service=self.core_service,
+            event_history_store=self.event_history_store,
             conversation_context=self.conversation_context,
         )
 
@@ -200,6 +203,7 @@ class SkillManager:
             tool_adapter_registry=context.tool_adapter_registry,
             device_action_adapter=context.device_action_adapter,
             core_service=context.core_service,
+            event_history_store=context.event_history_store,
             conversation_context=context.conversation_context,
             metadata=metadata,
         )

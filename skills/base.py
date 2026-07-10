@@ -14,6 +14,7 @@ class SkillContext:
     tool_adapter_registry: Any = None
     device_action_adapter: Any = None
     core_service: Any = None
+    event_history_store: Any = None
     conversation_context: Any = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 

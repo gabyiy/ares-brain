@@ -41,6 +41,7 @@ class IntentParser:
             IntentRule("note", self._parse_note),
             IntentRule("task", self._parse_task),
             IntentRule("device_action", self._parse_device_action),
+            IntentRule("event_history", self._parse_event_history),
             IntentRule("calculate", self._parse_calculate),
             IntentRule("memory_recall", self._parse_memory_recall),
             IntentRule("weather", self._parse_weather),
@@ -261,6 +262,22 @@ class IntentParser:
                     forbidden=safety.forbidden,
                     reason=safety.reason,
                 )
+
+        return None
+
+    def _parse_event_history(self, text: ParsedText) -> Optional[Intent]:
+        if text.is_exact("what happened recently", "show recent events"):
+            return self._intent("event_history", 0.96, text.raw_text, action="recent", query_type="recent")
+
+        if text.is_exact("show critical events"):
+            return self._intent(
+                "event_history",
+                0.96,
+                text.raw_text,
+                action="critical",
+                query_type="critical",
+                priority="critical",
+            )
 
         return None
 

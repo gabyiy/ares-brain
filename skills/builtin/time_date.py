@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from skills.base import Skill, SkillContext, SkillResponse
+from skills.EventHistorySkill import EventHistorySkill
 from skills.builtin.calculator import CalculatorSkill
 from skills.builtin.calendar import CalendarSkill
 from skills.builtin.device_action import DeviceActionSkill
@@ -58,6 +59,7 @@ def create_builtin_plugin() -> SkillPlugin:
             CalculatorSkill(),
             CalendarSkill(),
             DeviceActionSkill(),
+            EventHistorySkill(),
             GoalsSkill(),
             MarketSkill(),
             NotesSkill(),

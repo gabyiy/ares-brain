@@ -578,6 +578,8 @@ def _context_with_intent(context: Any, intent: Intent) -> Any:
         goals_store=getattr(context, "goals_store", None),
         tool_adapter_registry=getattr(context, "tool_adapter_registry", None),
         device_action_adapter=getattr(context, "device_action_adapter", None),
+        core_service=getattr(context, "core_service", None),
+        event_history_store=getattr(context, "event_history_store", None),
         conversation_context=getattr(context, "conversation_context", None),
         metadata=metadata,
     )
