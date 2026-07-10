@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
 from core.Microphone import MicrophoneAdapter, MockMicrophoneAdapter
+from core.SpeechToText import MockSpeechToTextAdapter, SpeechToTextAdapter
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class MockVoiceInputAdapter(VoiceInputAdapter):
         self,
         transcripts: Optional[Iterable[str]] = None,
         microphone_adapter: Optional[MicrophoneAdapter] = None,
+        speech_to_text_adapter: Optional[SpeechToTextAdapter] = None,
         fail: bool = False,
         failure_message: str = "mock_input_failure",
         source: str = "mock_voice_input_adapter",
@@ -66,6 +68,9 @@ class MockVoiceInputAdapter(VoiceInputAdapter):
         self.microphone_adapter = microphone_adapter or MockMicrophoneAdapter(
             source=f"{source}.microphone",
             available=False,
+        )
+        self.speech_to_text_adapter = speech_to_text_adapter or MockSpeechToTextAdapter(
+            source=f"{source}.stt",
         )
         self.capture_count = 0
         self.audio_hardware_accessed = False
@@ -113,6 +118,7 @@ class MockVoiceInputAdapter(VoiceInputAdapter):
                     "voice_input": "placeholder",
                     "microphone_adapter": self._microphone_status_data(),
                     "microphone": "disabled",
+                    "speech_to_text_adapter": self._speech_to_text_status_data(),
                     "stt": "not_configured",
                     "background_listening": "disabled",
                     "audio_hardware_access": "disabled",
@@ -129,6 +135,7 @@ class MockVoiceInputAdapter(VoiceInputAdapter):
                 "queued_inputs": len(self._transcripts),
                 "microphone_adapter": self._microphone_status_data(),
                 "microphone": "disabled",
+                "speech_to_text_adapter": self._speech_to_text_status_data(),
                 "stt": "mock",
                 "background_listening": "disabled",
                 "audio_hardware_access": "disabled",
@@ -147,6 +154,7 @@ class MockVoiceInputAdapter(VoiceInputAdapter):
                     "supported_input_modes": [],
                     "microphone_adapter": self._microphone_capabilities_data(),
                     "microphone": "disabled",
+                    "speech_to_text_adapter": self._speech_to_text_capabilities_data(),
                     "stt": "disabled",
                     "wake_word": "disabled",
                     "background_listening": "disabled",
@@ -163,6 +171,7 @@ class MockVoiceInputAdapter(VoiceInputAdapter):
                 "supported_input_modes": ["mock_text"],
                 "microphone_adapter": self._microphone_capabilities_data(),
                 "microphone": "disabled",
+                "speech_to_text_adapter": self._speech_to_text_capabilities_data(),
                 "stt": "mock",
                 "wake_word": "disabled",
                 "background_listening": "disabled",
@@ -178,6 +187,7 @@ class MockVoiceInputAdapter(VoiceInputAdapter):
             "voice_input": voice_input or self.voice_input,
             "microphone_adapter": self._microphone_status_data(),
             "microphone": "disabled",
+            "speech_to_text_adapter": self._speech_to_text_status_data(),
             "stt": "disabled" if not self.available else "mock",
             "wake_word": "disabled",
             "background_listening": "disabled",
@@ -192,6 +202,9 @@ class MockVoiceInputAdapter(VoiceInputAdapter):
             "placeholder": self.placeholder if placeholder is None else placeholder,
             "audio_hardware_accessed": self.audio_hardware_accessed
             or bool(getattr(self.microphone_adapter, "audio_hardware_accessed", False)),
+            "speech_engine_accessed": bool(
+                getattr(self.speech_to_text_adapter, "speech_engine_accessed", False)
+            ),
         }
 
     def _microphone_status_data(self) -> Dict[str, Any]:
@@ -199,6 +212,12 @@ class MockVoiceInputAdapter(VoiceInputAdapter):
 
     def _microphone_capabilities_data(self) -> Dict[str, Any]:
         return self.microphone_adapter.get_capabilities().to_dict()
+
+    def _speech_to_text_status_data(self) -> Dict[str, Any]:
+        return self.speech_to_text_adapter.get_status().to_dict()
+
+    def _speech_to_text_capabilities_data(self) -> Dict[str, Any]:
+        return self.speech_to_text_adapter.get_capabilities().to_dict()
 
 
 class MockVoiceOutputAdapter(VoiceOutputAdapter):
@@ -431,17 +450,26 @@ class NullVoiceInput(VoiceInput):
         self,
         adapter: Optional[VoiceInputAdapter] = None,
         microphone_adapter: Optional[MicrophoneAdapter] = None,
+        speech_to_text_adapter: Optional[SpeechToTextAdapter] = None,
     ):
         self.microphone_adapter = microphone_adapter
+        self.speech_to_text_adapter = speech_to_text_adapter
         self.adapter = adapter or MockVoiceInputAdapter(
             source="null_voice_input",
             voice_input="placeholder",
             available=False,
             placeholder=True,
             microphone_adapter=microphone_adapter,
+            speech_to_text_adapter=speech_to_text_adapter,
         )
         if self.microphone_adapter is None:
             self.microphone_adapter = getattr(self.adapter, "microphone_adapter", None)
+        if self.speech_to_text_adapter is None:
+            self.speech_to_text_adapter = getattr(
+                self.adapter,
+                "speech_to_text_adapter",
+                None,
+            )
 
     def listen_once(self) -> VoiceServiceResult:
         return self.adapter.capture()
@@ -506,15 +534,22 @@ class PlaceholderVoiceService(VoiceService):
         input_adapter: VoiceInputAdapter | None = None,
         output_adapter: VoiceOutputAdapter | None = None,
         microphone_adapter: MicrophoneAdapter | None = None,
+        speech_to_text_adapter: SpeechToTextAdapter | None = None,
     ):
         self.voice_input = voice_input or NullVoiceInput(
             adapter=input_adapter,
             microphone_adapter=microphone_adapter,
+            speech_to_text_adapter=speech_to_text_adapter,
         )
         self.voice_output = voice_output or NullVoiceOutput(adapter=output_adapter)
         self.microphone_adapter = microphone_adapter or getattr(
             self.voice_input,
             "microphone_adapter",
+            None,
+        )
+        self.speech_to_text_adapter = speech_to_text_adapter or getattr(
+            self.voice_input,
+            "speech_to_text_adapter",
             None,
         )
 
@@ -525,6 +560,10 @@ class PlaceholderVoiceService(VoiceService):
             or getattr(self.voice_output, "audio_hardware_accessed", False)
             or getattr(self.microphone_adapter, "audio_hardware_accessed", False)
         )
+
+    @property
+    def speech_engine_accessed(self) -> bool:
+        return bool(getattr(self.speech_to_text_adapter, "speech_engine_accessed", False))
 
     def get_status(self) -> VoiceServiceResult:
         input_status = self.voice_input.get_status()
@@ -542,6 +581,7 @@ class PlaceholderVoiceService(VoiceService):
                 "source": "voice_service",
                 "placeholder": True,
                 "audio_hardware_accessed": self.audio_hardware_accessed,
+                "speech_engine_accessed": self.speech_engine_accessed,
             },
         )
 
@@ -561,5 +601,6 @@ class PlaceholderVoiceService(VoiceService):
                 "source": "voice_service",
                 "placeholder": True,
                 "audio_hardware_accessed": self.audio_hardware_accessed,
+                "speech_engine_accessed": self.speech_engine_accessed,
             },
         )

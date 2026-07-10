@@ -64,6 +64,11 @@ from core.Microphone import (
 )
 from core.Planner import MultiStepPlan, Plan, Planner, PlanStep
 from core.PCService import PCCapabilities, PCService, PCServiceResult, PCStatus, WindowsPCService
+from core.SpeechToText import (
+    MockSpeechToTextAdapter,
+    SpeechToTextAdapter,
+    TranscriptionResult,
+)
 from core.ToolAdapter import (
     MockCalendarAdapter,
     MockMarketAdapter,
@@ -161,10 +166,12 @@ __all__ = [
     "SecretScanIssue",
     "SecretValidationError",
     "SecretsGuard",
+    "SpeechToTextAdapter",
     "StepResult",
     "MockCalendarAdapter",
     "MockMarketAdapter",
     "MockMicrophoneAdapter",
+    "MockSpeechToTextAdapter",
     "MockWeatherAdapter",
     "MicrophoneAdapter",
     "MicrophoneResult",
@@ -201,6 +208,7 @@ __all__ = [
     "ToolChainTraceStep",
     "ToolRequest",
     "ToolResponse",
+    "TranscriptionResult",
     "LocalDeviceActionAdapter",
     "classify_device_action",
     "get_global_conversation_context",
