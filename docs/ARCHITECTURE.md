@@ -168,6 +168,7 @@ Current responsibilities:
 - expose `get_capabilities()`
 - expose `get_status()` and compatibility `status()`
 - own `VoiceInput` and `VoiceOutput` components
+- keep concrete audio providers behind `VoiceInputAdapter` and `VoiceOutputAdapter`
 - provide structured placeholder Voice City status data
 - provide structured Voice City capability data
 - expose input/output status and capability data
@@ -184,10 +185,21 @@ Current Voice City component contracts:
 - `VoiceOutput.get_status()`
 - `VoiceOutput.get_capabilities()`
 
+Current Voice City adapter contracts:
+
+- `VoiceInputAdapter.capture_input()`
+- `VoiceInputAdapter.get_status()`
+- `VoiceInputAdapter.get_capabilities()`
+- `VoiceOutputAdapter.speak(text)`
+- `VoiceOutputAdapter.get_status()`
+- `VoiceOutputAdapter.get_capabilities()`
+
 Current placeholder implementations:
 
-- `NullVoiceInput` returns a safe placeholder result and does not access a microphone or run STT.
-- `NullVoiceOutput` accepts text as a safe placeholder and does not access speakers or run TTS.
+- `NullVoiceInput` is backed by a safe placeholder input adapter and does not access a microphone or run STT.
+- `NullVoiceOutput` is backed by a safe placeholder output adapter and does not access speakers or run TTS.
+- `MockVoiceInputAdapter` provides deterministic local/test text capture without microphone access.
+- `MockVoiceOutputAdapter` records deterministic local/test speech output without speaker access.
 
 Current voice loop foundation:
 
@@ -195,10 +207,11 @@ Current voice loop foundation:
 - Empty or missing input returns a safe no-input result.
 - Recognized text is passed to an injected existing text/planner/execution handler.
 - Final response text is passed to `VoiceOutput.speak(text)`.
+- Adapter failures are reported as safe input/output errors.
 - The loop does not own routing, planning, or skill execution logic.
 - The loop does not start background listening, wake word detection, microphone access, speaker access, GPT, or internet access.
 
-VoiceService is a skeleton only. It does not start microphone access, speaker output, speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
+VoiceService is a skeleton only. Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter layer is mock/local only and does not start microphone access, speaker output, speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
 
 PCService and VoiceService are the current services registered by default. Future services should follow the same registration and capability pattern.
 
@@ -319,7 +332,7 @@ Current boundary:
 
 ## Voice City
 
-Voice City has started with a safe service skeleton. The current placeholder service exposes status and capability discovery only. Future Voice City work will own wake word detection, speech-to-text, text-to-speech, microphones, speakers, and voice session state. The Brain should receive structured user text and return structured responses; it should not contain microphone or audio driver code.
+Voice City has started with a safe service skeleton, a one-shot text loop, and adapter contracts for future audio providers. The current placeholder service exposes status and capability discovery only, and the current adapters are mock/local only. Future Voice City work will own wake word detection, speech-to-text, text-to-speech, microphones, speakers, and voice session state through adapters such as Whisper, Vosk, or Piper. The Brain should receive structured user text and return structured responses; it should not contain microphone, speaker, speech-engine, or audio driver code.
 
 ## Vision City
 

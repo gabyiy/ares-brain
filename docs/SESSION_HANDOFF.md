@@ -4,13 +4,13 @@ Last Updated: 2026-07-10
 
 Current Version
 
-ARES v1.52 - Phase 3 Foundation Checkpoint
+ARES v1.53 - Voice City Audio Adapter Contracts
 
 ---
 
 Current Status
 
-ARES is at the Phase 3 foundation checkpoint before any real audio work.
+ARES is at the Voice City audio adapter contract foundation before any real audio work.
 
 Confirmed Phase 3 foundation:
 
@@ -20,10 +20,11 @@ Confirmed Phase 3 foundation:
 - Internal `core.EventBus`
 - Local `events.EventHistoryStore`
 - Read-only `skills.EventHistorySkill`
+- Voice City audio adapter contracts
 
-Current pytest collection: 351 tests.
+Current pytest collection: 357 tests.
 
-No runtime code changed for this checkpoint. Real microphone access, speaker output, wake word detection, real STT, real TTS, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
+Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
 The project has been fully reorganized into a modular architecture.
 
@@ -56,7 +57,7 @@ New Phase 3 skill modules:
 
 The skill layer is minimally wired into the text REPL through `IntentRouter`.
 Normal intents still run first; SkillManager is only a fallback when no intent matches.
-Real voice/audio work has not started. Voice City currently has only safe placeholder service contracts and a manual text loop simulation.
+Real voice/audio work has not started. Voice City currently has safe placeholder service contracts, mock/local audio adapter contracts, and a manual text loop simulation.
 
 Phase 4 long-term memory recall has started.
 
@@ -824,10 +825,26 @@ Phase 3 foundation checkpoint has been documented.
 Checkpoint status:
 
 - Current version: ARES v1.52 - Phase 3 Foundation Checkpoint.
-- Current pytest collection: 351 tests.
+- Checkpoint pytest collection before audio adapter contracts: 351 tests.
 - Implemented and verified foundation: Voice City skeleton, manual Voice City text loop simulation, lazy city routing, internal `core.EventBus`, local `events.EventHistoryStore`, and read-only `skills.EventHistorySkill`.
 - This checkpoint is documentation-only and made no runtime changes.
 - Real microphone access, speaker output, wake word detection, real STT, real TTS, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
+
+Voice City audio adapter contracts have been added.
+
+Voice adapter behavior:
+
+- New interface: `VoiceInputAdapter`.
+- New interface: `VoiceOutputAdapter`.
+- New safe input adapter: `MockVoiceInputAdapter`.
+- New safe output adapter: `MockVoiceOutputAdapter`.
+- `NullVoiceInput` and `NullVoiceOutput` now delegate through adapters while preserving placeholder no-audio behavior.
+- `PlaceholderVoiceService` accepts injected input/output adapters for test and future provider wiring.
+- Manual Voice City text simulation uses `MockVoiceInputAdapter` for typed text and still uses `NullVoiceOutput`.
+- `VoiceLoop` reports adapter failures safely and still ignores empty input safely.
+- Tests cover input capture, output speak, empty input, adapter injection, adapter failure, and no audio hardware access.
+- Current pytest collection: 357 tests.
+- Real Whisper, Vosk, Piper, microphone, speaker, wake word, background listener, GPT, internet, and real audio hardware access remain future work.
 
 ARES Behavior Schematic has been documented in README and `docs/ARCHITECTURE.md`.
 
@@ -1205,7 +1222,7 @@ Text REPL
 
 Immediate Next Milestone
 
-Voice wake word/STT/TTS planning on top of the safe Voice City contracts and one-shot text loop. Do not add real audio hardware access without explicit approval.
+Voice wake word/STT/TTS planning on top of the safe Voice City contracts, audio adapter contracts, and one-shot text loop. Do not add real audio hardware access without explicit approval.
 
 Next technical choices:
 
@@ -1231,7 +1248,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 351 tests.
+- Current pytest collection: 357 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1254,10 +1271,10 @@ Verification Notes
 - EventHistoryStore tests cover add, query by source/type/priority, bounded max size, empty history, persistence after reload, invalid priority rejection, and zero-size history.
 - CoreService event-history integration tests cover stored low, normal, high, critical, unknown-source, and disabled-source decisions.
 - EventHistorySkill tests cover recent events, critical events, empty history, parser phrases, planner steps, and SkillManager live path.
-- VoiceService tests cover CoreService registration, safe placeholder capabilities, safe placeholder status, VoiceInput/VoiceOutput ownership, NullVoiceInput listen placeholders, NullVoiceOutput speak placeholders, CoreService aggregation of PCService and VoiceService, VoiceLoop defaults, no-input behavior, recognized text routing to a mocked planner/execution handler, response handoff to NullVoiceOutput, safe input/handler/output failures, and no audio hardware access.
+- VoiceService tests cover CoreService registration, safe placeholder capabilities, safe placeholder status, VoiceInput/VoiceOutput ownership, VoiceInputAdapter/VoiceOutputAdapter mock implementations, adapter injection, NullVoiceInput listen placeholders, NullVoiceOutput speak placeholders, mock input capture, mock output speak, empty mock input, CoreService aggregation of PCService and VoiceService, VoiceLoop defaults, no-input behavior, recognized text routing to a mocked planner/execution handler, response handoff to NullVoiceOutput, safe input/handler/output/adapter failures, and no audio hardware access.
 - DeviceAction tests cover registry registration/listing, app allowlist config loading, calculator enabled state, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, structured PCService status, structured PCService capability discovery, CoreService-backed service registration/capability aggregation, default PCService status/capability interfaces, safe missing-capability reporting, stable result formatting, PCService delegation for status/lock/sleep/open-app calls, CoreService-backed action/app discovery, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows calculator launch through a mocked launcher, unknown/disabled app rejection, notepad/browser disabled handling, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
 - Manual calculator launch verification tests cover refusal without exact confirmation, the exact open_app device action path with mocked adapter, and safe adapter failure reporting without opening Calculator.
-- Manual Voice City text simulation tests cover import safety, typed text reaching VoiceLoop, real local calculator routing through the existing SkillManager planner/execution path, empty input safe exit, and no audio hardware access.
+- Manual Voice City text simulation tests cover import safety, typed text reaching VoiceLoop through `MockVoiceInputAdapter`, real local calculator routing through the existing SkillManager planner/execution path, empty input safe exit, and no audio hardware access.
 - DeviceActionSkill tests cover echo, list actions, list apps, structured system status, shutdown/restart confirmation-required responses, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed `lock_pc`/`sleep_pc`/`open_app` through SkillManager, run command/delete forbidden responses, unknown action safe failure, ToolSelector routing, Planner routing, SkillManager/CoreService handoff, SkillContext CoreService propagation, SkillManager/ExecutionPipeline confirmation-required handling, and text REPL display.
 - Adapter config guard tests cover mock mode, real-mode missing-env failure, placeholder handling, raw-secret rejection, example config loading, read-only mock adapter behavior, and confirmation-layer compatibility.
 - RealWeatherAdapter tests cover default mock weather behavior, real adapter instantiation, real-mode missing-env failure, mocked HTTP success, timeout safe errors, bad API response safe errors, HTTP status safe errors, normalized output stability, env-key-name-only config, raw env value non-exposure, safe WeatherSkill adapter failure handling, raw-looking key rejection, and SecretsGuard example-config compatibility.
@@ -1280,6 +1297,8 @@ Verification Notes
 
 Latest Commits
 
+- `0cf439d` Add Voice City audio adapter contracts
+- `d2732bf` Document Phase 3 foundation checkpoint
 - `8d39403` Document event history query skill
 - `844d4a5` Add event history query skill
 - `bd72981` Document core service event history persistence

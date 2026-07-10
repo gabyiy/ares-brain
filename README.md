@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.52 - Phase 3 Foundation Checkpoint
+ARES v1.53 - Voice City Audio Adapter Contracts
 
 ---
 
@@ -32,7 +32,9 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 
 `skills.EventHistorySkill` now provides read-only local queries for recent internal events. It supports "what happened recently", "show recent events", and "show critical events" through the existing IntentParser, Planner, ExecutionPipeline, SkillManager, and REPL path. It only reads local `EventHistoryStore` data and does not send notifications, start listeners, call devices, access the internet, or use GPT.
 
-`core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It owns `VoiceInput` and `VoiceOutput` components, currently implemented as `NullVoiceInput` and `NullVoiceOutput`. These expose `listen_once()`, `speak(text)`, `get_capabilities()`, and `get_status()` contracts with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled. `core.VoiceLoop` adds a one-shot text loop foundation: it calls `VoiceInput.listen_once()`, ignores empty input safely, passes recognized text to an injected existing text/planner/execution handler, and sends the final response text to `VoiceOutput.speak()`.
+`core.VoiceService` now provides the Voice City skeleton. CoreService registers a safe placeholder VoiceService as `voice` by default. It owns `VoiceInput` and `VoiceOutput` components, currently implemented as adapter-backed `NullVoiceInput` and `NullVoiceOutput`. These expose `listen_once()`, `speak(text)`, `get_capabilities()`, and `get_status()` contracts with structured placeholder data and explicit safeguards showing microphone, speaker, STT, TTS, wake word, background listening, GPT, and internet are disabled. `VoiceInputAdapter`, `VoiceOutputAdapter`, `MockVoiceInputAdapter`, and `MockVoiceOutputAdapter` now form the safe audio adapter contract layer for future real audio providers. `core.VoiceLoop` adds a one-shot text loop foundation: it calls `VoiceInput.listen_once()`, ignores empty input safely, passes recognized text to an injected existing text/planner/execution handler, and sends the final response text to `VoiceOutput.speak()`.
+
+Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter layer is mock/local only and does not access audio hardware.
 
 Phase 3 Foundation Checkpoint
 
@@ -45,7 +47,7 @@ The Phase 3 foundation is frozen before adding real audio. This checkpoint confi
 - Local `events.EventHistoryStore`
 - Read-only `skills.EventHistorySkill`
 
-Current pytest collection: `351 tests`.
+Checkpoint pytest collection before the audio adapter contracts: `351 tests`.
 
 Latest checkpoint baseline commits:
 
@@ -265,6 +267,7 @@ Completed
 - Voice City service skeleton
 - Voice City input/output contracts
 - Voice City text loop foundation
+- Voice City audio adapter contracts
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -365,7 +368,7 @@ Implemented Features
 - Optional CoreService to EventHistoryStore persistence for handled internal event decisions/results
 - Read-only `skills.EventHistorySkill` for querying recent and critical internal event history
 - Phase 2 architecture cleanup with centralized `PC_SERVICE_NAME`, CoreService carried through `SkillContext`, and focused service registration/capability contract tests
-- Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceInput`, `VoiceOutput`, `NullVoiceInput`, `NullVoiceOutput`, `VoiceStatus`, `VoiceCapabilities`, `VoiceLoop`, `VoiceLoopResult`, default CoreService registration as `voice`, safe placeholder status, a one-shot placeholder text loop, and no audio hardware access
+- Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceInput`, `VoiceOutput`, `VoiceInputAdapter`, `VoiceOutputAdapter`, `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, `NullVoiceInput`, `NullVoiceOutput`, `VoiceStatus`, `VoiceCapabilities`, `VoiceLoop`, `VoiceLoopResult`, default CoreService registration as `voice`, safe placeholder status, adapter-backed mock/local input and output, a one-shot placeholder text loop, and no audio hardware access
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
 - Confirmed Windows-only `lock_pc` action after explicit user approval
 - Confirmed Windows-only `sleep_pc` action after explicit user approval
@@ -388,7 +391,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 351 tests across core Phase 2-49 modules
+- Pytest automated coverage for 357 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -407,7 +410,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `351 tests`.
+Current pytest collection: `357 tests`.
 
 Manual Calculator Launch Verification
 
@@ -1137,19 +1140,35 @@ Phase 49
 
 Phase 50
 
+- Phase 3 foundation checkpoint
+- Voice City skeleton, manual text loop, lazy city routing, EventBus, EventHistoryStore, and EventHistorySkill confirmed before real audio
+- No runtime code changed for this checkpoint
+
+Phase 51
+
+- Voice City audio adapter contracts
+- `VoiceInputAdapter` and `VoiceOutputAdapter` define future audio provider boundaries
+- `MockVoiceInputAdapter` and `MockVoiceOutputAdapter` provide safe local/test adapters
+- `NullVoiceInput` and `NullVoiceOutput` are adapter-backed placeholders
+- Manual Voice City text simulation uses the mock input adapter
+- Tests cover input capture, output speak, empty input, and adapter failure
+- Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations remain future work
+
+Phase 52
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 51
+Phase 53
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 52
+Phase 54
 
 - Robotics
 - ROS2
