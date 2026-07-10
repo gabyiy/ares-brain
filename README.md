@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.58 - Voice Session Status Query
+ARES v1.59 - Phase 3 Voice Checkpoint
 
 ---
 
@@ -41,6 +41,23 @@ Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listen
 Voice sessions now write safe local operational events to `events.EventHistoryStore` when a store is available in `SkillContext`. Recorded event types are `voice_session.started`, `voice_session.stopped`, `voice_session.adapter_failure`, and `voice_session.max_turns_reached`. Event payloads store status, turn counts, max-turn metadata, and adapter failure details only; they do not store mock transcript content. `skills.EventHistorySkill` can show these events through "show recent events".
 
 ARES can now answer "what happened in voice session", "show last voice session", and "voice session status". The query reads the latest local `voice_session.*` events and returns a started/stopped/failure/max_turns summary without starting audio hardware or a new voice session.
+
+Phase 3 Voice Checkpoint
+
+The Phase 3 voice foundation is documented and frozen before any real audio work.
+
+Checkpoint status:
+
+- Test count: `391 tests`
+- Voice City skeleton
+- Audio adapter contracts
+- Single-turn loop
+- Multi-turn mock session
+- `VoiceSessionSkill`
+- Voice session event logging
+- Voice session status query
+
+This checkpoint is documentation-only. It does not add real microphone access, speaker output, wake word detection, real STT, real TTS, background listening, notifications, GPT, internet access, or real device/event automation.
 
 Phase 3 Foundation Checkpoint
 

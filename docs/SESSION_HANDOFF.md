@@ -4,13 +4,13 @@ Last Updated: 2026-07-10
 
 Current Version
 
-ARES v1.58 - Voice Session Status Query
+ARES v1.59 - Phase 3 Voice Checkpoint
 
 ---
 
 Current Status
 
-ARES is at the Voice Session Status Query foundation before any real audio work.
+ARES is at the Phase 3 Voice Checkpoint before any real audio work.
 
 Confirmed Phase 3 foundation:
 
@@ -36,6 +36,23 @@ Real microphone access, speaker output, wake word detection, real STT, real TTS,
 Voice sessions now write safe operational event records to `EventHistoryStore` when `SkillContext.event_history_store` is configured. The current event types are `voice_session.started`, `voice_session.stopped`, `voice_session.adapter_failure`, and `voice_session.max_turns_reached`. Event payloads avoid mock transcript text and store only operational metadata such as status, turn count, max-turn limit, and adapter failure details.
 
 ARES can now answer "what happened in voice session", "show last voice session", and "voice session status" by reading the latest local voice-session event group. This is read-only and returns started/stopped/failure/max_turns summary lines without starting a new mock session.
+
+Phase 3 Voice Checkpoint
+
+This checkpoint is documentation-only and freezes the current Voice City foundation before real audio work.
+
+Checkpoint status:
+
+- Test count: 391 tests
+- Voice City skeleton
+- Audio adapter contracts
+- Single-turn loop
+- Multi-turn mock session
+- `VoiceSessionSkill`
+- Voice session event logging
+- Voice session status query
+
+No real microphone access, speaker output, wake word detection, real STT, real TTS, background listener, notifications, GPT, internet access, or real device/event automation was added for this checkpoint.
 
 The project has been fully reorganized into a modular architecture.
 

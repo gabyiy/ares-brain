@@ -672,6 +672,21 @@ Phase 56: Voice Session Status Query
 - Current pytest collection is 391 tests.
 - No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, internet, or real audio hardware access was added.
 
+Phase 3 Voice Checkpoint
+
+- The current Phase 3 voice foundation is documented and frozen before real audio work.
+- Test count: 391 tests.
+- Confirmed foundation:
+  - Voice City skeleton
+  - Audio adapter contracts
+  - Single-turn loop
+  - Multi-turn mock session
+  - `VoiceSessionSkill`
+  - Voice session event logging
+  - Voice session status query
+- This checkpoint is documentation-only.
+- No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, internet, notifications, or real audio hardware access was added.
+
 Current State
 
 ARES is currently at the Voice Session Status Query foundation: a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a CoreService orchestration boundary for service registration, city lifecycle metadata, lazy route-by-capability handling, capability aggregation, internal city event decision routing, local internal event-history storage, optional CoreService event-history persistence, read-only EventHistorySkill queries, an internal future-use `core.EventBus` skeleton, `SkillContext` access to that CoreService boundary, a PCService boundary for all current PC operations, a VoiceService placeholder boundary for Voice City, explicit VoiceInput/VoiceOutput contracts with adapter-backed null implementations, mock VoiceInputAdapter/VoiceOutputAdapter implementations, `VoiceTextRequest`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionSkill`, safe Voice Session event logging to `EventHistoryStore`, read-only Voice Session status summaries from latest local event history, transcript/history output for mock sessions, transcript summaries from text-started mock sessions, a one-shot VoiceLoop text bridge, structured safe PC status responses, dynamic safe PC capability discovery, structured safe Voice City placeholder status/capability discovery, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
