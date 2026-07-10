@@ -85,7 +85,17 @@ from core.VoiceService import (
     VoiceServiceResult,
     VoiceStatus,
 )
-from core.VoiceLoop import VoiceLoop, VoiceLoopResult, VoiceSingleTurnLoop, VoiceTextRequest
+from core.VoiceLoop import (
+    DEFAULT_VOICE_SESSION_MAX_TURNS,
+    VOICE_SESSION_STOP_PHRASES,
+    VoiceLoop,
+    VoiceLoopResult,
+    VoiceSessionLoop,
+    VoiceSessionResult,
+    VoiceSessionTurn,
+    VoiceSingleTurnLoop,
+    VoiceTextRequest,
+)
 
 __all__ = [
     "ConversationContextManager",
@@ -166,8 +176,13 @@ __all__ = [
     "VoiceStatus",
     "VoiceLoop",
     "VoiceLoopResult",
+    "VoiceSessionLoop",
+    "VoiceSessionResult",
+    "VoiceSessionTurn",
     "VoiceSingleTurnLoop",
     "VoiceTextRequest",
+    "DEFAULT_VOICE_SESSION_MAX_TURNS",
+    "VOICE_SESSION_STOP_PHRASES",
     "MAX_CHAIN_DEPTH",
     "ToolAdapter",
     "ToolAdapterRegistry",

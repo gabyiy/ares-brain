@@ -9,6 +9,7 @@ from core import (
     PlaceholderVoiceService,
     VoiceLoop,
     VoiceOutput,
+    VoiceSessionLoop,
     VoiceSingleTurnLoop,
     VoiceServiceResult,
 )
@@ -423,6 +424,183 @@ def test_voice_single_turn_loop_does_not_access_audio_hardware():
     assert result.data["voice_input"]["metadata"]["audio_hardware_accessed"] is False
     assert result.data["voice_output"]["metadata"]["audio_hardware_accessed"] is False
     assert result.metadata["audio_hardware_access"] == "disabled"
+
+
+def test_voice_session_loop_runs_multiple_mock_turns():
+    handled_texts = []
+    input_adapter = MockVoiceInputAdapter(transcripts=["hello", "calculate 2 + 2"])
+    output_adapter = MockVoiceOutputAdapter()
+
+    def handle_text(text):
+        handled_texts.append(text)
+        return f"handled: {text}"
+
+    session = VoiceSessionLoop(
+        input_adapter=input_adapter,
+        output_adapter=output_adapter,
+        text_handler=handle_text,
+        max_turns=2,
+    )
+
+    result = session.run()
+
+    assert result.success is True
+    assert result.status == "max_turns_reached"
+    assert result.stop_reason == "max_turns"
+    assert handled_texts == ["hello", "calculate 2 + 2"]
+    assert output_adapter.spoken_texts == ["handled: hello", "handled: calculate 2 + 2"]
+    assert input_adapter.capture_count == 2
+    assert [turn.input_text for turn in result.turns] == ["hello", "calculate 2 + 2"]
+    assert [turn.response_text for turn in result.turns] == [
+        "handled: hello",
+        "handled: calculate 2 + 2",
+    ]
+    assert result.transcript == result.history
+    assert result.transcript[0]["user"] == "hello"
+    assert result.transcript[0]["assistant"] == "handled: hello"
+    assert result.data["turn_count"] == 2
+    assert result.data["max_turns"] == 2
+
+
+def test_voice_session_loop_stop_phrase_stops_before_handler():
+    handled_texts = []
+    input_adapter = MockVoiceInputAdapter(transcripts=["hello", "stop", "after stop"])
+    output_adapter = MockVoiceOutputAdapter()
+    session = VoiceSessionLoop(
+        input_adapter=input_adapter,
+        output_adapter=output_adapter,
+        text_handler=lambda text: handled_texts.append(text) or f"handled: {text}",
+        max_turns=3,
+    )
+
+    result = session.run()
+
+    assert result.success is True
+    assert result.status == "stopped"
+    assert result.stop_reason == "stop_phrase"
+    assert handled_texts == ["hello"]
+    assert output_adapter.spoken_texts == ["handled: hello"]
+    assert input_adapter.capture_count == 2
+    assert len(result.turns) == 2
+    assert result.turns[1].status == "stopped"
+    assert result.turns[1].input_text == "stop"
+    assert result.transcript[1]["assistant"] == ""
+
+
+def test_voice_session_loop_respects_max_turns():
+    input_adapter = MockVoiceInputAdapter(transcripts=["one", "two", "three"])
+    output_adapter = MockVoiceOutputAdapter()
+    session = VoiceSessionLoop(
+        input_adapter=input_adapter,
+        output_adapter=output_adapter,
+        text_handler=lambda text: f"handled: {text}",
+        max_turns=2,
+    )
+
+    result = session.run()
+
+    assert result.success is True
+    assert result.status == "max_turns_reached"
+    assert input_adapter.capture_count == 2
+    assert output_adapter.spoken_texts == ["handled: one", "handled: two"]
+    assert [entry["user"] for entry in result.history] == ["one", "two"]
+
+
+def test_voice_session_loop_empty_input_is_safe_no_op():
+    handled_texts = []
+    input_adapter = MockVoiceInputAdapter(transcripts=["", "hello"])
+    output_adapter = MockVoiceOutputAdapter()
+    session = VoiceSessionLoop(
+        input_adapter=input_adapter,
+        output_adapter=output_adapter,
+        text_handler=lambda text: handled_texts.append(text) or f"handled: {text}",
+        max_turns=2,
+    )
+
+    result = session.run()
+
+    assert result.success is True
+    assert result.status == "max_turns_reached"
+    assert handled_texts == ["hello"]
+    assert output_adapter.spoken_texts == ["handled: hello"]
+    assert input_adapter.capture_count == 2
+    assert result.turns[0].status == "no_input"
+    assert result.turns[0].input_text == ""
+    assert result.turns[0].response_text == ""
+    assert result.turns[1].status == "completed"
+    assert result.transcript[0]["status"] == "no_input"
+    assert result.transcript[1]["assistant"] == "handled: hello"
+
+
+def test_voice_session_loop_input_adapter_failure_fails_safely():
+    handled_texts = []
+    input_adapter = MockVoiceInputAdapter(fail=True)
+    output_adapter = MockVoiceOutputAdapter()
+    session = VoiceSessionLoop(
+        input_adapter=input_adapter,
+        output_adapter=output_adapter,
+        text_handler=lambda text: handled_texts.append(text),
+        max_turns=3,
+    )
+
+    result = session.run()
+
+    assert result.success is False
+    assert result.status == "failed"
+    assert result.stop_reason == "failure"
+    assert result.error_message == "mock_input_failure"
+    assert handled_texts == []
+    assert output_adapter.spoken_texts == []
+    assert input_adapter.capture_count == 1
+    assert len(result.turns) == 1
+    assert result.turns[0].status == "input_error"
+    assert result.turns[0].data["voice_input"]["data"]["microphone"] == "disabled"
+
+
+def test_voice_session_loop_output_adapter_failure_fails_safely():
+    input_adapter = MockVoiceInputAdapter(transcripts=["hello"])
+    output_adapter = MockVoiceOutputAdapter(fail=True)
+    session = VoiceSessionLoop(
+        input_adapter=input_adapter,
+        output_adapter=output_adapter,
+        text_handler=lambda text: "Hello safely.",
+        max_turns=2,
+    )
+
+    result = session.run()
+
+    assert result.success is False
+    assert result.status == "failed"
+    assert result.stop_reason == "failure"
+    assert result.error_message == "mock_output_failure"
+    assert input_adapter.capture_count == 1
+    assert output_adapter.spoken_texts == ["Hello safely."]
+    assert len(result.turns) == 1
+    assert result.turns[0].status == "output_error"
+    assert result.turns[0].data["voice_output"]["data"]["speaker"] == "disabled"
+
+
+def test_voice_session_loop_does_not_access_audio_hardware():
+    input_adapter = MockVoiceInputAdapter(transcripts=["hello", "goodbye"])
+    output_adapter = MockVoiceOutputAdapter()
+    session = VoiceSessionLoop(
+        input_adapter=input_adapter,
+        output_adapter=output_adapter,
+        text_handler=lambda text: "Hello.",
+        max_turns=2,
+    )
+
+    result = session.run()
+
+    assert result.success is True
+    assert session.audio_hardware_accessed is False
+    assert input_adapter.audio_hardware_accessed is False
+    assert output_adapter.audio_hardware_accessed is False
+    assert result.metadata["audio_hardware_access"] == "disabled"
+    assert result.metadata["background_loop"] == "disabled"
+    assert result.metadata["audio_hardware_accessed"] is False
+    assert result.turns[0].data["voice_input"]["metadata"]["audio_hardware_accessed"] is False
+    assert result.turns[0].data["voice_output"]["metadata"]["audio_hardware_accessed"] is False
 
 
 def test_voice_loop_empty_input_does_nothing_safely():
