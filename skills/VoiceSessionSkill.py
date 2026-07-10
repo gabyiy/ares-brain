@@ -20,11 +20,16 @@ class VoiceSessionSkill(Skill):
         "start voice session",
         "start mock voice",
         "run voice test",
+        "what happened in voice session",
+        "show last voice session",
+        "voice session status",
     )
     selection_keywords = (
         "voice session",
         "mock voice",
         "voice test",
+        "last voice session",
+        "voice session status",
     )
     selection_priority = 0.1
 
@@ -43,10 +48,13 @@ class VoiceSessionSkill(Skill):
         self.output_adapter = output_adapter
 
     def can_handle(self, text: str) -> bool:
-        return _looks_like_voice_session(text)
+        return _looks_like_voice_session(text) or _looks_like_voice_session_status(text)
 
     def handle(self, text: str, context: SkillContext) -> SkillResponse:
         parsed = self._parse_from_context(text, context)
+        if parsed.get("action") == "status":
+            return self._handle_status(context)
+
         max_turns = _coerce_max_turns(parsed.get("max_turns"), default=self.default_max_turns)
         mock_inputs = parsed.get("mock_inputs")
         transcripts = (
@@ -120,14 +128,63 @@ class VoiceSessionSkill(Skill):
             entities = dict(getattr(intent, "extracted_entities", {}) or {})
             return {
                 "action": entities.get("action") or "start",
+                "query_type": entities.get("query_type"),
                 "max_turns": entities.get("max_turns"),
                 "mock_inputs": entities.get("mock_inputs"),
             }
         return {
-            "action": "start",
+            "action": "status" if _looks_like_voice_session_status(text) else "start",
+            "query_type": "latest" if _looks_like_voice_session_status(text) else None,
             "max_turns": _extract_max_turns(text),
             "mock_inputs": None,
         }
+
+    def _handle_status(self, context: SkillContext) -> SkillResponse:
+        store = getattr(context, "event_history_store", None)
+        records = _latest_voice_session_records(store) if store else []
+        if not records:
+            return SkillResponse(
+                text="No voice session events found.",
+                skill=self.name,
+                metadata={
+                    "action": "status",
+                    "status": "no_session",
+                    "event_count": 0,
+                    "mock_adapters_only": True,
+                    "audio_hardware_access": "disabled",
+                    "microphone": "disabled",
+                    "speaker": "disabled",
+                    "wake_word": "disabled",
+                    "background_listening": "disabled",
+                    "gpt": "disabled",
+                    "internet": "disabled",
+                },
+            )
+
+        summary = _voice_session_status_summary(records)
+        return SkillResponse(
+            text=summary["text"],
+            skill=self.name,
+            metadata={
+                "action": "status",
+                "status": summary["status"],
+                "event_count": len(records),
+                "event_types": summary["event_types"],
+                "started": summary["started"],
+                "stopped": summary["stopped"],
+                "failure": summary["failure"],
+                "max_turns_reached": summary["max_turns_reached"],
+                "records": [record.to_dict() for record in records],
+                "mock_adapters_only": True,
+                "audio_hardware_access": "disabled",
+                "microphone": "disabled",
+                "speaker": "disabled",
+                "wake_word": "disabled",
+                "background_listening": "disabled",
+                "gpt": "disabled",
+                "internet": "disabled",
+            },
+        )
 
 
 def _record_result_events(context: SkillContext, result: VoiceSessionResult):
@@ -202,6 +259,97 @@ def _record_voice_session_event(
     )
 
 
+def _latest_voice_session_records(store):
+    records = [
+        record
+        for record in store.list()
+        if record.source == VOICE_SESSION_EVENT_SOURCE and str(record.type).startswith("voice_session.")
+    ]
+    if not records:
+        return []
+
+    latest_session_id = _record_session_id(records[-1])
+    if latest_session_id:
+        session_records = [
+            record for record in records if _record_session_id(record) == latest_session_id
+        ]
+        if session_records:
+            return session_records
+
+    for index in range(len(records) - 1, -1, -1):
+        if records[index].type == "voice_session.started":
+            return records[index:]
+
+    return [records[-1]]
+
+
+def _voice_session_status_summary(records):
+    event_types = [record.type for record in records]
+    started = "voice_session.started" in event_types
+    stopped = "voice_session.stopped" in event_types
+    failure = "voice_session.adapter_failure" in event_types
+    max_turns_reached = "voice_session.max_turns_reached" in event_types
+    final_payload = _record_payload(records[-1])
+    status = str(final_payload.get("status") or _status_from_event_types(event_types))
+
+    lines = ["Last mock voice session status:"]
+    lines.append(f"- started: {'yes' if started else 'no'}")
+    lines.append(f"- stopped: {'yes' if stopped else 'no'}")
+    lines.append(f"- failure: {_failure_summary(records) if failure else 'none'}")
+    lines.append(f"- max_turns: {_max_turns_summary(records) if max_turns_reached else 'not reached'}")
+    lines.append(f"- events: {', '.join(event_types)}")
+    lines.append("Safeguards: mock adapters only; microphone, speaker, wake word, background listening, GPT, and internet are disabled.")
+
+    return {
+        "text": "\n".join(lines),
+        "status": status,
+        "event_types": event_types,
+        "started": started,
+        "stopped": stopped,
+        "failure": failure,
+        "max_turns_reached": max_turns_reached,
+    }
+
+
+def _record_payload(record) -> dict:
+    event = dict(getattr(record, "event", {}) or {})
+    return dict(event.get("payload", {}) or {})
+
+
+def _record_session_id(record) -> str:
+    return str(_record_payload(record).get("session_id") or "").strip()
+
+
+def _status_from_event_types(event_types) -> str:
+    if "voice_session.adapter_failure" in event_types:
+        return "failed"
+    if "voice_session.stopped" in event_types:
+        return "stopped"
+    if "voice_session.max_turns_reached" in event_types:
+        return "max_turns_reached"
+    return "started"
+
+
+def _failure_summary(records) -> str:
+    for record in records:
+        if record.type == "voice_session.adapter_failure":
+            payload = _record_payload(record)
+            detail = str(payload.get("failed_turn_status") or "adapter_failure")
+            message = str(payload.get("error_message") or "").strip()
+            return f"{detail} ({message})" if message else detail
+    return "adapter_failure"
+
+
+def _max_turns_summary(records) -> str:
+    for record in records:
+        if record.type == "voice_session.max_turns_reached":
+            payload = _record_payload(record)
+            turn_count = payload.get("turn_count")
+            max_turns = payload.get("max_turns")
+            return f"reached after {turn_count} turn(s), limit {max_turns}"
+    return "reached"
+
+
 def _result_payload(result: VoiceSessionResult):
     return {
         "status": result.status,
@@ -263,6 +411,16 @@ def _looks_like_voice_session(text: str) -> bool:
         "run voice test",
     }
     return any(normalized == phrase or normalized.startswith(f"{phrase} ") for phrase in phrases)
+
+
+def _looks_like_voice_session_status(text: str) -> bool:
+    normalized = " ".join(str(text or "").lower().split())
+    phrases = {
+        "what happened in voice session",
+        "show last voice session",
+        "voice session status",
+    }
+    return normalized in phrases
 
 
 def _extract_max_turns(text: str):

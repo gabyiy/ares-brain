@@ -861,6 +861,24 @@ class Planner:
         return self._event_history_step(text, entities)
 
     def _voice_session_step(self, raw_text: str, entities: Dict[str, Any]) -> PlanStep:
+        action = str(entities.get("action") or "").strip().lower() or "start"
+        if action == "status":
+            clean_entities = {
+                **entities,
+                "action": "status",
+                "query_type": entities.get("query_type") or "latest",
+            }
+            return PlanStep(
+                order=0,
+                target="voice_session",
+                action="status",
+                input_text=raw_text,
+                intent_name="voice_session",
+                entities=clean_entities,
+                can_execute=True,
+                description="Summarize the latest mock Voice City session events.",
+            )
+
         clean_entities = {
             **entities,
             "action": "start",
@@ -878,6 +896,15 @@ class Planner:
         )
 
     def _voice_session_step_from_text(self, text: str):
+        if _looks_like_voice_session_status(text):
+            return self._voice_session_step(
+                text,
+                {
+                    "action": "status",
+                    "query_type": "latest",
+                },
+            )
+
         if not _looks_like_voice_session(text):
             return None
         return self._voice_session_step(
@@ -1397,6 +1424,16 @@ def _looks_like_voice_session(text: str) -> bool:
         "run voice test",
     }
     return any(normalized == phrase or normalized.startswith(f"{phrase} ") for phrase in phrases)
+
+
+def _looks_like_voice_session_status(text: str) -> bool:
+    normalized = " ".join(_tokens(text or ""))
+    phrases = {
+        "what happened in voice session",
+        "show last voice session",
+        "voice session status",
+    }
+    return normalized in phrases
 
 
 def _voice_session_max_turns(text: str, fallback=None):

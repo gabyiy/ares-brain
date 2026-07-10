@@ -283,6 +283,15 @@ class IntentParser:
         return None
 
     def _parse_voice_session(self, text: ParsedText) -> Optional[Intent]:
+        if _looks_like_voice_session_status(text.raw_text):
+            return self._intent(
+                "voice_session",
+                0.96,
+                text.raw_text,
+                action="status",
+                query_type="latest",
+            )
+
         if not _looks_like_voice_session(text.raw_text):
             return None
 
@@ -601,6 +610,16 @@ def _looks_like_voice_session(text: str) -> bool:
         "run voice test",
     }
     return any(normalized == phrase or normalized.startswith(f"{phrase} ") for phrase in phrases)
+
+
+def _looks_like_voice_session_status(text: str) -> bool:
+    normalized = _normalize(text)
+    phrases = {
+        "what happened in voice session",
+        "show last voice session",
+        "voice session status",
+    }
+    return normalized in phrases
 
 
 def _voice_session_max_turns(text: str):

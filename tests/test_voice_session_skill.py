@@ -23,6 +23,21 @@ def test_voice_session_parser_extracts_max_turns():
     assert intent.extracted_entities["max_turns"] == 2
 
 
+def test_voice_session_parser_detects_status_phrases():
+    parser = IntentParser()
+
+    for phrase in (
+        "what happened in voice session",
+        "show last voice session",
+        "voice session status",
+    ):
+        intent = parser.parse(phrase)
+        assert intent.intent_name == "voice_session"
+        assert intent.confidence == 0.96
+        assert intent.extracted_entities["action"] == "status"
+        assert intent.extracted_entities["query_type"] == "latest"
+
+
 def test_voice_session_planner_creates_skill_step():
     intent = IntentParser().parse("start mock voice for 2 turns")
     plan = Planner().plan(intent)
@@ -33,6 +48,17 @@ def test_voice_session_planner_creates_skill_step():
     assert plan.steps[0].action == "start"
     assert plan.steps[0].entities["max_turns"] == 2
     assert "no audio hardware access" in plan.steps[0].description
+
+
+def test_voice_session_planner_creates_status_step():
+    intent = IntentParser().parse("voice session status")
+    plan = Planner().plan(intent)
+
+    assert plan.intent_name == "voice_session"
+    assert len(plan.steps) == 1
+    assert plan.steps[0].target == "voice_session"
+    assert plan.steps[0].action == "status"
+    assert plan.steps[0].entities["query_type"] == "latest"
 
 
 def test_voice_session_tool_selector_routes_to_skill():
@@ -198,6 +224,81 @@ def test_voice_session_skill_empty_session_is_safe():
     assert response.metadata["speaker"] == "disabled"
 
 
+def test_voice_session_status_query_handles_no_session(tmp_path):
+    store = EventHistoryStore(path=tmp_path / "events.json")
+
+    response = VoiceSessionSkill().handle(
+        "voice session status",
+        SkillContext(event_history_store=store),
+    )
+
+    assert response.skill == "voice_session"
+    assert response.text == "No voice session events found."
+    assert response.metadata["action"] == "status"
+    assert response.metadata["status"] == "no_session"
+    assert response.metadata["event_count"] == 0
+
+
+def test_voice_session_status_query_summarizes_normal_session(tmp_path):
+    store = EventHistoryStore(path=tmp_path / "events.json")
+    skill = VoiceSessionSkill(
+        mock_inputs=["stop"],
+        text_handler=lambda text: f"handled: {text}",
+    )
+    context = SkillContext(event_history_store=store)
+    skill.handle("start voice session", context)
+
+    response = skill.handle("show last voice session", context)
+
+    assert response.metadata["status"] == "stopped"
+    assert response.metadata["started"] is True
+    assert response.metadata["stopped"] is True
+    assert response.metadata["failure"] is False
+    assert response.metadata["max_turns_reached"] is False
+    assert "- started: yes" in response.text
+    assert "- stopped: yes" in response.text
+    assert "- failure: none" in response.text
+    assert "- max_turns: not reached" in response.text
+
+
+def test_voice_session_status_query_summarizes_failed_session(tmp_path):
+    store = EventHistoryStore(path=tmp_path / "events.json")
+    skill = VoiceSessionSkill(
+        input_adapter=MockVoiceInputAdapter(fail=True),
+        output_adapter=MockVoiceOutputAdapter(),
+    )
+    context = SkillContext(event_history_store=store)
+    skill.handle("start voice session", context)
+
+    response = skill.handle("what happened in voice session", context)
+
+    assert response.metadata["status"] == "failed"
+    assert response.metadata["started"] is True
+    assert response.metadata["failure"] is True
+    assert response.metadata["stopped"] is False
+    assert response.metadata["max_turns_reached"] is False
+    assert "- failure: input_error (mock_input_failure)" in response.text
+
+
+def test_voice_session_status_query_summarizes_max_turns(tmp_path):
+    store = EventHistoryStore(path=tmp_path / "events.json")
+    skill = VoiceSessionSkill(
+        mock_inputs=["one"],
+        text_handler=lambda text: f"handled: {text}",
+    )
+    context = SkillContext(event_history_store=store)
+    skill.handle("run voice test for 1 turn", context)
+
+    response = skill.handle("voice session status", context)
+
+    assert response.metadata["status"] == "max_turns_reached"
+    assert response.metadata["started"] is True
+    assert response.metadata["stopped"] is False
+    assert response.metadata["failure"] is False
+    assert response.metadata["max_turns_reached"] is True
+    assert "- max_turns: reached after 1 turn(s), limit 1" in response.text
+
+
 def test_voice_session_skill_manager_live_path_uses_execution_pipeline(tmp_path):
     bus = get_global_bus()
     bus.clear_history()
@@ -217,3 +318,21 @@ def test_voice_session_skill_manager_live_path_uses_execution_pipeline(tmp_path)
         "voice_session.started",
         "voice_session.max_turns_reached",
     ]
+
+
+def test_voice_session_status_query_works_through_skill_manager(tmp_path):
+    bus = get_global_bus()
+    bus.clear_history()
+    store = EventHistoryStore(path=tmp_path / "events.json")
+    manager = SkillManager(event_bus=bus, event_history_store=store)
+    manager.register_plugin(create_builtin_plugin())
+
+    manager.handle("run voice test for 1 turn")
+    response = manager.handle("voice session status")
+
+    assert response.skill == "voice_session"
+    assert "Last mock voice session status:" in response.text
+    assert "- started: yes" in response.text
+    assert "- max_turns: reached after 1 turn(s), limit 1" in response.text
+    assert manager.last_plan.steps[0].target == "voice_session"
+    assert manager.last_plan.steps[0].action == "status"
