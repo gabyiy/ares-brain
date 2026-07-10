@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.56 - Voice Session Skill
+ARES v1.57 - Voice Session Event Logging
 
 ---
 
@@ -37,6 +37,8 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter layer is mock/local only and does not access audio hardware.
 
 `skills.VoiceSessionSkill` now exposes the safe mock voice session through the normal text command path. It recognizes "start voice session", "start mock voice", and "run voice test", then uses `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop` with a bounded `max_turns` limit. It returns a transcript summary through the existing IntentParser, Planner, ExecutionPipeline, SkillManager, and REPL path. It does not access a microphone, speaker, wake word, background listener, GPT, internet, or real audio provider.
+
+Voice sessions now write safe local operational events to `events.EventHistoryStore` when a store is available in `SkillContext`. Recorded event types are `voice_session.started`, `voice_session.stopped`, `voice_session.adapter_failure`, and `voice_session.max_turns_reached`. Event payloads store status, turn counts, max-turn metadata, and adapter failure details only; they do not store mock transcript content. `skills.EventHistorySkill` can show these events through "show recent events".
 
 Phase 3 Foundation Checkpoint
 
@@ -273,6 +275,7 @@ Completed
 - Voice City adapter-backed single-turn loop
 - Voice City multi-turn mock session
 - Voice Session Skill
+- Voice Session event logging
 - Automated pytest suite
 - Session handoff documentation
 - Modular project structure
@@ -378,6 +381,7 @@ Implemented Features
 - Phase 2 architecture cleanup with centralized `PC_SERVICE_NAME`, CoreService carried through `SkillContext`, and focused service registration/capability contract tests
 - Voice City foundation with `VoiceService`, `PlaceholderVoiceService`, `VoiceInput`, `VoiceOutput`, `VoiceInputAdapter`, `VoiceOutputAdapter`, `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, `NullVoiceInput`, `NullVoiceOutput`, `VoiceStatus`, `VoiceCapabilities`, `VoiceTextRequest`, `VoiceLoop`, `VoiceLoopResult`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionResult`, `VoiceSessionTurn`, default CoreService registration as `voice`, safe placeholder status, adapter-backed mock/local input and output, a one-shot placeholder text loop, an adapter-backed single-turn loop, bounded multi-turn mock sessions, and no audio hardware access
 - Built-in `VoiceSessionSkill` for starting bounded mock Voice City sessions from text commands through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path
+- Safe Voice Session event logging to `EventHistoryStore` for session start, stop, adapter failure, and max-turn completion events
 - Device action danger classification with `safe`, `confirmation_required`, and `forbidden`
 - Confirmed Windows-only `lock_pc` action after explicit user approval
 - Confirmed Windows-only `sleep_pc` action after explicit user approval
@@ -400,7 +404,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 379 tests across current core modules
+- Pytest automated coverage for 384 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -419,7 +423,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `379 tests`.
+Current pytest collection: `384 tests`.
 
 Manual Calculator Launch Verification
 
@@ -1193,19 +1197,28 @@ Phase 54
 
 Phase 55
 
+- Voice Session event logging
+- `VoiceSessionSkill` records safe local operational events to `EventHistoryStore`
+- Event types: `voice_session.started`, `voice_session.stopped`, `voice_session.adapter_failure`, and `voice_session.max_turns_reached`
+- `EventHistorySkill` can show these events through recent event queries
+- Tests cover start, stop, adapter failure, max-turn completion, live SkillManager logging, and event-history display
+- No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, or internet was added
+
+Phase 56
+
 - Voice wake word
 - Speech-to-text
 - Text-to-speech
 - Continuous conversation
 
-Phase 55
+Phase 57
 
 - Vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 56
+Phase 58
 
 - Robotics
 - ROS2
