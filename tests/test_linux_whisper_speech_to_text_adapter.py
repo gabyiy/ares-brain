@@ -1,0 +1,390 @@
+import wave
+
+from core import (
+    AudioChunk,
+    LinuxAlsaMicrophoneAdapter,
+    LinuxWhisperSpeechToTextAdapter,
+    SafeProcessResult,
+    WHISPER_STATUS_BINARY_MISSING,
+    WHISPER_STATUS_INVALID_AUDIO,
+    WHISPER_STATUS_MODEL_MISSING,
+    WHISPER_STATUS_NO_TRANSCRIPTION,
+    WHISPER_STATUS_TRANSCRIBED,
+    WHISPER_STATUS_TRANSCRIPTION_FAILED,
+    WHISPER_STATUS_TRANSCRIPTION_TIMEOUT,
+)
+from scripts import manual_verify_linux_whisper_stt as manual_whisper
+
+
+ARECORD_DEVICES = """**** List of CAPTURE Hardware Devices ****
+card 1: Device [USB PnP Sound Device], device 0: USB Audio [USB Audio]
+"""
+
+
+class FakeWhisperRunner:
+    def __init__(
+        self,
+        available=True,
+        returncode=0,
+        stdout="detected language: English\n[00:00:00.000 --> 00:00:01.000] hello ares",
+        stderr="",
+        timed_out=False,
+        transcript_text="hello ares",
+        write_transcript=True,
+    ):
+        self.available = available
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.timed_out = timed_out
+        self.transcript_text = transcript_text
+        self.write_transcript = write_transcript
+        self.calls = []
+
+    def which(self, executable):
+        return "/usr/local/bin/whisper-cli" if self.available else None
+
+    def run(self, args, timeout_seconds):
+        safe_args = list(args)
+        self.calls.append({"args": safe_args, "timeout_seconds": timeout_seconds})
+        if self.write_transcript and "-of" in safe_args and self.returncode == 0 and not self.timed_out:
+            output_base = safe_args[safe_args.index("-of") + 1]
+            with open(f"{output_base}.txt", "w", encoding="utf-8") as handle:
+                handle.write(self.transcript_text)
+        return SafeProcessResult(
+            args=safe_args,
+            returncode=-1 if self.timed_out else self.returncode,
+            stdout=self.stdout,
+            stderr=self.stderr,
+            timed_out=self.timed_out,
+            error_message="process_timeout" if self.timed_out else "",
+        )
+
+
+class FakeAlsaRunner:
+    def __init__(self):
+        self.calls = []
+
+    def which(self, executable):
+        return "/usr/bin/arecord"
+
+    def run(self, args, timeout_seconds):
+        safe_args = list(args)
+        self.calls.append({"args": safe_args, "timeout_seconds": timeout_seconds})
+        if safe_args[-1] == "-l":
+            return SafeProcessResult(args=safe_args, returncode=0, stdout=ARECORD_DEVICES)
+        write_valid_wav(safe_args[-1])
+        return SafeProcessResult(args=safe_args, returncode=0)
+
+
+def write_valid_wav(path, frames=b"\x00\x01" * 160):
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(frames)
+
+
+def create_model(tmp_path):
+    model = tmp_path / "ggml-tiny.en.bin"
+    model.write_bytes(b"fake model")
+    return model
+
+
+def create_adapter(tmp_path, runner=None, clock_values=None):
+    model = create_model(tmp_path)
+    values = list(clock_values or [10.0, 10.25])
+
+    def clock():
+        return values.pop(0) if values else 10.25
+
+    return LinuxWhisperSpeechToTextAdapter(
+        model_path=model,
+        runner=runner or FakeWhisperRunner(),
+        clock=clock,
+    )
+
+
+def test_linux_whisper_health_check_passes_with_binary_and_model(tmp_path):
+    adapter = create_adapter(tmp_path)
+
+    result = adapter.health_check()
+
+    assert result.success is True
+    assert result.status == "healthy"
+    assert result.data["model_available"] is True
+    assert result.data["whisper_binary_available"] is True
+    assert result.data["internet"] == "disabled"
+
+
+def test_linux_whisper_missing_binary_fails_safely(tmp_path):
+    adapter = create_adapter(tmp_path, runner=FakeWhisperRunner(available=False))
+
+    result = adapter.health_check()
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_BINARY_MISSING
+    assert result.error_message == "whisper_binary_missing"
+
+
+def test_linux_whisper_missing_model_fails_safely(tmp_path):
+    missing_model = tmp_path / "missing.bin"
+    adapter = LinuxWhisperSpeechToTextAdapter(
+        model_path=missing_model,
+        runner=FakeWhisperRunner(),
+    )
+
+    result = adapter.health_check()
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_MODEL_MISSING
+    assert result.error_message == "whisper_model_missing"
+
+
+def test_linux_whisper_transcribes_wav_file_with_metadata(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+    runner = FakeWhisperRunner(transcript_text="hello from raspberry pi")
+    adapter = create_adapter(tmp_path, runner=runner, clock_values=[1.0, 1.42])
+
+    result = adapter.transcribe_wav(wav_path, language="en", timeout_seconds=33)
+
+    assert result.success is True
+    assert result.status == WHISPER_STATUS_TRANSCRIBED
+    assert result.text == "hello from raspberry pi"
+    assert result.data["processing_time_seconds"] == 0.42
+    assert result.data["language"] == "en"
+    assert result.data["audio_validation"]["success"] is True
+    assert result.metadata["subprocess_shell"] is False
+    assert result.metadata["speech_engine_accessed"] is True
+    assert adapter.transcription_count == 1
+    command = runner.calls[0]["args"]
+    assert isinstance(command, list)
+    assert "-m" in command
+    assert "-f" in command
+    assert "-otxt" in command
+    assert "-of" in command
+    assert runner.calls[0]["timeout_seconds"] == 33
+
+
+def test_linux_whisper_parses_stdout_when_text_file_is_missing(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+    runner = FakeWhisperRunner(
+        write_transcript=False,
+        stdout="detected language: English\n[00:00:00.000 --> 00:00:01.000] stdout text",
+    )
+    adapter = create_adapter(tmp_path, runner=runner)
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is True
+    assert result.status == WHISPER_STATUS_TRANSCRIBED
+    assert result.text == "stdout text"
+    assert result.data["language"] == "english"
+
+
+def test_linux_whisper_no_transcription_is_safe(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+    runner = FakeWhisperRunner(write_transcript=True, transcript_text="", stdout="")
+    adapter = create_adapter(tmp_path, runner=runner)
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is True
+    assert result.status == WHISPER_STATUS_NO_TRANSCRIPTION
+    assert result.text == ""
+    assert result.confidence == 0.0
+
+
+def test_linux_whisper_invalid_audio_fails_safely(tmp_path):
+    wav_path = tmp_path / "bad.wav"
+    wav_path.write_bytes(b"not wav")
+    adapter = create_adapter(tmp_path)
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_INVALID_AUDIO
+    assert result.error_message.startswith("invalid_wav")
+    assert result.metadata["speech_engine_accessed"] is False
+
+
+def test_linux_whisper_missing_audio_file_fails_safely(tmp_path):
+    adapter = create_adapter(tmp_path)
+
+    result = adapter.transcribe_wav(tmp_path / "missing.wav")
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_INVALID_AUDIO
+    assert result.error_message == "audio_file_missing"
+
+
+def test_linux_whisper_timeout_fails_safely(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+    adapter = create_adapter(tmp_path, runner=FakeWhisperRunner(timed_out=True))
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_TRANSCRIPTION_TIMEOUT
+    assert result.error_message == "whisper_transcription_timeout"
+
+
+def test_linux_whisper_nonzero_process_exit_fails_safely(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+    adapter = create_adapter(
+        tmp_path,
+        runner=FakeWhisperRunner(returncode=2, stderr="model decode failed"),
+    )
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_TRANSCRIPTION_FAILED
+    assert result.error_message == "whisper_exit_2"
+    assert "model decode failed" in result.data["process"]["stderr_preview"]
+
+
+def test_linux_whisper_transcribes_audio_chunk_by_writing_temporary_wav(tmp_path):
+    adapter = create_adapter(tmp_path, runner=FakeWhisperRunner(transcript_text="chunk text"))
+    chunk = AudioChunk(
+        data=b"\x00\x01" * 160,
+        sample_rate_hz=16000,
+        channels=1,
+        sample_width_bytes=2,
+        source="test_chunk",
+    )
+
+    result = adapter.transcribe(chunk)
+
+    assert result.success is True
+    assert result.status == WHISPER_STATUS_TRANSCRIBED
+    assert result.text == "chunk text"
+    assert result.data["audio_chunk"]["source"] == "test_chunk"
+
+
+def test_linux_whisper_transcribes_audio_chunk_with_existing_wav_path(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+    adapter = create_adapter(tmp_path, runner=FakeWhisperRunner(transcript_text="metadata path"))
+    chunk = AudioChunk(
+        data=b"\x00\x01" * 160,
+        source="alsa",
+        metadata={"wav_path": str(wav_path)},
+    )
+
+    result = adapter.transcribe(chunk)
+
+    assert result.success is True
+    assert result.text == "metadata path"
+    assert result.data["audio_path"] == str(wav_path)
+
+
+def test_linux_whisper_empty_audio_chunk_returns_safe_empty_result(tmp_path):
+    adapter = create_adapter(tmp_path)
+
+    result = adapter.transcribe(AudioChunk(data=b"", source="empty"))
+
+    assert result.success is True
+    assert result.status == "empty_audio"
+    assert result.text == ""
+    assert result.data["audio_chunk"]["byte_count"] == 0
+
+
+def test_linux_whisper_status_and_capabilities_are_structured(tmp_path):
+    adapter = create_adapter(tmp_path)
+
+    status = adapter.get_status()
+    capabilities = adapter.get_capabilities()
+
+    assert status.success is True
+    assert status.status == "ready"
+    assert status.data["model_available"] is True
+    assert status.data["whisper_binary_available"] is True
+    assert capabilities.success is True
+    assert capabilities.data["supported_input"] == "WAV file or AudioChunk"
+    assert capabilities.data["recommended_model"] == "ggml-tiny.en.bin"
+    assert capabilities.data["wake_word"] == "disabled"
+    assert capabilities.data["tts"] == "disabled"
+
+
+def test_raspberry_pi_integration_records_wav_then_transcribes_with_mocks(tmp_path):
+    alsa_runner = FakeAlsaRunner()
+    whisper_runner = FakeWhisperRunner(transcript_text="raspberry pi test")
+    model = create_model(tmp_path)
+    wav_path = tmp_path / "pi_sample.wav"
+    microphone = LinuxAlsaMicrophoneAdapter(runner=alsa_runner, record_seconds=1)
+    stt = LinuxWhisperSpeechToTextAdapter(model_path=model, runner=whisper_runner)
+
+    record = microphone.record_wav(wav_path, seconds=1)
+    transcription = stt.transcribe_wav(wav_path)
+
+    assert record.success is True
+    assert wav_path.exists()
+    assert transcription.success is True
+    assert transcription.text == "raspberry pi test"
+    assert any(call["args"][-1] == str(wav_path) for call in alsa_runner.calls)
+    assert whisper_runner.calls[0]["args"][whisper_runner.calls[0]["args"].index("-f") + 1] == str(wav_path)
+
+
+def test_manual_linux_whisper_script_records_and_transcribes_with_mocks(tmp_path):
+    outputs = []
+    alsa_runner = FakeAlsaRunner()
+    whisper_runner = FakeWhisperRunner(transcript_text="manual recognized text")
+    model = create_model(tmp_path)
+    wav_path = tmp_path / "manual.wav"
+
+    def microphone_factory(**kwargs):
+        return LinuxAlsaMicrophoneAdapter(runner=alsa_runner, **kwargs)
+
+    def stt_factory(**kwargs):
+        return LinuxWhisperSpeechToTextAdapter(runner=whisper_runner, **kwargs)
+
+    exit_code = manual_whisper.run_manual_verification(
+        argv=[
+            "--record",
+            "--model",
+            str(model),
+            "--seconds",
+            "1",
+            "--output",
+            str(wav_path),
+        ],
+        output_func=outputs.append,
+        microphone_factory=microphone_factory,
+        stt_factory=stt_factory,
+    )
+
+    assert exit_code == 0
+    assert wav_path.exists()
+    assert any("Recognized text: manual recognized text" in line for line in outputs)
+    assert any("Processing time:" in line for line in outputs)
+
+
+def test_manual_linux_whisper_script_does_not_record_without_flag(tmp_path):
+    outputs = []
+    alsa_runner = FakeAlsaRunner()
+    whisper_runner = FakeWhisperRunner(transcript_text="ignored")
+    model = create_model(tmp_path)
+
+    def microphone_factory(**kwargs):
+        return LinuxAlsaMicrophoneAdapter(runner=alsa_runner, **kwargs)
+
+    def stt_factory(**kwargs):
+        return LinuxWhisperSpeechToTextAdapter(runner=whisper_runner, **kwargs)
+
+    exit_code = manual_whisper.run_manual_verification(
+        argv=["--model", str(model)],
+        output_func=outputs.append,
+        microphone_factory=microphone_factory,
+        stt_factory=stt_factory,
+    )
+
+    assert exit_code == 0
+    assert any("No recording requested" in line for line in outputs)
+    assert all(call["args"][-1] == "-l" for call in alsa_runner.calls)
+    assert whisper_runner.calls == []

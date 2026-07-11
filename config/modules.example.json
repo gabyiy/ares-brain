@@ -4,6 +4,7 @@
     "mock_microphone_adapter": true,
     "linux_alsa_microphone_adapter": false,
     "mock_speech_to_text_adapter": true,
+    "linux_whisper_speech_to_text_adapter": false,
     "mock_voice_output_adapter": true,
     "voice_command_router": true,
     "voice_session_skill": true

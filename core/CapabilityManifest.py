@@ -1041,6 +1041,31 @@ def default_voice_related_manifests() -> List[CapabilityManifest]:
             metadata={"source": "voice_city", "mock": True},
         ),
         CapabilityManifest(
+            module_name="linux_whisper_speech_to_text_adapter",
+            module_type=MODULE_TYPE_ADAPTER,
+            module_version=CONTRACT_VERSION_V1,
+            manifest_version=MANIFEST_VERSION_V1,
+            description="Offline Whisper speech-to-text adapter for Raspberry Pi/Linux WAV transcription.",
+            provider="ares",
+            enabled_by_default=False,
+            capabilities=["voice.transcribe"],
+            consumed_contracts={CONTRACT_SPEECH_TO_TEXT_REQUEST: [CONTRACT_VERSION_V1]},
+            produced_contracts={CONTRACT_SPEECH_TO_TEXT_RESULT: [CONTRACT_VERSION_V1]},
+            platform=PlatformCompatibility(
+                supported_operating_systems=["linux"],
+                hardware_requirements={"microphone_required": False}
+            ),
+            permissions=[PERMISSION_FILESYSTEM_READ, PERMISSION_FILESYSTEM_WRITE, PERMISSION_PROCESS_LAUNCH],
+            lifecycle_support=[LIFECYCLE_OPERATION_HEALTH_CHECK],
+            metadata={
+                "source": "voice_city",
+                "offline": True,
+                "engine": "whisper.cpp",
+                "recommended_model": "ggml-tiny.en.bin",
+                "default_enabled": False,
+            },
+        ),
+        CapabilityManifest(
             module_name="mock_voice_output_adapter",
             module_type=MODULE_TYPE_ADAPTER,
             module_version=CONTRACT_VERSION_V1,
