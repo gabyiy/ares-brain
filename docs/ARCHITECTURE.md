@@ -339,7 +339,44 @@ python scripts/manual_verify_linux_whisper_stt.py \
   --output /tmp/ares_whisper_hw_1_0.wav
 ```
 
-Current pytest collection after this checkpoint: 663 tests.
+Phase pytest collection after this checkpoint was 663 tests.
+
+# Raspberry Pi Whisper Runtime Preparation
+
+The offline STT adapter requires an installed local Whisper runtime and a local GGML model. ARES now provides owner-run setup scripts for that Raspberry Pi preparation without changing the Brain, CoreService, Voice City contracts, or default runtime path.
+
+Setup flow:
+
+```bash
+sudo apt update
+sudo apt install -y git cmake build-essential curl
+python scripts/install_whisper_cpp_raspberry_pi.py
+```
+
+`scripts/install_whisper_cpp_raspberry_pi.py`:
+
+- clones `https://github.com/ggml-org/whisper.cpp.git` into `external/whisper.cpp` if missing
+- builds `external/whisper.cpp/build/bin/whisper-cli` through CMake
+- downloads the recommended `tiny.en` GGML model into `models/whisper/ggml-tiny.en.bin`
+- verifies the executable and model exist before reporting PASS
+- uses subprocess argument lists through the existing safe runner boundary
+
+Runtime verification flow:
+
+```bash
+python scripts/manual_verify_linux_alsa_microphone.py --record --seconds 3 --output /tmp/ares_mic_test.wav
+python scripts/verify_whisper_cpp_runtime.py --wav /tmp/ares_mic_test.wav
+```
+
+`scripts/verify_whisper_cpp_runtime.py` locates `whisper-cli`, locates the model, sends an existing recorded WAV sample to `LinuxWhisperSpeechToTextAdapter`, and prints clear PASS/FAIL diagnostics with recognized text and timing.
+
+Safety boundaries:
+
+- setup/downloads are explicit owner-run preparation steps, not ARES runtime behavior
+- no wake word detection, background listening, TTS, GPT, internet runtime path, autonomous loop, or conversation loop is started
+- downloaded GGML binaries, local manual samples, and the cloned whisper.cpp checkout are ignored by git
+
+Current pytest collection after this checkpoint: 675 tests.
 
 # Architecture Hardening Checkpoint
 
@@ -436,9 +473,9 @@ Safety regression guarantees:
 
 # Next Project Block
 
-After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice checkpoints are the Linux ALSA microphone adapter and offline Whisper STT adapter. The next planned sequence is:
+After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice checkpoints are the Linux ALSA microphone adapter, offline Whisper STT adapter, and Raspberry Pi whisper.cpp runtime preparation scripts. The next planned sequence is:
 
-1. verify real Raspberry Pi USB microphone plus offline Whisper transcription with the manual STT script
+1. run the whisper.cpp installer and runtime verifier on the Raspberry Pi
 2. implement a real TTS adapter
 3. run a real single-turn voice loop
 4. only later add wake-word/background listening

@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.72 - Offline Whisper Speech-to-Text Adapter
+ARES v1.73 - Raspberry Pi Whisper Runtime Preparation
 
 ---
 
@@ -41,6 +41,8 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 `core.SpeechToText` now defines the speech-to-text adapter abstraction for converting microphone `AudioChunk` objects into text without binding ARES to Whisper, Vosk, wake word detection, internet services, GPT, or hardware-specific code. `TranscriptionResult` includes transcription text, status, error details, and a bounded `confidence` field. `SpeechToTextAdapter` defines `transcribe(audio_chunk)`, `get_status()`, and `get_capabilities()`, and `MockSpeechToTextAdapter` provides deterministic success, empty-audio, low-confidence, no-transcription, and failure behavior. `PlaceholderVoiceService`, `NullVoiceInput`, and `MockVoiceInputAdapter` accept the speech-to-text adapter through dependency injection.
 
 `core.LinuxWhisperSpeechToTextAdapter` is the first offline speech-to-text provider for Raspberry Pi/Linux. It implements the existing `SpeechToTextAdapter` contract, accepts WAV files recorded by `LinuxAlsaMicrophoneAdapter` or `AudioChunk` input, runs a local Whisper/whisper.cpp-style executable with `shell=False`, requires a local model file such as `ggml-tiny.en.bin`, and returns structured `TranscriptionResult` data with text, processing time, language metadata when available, and safe failure statuses. It is disabled by default in `config/modules.example.json` and registered as `linux_whisper_speech_to_text_adapter` so another STT engine can replace it later without changing the Brain.
+
+Raspberry Pi Whisper runtime preparation is now documented and scriptable. `scripts/install_whisper_cpp_raspberry_pi.py` clones `whisper.cpp` into `external/whisper.cpp` if missing, builds `whisper-cli` with CMake, downloads the recommended tiny English GGML model into `models/whisper/ggml-tiny.en.bin`, and verifies both files exist. `scripts/verify_whisper_cpp_runtime.py` locates `whisper-cli`, locates the model, transcribes an existing recorded WAV sample, and prints PASS/FAIL diagnostics. These are owner-run setup/verification scripts only; they do not start wake-word detection, background listening, GPT, internet runtime calls, TTS, or a conversation loop.
 
 `core.VoiceCommandRouter` now routes `TranscriptionResult` objects into Voice City without any speech engine dependency. It validates a configurable confidence threshold, ignores empty transcriptions safely, propagates transcription failures, routes valid text through CoreService's `voice.text_loop` capability, handles unknown commands with structured safe results, and records local routed/rejected metrics plus `voice_command.routed` and `voice_command.rejected` events.
 
@@ -514,7 +516,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 663 tests across current core modules
+- Pytest automated coverage for 675 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -533,7 +535,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `663 tests`.
+Current pytest collection: `675 tests`.
 
 Manual Calculator Launch Verification
 
@@ -572,6 +574,46 @@ py scripts\manual_verify_linux_alsa_microphone.py
 ```
 
 The script uses the same `LinuxAlsaMicrophoneAdapter` path as Voice City. It does not run Whisper, Vosk, speech-to-text, wake word, GPT, internet access, speaker/TTS, or background listening.
+
+Raspberry Pi Whisper Runtime Preparation
+
+The recommended Raspberry Pi 5 setup uses `whisper.cpp` with a small English-only GGML model first. Install basic build tools outside ARES:
+
+```bash
+sudo apt update
+sudo apt install -y git cmake build-essential curl
+```
+
+From the ARES repository root, run the installer:
+
+```bash
+python scripts/install_whisper_cpp_raspberry_pi.py
+```
+
+By default the installer:
+
+- clones `https://github.com/ggml-org/whisper.cpp.git` into `external/whisper.cpp` if missing
+- builds `external/whisper.cpp/build/bin/whisper-cli`
+- downloads `tiny.en` as `models/whisper/ggml-tiny.en.bin`
+- verifies the executable and model are present
+
+After recording a WAV sample with the ALSA script, verify the runtime:
+
+```bash
+python scripts/manual_verify_linux_alsa_microphone.py --record --seconds 3 --output /tmp/ares_mic_test.wav
+python scripts/verify_whisper_cpp_runtime.py --wav /tmp/ares_mic_test.wav
+```
+
+If needed, pass explicit paths:
+
+```bash
+python scripts/verify_whisper_cpp_runtime.py \
+  --whisper-command external/whisper.cpp/build/bin/whisper-cli \
+  --model models/whisper/ggml-tiny.en.bin \
+  --wav /tmp/ares_mic_test.wav
+```
+
+These scripts prepare and verify the offline speech-recognition runtime. They do not add wake words, background listening, GPT, TTS, or a conversation loop.
 
 Manual Raspberry Pi Offline Whisper STT Verification
 
@@ -773,13 +815,14 @@ Completed:
 - Final integration, recovery, and safety regression checkpoint
 - Linux ALSA microphone adapter for explicit Raspberry Pi capture tests
 - Offline Whisper speech-to-text adapter for explicit Raspberry Pi WAV transcription
+- Raspberry Pi whisper.cpp runtime preparation and verification scripts
 - Voice City foundation
 - Voice City input/output contracts
 - Voice City text loop foundation
 
 Next:
 
-1. Verify real Raspberry Pi USB microphone plus offline Whisper transcription with the manual STT script
+1. Run whisper.cpp installer and runtime verifier on the Raspberry Pi
 2. Implement a real TTS adapter
 3. Run a real single-turn voice loop
 4. Only later add wake-word/background listening
@@ -1545,31 +1588,40 @@ Phase 69
 - The adapter accepts WAV files from `LinuxAlsaMicrophoneAdapter` or `AudioChunk` input, requires a local Whisper model, uses a local whisper.cpp-style executable with `shell=False`, and returns structured transcription text, processing time, language metadata, and safe failure statuses
 - `linux_whisper_speech_to_text_adapter` is registered as a disabled-by-default capability manifest provider
 - `scripts/manual_verify_linux_whisper_stt.py` records a short WAV through ALSA only when `--record` is provided, transcribes it with offline Whisper, and prints recognized text/timing
-- Current pytest collection is 663 tests
+- Phase pytest collection at this point was 663 tests
 - No wake word, background listener, GPT, internet, speaker/TTS, autonomous loop, or conversation loop was added
 
 Phase 70
 
+- Raspberry Pi whisper.cpp runtime preparation
+- `scripts/install_whisper_cpp_raspberry_pi.py` clones whisper.cpp if missing, builds `whisper-cli`, downloads the recommended `tiny.en` GGML model into `models/whisper/ggml-tiny.en.bin`, and verifies the executable/model outputs
+- `scripts/verify_whisper_cpp_runtime.py` locates `whisper-cli`, locates the model, runs offline transcription on an existing recorded WAV sample, and prints PASS/FAIL diagnostics
+- Generated local samples, the cloned whisper.cpp tree, and downloaded GGML binaries are ignored by git
+- Current pytest collection is 675 tests
+- No wake word, background listener, GPT, internet runtime path, speaker/TTS, autonomous loop, or conversation loop was added
+
+Phase 71
+
 - Phase 3 Real Voice Integration next block
-- Verify real Raspberry Pi USB microphone plus offline Whisper transcription with the manual STT script
+- Run whisper.cpp installer and runtime verifier on the Raspberry Pi
 - Implement a real TTS adapter
 - Run a real single-turn voice loop
 - Only later add wake-word/background listening
 
-Phase 71
+Phase 72
 
 - Future voice expansion
 - Wake word
 - Continuous conversation
 
-Phase 72
+Phase 73
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 73
+Phase 74
 
 - Robotics
 - ROS2
