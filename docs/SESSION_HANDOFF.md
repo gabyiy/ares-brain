@@ -4,13 +4,13 @@ Last Updated: 2026-07-10
 
 Current Version
 
-ARES v1.62 - Voice Command Router
+ARES v1.63 - Simulated Voice Pipeline
 
 ---
 
 Current Status
 
-ARES is at the Voice Command Router foundation before any real audio work.
+ARES is at the simulated VoicePipeline foundation before any real audio work.
 
 Confirmed Phase 3 foundation:
 
@@ -29,8 +29,10 @@ Confirmed Phase 3 foundation:
 - Microphone adapter abstraction
 - Speech-to-text adapter abstraction
 - Voice Command Router
+- Simulated VoicePipeline
+- Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 418 tests.
+Current pytest collection: 432 tests.
 
 Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
@@ -88,6 +90,40 @@ Voice command routing behavior:
 - Routed and rejected commands emit `voice_command.routed` and `voice_command.rejected` events.
 - Tests cover successful routing, empty transcription, low-confidence rejection, unknown command handling, transcription failure propagation, metrics, and event-bus publication.
 - No Whisper, Vosk, GPT, wake word, internet, hardware access, real microphone, real STT, or background listener was added.
+
+Simulated VoicePipeline has been added.
+
+Voice pipeline behavior:
+
+- New module: `core.VoicePipeline`.
+- New result model: `core.VoicePipelineResult`.
+- `VoicePipeline.run_once()` accepts audio through an injected `MicrophoneAdapter`.
+- Audio is transcribed through an injected `SpeechToTextAdapter`.
+- The resulting `TranscriptionResult` is passed through `VoiceCommandRouter`.
+- Valid commands route through CoreService's `voice.text_loop` capability.
+- Only the required city is activated; unrelated cities remain idle.
+- Final response text is sent through an injected `VoiceOutputAdapter`.
+- Session ids and correlation ids are preserved through stage data and all pipeline events.
+- Structured events are recorded for audio captured, transcription accepted/rejected, command routed/rejected, city activated, execution completed/failed, and output produced.
+- Failure at microphone, STT, routing, target city, or output stages returns a safe structured result and does not corrupt later turns in the same session.
+- Tests cover successful complete command, empty audio, microphone failure, STT failure, empty transcription, low confidence, unknown command, CoreService routing failure, target city failure, output failure, reusable session state after failure, requested-city activation only, stable correlation ids, and unrelated city idleness.
+- No concrete microphone/STT/output adapters were imported into the Brain or CoreService.
+- No real microphone access, Whisper, Vosk, Piper, GPT, wake-word detection, internet access, background listening, daemon/service installation, or guessed RAM/CPU limits were added.
+
+Architecture Hardening Checkpoint
+
+This checkpoint comes after the simulated Phase 3 Voice City command pipeline and before real hardware/adapters.
+
+Future hardening items:
+
+1. enforced module lifecycle
+2. capability manifests
+3. versioned interface contracts
+4. memory/database migrations
+5. health checks and adapter fallback
+6. measured resource budgets
+
+Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
 Phase 3 Voice Checkpoint
 
@@ -923,7 +959,7 @@ Voice adapter behavior:
 - Manual Voice City text simulation uses `MockVoiceInputAdapter` for typed text and still uses `NullVoiceOutput`.
 - `VoiceLoop` reports adapter failures safely and still ignores empty input safely.
 - Tests cover input capture, output speak, empty input, adapter injection, adapter failure, and no audio hardware access.
-- Current pytest collection: 418 tests.
+- Phase pytest collection at this point was 357 tests.
 - Real Whisper, Vosk, Piper, microphone, speaker, wake word, background listener, GPT, internet, and real audio hardware access remain future work.
 
 Voice City adapter-backed single-turn loop has been added.
@@ -1001,7 +1037,7 @@ Voice session status behavior:
 - The response summarizes whether the latest mock voice session started, stopped, failed, or reached max turns.
 - No-session queries return `No voice session events found.`
 - Tests cover no session, normal stopped session, failed session, max-turn session, parser routing, planner routing, and SkillManager live path.
-- Current pytest collection: 418 tests.
+- Phase pytest collection at this point was 391 tests.
 - No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, internet, notifications, or real audio hardware access was added.
 
 ARES Behavior Schematic has been documented in README and `docs/ARCHITECTURE.md`.
@@ -1406,7 +1442,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 418 tests.
+- Current pytest collection: 432 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1429,6 +1465,7 @@ Verification Notes
 - EventHistoryStore tests cover add, query by source/type/priority, bounded max size, empty history, persistence after reload, invalid priority rejection, and zero-size history.
 - CoreService event-history integration tests cover stored low, normal, high, critical, unknown-source, and disabled-source decisions.
 - EventHistorySkill tests cover recent events, critical events, empty history, parser phrases, planner steps, and SkillManager live path.
+- VoicePipeline tests cover successful complete simulated command execution, empty audio, microphone failure, STT failure, empty transcription, low-confidence rejection, unknown command, CoreService routing failure, target city failure, output adapter failure, session reuse after failure, requested-city activation only, stable correlation ids, and unrelated city idleness.
 - VoiceService tests cover CoreService registration, safe placeholder capabilities, safe placeholder status, VoiceInput/VoiceOutput ownership, VoiceInputAdapter/VoiceOutputAdapter mock implementations, adapter injection, NullVoiceInput listen placeholders, NullVoiceOutput speak placeholders, mock input capture and capture compatibility, mock output speak, empty mock input, CoreService aggregation of PCService and VoiceService, VoiceTextRequest conversion, VoiceLoop defaults, VoiceSingleTurnLoop normal input/output, VoiceSessionLoop multi-turn flow, stop phrase handling, max-turn limiting, empty no-op turns, input adapter failure, output adapter failure, transcript/history output, no-input behavior, recognized text routing to a mocked planner/execution handler, response handoff to NullVoiceOutput, safe input/handler/output/adapter failures, and no audio hardware access.
 - VoiceSessionSkill tests cover parser phrases, max-turn entity extraction, status query phrases, Planner step creation, ToolSelector routing, direct skill start, stop phrase handling, max-turn limiting, empty session behavior, transcript summaries, mock-adapter-only safeguards, safe local event history records for start/stop/adapter failure/max-turn completion, latest voice-session status summaries for no-session/stopped/failed/max-turn cases, EventHistorySkill display, and SkillManager live-path execution.
 - DeviceAction tests cover registry registration/listing, app allowlist config loading, calculator enabled state, invalid config rejection, duplicate app id rejection, unknown action safe failure, echo, list actions, list apps, structured PCService status, structured PCService capability discovery, CoreService-backed service registration/capability aggregation, default PCService status/capability interfaces, safe missing-capability reporting, stable result formatting, PCService delegation for status/lock/sleep/open-app calls, CoreService-backed action/app discovery, danger classification, confirmation-required placeholders, forbidden placeholders, unapproved `lock_pc`/`sleep_pc`/`open_app`, confirmed mocked Windows lock/sleep, confirmed Windows calculator launch through a mocked launcher, unknown/disabled app rejection, notepad/browser disabled handling, arbitrary path rejection, shell-like input rejection, user-supplied path isolation, non-Windows unsupported handling, shutdown/restart remaining non-executable, and not-executed dangerous results.
@@ -1456,6 +1493,7 @@ Verification Notes
 
 Latest Commits
 
+- `9365d76` Add simulated voice command pipeline
 - `20930a1` Add voice command router
 - `b02fc6a` Add speech-to-text adapter abstraction
 - `36a534b` Add microphone adapter abstraction
@@ -1536,7 +1574,8 @@ Latest Commits
 
 Next Planned Step
 
-- Plan Voice wake word/STT/TTS integration only after explicit approval.
+- Architecture hardening before real hardware/adapters: enforced module lifecycle, capability manifests, versioned interface contracts, memory/database migrations, health checks and adapter fallback, and measured resource budgets.
+- Plan Voice wake word/STT/TTS integration only after explicit approval and after the hardening scope is handled.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not enable default real weather/market API behavior, Google Calendar integration, GPT, embeddings, real voice/audio hardware, vision, scheduling, notifications, or background automation yet.

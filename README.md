@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.62 - Voice Command Router
+ARES v1.63 - Simulated Voice Pipeline
 
 ---
 
@@ -40,7 +40,22 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 
 `core.VoiceCommandRouter` now routes `TranscriptionResult` objects into Voice City without any speech engine dependency. It validates a configurable confidence threshold, ignores empty transcriptions safely, propagates transcription failures, routes valid text through CoreService's `voice.text_loop` capability, handles unknown commands with structured safe results, and records local routed/rejected metrics plus `voice_command.routed` and `voice_command.rejected` events.
 
+`core.VoicePipeline` now provides the simulated end-to-end Voice City command pipeline. It accepts audio through an injected `MicrophoneAdapter`, transcribes through an injected `SpeechToTextAdapter`, passes `TranscriptionResult` through `VoiceCommandRouter`, routes valid commands through CoreService, activates only the required city, sends final text through an injected `VoiceOutputAdapter`, preserves session and correlation ids through every stage, and records structured local events for audio capture, transcription accepted/rejected, command routed/rejected, city activation, execution completion/failure, and output production. The pipeline is mock/local only and does not import concrete adapters into the Brain or CoreService.
+
 Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter layer is mock/local only and does not access audio hardware.
+
+Architecture Hardening Checkpoint
+
+The simulated Phase 3 voice pipeline is the checkpoint before real hardware adapters. Future hardening items to complete before real audio or broader city activation:
+
+1. enforced module lifecycle
+2. capability manifests
+3. versioned interface contracts
+4. memory/database migrations
+5. health checks and adapter fallback
+6. measured resource budgets
+
+Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
 `skills.VoiceSessionSkill` now exposes the safe mock voice session through the normal text command path. It recognizes "start voice session", "start mock voice", and "run voice test", then uses `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop` with a bounded `max_turns` limit. It returns a transcript summary through the existing IntentParser, Planner, ExecutionPipeline, SkillManager, and REPL path. It does not access a microphone, speaker, wake word, background listener, GPT, internet, or real audio provider.
 
@@ -412,6 +427,8 @@ Implemented Features
 - Microphone adapter abstraction with `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, `MockMicrophoneAdapter`, safe lifecycle methods, timeout handling, cancellation support, and Voice City dependency injection
 - Speech-to-text adapter abstraction with `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, confidence scores, empty transcription handling, low-confidence handling, safe failure results, and Voice City dependency injection
 - Voice Command Router with confidence gating, empty-transcription handling, unknown-command handling, CoreService `voice.text_loop` routing, routed/rejected metrics, and routed/rejected events
+- Simulated VoicePipeline connecting mock microphone audio, mock speech-to-text, VoiceCommandRouter, CoreService route-by-capability, mock output, session/correlation ids, and structured stage events
+- Architecture Hardening Checkpoint before real hardware/adapters with lifecycle, manifest, interface versioning, migration, health-check/fallback, and resource-budget follow-up items
 - Built-in `VoiceSessionSkill` for starting bounded mock Voice City sessions from text commands through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path
 - Safe Voice Session event logging to `EventHistoryStore` for session start, stop, adapter failure, and max-turn completion events
 - Read-only Voice Session status queries for the latest mock session event group
@@ -437,7 +454,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 418 tests across current core modules
+- Pytest automated coverage for 432 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -456,7 +473,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `418 tests`.
+Current pytest collection: `432 tests`.
 
 Manual Calculator Launch Verification
 
@@ -1248,19 +1265,63 @@ Phase 56
 
 Phase 57
 
-- Voice wake word
-- Speech-to-text
-- Text-to-speech
-- Continuous conversation
+- Microphone adapter abstraction
+- `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, and `MockMicrophoneAdapter`
+- Start/stop/read lifecycle, timeout handling, cancellation support, safe failures, and dependency injection into Voice City
+- No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, or background listener
 
 Phase 58
 
-- Vision
+- Speech-to-text adapter abstraction
+- `TranscriptionResult`, `SpeechToTextAdapter`, and `MockSpeechToTextAdapter`
+- Confidence handling, empty transcription handling, low-confidence handling, and safe STT failure paths
+- No real STT engine, Whisper, Vosk, wake word, real microphone, GPT, internet, or background listener
+
+Phase 59
+
+- Voice Command Router
+- Routes `TranscriptionResult` through CoreService `voice.text_loop`
+- Handles empty transcription, low confidence, transcription failures, unknown commands, metrics, and routed/rejected events
+- No Whisper, Vosk, GPT, wake word, internet, hardware access, or background listener
+
+Phase 60
+
+- Simulated VoicePipeline
+- End-to-end mock/local path: `MicrophoneAdapter` -> `SpeechToTextAdapter` -> `VoiceCommandRouter` -> CoreService -> mock output adapter
+- Preserves session ids and correlation ids through stage data and structured events
+- Records audio captured, transcription accepted/rejected, command routed/rejected, city activated, execution completed/failed, and output produced events
+- Tests cover complete success, empty audio, microphone failure, STT failure, empty transcription, low confidence, unknown command, CoreService routing failure, target city failure, output failure, reusable session state, requested-city activation only, stable correlation ids, and unrelated city idleness
+- Current pytest collection is 432 tests
+- No real microphone, Whisper, Vosk, Piper, GPT, wake-word detection, internet, background listening, daemon/service installation, or guessed resource limits
+
+Architecture Hardening Checkpoint
+
+- This checkpoint comes after the simulated Phase 3 voice pipeline and before real hardware/adapters
+- Future hardening items:
+  1. enforced module lifecycle
+  2. capability manifests
+  3. versioned interface contracts
+  4. memory/database migrations
+  5. health checks and adapter fallback
+  6. measured resource budgets
+- Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
+
+Phase 61
+
+- Future real voice planning only
+- Wake word
+- Real speech-to-text
+- Real text-to-speech
+- Continuous conversation
+
+Phase 62
+
+- Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 59
+Phase 63
 
 - Robotics
 - ROS2

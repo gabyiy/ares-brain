@@ -609,7 +609,7 @@ Phase 51: Voice City Audio Adapter Contracts
 - `VoiceLoop` reports adapter failures safely and continues to ignore empty input safely.
 - Manual Voice City text simulation uses the mock input adapter and `NullVoiceOutput`.
 - Tests cover input capture, output speak, empty input, adapter failure, adapter injection, and no audio hardware access.
-- Current pytest collection is 357 tests.
+- Phase pytest collection at this point was 357 tests.
 - Real Whisper, Vosk, Piper, microphone, speaker, wake word, background listener, GPT, and internet integrations remain future work.
 
 Phase 52: Voice City Adapter-Backed Single-Turn Loop
@@ -622,7 +622,7 @@ Phase 52: Voice City Adapter-Backed Single-Turn Loop
 - Input adapter failures fail safely before text handling.
 - Output adapter failures fail safely after response generation.
 - Tests cover normal one-turn input/output, empty input, input adapter failure, output adapter failure, and no real microphone/speaker access.
-- Current pytest collection is 363 tests.
+- Phase pytest collection at this point was 363 tests.
 - No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, internet, or real audio hardware access was added.
 
 Phase 53: Voice City Multi-Turn Mock Session
@@ -695,7 +695,7 @@ Phase 57: Microphone Adapter Abstraction
 - `PlaceholderVoiceService`, `NullVoiceInput`, and `MockVoiceInputAdapter` accept microphone adapters through dependency injection.
 - Voice City can swap microphone implementations later without changing the Brain, CoreService, skills, or current text loops.
 - Tests cover audio chunk serialization/validation, start/stop, read-before-start, queued chunk reads, timeout, cancellation callable/event support, failure modes, status/capabilities, and Voice City injection.
-- Current pytest collection is 403 tests.
+- Phase pytest collection at this point was 403 tests.
 - No Whisper, Vosk, Piper, wake word, hardware-specific code, real microphone access, real STT, speaker access, GPT, internet, or background listener was added.
 
 Phase 58: Speech-to-Text Adapter Abstraction
@@ -707,7 +707,7 @@ Phase 58: Speech-to-Text Adapter Abstraction
 - `PlaceholderVoiceService`, `NullVoiceInput`, and `MockVoiceInputAdapter` accept speech-to-text adapters through dependency injection.
 - Voice City can swap transcription implementations later without changing the Brain, CoreService, skills, or current text loops.
 - Tests cover success, empty audio, low confidence, adapter failure, no transcription, confidence clamping, status/capability data, and Voice City injection.
-- Current pytest collection is 412 tests.
+- Phase pytest collection at this point was 412 tests.
 - No Whisper, Vosk, wake word, real microphone access, real STT, hardware-specific code, internet, GPT, or background listener was added.
 
 Phase 59: Voice Command Router
@@ -722,12 +722,39 @@ Phase 59: Voice Command Router
 - Unknown commands return safe structured `unknown_command` results.
 - Routed and rejected commands emit local `voice_command.routed` and `voice_command.rejected` events.
 - Tests cover successful routing, empty transcription, low-confidence rejection, unknown command handling, transcription failure propagation, metrics, and event-bus publication.
-- Current pytest collection is 418 tests.
+- Phase pytest collection at this point was 418 tests.
 - No Whisper, Vosk, GPT, wake word, internet, hardware access, real microphone, real STT, or background listener was added.
+
+Phase 60: Simulated VoicePipeline
+
+- `core.VoicePipeline` orchestrates a simulated end-to-end Voice City command path.
+- The pipeline receives audio only through an injected `MicrophoneAdapter`.
+- It transcribes through an injected `SpeechToTextAdapter`.
+- It passes `TranscriptionResult` through `VoiceCommandRouter`.
+- Valid commands route through CoreService's `voice.text_loop` capability.
+- Only the required city is activated; unrelated cities remain idle.
+- Final response text is sent through an injected `VoiceOutputAdapter`.
+- `VoicePipelineResult` preserves success/status, final text, response text, session id, correlation id, stage data, events, and safe metadata.
+- Structured events are recorded for audio captured, transcription accepted/rejected, command routed/rejected, city activated, execution completed/failed, and output produced.
+- Tests cover successful complete command, empty audio, microphone failure, STT failure, empty transcription, low-confidence transcription, unknown command, CoreService routing failure, target city failure, output adapter failure, reusable session state after failure, requested-city activation only, stable correlation id propagation, and unrelated city idleness.
+- Current pytest collection is 432 tests.
+- No real microphone access, Whisper, Vosk, Piper, GPT, wake-word detection, internet access, background listening, daemon/service installation, or guessed RAM/CPU limits were added.
+
+Architecture Hardening Checkpoint
+
+- This checkpoint comes after the simulated Phase 3 Voice City command pipeline and before real hardware/adapters.
+- Future hardening items:
+  1. enforced module lifecycle
+  2. capability manifests
+  3. versioned interface contracts
+  4. memory/database migrations
+  5. health checks and adapter fallback
+  6. measured resource budgets
+- Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
 Current State
 
-ARES is currently at the Voice Command Router foundation: a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a CoreService orchestration boundary for service registration, city lifecycle metadata, lazy route-by-capability handling, capability aggregation, internal city event decision routing, local internal event-history storage, optional CoreService event-history persistence, read-only EventHistorySkill queries, an internal future-use `core.EventBus` skeleton, `SkillContext` access to that CoreService boundary, a PCService boundary for all current PC operations, a VoiceService placeholder boundary for Voice City, explicit VoiceInput/VoiceOutput contracts with adapter-backed null implementations, `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, `MockMicrophoneAdapter`, `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, `VoiceCommandRouter`, `VoiceCommandRoutingResult`, `VoiceCommandRouterMetrics`, mock VoiceInputAdapter/VoiceOutputAdapter implementations, `VoiceTextRequest`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionSkill`, safe Voice Session event logging to `EventHistoryStore`, read-only Voice Session status summaries from latest local event history, transcript/history output for mock sessions, transcript summaries from text-started mock sessions, a one-shot VoiceLoop text bridge, structured safe PC status responses, dynamic safe PC capability discovery, structured safe Voice City placeholder status/capability discovery, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
+ARES is currently at the simulated VoicePipeline foundation: a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a CoreService orchestration boundary for service registration, city lifecycle metadata, lazy route-by-capability handling, capability aggregation, internal city event decision routing, local internal event-history storage, optional CoreService event-history persistence, read-only EventHistorySkill queries, an internal future-use `core.EventBus` skeleton, `SkillContext` access to that CoreService boundary, a PCService boundary for all current PC operations, a VoiceService placeholder boundary for Voice City, explicit VoiceInput/VoiceOutput contracts with adapter-backed null implementations, `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, `MockMicrophoneAdapter`, `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, `VoiceCommandRouter`, `VoiceCommandRoutingResult`, `VoiceCommandRouterMetrics`, `VoicePipeline`, `VoicePipelineResult`, mock VoiceInputAdapter/VoiceOutputAdapter implementations, `VoiceTextRequest`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionSkill`, safe Voice Session event logging to `EventHistoryStore`, read-only Voice Session status summaries from latest local event history, transcript/history output for mock sessions, transcript summaries from text-started mock sessions, a one-shot VoiceLoop text bridge, structured safe PC status responses, dynamic safe PC capability discovery, structured safe Voice City placeholder status/capability discovery, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -739,10 +766,10 @@ The current deterministic answer paths are:
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, calendar, event-history queries, voice-session starts, and voice-session status queries
 - `Planner`, `MultiStepPlan`, `ConfirmationManager`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, voice sessions, voice-session status, context responses, confirmations, and conversation memory plan execution
 - `ToolAdapterRegistry`, `ExternalAdapterConfig`, `SecretsGuard`, `RealWeatherAdapter`, and `RealMarketAdapter` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
-- `CoreService`, `EventBus`, `EventHistoryStore`, `EventHistorySkill`, `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, `MockMicrophoneAdapter`, `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, `VoiceCommandRouter`, `VoiceCommandRoutingResult`, `VoiceCommandRouterMetrics`, `VoiceService`, `VoiceInput`, `VoiceOutput`, `VoiceInputAdapter`, `VoiceOutputAdapter`, `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, `NullVoiceInput`, `NullVoiceOutput`, `PlaceholderVoiceService`, `VoiceTextRequest`, `VoiceLoop`, `VoiceLoopResult`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionSkill`, `VoiceSessionResult`, `VoiceSessionTurn`, `DeviceActionRegistry`, `LocalDeviceActionAdapter`, `PCService`, `PCStatus`, `PCCapabilities`, `WindowsPCService`, `AppLaunchConfig`, `AppAllowlistLoader`, and `DeviceActionSkill` for safe local Device/PC City and Voice City foundations, service registration, city lifecycle metadata, lazy capability routing, capability aggregation, internal future-use event reporting skeletons, internal CoreService event decision routing, optional CoreService event-history persistence, local internal event-history logging, read-only event-history queries, safe voice session event history records, read-only latest voice-session status summaries, structured local `system status`, structured placeholder voice status, adapter-backed placeholder voice input/output, adapter-backed microphone abstraction, adapter-backed speech-to-text abstraction, confidence-gated voice command routing, adapter-backed single-turn voice-style routing, bounded multi-turn mock session routing, text-command mock voice sessions, transcript/history output, one-shot placeholder voice text routing, dynamic local action/app/voice discovery, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated config-backed allowlisted Windows `open_app`, safe live routing, and stable confirmation-required/forbidden responses
+- `CoreService`, `EventBus`, `EventHistoryStore`, `EventHistorySkill`, `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, `MockMicrophoneAdapter`, `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, `VoiceCommandRouter`, `VoiceCommandRoutingResult`, `VoiceCommandRouterMetrics`, `VoicePipeline`, `VoicePipelineResult`, `VoiceService`, `VoiceInput`, `VoiceOutput`, `VoiceInputAdapter`, `VoiceOutputAdapter`, `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, `NullVoiceInput`, `NullVoiceOutput`, `PlaceholderVoiceService`, `VoiceTextRequest`, `VoiceLoop`, `VoiceLoopResult`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionSkill`, `VoiceSessionResult`, `VoiceSessionTurn`, `DeviceActionRegistry`, `LocalDeviceActionAdapter`, `PCService`, `PCStatus`, `PCCapabilities`, `WindowsPCService`, `AppLaunchConfig`, `AppAllowlistLoader`, and `DeviceActionSkill` for safe local Device/PC City and Voice City foundations, service registration, city lifecycle metadata, lazy capability routing, capability aggregation, internal future-use event reporting skeletons, internal CoreService event decision routing, optional CoreService event-history persistence, local internal event-history logging, read-only event-history queries, safe voice session event history records, read-only latest voice-session status summaries, structured local `system status`, structured placeholder voice status, adapter-backed placeholder voice input/output, adapter-backed microphone abstraction, adapter-backed speech-to-text abstraction, confidence-gated voice command routing, simulated end-to-end voice command routing, adapter-backed single-turn voice-style routing, bounded multi-turn mock session routing, text-command mock voice sessions, transcript/history output, one-shot placeholder voice text routing, dynamic local action/app/voice discovery, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated config-backed allowlisted Windows `open_app`, safe live routing, and stable confirmation-required/forbidden responses
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 418 tests.
+The current pytest collection is 432 tests.
 
 The current memory paths are:
 
@@ -774,23 +801,25 @@ Core Services City is a shared infrastructure city for scheduler, permissions, l
 
 Codex City is a future maintenance city. It should check the ARES GitHub repository, pull latest code, run tests, check compile, check docs freshness, report problems, and suggest fixes. Codex City must never auto-edit without owner approval.
 
-This roadmap entry is planning documentation plus the current safe VoiceService skeleton, VoiceInput/VoiceOutput contracts, and one-shot VoiceLoop text bridge only. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, real voice/audio implementation, internet access, real APIs, or notifications.
+This roadmap entry documents the current safe VoiceService skeleton, VoiceInput/VoiceOutput contracts, one-shot VoiceLoop text bridge, microphone adapter abstraction, speech-to-text adapter abstraction, VoiceCommandRouter, and simulated VoicePipeline only. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, real voice/audio implementation, internet access, real APIs, notifications, daemon installation, or background listening.
 
 Next Priorities
 
-1. Voice wake word/STT/TTS planning.
-2. GPT fallback integration.
-3. Raspberry Pi deployment.
-4. Robot body / sensors.
+1. Architecture hardening before real hardware/adapters.
+2. Voice wake word/STT/TTS planning after hardening scope is approved.
+3. GPT fallback integration.
+4. Raspberry Pi deployment.
+5. Robot body / sensors.
 
 What Must Not Be Started Yet
 
-- No real voice/audio implementation beyond the safe VoiceService placeholder, microphone adapter abstraction, speech-to-text adapter abstraction, VoiceCommandRouter, null input/output components, and one-shot VoiceLoop text bridge.
+- No real voice/audio implementation beyond the safe VoiceService placeholder, microphone adapter abstraction, speech-to-text adapter abstraction, VoiceCommandRouter, VoicePipeline, null input/output components, and one-shot VoiceLoop text bridge.
 - No GPT or LLM integration.
 - No embeddings.
 - No notification scheduling or delivery.
 - No calendar integration.
 - No Raspberry Pi deployment work.
+- No real microphone, speaker, Whisper, Vosk, Piper, wake word, daemon/service installation, internet access, or background listening.
 - No new skills before the roadmap and architecture decision is approved.
 - No AI parser or regex-only parser rewrite.
 - No robotics or movement integration.

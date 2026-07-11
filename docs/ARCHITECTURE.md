@@ -241,10 +241,35 @@ Current voice loop foundation:
 - `EventHistorySkill` can show these Voice City operational records through recent event queries.
 - `VoiceSessionSkill` can also answer "what happened in voice session", "show last voice session", and "voice session status" by reading the latest local `voice_session.*` event group.
 - Voice Session status queries are read-only and return started/stopped/failure/max_turns summaries without starting a new session.
+- `VoicePipeline` is the simulated end-to-end Voice City command pipeline.
+- `VoicePipeline.run_once()` accepts audio through an injected `MicrophoneAdapter`.
+- Audio is transcribed through an injected `SpeechToTextAdapter`.
+- The resulting `TranscriptionResult` is passed through `VoiceCommandRouter`.
+- Valid commands route through CoreService's `voice.text_loop` capability.
+- Only the required city is activated; unrelated cities remain idle.
+- Final response text is sent through an injected `VoiceOutputAdapter`.
+- Session ids and correlation ids are preserved in stage data and structured events.
+- The pipeline records local events for audio captured, transcription accepted/rejected, command routed/rejected, city activated, execution completed/failed, and output produced.
+- The pipeline fails safely at microphone, STT, routing, command execution, and output stages without corrupting the voice session state.
 - The loop does not own routing, planning, or skill execution logic.
 - The loop does not start background listening, wake word detection, microphone access, speaker access, GPT, or internet access.
 
-VoiceService is a skeleton only. Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current microphone adapter abstraction, speech-to-text adapter abstraction, input/output adapter, single-turn, multi-turn session, VoiceSessionSkill, Voice Session event logging, and Voice Session status query layers are mock/local only and do not start microphone access, speaker output, real speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
+VoiceService is a skeleton only. Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current microphone adapter abstraction, speech-to-text adapter abstraction, input/output adapter, single-turn, multi-turn session, VoiceSessionSkill, Voice Session event logging, Voice Session status query, VoiceCommandRouter, and VoicePipeline layers are mock/local only and do not start microphone access, speaker output, real speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
+
+# Architecture Hardening Checkpoint
+
+This checkpoint comes after the simulated Phase 3 Voice City command pipeline and before real hardware/adapters.
+
+Future hardening items:
+
+1. enforced module lifecycle
+2. capability manifests
+3. versioned interface contracts
+4. memory/database migrations
+5. health checks and adapter fallback
+6. measured resource budgets
+
+Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
 PCService and VoiceService are the current services registered by default. Future services should follow the same registration and capability pattern.
 
@@ -365,7 +390,7 @@ Current boundary:
 
 ## Voice City
 
-Voice City has started with a safe service skeleton, a one-shot text loop, and adapter contracts for future audio providers. The current placeholder service exposes status and capability discovery only, and the current adapters are mock/local only. Future Voice City work will own wake word detection, speech-to-text, text-to-speech, microphones, speakers, and voice session state through adapters such as Whisper, Vosk, or Piper. The Brain should receive structured user text and return structured responses; it should not contain microphone, speaker, speech-engine, or audio driver code.
+Voice City has started with a safe service skeleton, a one-shot text loop, adapter contracts for future audio providers, a VoiceCommandRouter, and a simulated end-to-end VoicePipeline. The current placeholder service exposes status and capability discovery, and the current adapters are mock/local only. Future Voice City work will own wake word detection, real speech-to-text, real text-to-speech, microphones, speakers, and voice session state through adapters such as Whisper, Vosk, or Piper. The Brain should receive structured user text and return structured responses; it should not contain microphone, speaker, speech-engine, or audio driver code.
 
 ## Vision City
 
@@ -420,6 +445,7 @@ The Brain remains unchanged because identity, memory, personality, goals, reason
 - Discovery over assumptions.
 - Small independent modules.
 - Capability interfaces are explicit.
+- Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 - Dangerous actions require confirmation.
 - Secrets are never stored in committed config.
 - Real API integrations stay gated by config and environment variables.
