@@ -72,6 +72,8 @@ class MockSpeechToTextAdapter(SpeechToTextAdapter):
         fail: bool = False,
         failure_message: str = "mock_stt_failure",
         low_confidence_threshold: float = 0.5,
+        available: bool = True,
+        degraded: bool = False,
     ):
         self._transcripts = [str(transcript or "") for transcript in (transcripts or [])]
         self.confidence = confidence
@@ -79,6 +81,8 @@ class MockSpeechToTextAdapter(SpeechToTextAdapter):
         self.fail = fail
         self.failure_message = failure_message
         self.low_confidence_threshold = low_confidence_threshold
+        self.available = available
+        self.degraded = degraded
         self.transcription_count = 0
         self.audio_hardware_accessed = False
         self.speech_engine_accessed = False
@@ -128,6 +132,27 @@ class MockSpeechToTextAdapter(SpeechToTextAdapter):
         )
 
     def get_status(self) -> TranscriptionResult:
+        if not self.available:
+            return self._failure(
+                status="unavailable",
+                text="",
+                error_message="stt_unavailable",
+                audio_chunk=AudioChunk(data=b"", source=self.source),
+            )
+        if self.degraded:
+            return self._success(
+                status="degraded",
+                text="",
+                confidence=1.0,
+                audio_chunk=None,
+                message="Mock speech-to-text status is degraded.",
+                extra_data={
+                    "queued_transcripts": len(self._transcripts),
+                    "transcription_count": self.transcription_count,
+                    "stt": "mock",
+                    "available": True,
+                },
+            )
         return self._success(
             status="mock",
             text="",
@@ -154,6 +179,47 @@ class MockSpeechToTextAdapter(SpeechToTextAdapter):
                 "confidence": "supported",
                 "empty_audio_handling": "safe_empty_result",
                 "speech_engine": "disabled",
+            },
+        )
+
+    def health_check(self) -> TranscriptionResult:
+        if self.fail:
+            return self._failure(
+                status="failed",
+                text="",
+                error_message=self.failure_message,
+                audio_chunk=AudioChunk(data=b"", source=self.source),
+            )
+        if not self.available:
+            return self._failure(
+                status="unavailable",
+                text="",
+                error_message="stt_unavailable",
+                audio_chunk=AudioChunk(data=b"", source=self.source),
+            )
+        if self.degraded:
+            return self._success(
+                status="degraded",
+                text="",
+                confidence=max(0.0, min(1.0, float(self.confidence))),
+                audio_chunk=None,
+                message="Mock speech-to-text health check reports degraded mode.",
+                extra_data={
+                    "queued_transcripts": len(self._transcripts),
+                    "stt": "mock",
+                    "available": True,
+                },
+            )
+        return self._success(
+            status="healthy",
+            text="",
+            confidence=max(0.0, min(1.0, float(self.confidence))),
+            audio_chunk=None,
+            message="Mock speech-to-text health check passed.",
+            extra_data={
+                "queued_transcripts": len(self._transcripts),
+                "stt": "mock",
+                "available": True,
             },
         )
 

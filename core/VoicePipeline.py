@@ -18,6 +18,11 @@ from core.Contracts import (
 )
 from core.CoreService import CoreService
 from core.EventBus import Event, EventBus, PRIORITY_NORMAL
+from core.Health import (
+    RETRY_SAFE,
+    AdapterCandidate,
+    AdapterFallbackPolicy,
+)
 from core.Microphone import AudioChunk, MicrophoneAdapter, MicrophoneResult
 from core.SpeechToText import SpeechToTextAdapter, TranscriptionResult
 from core.VoiceCommandRouter import (
@@ -90,6 +95,9 @@ class VoicePipeline:
         core_service: Optional[CoreService] = None,
         command_router: Optional[VoiceCommandRouter] = None,
         event_bus: Optional[EventBus] = None,
+        fallback_policy: Optional[AdapterFallbackPolicy] = None,
+        microphone_candidates: Optional[List[AdapterCandidate]] = None,
+        speech_to_text_candidates: Optional[List[AdapterCandidate]] = None,
         confidence_threshold: float = DEFAULT_VOICE_COMMAND_CONFIDENCE_THRESHOLD,
         route_capability: str = DEFAULT_VOICE_ROUTE_CAPABILITY,
     ):
@@ -103,6 +111,11 @@ class VoicePipeline:
         self.microphone_adapter = microphone_adapter
         self.speech_to_text_adapter = speech_to_text_adapter
         self.output_adapter = output_adapter
+        self._active_microphone_adapter = microphone_adapter
+        self._active_speech_to_text_adapter = speech_to_text_adapter
+        self.fallback_policy = fallback_policy
+        self.microphone_candidates = list(microphone_candidates or [])
+        self.speech_to_text_candidates = list(speech_to_text_candidates or [])
         self.event_bus = event_bus
         self.core_service = core_service or CoreService(register_default_pc=False)
         self.command_router = command_router or VoiceCommandRouter(
@@ -158,6 +171,8 @@ class VoicePipeline:
 
         timeout_seconds = request_payload.get("timeout_seconds")
         run_events: List[Dict[str, Any]] = []
+        self._active_microphone_adapter = self.microphone_adapter
+        self._active_speech_to_text_adapter = self.speech_to_text_adapter
         microphone_request = MicrophoneCaptureRequestV1(
             timeout_seconds=timeout_seconds,
             session_id=clean_session_id,
@@ -181,6 +196,25 @@ class VoicePipeline:
                 metadata=_metadata(),
             )
         microphone_data: Dict[str, Any] = {"request": microphone_request.to_dict()}
+
+        microphone_selection = self._select_microphone_adapter()
+        if microphone_selection is not None:
+            microphone_data["adapter_selection"] = microphone_selection.to_dict()
+            if not microphone_selection.success:
+                return self._finish_with_output(
+                    success=False,
+                    status="microphone_failed",
+                    text=microphone_selection.message or "No healthy microphone adapter is available.",
+                    response_text=microphone_selection.message
+                    or "No healthy microphone adapter is available.",
+                    error_message=microphone_selection.error_code
+                    or "microphone_adapter_unavailable",
+                    session_id=clean_session_id,
+                    correlation_id=clean_correlation_id,
+                    run_events=run_events,
+                    data={"microphone": microphone_data},
+                    execution_failed_stage="microphone_health",
+                )
 
         start_result = self._start_microphone()
         microphone_data["start"] = start_result.to_dict()
@@ -517,25 +551,51 @@ class VoicePipeline:
 
     def _start_microphone(self) -> MicrophoneResult:
         try:
-            return self.microphone_adapter.start()
+            return self._active_microphone_adapter.start()
         except Exception as error:
             return _microphone_failure("start_failed", error)
 
     def _read_microphone(self, timeout_seconds: Optional[float]) -> MicrophoneResult:
         try:
-            return self.microphone_adapter.read_chunk(timeout_seconds=timeout_seconds)
+            return self._active_microphone_adapter.read_chunk(timeout_seconds=timeout_seconds)
         except Exception as error:
             return _microphone_failure("read_failed", error)
 
     def _stop_microphone(self) -> MicrophoneResult:
         try:
-            return self.microphone_adapter.stop()
+            return self._active_microphone_adapter.stop()
         except Exception as error:
             return _microphone_failure("stop_failed", error)
 
     def _transcribe(self, audio_chunk: AudioChunk) -> TranscriptionResult:
+        if self.fallback_policy is not None and self.speech_to_text_candidates:
+            execution = self.fallback_policy.execute(
+                self.speech_to_text_candidates,
+                "voice.transcribe",
+                lambda adapter: adapter.transcribe(audio_chunk),
+                retry_safety=RETRY_SAFE,
+                required_interface_version=CONTRACT_VERSION_V1,
+            )
+            if execution.success:
+                return _transcription_from_execution(execution, audio_chunk)
+            return TranscriptionResult(
+                success=False,
+                status=execution.status,
+                text="",
+                confidence=0.0,
+                error_message=execution.original_error
+                or execution.error_message
+                or "speech_to_text_unavailable",
+                data={
+                    "audio_chunk": audio_chunk.to_dict(),
+                    "source": "voice_pipeline",
+                    "speech_engine_access": "disabled",
+                    "fallback_execution": execution.to_dict(),
+                },
+                metadata=_metadata(),
+            )
         try:
-            return self.speech_to_text_adapter.transcribe(audio_chunk)
+            return self._active_speech_to_text_adapter.transcribe(audio_chunk)
         except Exception as error:
             return TranscriptionResult(
                 success=False,
@@ -550,6 +610,18 @@ class VoicePipeline:
                 },
                 metadata=_metadata(),
             )
+
+    def _select_microphone_adapter(self):
+        if self.fallback_policy is None or not self.microphone_candidates:
+            return None
+        selection = self.fallback_policy.select(
+            self.microphone_candidates,
+            "voice.capture",
+            required_interface_version=CONTRACT_VERSION_V1,
+        )
+        if selection.success:
+            self._active_microphone_adapter = selection.selected_adapter
+        return selection
 
     def _speak(self, text: str) -> VoiceServiceResult:
         try:
@@ -624,6 +696,31 @@ def _microphone_failure(status: str, error: Exception) -> MicrophoneResult:
         error_message=message,
         data={"source": "voice_pipeline", "audio_hardware_access": "disabled"},
         metadata=_metadata(),
+    )
+
+
+def _transcription_from_execution(
+    execution: Any,
+    audio_chunk: AudioChunk,
+) -> TranscriptionResult:
+    data = dict(execution.data or {})
+    transcription_data = dict(data.get("data") or {})
+    metadata = dict(data.get("metadata") or {})
+    return TranscriptionResult(
+        success=bool(data.get("success", True)),
+        status=str(data.get("status") or "transcribed"),
+        text=str(data.get("text") or ""),
+        confidence=float(data.get("confidence") or 0.0),
+        error_message=str(data.get("error_message") or ""),
+        data={
+            **transcription_data,
+            "audio_chunk": transcription_data.get("audio_chunk") or audio_chunk.to_dict(),
+            "source": "voice_pipeline",
+            "speech_engine_access": "disabled",
+            "fallback_execution": execution.to_dict(),
+            "selected_adapter_name": execution.selected_adapter_name,
+        },
+        metadata={**_metadata(), **metadata},
     )
 
 

@@ -28,6 +28,12 @@ from core.Contracts import (
     utc_contract_timestamp,
     validate_contract,
 )
+from core.Health import (
+    HEALTH_STATUS_DISABLED,
+    HealthResult,
+    check_component_health,
+    health_from_lifecycle,
+)
 from core.ModuleLifecycle import (
     LIFECYCLE_DEGRADED,
     LIFECYCLE_FAILED,
@@ -315,6 +321,97 @@ class CoreService:
                     transition.to_dict()
                     for transition in self.lifecycle_manager.history(service_name)
                 ],
+            },
+            metadata={"safe": True, "source": "core_service"},
+        )
+
+    def get_service_health(
+        self,
+        name: str,
+        probe: bool = False,
+        force_refresh: bool = False,
+    ) -> CoreServiceResult:
+        """Return safe health visibility without activating lazy services by default."""
+        service_name = _normalize_service_name(name)
+        if service_name not in self._services:
+            return CoreServiceResult(
+                success=False,
+                text=f"Health lookup failed safely because service is missing: {name}",
+                error_message="service_not_registered",
+                data={"source": "core_service", "service": service_name},
+                metadata={"safe": True, "source": "core_service"},
+            )
+
+        health = self._service_health(service_name, probe=probe, force_refresh=force_refresh)
+        return CoreServiceResult(
+            success=health.status != HEALTH_STATUS_DISABLED,
+            text=f"Health discovered for service: {service_name}",
+            error_message=health.error_code if health.status == HEALTH_STATUS_DISABLED else "",
+            data={
+                "source": "core_service",
+                "service": service_name,
+                "health": health.to_dict(),
+                "probe": bool(probe),
+                "city_status": self._city_status(service_name),
+                "lifecycle_status": self.lifecycle_manager.status(service_name).to_dict(),
+            },
+            metadata={"safe": True, "source": "core_service"},
+        )
+
+    def list_service_health(
+        self,
+        probe: bool = False,
+        force_refresh: bool = False,
+    ) -> CoreServiceResult:
+        """Return health summaries for registered services without starting them."""
+        services = [
+            self._service_health(name, probe=probe, force_refresh=force_refresh).to_dict()
+            for name in self._services
+        ]
+        return CoreServiceResult(
+            success=True,
+            text="Service health discovered.",
+            data={
+                "source": "core_service",
+                "probe": bool(probe),
+                "services": services,
+                "city_statuses": self._city_statuses(),
+            },
+            metadata={"safe": True, "source": "core_service"},
+        )
+
+    def get_capability_health(
+        self,
+        capability: str,
+        probe: bool = False,
+        force_refresh: bool = False,
+    ) -> CoreServiceResult:
+        """Return health summaries for services that declare a capability."""
+        clean_capability = _normalize_capability(capability)
+        candidates = [
+            name
+            for name in self._services
+            if clean_capability in self._service_capabilities(name)
+        ]
+        health = [
+            self._service_health(name, probe=probe, force_refresh=force_refresh).to_dict()
+            for name in candidates
+        ]
+        return CoreServiceResult(
+            success=bool(candidates),
+            text=(
+                f"Capability health discovered: {clean_capability}"
+                if candidates
+                else f"No services declare capability: {clean_capability}"
+            ),
+            error_message="" if candidates else "capability_not_available",
+            data={
+                "source": "core_service",
+                "capability": clean_capability,
+                "probe": bool(probe),
+                "services": health,
+                "candidate_services": candidates,
+                "city_statuses": self._city_statuses(),
             },
             metadata={"safe": True, "source": "core_service"},
         )
@@ -652,6 +749,85 @@ class CoreService:
             },
             error_message="" if not errors else "capability_discovery_errors",
             metadata={"safe": True, "source": "core_service"},
+        )
+
+    def _service_health(
+        self,
+        service_name: str,
+        probe: bool = False,
+        force_refresh: bool = False,
+    ) -> HealthResult:
+        clean_name = _normalize_service_name(service_name)
+        capabilities = self._service_capabilities(clean_name)
+        manifest = self.manifest_registry.get_manifest(clean_name)
+        if self._city_status(clean_name) == CITY_STATE_DISABLED:
+            return HealthResult(
+                component_name=clean_name,
+                component_type=type(self._services[clean_name]).__name__,
+                status=HEALTH_STATUS_DISABLED,
+                healthy=False,
+                available=False,
+                degraded=False,
+                error_code="service_disabled",
+                message="Service is disabled by CoreService.",
+                capabilities=capabilities,
+                metadata={
+                    "source": "core_service",
+                    "active_probe": False,
+                    "manifest": manifest.to_dict() if manifest else {},
+                },
+            )
+
+        if not probe:
+            lifecycle_health = health_from_lifecycle(
+                component_name=clean_name,
+                component_type=type(self._services[clean_name]).__name__,
+                lifecycle_status=self.lifecycle_manager.status(clean_name),
+                city_status=self._city_status(clean_name),
+                capabilities=capabilities,
+            )
+            metadata = dict(lifecycle_health.metadata)
+            metadata["manifest"] = manifest.to_dict() if manifest else {}
+            metadata["force_refresh"] = bool(force_refresh)
+            return HealthResult(
+                component_name=lifecycle_health.component_name,
+                component_type=lifecycle_health.component_type,
+                status=lifecycle_health.status,
+                healthy=lifecycle_health.healthy,
+                available=lifecycle_health.available,
+                degraded=lifecycle_health.degraded,
+                checked_at=lifecycle_health.checked_at,
+                latency_ms=lifecycle_health.latency_ms,
+                error_code=lifecycle_health.error_code,
+                message=lifecycle_health.message,
+                capabilities=lifecycle_health.capabilities,
+                metadata=metadata,
+            )
+
+        active_health = check_component_health(
+            self._services[clean_name],
+            component_name=clean_name,
+            component_type=type(self._services[clean_name]).__name__,
+            capabilities=capabilities,
+        )
+        metadata = dict(active_health.metadata)
+        metadata["source"] = "core_service"
+        metadata["active_probe"] = True
+        metadata["manifest"] = manifest.to_dict() if manifest else {}
+        metadata["force_refresh"] = bool(force_refresh)
+        return HealthResult(
+            component_name=active_health.component_name,
+            component_type=active_health.component_type,
+            status=active_health.status,
+            healthy=active_health.healthy,
+            available=active_health.available,
+            degraded=active_health.degraded,
+            checked_at=active_health.checked_at,
+            latency_ms=active_health.latency_ms,
+            error_code=active_health.error_code,
+            message=active_health.message,
+            capabilities=active_health.capabilities,
+            metadata=metadata,
         )
 
     def _city_status(self, name: str) -> str:

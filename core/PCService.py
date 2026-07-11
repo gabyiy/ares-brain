@@ -99,6 +99,9 @@ class PCService:
     def status(self) -> PCServiceResult:
         return self.get_status()
 
+    def health_check(self) -> PCServiceResult:
+        return self.get_status()
+
 
 class WindowsPCService(PCService):
     def __init__(

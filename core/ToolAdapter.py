@@ -69,6 +69,23 @@ class ToolAdapter(ABC):
     def supports(self, capability: str) -> bool:
         return (capability or "").strip() in set(self.capabilities)
 
+    def health_check(self) -> ToolResponse:
+        return ToolResponse(
+            adapter_name=self.name,
+            capability="health.check",
+            success=True,
+            text=f"Tool adapter health check passed: {self.name}.",
+            data={
+                "status": "healthy",
+                "adapter_name": self.name,
+                "capabilities": list(self.capabilities),
+                "requires_network": bool(self.requires_network),
+                "requires_auth": bool(self.requires_auth),
+                "supports_real_mode": bool(self.supports_real_mode),
+            },
+            metadata={"safe": True, "source": "tool_adapter"},
+        )
+
     def handle_configured(
         self,
         request: ToolRequest,

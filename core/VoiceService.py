@@ -29,6 +29,9 @@ class VoiceInputAdapter:
     def get_capabilities(self) -> VoiceServiceResult:
         raise NotImplementedError
 
+    def health_check(self) -> VoiceServiceResult:
+        return self.get_status()
+
 
 class VoiceOutputAdapter:
     """Adapter boundary for future text-to-speech output providers."""
@@ -180,6 +183,34 @@ class MockVoiceInputAdapter(VoiceInputAdapter):
             metadata=self._metadata(),
         )
 
+    def health_check(self) -> VoiceServiceResult:
+        if self.fail:
+            return VoiceServiceResult(
+                success=False,
+                text="Mock voice input health check failed safely.",
+                data=self._base_data(transcript=""),
+                error_message=self.failure_message,
+                metadata=self._metadata(),
+            )
+        if not self.available:
+            return VoiceServiceResult(
+                success=False,
+                text="Mock voice input health check reports unavailable placeholder.",
+                data=self._base_data(transcript="", voice_input="placeholder"),
+                error_message="voice_input_unavailable",
+                metadata=self._metadata(placeholder=True),
+            )
+        return VoiceServiceResult(
+            success=True,
+            text="Mock voice input health check passed.",
+            data={
+                **self._base_data(transcript=""),
+                "status": "healthy",
+                "capabilities": ["voice.capture"],
+            },
+            metadata=self._metadata(),
+        )
+
     def _base_data(self, transcript: str, voice_input: Optional[str] = None) -> Dict[str, Any]:
         return {
             "source": self.source,
@@ -323,6 +354,37 @@ class MockVoiceOutputAdapter(VoiceOutputAdapter):
                 "speaker": "disabled",
                 "tts": "mock",
                 "audio_hardware_access": "disabled",
+            },
+            metadata=self._metadata(),
+        )
+
+    def health_check(self) -> VoiceServiceResult:
+        if self.fail:
+            return VoiceServiceResult(
+                success=False,
+                text="Mock voice output health check failed safely.",
+                data=self._base_data(""),
+                error_message=self.failure_message,
+                metadata=self._metadata(),
+            )
+        if not self.available:
+            return VoiceServiceResult(
+                success=True,
+                text="Mock voice output placeholder is available as a no-audio fallback.",
+                data={
+                    **self._base_data("", voice_output="placeholder"),
+                    "status": "healthy",
+                    "capabilities": ["voice.output"],
+                },
+                metadata=self._metadata(placeholder=True),
+            )
+        return VoiceServiceResult(
+            success=True,
+            text="Mock voice output health check passed.",
+            data={
+                **self._base_data(""),
+                "status": "healthy",
+                "capabilities": ["voice.output"],
             },
             metadata=self._metadata(),
         )
@@ -596,6 +658,37 @@ class PlaceholderVoiceService(VoiceService):
             success=True,
             text="Voice City capabilities discovered.",
             data=capabilities.to_dict(),
+            metadata={
+                "safe": True,
+                "source": "voice_service",
+                "placeholder": True,
+                "audio_hardware_accessed": self.audio_hardware_accessed,
+                "speech_engine_accessed": self.speech_engine_accessed,
+            },
+        )
+
+    def health_check(self) -> VoiceServiceResult:
+        return VoiceServiceResult(
+            success=True,
+            text="Voice City health check passed in placeholder/mock mode.",
+            data={
+                "status": "healthy",
+                "source": "voice_service",
+                "capabilities": [
+                    "voice.status",
+                    "voice.capabilities",
+                    "voice.text_loop",
+                ],
+                "voice_input": self.voice_input.get_status().to_dict()
+                if hasattr(self.voice_input.get_status(), "to_dict")
+                else {},
+                "voice_output": self.voice_output.get_status().to_dict()
+                if hasattr(self.voice_output.get_status(), "to_dict")
+                else {},
+                "audio_hardware_access": "disabled",
+                "speech_engine_access": "disabled",
+                "background_listening": "disabled",
+            },
             metadata={
                 "safe": True,
                 "source": "voice_service",

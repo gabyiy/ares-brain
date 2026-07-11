@@ -286,6 +286,29 @@ class MockMicrophoneAdapter(MicrophoneAdapter):
             },
         )
 
+    def health_check(self) -> MicrophoneResult:
+        if not self.available:
+            return self._failure(
+                status="unavailable",
+                text="Mock microphone health check reports unavailable. No hardware was accessed.",
+                error_message="microphone_unavailable",
+            )
+        if self.fail_start:
+            return self._failure(
+                status="failed",
+                text="Mock microphone health check reports start failure.",
+                error_message=self.failure_message,
+            )
+        return self._success(
+            status="healthy",
+            text="Mock microphone health check passed. No hardware was accessed.",
+            data={
+                "queued_chunks": len(self._chunks),
+                "microphone": "mock",
+                "audio_hardware_access": "disabled",
+            },
+        )
+
     def _normalize_chunk(
         self,
         chunk: AudioChunk | bytes | bytearray,
