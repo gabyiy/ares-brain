@@ -137,6 +137,7 @@ Current responsibilities:
 - provide `get_service(name)` lookup
 - provide `list_services()` metadata
 - aggregate capabilities with `get_capabilities()`
+- expose lazy health visibility with `get_service_health()`, `list_service_health()`, and `get_capability_health()`
 - route a request to one matching city with `route_by_capability()`
 - validate capability manifests before module activation
 - expose `get_manifest(name)` and `list_manifests()`
@@ -272,11 +273,11 @@ Implemented:
 - versioned interface contracts
 - capability manifests
 - memory/database migrations
+- health checks and adapter fallback
 
 Remaining hardening items:
 
-1. health checks and adapter fallback
-2. measured resource budgets
+1. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
@@ -290,6 +291,78 @@ Permanent memory rules:
 - Unknown future schema versions must never be silently downgraded.
 - A failed load must never be interpreted as empty memory.
 - Hardware-specific paths must not become part of the durable memory schema.
+
+Permanent health/fallback rules:
+
+- The Brain never selects concrete adapters.
+- Automatic fallback is allowed only for explicitly retry-safe operations.
+- A failed adapter must never cause unrelated Cities to activate.
+- Fallback must never hide the original failure.
+- Disabled or circuit-open adapters must not be selected.
+- Health checks must not perform destructive actions.
+
+# Health Checks and Adapter Fallback
+
+`core.Health` is the common health and fallback boundary for services, Cities, skills, and adapters. It normalizes existing `health_check()`, `get_status()`, and `status()` outputs behind one `HealthResult` shape instead of replacing stable local status contracts.
+
+Health results include:
+
+- component name
+- component type
+- status
+- healthy/available/degraded booleans
+- check timestamp
+- optional latency
+- error code
+- safe message
+- capabilities
+- bounded non-secret metadata
+
+Supported health statuses are:
+
+- `healthy`
+- `degraded`
+- `unavailable`
+- `failed`
+- `disabled`
+- `unknown`
+
+Health checks are availability checks only. They must not start background listeners, open microphones, send notifications, call GPT, access arbitrary internet endpoints, mutate Brain state, modify persistent memory, execute PC actions, or activate unrelated Cities.
+
+`AdapterFallbackPolicy` centralizes provider selection inside the owning City/service boundary. It accepts ordered `AdapterCandidate` objects, checks capability compatibility, interface-version compatibility, enabled state, health status, and circuit state, then selects the first compatible healthy adapter. Degraded adapters are selected only when policy explicitly allows degraded operation. Rejected candidates remain visible through structured rejection reasons.
+
+Runtime fallback is separate from preflight selection. Runtime fallback is allowed only when the operation is explicitly marked `retry_safe`. It is bounded by `max_fallback_attempts`, preserves the original failure in the result/history, and reports which adapter ultimately handled the request. Retry-unsafe or unknown operations do not automatically fall back.
+
+`CircuitBreaker` provides local bounded failure tracking with states:
+
+- `closed`
+- `open`
+- `half_open`
+
+Repeated failures open a circuit. Open adapters are skipped. After cooldown, a checked adapter moves to half-open for one probe. A successful probe closes the circuit; a failed probe reopens it. There is no daemon or background timer; state advances only when checked or used.
+
+`HealthCache` supports optional short-lived health caching with TTL, forced refresh, and disabled-adapter invalidation. It is in-memory only.
+
+CoreService health visibility is read-only:
+
+- `get_service_health(name)`
+- `list_service_health()`
+- `get_capability_health(capability)`
+
+These methods report known manifest, lifecycle, city status, and safe health state without activating every lazy City. Active probes are explicit and still must not execute business actions.
+
+Voice City is the first integrated fallback boundary. The simulated `VoicePipeline` can use candidate lists for mock microphone selection and mock speech-to-text fallback. Default single-adapter behavior remains compatible. Text/mock fallback remains available in tests when the primary mock STT adapter is unavailable.
+
+Operational health/fallback events can be stored in `EventHistoryStore`:
+
+- `health.check_failed`
+- `health.fallback_selected`
+- `health.all_candidates_unavailable`
+- `health.circuit_opened`
+- `health.circuit_half_open_probe`
+- `health.circuit_recovered`
+
+Event payloads include only bounded operational fields such as city, capability, adapter name, status, error code, and attempt count. They must not store transcripts, API keys, raw personal data, or full exception traces.
 
 # Versioned Interface Contracts
 
@@ -674,6 +747,10 @@ The Brain remains unchanged because identity, memory, personality, goals, reason
 - Communication uses structured data.
 - Public architectural boundaries use versioned contracts.
 - No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
+- Concrete adapter selection happens inside the owning City or service, never in the Brain.
+- Automatic fallback is allowed only for explicitly retry-safe operations.
+- Disabled, incompatible, unhealthy, or circuit-open adapters must not be selected.
+- Health checks must not perform destructive actions.
 - No hardcoded dependencies in the Brain.
 - Discovery over assumptions.
 - Small independent modules.

@@ -4,13 +4,13 @@ Last Updated: 2026-07-11
 
 Current Version
 
-ARES v1.67 - Memory Schema Migrations
+ARES v1.68 - Health Checks and Adapter Fallback
 
 ---
 
 Current Status
 
-ARES is at the memory schema migration foundation before any real audio work.
+ARES is at the health checks and controlled adapter fallback foundation before any real audio work.
 
 Confirmed Phase 3 foundation:
 
@@ -34,9 +34,10 @@ Confirmed Phase 3 foundation:
 - Versioned interface contracts
 - Capability manifests
 - Memory/schema migrations
+- Health checks and controlled adapter fallback
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 527 tests.
+Current pytest collection: 560 tests.
 
 Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
@@ -124,11 +125,11 @@ Implemented:
 - versioned interface contracts
 - capability manifests
 - memory/database migrations
+- health checks and adapter fallback
 
 Remaining hardening items:
 
-1. health checks and adapter fallback
-2. measured resource budgets
+1. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
@@ -142,6 +143,15 @@ Permanent memory rules:
 - Unknown future schema versions must never be silently downgraded.
 - A failed load must never be interpreted as empty memory.
 - Hardware-specific paths must not become part of the durable memory schema.
+
+Permanent health/fallback rules:
+
+- The Brain never selects concrete adapters.
+- Automatic fallback is allowed only for explicitly retry-safe operations.
+- A failed adapter must never cause unrelated Cities to activate.
+- Fallback must never hide the original failure.
+- Disabled or circuit-open adapters must not be selected.
+- Health checks must not perform destructive actions.
 
 Enforced module lifecycle has been added.
 
@@ -249,6 +259,31 @@ Migration behavior:
 - Inspection reports show store path, schema name, detected version, target version, migration needed, path, latest backup, and validation state without dumping personal memory contents.
 - Tests use temporary directories only and do not touch real user data.
 - No real microphone access, Whisper, Vosk, Piper, wake word, GPT, internet, remote databases, cloud synchronization, distributed locking, PostgreSQL, Docker, automatic cloud backup, health fallback, or guessed resource limits were added.
+
+Health checks and controlled adapter fallback have been added.
+
+Health/fallback behavior:
+
+- New module: `core.Health`.
+- New common model: `HealthResult`.
+- New policy/config models: `HealthPolicyConfig`, `AdapterCandidate`, `AdapterFallbackPolicy`, and `FallbackExecutionResult`.
+- New local resilience helpers: `CircuitBreaker` and `HealthCache`.
+- Health statuses are `healthy`, `degraded`, `unavailable`, `failed`, `disabled`, and `unknown`.
+- Retry safety is explicit: `retry_safe`, `retry_unsafe`, or `unknown`.
+- CoreService exposes read-only health visibility with `get_service_health(name)`, `list_service_health()`, and `get_capability_health(capability)`.
+- Lazy health visibility reports manifest, lifecycle, and city state without activating every City.
+- Active health probes are explicit and call only safe health/status methods.
+- Adapter fallback checks enabled state, declared capability, interface version, health status, degraded-mode policy, and circuit state before selection.
+- Degraded adapters are used only when policy explicitly allows them.
+- Runtime fallback is bounded by `max_fallback_attempts` and allowed only for explicitly retry-safe operations.
+- Runtime fallback preserves the original failure in the execution result/history.
+- Circuit breaker states are `closed`, `open`, and `half_open`, with deterministic clock injection for tests and no background timer.
+- Health cache supports TTL reuse, expiration, forced refresh, and disabled-adapter invalidation.
+- `MockMicrophoneAdapter`, `MockSpeechToTextAdapter`, `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, `ToolAdapter`, `PCService`, and `PlaceholderVoiceService` expose safe health checks or status-backed health behavior.
+- `VoicePipeline` can use optional candidate lists for mock microphone selection and mock STT fallback while preserving its default single-adapter path.
+- EventHistoryStore can record safe operational events for health check failures, fallback selections, all-unavailable decisions, circuit opened, half-open probes, and circuit recovery.
+- Tests cover health normalization, selection, rejection reasons, degraded policy, bounded fallback attempts, retry-safety, circuit breaker transitions, cache behavior, event-history safety, CoreService lazy health visibility, VoicePipeline compatibility, and STT fallback.
+- No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, real weather/market calls, notifications, automatic PC actions, background listeners, or measured resource budgets were added.
 
 Phase 3 Voice Checkpoint
 
@@ -1541,12 +1576,13 @@ Text REPL
 
 Immediate Next Milestone
 
-Health checks and adapter fallback are the next Architecture Hardening Checkpoint item. Do not add real audio hardware access without explicit approval.
+Measured resource budgets are the next Architecture Hardening Checkpoint item. Do not add real audio hardware access without explicit approval.
 
 Next technical choices:
 
 - Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
 - Keep voice, GPT, embeddings, external weather/stocks/calendar APIs, real scheduling, notifications, and Raspberry Pi deployment out of scope until explicitly approved.
+- Keep real microphone, Whisper, Vosk, Piper, wake word, internet-backed adapters, notifications, and automatic PC actions out of scope until measured resource budgets are handled and explicitly approved.
 - Connect selected daily reflection scripts and future providers to MemoryStore v1 only after the memory contract is documented.
 
 ---
@@ -1567,7 +1603,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 527 tests.
+- Current pytest collection: 560 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1587,6 +1623,7 @@ Verification Notes
 - CoreService tests cover service registration, lifecycle metadata, capability registry metadata, lazy route-by-capability behavior, unused city idle behavior, disabled city routing prevention, and failed route state handling.
 - ModuleLifecycle tests cover UNLOADED -> STARTING -> READY startup, READY -> BUSY -> READY execution, READY -> STOPPING -> STOPPED shutdown, idempotent start/stop, execution rejection before start, health-check DEGRADED/FAILED policy behavior, startup failure, execution failure isolation, illegal transition rejection, explicit recovery, transition history, monotonic timestamps, correlation id preservation, and lifecycle status queries.
 - CoreService lifecycle tests cover lifecycle health gating, explicit recovery, unrelated-module failure isolation, lifecycle status/history queries, and Voice City activation without activating PC City.
+- Health fallback tests cover HealthResult normalization, healthy/degraded/unavailable/failed/disabled states, primary/secondary adapter selection, disabled/capability/version rejection, degraded strict/permissive policy, all-unavailable failure, rejection reasons, bounded fallback attempts, retry-safe fallback, retry-unsafe no-fallback, circuit open/half-open/recovery behavior, deterministic clocks, health cache TTL/refresh/invalidations, malformed/timeout/exception health failures, event-history safety, lazy CoreService health visibility, active probes without lifecycle activation, VoicePipeline compatibility, and mock STT fallback.
 - Core EventBus tests cover event dataclass normalization, publish, subscribe, unsubscribe, no-subscriber safety, priority ordering, invalid priority rejection, and stable priority levels.
 - CoreService event decision tests cover low, normal, high, critical, unknown-source, and disabled-source event handling.
 - EventHistoryStore tests cover add, query by source/type/priority, bounded max size, empty history, persistence after reload, invalid priority rejection, and zero-size history.
@@ -1623,6 +1660,8 @@ Verification Notes
 
 Latest Commits
 
+- `ebaff5a` Add health checks and adapter fallback
+- `a269ff2` Document memory schema migrations
 - `dc2526d` Add versioned memory schema migrations
 - `80df88b` Add capability manifest foundation
 - `98d8dea` Document versioned interface contracts
@@ -1709,8 +1748,8 @@ Latest Commits
 
 Next Planned Step
 
-- Architecture hardening before real hardware/adapters: health checks and adapter fallback.
-- Remaining hardening after fallback: measured resource budgets.
+- Architecture hardening before real hardware/adapters: measured resource budgets.
+- Health checks and controlled adapter fallback are implemented.
 - Plan Voice wake word/STT/TTS integration only after explicit approval and after the hardening scope is handled.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.

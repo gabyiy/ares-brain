@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.67 - Memory Schema Migrations
+ARES v1.68 - Health Checks and Adapter Fallback
 
 ---
 
@@ -20,7 +20,7 @@ The active runtime includes `core.IntentParser` for structured local intents, `c
 
 The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the Brain/CoreService capital city model, current CoreService and PCService boundaries, capability discovery, future cities, upgrade philosophy, design rules, and long-term vision.
 
-`core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, `get_capabilities()`, `route_by_capability()`, `get_lifecycle_status()`, `get_lifecycle_history()`, `recover_service()`, `get_manifest(name)`, and `list_manifests()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior. CoreService keeps compatibility city states as `idle`, `active`, `failed`, and `disabled`, and now owns `core.ModuleLifecycleManager` for strict module lifecycle enforcement with `UNLOADED`, `STARTING`, `READY`, `BUSY`, `DEGRADED`, `STOPPING`, `STOPPED`, and `FAILED`. Lazy capability routing starts and health-checks only the selected module, executes it only when READY, and leaves unused modules inactive. `core.Contracts` now provides versioned V1 public request/result contracts, a central compatibility registry, deterministic serialization, and safe rejection before module execution for unsupported contracts. `core.CapabilityManifest` and `CapabilityManifestRegistry` now require CoreService-managed modules to declare identity, capabilities, contracts, dependencies, platform compatibility, permissions, lifecycle support, and provider metadata before activation. `memory.schema_migrations` now provides centralized durable-store schema envelopes, migration registration, legacy import, backup-before-write, atomic replacement, write locking, corruption rejection, and read-only inspection for active JSON-backed persistent stores.
+`core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, `get_capabilities()`, `route_by_capability()`, `get_lifecycle_status()`, `get_lifecycle_history()`, `recover_service()`, `get_manifest(name)`, `list_manifests()`, `get_service_health(name)`, `list_service_health()`, and `get_capability_health(capability)`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior. CoreService keeps compatibility city states as `idle`, `active`, `failed`, and `disabled`, and now owns `core.ModuleLifecycleManager` for strict module lifecycle enforcement with `UNLOADED`, `STARTING`, `READY`, `BUSY`, `DEGRADED`, `STOPPING`, `STOPPED`, and `FAILED`. Lazy capability routing starts and health-checks only the selected module, executes it only when READY, and leaves unused modules inactive. `core.Contracts` now provides versioned V1 public request/result contracts, a central compatibility registry, deterministic serialization, and safe rejection before module execution for unsupported contracts. `core.CapabilityManifest` and `CapabilityManifestRegistry` now require CoreService-managed modules to declare identity, capabilities, contracts, dependencies, platform compatibility, permissions, lifecycle support, and provider metadata before activation. `memory.schema_migrations` now provides centralized durable-store schema envelopes, migration registration, legacy import, backup-before-write, atomic replacement, write locking, corruption rejection, and read-only inspection for active JSON-backed persistent stores. `core.Health` now provides a common health result model, bounded adapter fallback policy, explicit retry-safety classification, circuit breaker foundation, short-lived health cache, and event-history integration for observable fallback decisions.
 
 `core.EventBus` now provides an internal future city event skeleton with `Event` records shaped as source, type, priority, payload, and timestamp. Supported priorities are `low`, `normal`, `high`, and `critical`. This is future-use infrastructure only; it does not start background listeners, notifications, camera loops, internet access, GPT, or any daemon.
 
@@ -42,6 +42,8 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 
 `core.VoicePipeline` now provides the simulated end-to-end Voice City command pipeline. It accepts audio through an injected `MicrophoneAdapter`, transcribes through an injected `SpeechToTextAdapter`, passes `TranscriptionResult` through `VoiceCommandRouter`, routes valid commands through CoreService, activates only the required city, sends final text through an injected `VoiceOutputAdapter`, preserves session and correlation ids through every stage, and records structured local events for audio capture, transcription accepted/rejected, command routed/rejected, city activation, execution completion/failure, and output production. The pipeline is mock/local only and does not import concrete adapters into the Brain or CoreService.
 
+`core.Health` normalizes service, city, skill, and adapter health behind `HealthResult` with explicit statuses: `healthy`, `degraded`, `unavailable`, `failed`, `disabled`, and `unknown`. `AdapterFallbackPolicy` selects only enabled, capability-compatible, interface-version-compatible, healthy adapters, can use degraded adapters only when policy allows, reports every rejection reason, and records bounded health/fallback events when an `EventHistoryStore` is provided. Runtime fallback is allowed only for explicitly `retry_safe` operations, preserves the original failure, and is bounded by configured maximum attempts. `CircuitBreaker` tracks `closed`, `open`, and `half_open` states with injected clocks for deterministic tests. `HealthCache` supports short-lived cached health results with forced refresh and disabled-adapter invalidation. The simulated VoicePipeline can use candidate lists for mock microphone/STT adapter selection and STT fallback; default single-adapter behavior remains compatible.
+
 Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter layer is mock/local only and does not access audio hardware.
 
 Architecture Hardening Checkpoint
@@ -54,11 +56,11 @@ Implemented:
 - versioned interface contracts
 - capability manifests
 - memory/database migrations
+- health checks and adapter fallback
 
 Remaining:
 
-1. health checks and adapter fallback
-2. measured resource budgets
+1. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
@@ -69,6 +71,8 @@ Permanent manifest rule: No independently loadable ARES module may start without
 Capability manifests now describe ARES modules before activation. Each manifest declares module identity, module type, explicit capabilities, consumed and produced contract versions, dependencies, supported platforms, requested permissions, lifecycle operations, provider information, and metadata. `CapabilityManifestRegistry` validates duplicates, contract support, required capabilities, required modules, incompatible capabilities, platform compatibility, permission policy, and lifecycle compatibility. CoreService checks manifests before module lifecycle start, records safe manifest rejection events when an `EventHistoryStore` is configured, and leaves unrelated cities idle. `SkillRegistry` also registers skill manifests from explicit skill metadata. `config/modules.example.json` documents local enable/disable flags, preferred providers, and allowed permissions without remote configuration, package downloads, dynamic loading, secrets, or internet discovery.
 
 Permanent memory rules: durable ARES data may never be rewritten without validation and backup; unknown future schema versions must never be silently downgraded; a failed load must never be interpreted as empty memory; hardware-specific paths must not become part of the durable memory schema.
+
+Permanent health/fallback rules: the Brain never selects concrete adapters; automatic fallback is allowed only for explicitly retry-safe operations; a failed adapter must never cause unrelated Cities to activate; fallback must never hide the original failure; disabled or circuit-open adapters must not be selected; health checks must not perform destructive actions.
 
 Memory schema migrations now protect active JSON-backed durable stores. The current envelope fields are `schema_name`, `schema_version`, `created_at`, `updated_at`, `data`, and optional `metadata`. The current active schemas are `ares.user_profile`, `ares.goals`, `ares.notes`, `ares.tasks`, `ares.memory.short`, `ares.memory.long`, and `ares.event_history`. `ReminderScheduler` derives from tasks and has no separate file. Voice-session history is stored through `EventHistoryStore`; there is no separate voice-session store. Legacy `memory_manager.py` remains a separate script API over legacy files and is documented as legacy/disconnected from the active store path.
 
@@ -468,7 +472,7 @@ Implemented Features
 - Speech-to-text adapter abstraction with `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, confidence scores, empty transcription handling, low-confidence handling, safe failure results, and Voice City dependency injection
 - Voice Command Router with confidence gating, empty-transcription handling, unknown-command handling, CoreService `voice.text_loop` routing, routed/rejected metrics, and routed/rejected events
 - Simulated VoicePipeline connecting mock microphone audio, mock speech-to-text, VoiceCommandRouter, CoreService route-by-capability, mock output, session/correlation ids, and structured stage events
-- Architecture Hardening Checkpoint before real hardware/adapters with enforced lifecycle, versioned interface contracts, capability manifests, and memory/database migrations implemented, and health-check/fallback plus resource-budget follow-up items remaining
+- Architecture Hardening Checkpoint before real hardware/adapters with enforced lifecycle, versioned interface contracts, capability manifests, memory/database migrations, and health checks plus controlled adapter fallback implemented, with measured resource budgets remaining
 - Built-in `VoiceSessionSkill` for starting bounded mock Voice City sessions from text commands through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path
 - Safe Voice Session event logging to `EventHistoryStore` for session start, stop, adapter failure, and max-turn completion events
 - Read-only Voice Session status queries for the latest mock session event group
@@ -494,7 +498,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 527 tests across current core modules
+- Pytest automated coverage for 560 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -513,7 +517,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `527 tests`.
+Current pytest collection: `560 tests`.
 
 Manual Calculator Launch Verification
 
@@ -1358,13 +1362,14 @@ Architecture Hardening Checkpoint
   - versioned interface contracts
   - capability manifests
   - memory/database migrations
+  - health checks and adapter fallback
 - Remaining hardening items:
-  1. health checks and adapter fallback
-  2. measured resource budgets
+  1. measured resource budgets
 - Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 - Permanent contract rule: No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
 - Permanent manifest rule: No independently loadable ARES module may start without a valid registered capability manifest.
 - Permanent memory rule: Durable ARES data may never be rewritten without validation and backup.
+- Permanent health/fallback rules: the Brain never selects concrete adapters; automatic fallback is allowed only for explicitly retry-safe operations; a failed adapter must never cause unrelated Cities to activate; fallback must never hide the original failure; disabled or circuit-open adapters must not be selected; health checks must not perform destructive actions.
 
 Phase 62
 
@@ -1406,20 +1411,36 @@ Phase 64
 
 Phase 65
 
+- Health checks and controlled adapter fallback
+- `core.Health` defines `HealthResult`, `HealthPolicyConfig`, `AdapterCandidate`, `AdapterFallbackPolicy`, `CircuitBreaker`, and `HealthCache`
+- Health status values are `healthy`, `degraded`, `unavailable`, `failed`, `disabled`, and `unknown`
+- CoreService exposes lazy read-only health visibility through `get_service_health()`, `list_service_health()`, and `get_capability_health()` without activating every City
+- Adapter fallback checks capability compatibility, interface version, disabled state, health status, and circuit state before selection
+- Degraded adapters are rejected unless policy explicitly allows them
+- Runtime fallback is bounded and allowed only for explicitly `retry_safe` operations
+- Circuit breaker states are `closed`, `open`, and `half_open`; state changes only when checked or used
+- Health cache supports TTL, forced refresh, and disabled-adapter invalidation
+- VoicePipeline can use candidate lists for mock microphone selection and mock STT fallback while preserving default single-adapter behavior
+- EventHistoryStore can record health-check failures, fallback selections, all-unavailable decisions, circuit opened, half-open probe, and circuit recovered events without transcript content or secrets
+- Current pytest collection is 560 tests
+- No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, real weather/market calls, notifications, automatic PC actions, resource budgets, or background listeners
+
+Phase 66
+
 - Future real voice planning only
 - Wake word
 - Real speech-to-text
 - Real text-to-speech
 - Continuous conversation
 
-Phase 66
+Phase 67
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 67
+Phase 68
 
 - Robotics
 - ROS2
