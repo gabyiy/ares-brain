@@ -17,3 +17,7 @@ data/event_history.json
 data/notes.json
 data/tasks.json
 data/.migration_backups/
+data/manual_alsa_samples/
+data/manual_whisper_samples/
+external/whisper.cpp/
+models/whisper/*.bin
