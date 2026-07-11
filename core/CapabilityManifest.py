@@ -995,6 +995,34 @@ def default_voice_related_manifests() -> List[CapabilityManifest]:
             metadata={"source": "voice_city", "mock": True},
         ),
         CapabilityManifest(
+            module_name="linux_alsa_microphone_adapter",
+            module_type=MODULE_TYPE_ADAPTER,
+            module_version=CONTRACT_VERSION_V1,
+            manifest_version=MANIFEST_VERSION_V1,
+            description="Linux ALSA arecord microphone adapter for Raspberry Pi manual capture.",
+            provider="ares",
+            enabled_by_default=False,
+            capabilities=["voice.capture"],
+            consumed_contracts={CONTRACT_MICROPHONE_CAPTURE_REQUEST: [CONTRACT_VERSION_V1]},
+            produced_contracts={CONTRACT_MICROPHONE_CAPTURE_RESULT: [CONTRACT_VERSION_V1]},
+            platform=PlatformCompatibility(
+                supported_operating_systems=["linux"],
+                hardware_requirements={"microphone_required": True}
+            ),
+            permissions=[PERMISSION_MICROPHONE_READ, PERMISSION_PROCESS_LAUNCH],
+            lifecycle_support=[
+                LIFECYCLE_OPERATION_START,
+                LIFECYCLE_OPERATION_HEALTH_CHECK,
+                LIFECYCLE_OPERATION_STOP,
+            ],
+            metadata={
+                "source": "voice_city",
+                "hardware_specific": "linux_alsa",
+                "uses_arecord": True,
+                "default_enabled": False,
+            },
+        ),
+        CapabilityManifest(
             module_name="mock_speech_to_text_adapter",
             module_type=MODULE_TYPE_ADAPTER,
             module_version=CONTRACT_VERSION_V1,
