@@ -35,6 +35,7 @@ from core.Health import (
     health_from_lifecycle,
 )
 from core.ModuleLifecycle import (
+    LIFECYCLE_BUSY,
     LIFECYCLE_DEGRADED,
     LIFECYCLE_FAILED,
     LifecyclePolicy,
@@ -42,6 +43,12 @@ from core.ModuleLifecycle import (
     ModuleLifecycleManager,
 )
 from core.PCService import PCService, WindowsPCService
+from core.ResourceBudget import (
+    RESOURCE_ERROR_NO_EVICTION_CANDIDATE,
+    ResourceDecision,
+    ResourceManager,
+    ResourcePolicy,
+)
 from core.VoiceService import PlaceholderVoiceService, VoiceService
 from events.EventHistoryStore import EventHistoryStore
 
@@ -121,6 +128,8 @@ class CoreService:
         lifecycle_manager: Optional[ModuleLifecycleManager] = None,
         manifest_registry: Optional[CapabilityManifestRegistry] = None,
         manifest_policy: Optional[ManifestPolicy] = None,
+        resource_manager: Optional[ResourceManager] = None,
+        resource_policy: Optional[ResourcePolicy] = None,
         register_default_pc: bool = True,
         register_default_voice: bool = True,
     ):
@@ -131,6 +140,10 @@ class CoreService:
         self.lifecycle_manager = lifecycle_manager or ModuleLifecycleManager()
         self.manifest_registry = manifest_registry or CapabilityManifestRegistry(
             policy=manifest_policy,
+        )
+        self.resource_manager = resource_manager or ResourceManager(
+            policy=resource_policy,
+            event_history_store=event_history_store,
         )
         if register_default_voice or voice_service is not None:
             register_default_voice_manifests(self.manifest_registry)
@@ -188,7 +201,17 @@ class CoreService:
             "capabilities": _normalize_capabilities(capabilities or []),
         }
         self._ensure_service_manifest(service_name, service, capabilities or [], manifest)
-        self.lifecycle_manager.register_module(service_name, service, LifecyclePolicy())
+        registered_manifest = self.manifest_registry.get_manifest(service_name)
+        inactivity_seconds = (
+            registered_manifest.resources.inactivity_timeout_seconds
+            if registered_manifest is not None
+            else None
+        )
+        self.lifecycle_manager.register_module(
+            service_name,
+            service,
+            LifecyclePolicy(inactivity_seconds=inactivity_seconds),
+        )
         return service
 
     def get_service(self, name: str) -> Optional[Any]:
@@ -521,6 +544,37 @@ class CoreService:
                 correlation_id,
                 session_id,
             )
+        manifest = self.manifest_registry.get_manifest(service_name)
+        resource_reservation = self._reserve_resources_for_activation(
+            manifest,
+            clean_capability,
+            correlation_id,
+            session_id,
+        )
+        if not resource_reservation.success:
+            return self._resource_activation_failure(
+                clean_capability,
+                service_name,
+                resource_reservation,
+                correlation_id,
+                session_id,
+            )
+        task_id = _resource_task_id(service_name, clean_capability, correlation_id, session_id)
+        task_slot = self.resource_manager.acquire_task(
+            manifest or service_name,
+            task_id=task_id,
+            priority=manifest.resources.task_priority if manifest is not None else "",
+        )
+        if not task_slot.success:
+            if resource_reservation.status == "reserved":
+                self.resource_manager.release(service_name, force=True)
+            return self._resource_activation_failure(
+                clean_capability,
+                service_name,
+                task_slot,
+                correlation_id,
+                session_id,
+            )
         lifecycle_request = LifecycleRequest(
             module_name=service_name,
             operation="route_by_capability",
@@ -535,6 +589,9 @@ class CoreService:
         )
         start_result = self.lifecycle_manager.start(service_name, lifecycle_request)
         if not start_result.success:
+            self.resource_manager.release_task(service_name, task_id)
+            if resource_reservation.status == "reserved":
+                self.resource_manager.release(service_name, force=True)
             self._set_city_status(service_name, CITY_STATE_FAILED)
             return self._route_lifecycle_failure(
                 clean_capability,
@@ -545,6 +602,9 @@ class CoreService:
 
         health_result = self.lifecycle_manager.health_check(service_name, lifecycle_request)
         if not health_result.success:
+            self.resource_manager.release_task(service_name, task_id)
+            if resource_reservation.status == "reserved":
+                self.resource_manager.release(service_name, force=True)
             self._set_city_status(service_name, CITY_STATE_FAILED)
             return self._route_lifecycle_failure(
                 clean_capability,
@@ -554,12 +614,16 @@ class CoreService:
             )
 
         self._set_city_status(service_name, CITY_STATE_ACTIVE)
-        execute_result = self.lifecycle_manager.execute(
-            service_name,
-            lifecycle_request,
-            lambda active_service: handler(active_service),
-        )
+        try:
+            execute_result = self.lifecycle_manager.execute(
+                service_name,
+                lifecycle_request,
+                lambda active_service: handler(active_service),
+            )
+        finally:
+            task_release = self.resource_manager.release_task(service_name, task_id)
         if not execute_result.success:
+            resource_release = self.resource_manager.release(service_name, force=True)
             self._set_city_status(service_name, CITY_STATE_FAILED)
             return CoreServiceResult(
                 success=False,
@@ -575,6 +639,13 @@ class CoreService:
                         "execute": execute_result.to_dict(),
                     },
                     "lifecycle_status": self.lifecycle_manager.status(service_name).to_dict(),
+                    "resource_management": {
+                        "reservation": resource_reservation.to_dict(),
+                        "task_slot": task_slot.to_dict(),
+                        "task_release": task_release.to_dict(),
+                        "resource_release": resource_release.to_dict(),
+                        "current_usage": self.resource_manager.current_usage(),
+                    },
                     "city_lifecycle": {
                         "before": before_status,
                         "during": CITY_STATE_ACTIVE,
@@ -588,6 +659,7 @@ class CoreService:
             )
 
         response = execute_result.data.get("response")
+        activity = self.resource_manager.record_activity(service_name)
         self._set_city_status(service_name, CITY_STATE_IDLE)
         return CoreServiceResult(
             success=True,
@@ -605,6 +677,13 @@ class CoreService:
                     "execute": execute_result.to_dict(),
                 },
                 "lifecycle_status": self.lifecycle_manager.status(service_name).to_dict(),
+                "resource_management": {
+                    "reservation": resource_reservation.to_dict(),
+                    "task_slot": task_slot.to_dict(),
+                    "task_release": task_release.to_dict(),
+                    "activity": activity.to_dict(),
+                    "current_usage": self.resource_manager.current_usage(),
+                },
                 "city_lifecycle": {
                     "before": before_status,
                     "during": CITY_STATE_ACTIVE,
@@ -614,6 +693,172 @@ class CoreService:
             },
             correlation_id=correlation_id,
             session_id=session_id,
+            metadata={"safe": True, "source": "core_service"},
+        )
+
+    def get_resource_status(self) -> CoreServiceResult:
+        """Return safe resource-budget status without activating inactive services."""
+        return CoreServiceResult(
+            success=True,
+            text="Resource status discovered.",
+            data={
+                "source": "core_service",
+                "policy": self.resource_manager.policy.to_dict(),
+                "current_usage": self.resource_manager.current_usage(),
+                "reservations": self.resource_manager.list_reservations(),
+                "observed_process_metrics": self.resource_manager.observed_process_metrics(),
+                "city_statuses": self._city_statuses(),
+            },
+            metadata={"safe": True, "source": "core_service"},
+        )
+
+    def get_module_resource_status(self, name: str) -> CoreServiceResult:
+        """Return one module's resource reservation status without activation."""
+        service_name = _normalize_service_name(name)
+        decision = self.resource_manager.module_status(service_name)
+        return CoreServiceResult(
+            success=decision.success,
+            text=decision.text,
+            error_message=decision.error_message,
+            data={
+                "source": "core_service",
+                "service": service_name,
+                "resource_status": decision.to_dict(),
+                "city_status": self._city_status(service_name)
+                if service_name in self._services
+                else "",
+            },
+            metadata={"safe": True, "source": "core_service"},
+        )
+
+    def list_loaded_modules(self) -> CoreServiceResult:
+        """Return modules with active logical resource reservations."""
+        return CoreServiceResult(
+            success=True,
+            text="Loaded modules discovered.",
+            data={
+                "source": "core_service",
+                "loaded_modules": self.resource_manager.list_loaded_modules(),
+                "city_statuses": self._city_statuses(),
+            },
+            metadata={"safe": True, "source": "core_service"},
+        )
+
+    def list_resource_reservations(self) -> CoreServiceResult:
+        """Return logical resource reservations without exposing personal data."""
+        return CoreServiceResult(
+            success=True,
+            text="Resource reservations discovered.",
+            data={
+                "source": "core_service",
+                "reservations": self.resource_manager.list_reservations(),
+                "current_usage": self.resource_manager.current_usage(),
+            },
+            metadata={"safe": True, "source": "core_service"},
+        )
+
+    def explain_activation(self, name: str) -> CoreServiceResult:
+        """Explain whether a registered module can activate under current budgets."""
+        service_name = _normalize_service_name(name)
+        manifest = self.manifest_registry.get_manifest(service_name)
+        if manifest is None:
+            return CoreServiceResult(
+                success=False,
+                text=f"Activation explanation failed safely because service is missing: {name}",
+                error_message="service_not_registered",
+                data={"source": "core_service", "service": service_name},
+                metadata={"safe": True, "source": "core_service"},
+            )
+        decision = self.resource_manager.can_activate(manifest)
+        return CoreServiceResult(
+            success=decision.success,
+            text=decision.text,
+            error_message=decision.error_message,
+            data={
+                "source": "core_service",
+                "service": service_name,
+                "resource_decision": decision.to_dict(),
+                "current_usage": self.resource_manager.current_usage(),
+                "manifest_resources": manifest.resources.to_dict(),
+            },
+            metadata={"safe": True, "source": "core_service"},
+        )
+
+    def run_resource_maintenance(self) -> CoreServiceResult:
+        """Stop and release inactive non-persistent modules during explicit ticks."""
+        inactive = self.resource_manager.find_inactive_modules()
+        unloaded: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+        for candidate in inactive:
+            service_name = str(candidate.get("module_name") or "")
+            if service_name not in self._services:
+                errors.append({"module_name": service_name, "error": "service_not_registered"})
+                continue
+            if self._city_status(service_name) == CITY_STATE_ACTIVE:
+                errors.append({"module_name": service_name, "error": "module_active"})
+                continue
+            lifecycle_status = self.lifecycle_manager.status(service_name)
+            if lifecycle_status.state == LIFECYCLE_BUSY:
+                errors.append({"module_name": service_name, "error": "module_busy"})
+                continue
+            stop_result = self.lifecycle_manager.stop(
+                service_name,
+                LifecycleRequest(
+                    module_name=service_name,
+                    operation="resource_maintenance",
+                    metadata={"source": "core_service"},
+                ),
+            )
+            if not stop_result.success:
+                errors.append(
+                    {
+                        "module_name": service_name,
+                        "error": stop_result.error_message or stop_result.status,
+                        "stop": stop_result.to_dict(),
+                    }
+                )
+                continue
+            release = self.resource_manager.release(service_name)
+            if release.success:
+                self.resource_manager.record_idle_unloaded(service_name)
+                unloaded.append(
+                    {
+                        "module_name": service_name,
+                        "candidate": candidate,
+                        "stop": stop_result.to_dict(),
+                        "release": release.to_dict(),
+                    }
+                )
+            else:
+                errors.append(
+                    {
+                        "module_name": service_name,
+                        "error": release.error_message or release.status,
+                        "release": release.to_dict(),
+                    }
+                )
+
+        self.resource_manager.record_maintenance_completed(
+            {
+                "inactive_count": len(inactive),
+                "unloaded_count": len(unloaded),
+                "error_count": len(errors),
+            }
+        )
+        return CoreServiceResult(
+            success=not errors,
+            text="Resource maintenance completed."
+            if not errors
+            else "Resource maintenance completed with errors.",
+            error_message="" if not errors else "resource_maintenance_errors",
+            data={
+                "source": "core_service",
+                "inactive": inactive,
+                "unloaded": unloaded,
+                "errors": errors,
+                "current_usage": self.resource_manager.current_usage(),
+                "city_statuses": self._city_statuses(),
+            },
             metadata={"safe": True, "source": "core_service"},
         )
 
@@ -882,6 +1127,125 @@ class CoreService:
             return None, selection
         return selection.selected_provider, selection
 
+    def _reserve_resources_for_activation(
+        self,
+        manifest: Optional[CapabilityManifest],
+        capability: str,
+        correlation_id: str,
+        session_id: str,
+    ) -> ResourceDecision:
+        if manifest is None:
+            return ResourceDecision(
+                success=False,
+                status="invalid_resource_manifest",
+                module_name="",
+                text="Resource activation failed because manifest is missing.",
+                error_message="invalid_resource_manifest",
+                data={"capability": capability},
+                metadata={"safe": True, "source": "core_service"},
+            )
+        decision = self.resource_manager.reserve(manifest)
+        if decision.success:
+            return decision
+        if not self.resource_manager.policy.eviction_enabled:
+            return decision
+
+        eviction = self.resource_manager.select_eviction_candidate(
+            manifest,
+            priority=manifest.resources.task_priority,
+        )
+        if not eviction.success:
+            if eviction.status == RESOURCE_ERROR_NO_EVICTION_CANDIDATE:
+                return ResourceDecision(
+                    success=False,
+                    status=decision.status,
+                    module_name=manifest.module_name,
+                    text=decision.text,
+                    error_message=decision.error_message,
+                    data={
+                        "resource_decision": decision.to_dict(),
+                        "eviction": eviction.to_dict(),
+                    },
+                    metadata={"safe": True, "source": "core_service"},
+                )
+            return eviction
+
+        candidate_name = str(eviction.data.get("candidate", {}).get("module_name") or "")
+        if not candidate_name:
+            return eviction
+        stop_result = self.lifecycle_manager.stop(
+            candidate_name,
+            LifecycleRequest(
+                module_name=candidate_name,
+                operation="resource_eviction",
+                session_id=session_id,
+                correlation_id=correlation_id,
+                metadata={"source": "core_service"},
+            ),
+        )
+        if not stop_result.success:
+            return ResourceDecision(
+                success=False,
+                status="eviction_stop_failed",
+                module_name=manifest.module_name,
+                text="Resource eviction failed because candidate stop failed safely.",
+                error_message=stop_result.error_message or stop_result.status,
+                data={
+                    "resource_decision": decision.to_dict(),
+                    "eviction": eviction.to_dict(),
+                    "stop": stop_result.to_dict(),
+                },
+                metadata={"safe": True, "source": "core_service"},
+            )
+        release = self.resource_manager.release(candidate_name)
+        if not release.success:
+            return ResourceDecision(
+                success=False,
+                status="eviction_release_failed",
+                module_name=manifest.module_name,
+                text="Resource eviction failed because reservation release failed safely.",
+                error_message=release.error_message or release.status,
+                data={
+                    "resource_decision": decision.to_dict(),
+                    "eviction": eviction.to_dict(),
+                    "stop": stop_result.to_dict(),
+                    "release": release.to_dict(),
+                },
+                metadata={"safe": True, "source": "core_service"},
+            )
+        self.resource_manager.record_eviction_performed(candidate_name, manifest.module_name)
+        retry = self.resource_manager.reserve(manifest)
+        if not retry.success:
+            return ResourceDecision(
+                success=False,
+                status=retry.status,
+                module_name=manifest.module_name,
+                text=retry.text,
+                error_message=retry.error_message,
+                data={
+                    "resource_decision": decision.to_dict(),
+                    "eviction": eviction.to_dict(),
+                    "stop": stop_result.to_dict(),
+                    "release": release.to_dict(),
+                    "retry": retry.to_dict(),
+                },
+                metadata={"safe": True, "source": "core_service"},
+            )
+        return ResourceDecision(
+            success=True,
+            status=retry.status,
+            module_name=manifest.module_name,
+            text=retry.text,
+            data={
+                "reservation": retry.to_dict(),
+                "eviction": eviction.to_dict(),
+                "evicted_module": candidate_name,
+                "stop": stop_result.to_dict(),
+                "release": release.to_dict(),
+            },
+            metadata={"safe": True, "source": "core_service"},
+        )
+
     def _ignored_event_result(
         self,
         event: Event,
@@ -1027,6 +1391,32 @@ class CoreService:
             metadata={"safe": True, "source": "core_service"},
         )
 
+    def _resource_activation_failure(
+        self,
+        capability: str,
+        service_name: str,
+        result: ResourceDecision,
+        correlation_id: str,
+        session_id: str,
+    ) -> CoreServiceResult:
+        return CoreServiceResult(
+            success=False,
+            text=f"Capability route failed resource budget gate: {capability}",
+            error_message=result.error_message or result.status,
+            data={
+                "source": "core_service",
+                "capability": capability,
+                "service": service_name,
+                "status": "resource_rejected",
+                "resource_decision": result.to_dict(),
+                "current_usage": self.resource_manager.current_usage(),
+                "city_statuses": self._city_statuses(),
+            },
+            correlation_id=correlation_id,
+            session_id=session_id,
+            metadata={"safe": True, "source": "core_service"},
+        )
+
     def _route_lifecycle_failure(
         self,
         capability: str,
@@ -1136,6 +1526,16 @@ def _normalize_capabilities(capabilities: List[str]) -> List[str]:
             seen.add(clean_capability)
             normalized.append(clean_capability)
     return normalized
+
+
+def _resource_task_id(
+    service_name: str,
+    capability: str,
+    correlation_id: str,
+    session_id: str,
+) -> str:
+    identifier = str(correlation_id or session_id or capability or "task").strip()
+    return f"{_normalize_service_name(service_name)}:{identifier}"
 
 
 def _route_response_to_data(response: Any) -> Dict[str, Any]:

@@ -1,0 +1,44 @@
+{
+  "platform_profiles": {
+    "test": {
+      "maximum_estimated_loaded_ram_mb": 256,
+      "maximum_heavy_modules_loaded": 1,
+      "maximum_concurrent_tasks": 4,
+      "default_inactivity_timeout_seconds": 60,
+      "allow_network_required_modules": false,
+      "allow_hardware_accelerated_modules": false,
+      "eviction_enabled": false
+    },
+    "raspberry_pi_5": {
+      "maximum_estimated_loaded_ram_mb": 512,
+      "maximum_heavy_modules_loaded": 1,
+      "maximum_concurrent_tasks": 2,
+      "default_inactivity_timeout_seconds": 120,
+      "allow_network_required_modules": false,
+      "allow_hardware_accelerated_modules": false,
+      "eviction_enabled": false
+    },
+    "desktop": {
+      "maximum_estimated_loaded_ram_mb": 4096,
+      "maximum_heavy_modules_loaded": 3,
+      "maximum_concurrent_tasks": 16,
+      "default_inactivity_timeout_seconds": 600,
+      "allow_network_required_modules": false,
+      "allow_hardware_accelerated_modules": false,
+      "eviction_enabled": false
+    },
+    "future_orin": {
+      "maximum_estimated_loaded_ram_mb": 2048,
+      "maximum_heavy_modules_loaded": 2,
+      "maximum_concurrent_tasks": 8,
+      "default_inactivity_timeout_seconds": 300,
+      "allow_network_required_modules": false,
+      "allow_hardware_accelerated_modules": false,
+      "eviction_enabled": false
+    }
+  },
+  "notes": [
+    "These are declared logical budgets, not exact measured RAM or CPU usage.",
+    "Real hardware measurements and tuning belong to a later validation pass."
+  ]
+}

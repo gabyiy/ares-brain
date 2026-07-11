@@ -26,6 +26,7 @@ from core.Contracts import (
     ContractRegistry,
     is_valid_contract_version,
 )
+from core.ResourceBudget import ResourceDeclaration
 
 
 MANIFEST_VERSION_V1 = "v1"
@@ -88,6 +89,7 @@ _MANIFEST_REQUIRED_FIELDS = {
     "permissions",
     "lifecycle_support",
 }
+_MANIFEST_OPTIONAL_FIELDS = {"dependencies", "platform", "resources", "metadata"}
 
 
 @dataclass(frozen=True)
@@ -214,6 +216,7 @@ class CapabilityManifest:
     platform: PlatformCompatibility = field(default_factory=PlatformCompatibility)
     permissions: List[str] = field(default_factory=list)
     lifecycle_support: List[str] = field(default_factory=list)
+    resources: ResourceDeclaration = field(default_factory=ResourceDeclaration)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -272,13 +275,19 @@ class CapabilityManifest:
             "lifecycle_support",
             _normalize_lifecycle_operations(self.lifecycle_support),
         )
+        if not isinstance(self.resources, ResourceDeclaration):
+            object.__setattr__(
+                self,
+                "resources",
+                ResourceDeclaration.from_dict(self.resources),  # type: ignore[arg-type]
+            )
         object.__setattr__(self, "metadata", dict(self.metadata or {}))
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]):
         if not isinstance(payload, dict):
             raise ValueError("Manifest payload must be a dictionary")
-        unknown_fields = sorted(set(payload) - (_MANIFEST_REQUIRED_FIELDS | {"dependencies", "platform", "metadata"}))
+        unknown_fields = sorted(set(payload) - (_MANIFEST_REQUIRED_FIELDS | _MANIFEST_OPTIONAL_FIELDS))
         if unknown_fields:
             raise ValueError(f"Unknown manifest fields: {', '.join(unknown_fields)}")
         for field_name in _MANIFEST_REQUIRED_FIELDS:
@@ -299,6 +308,7 @@ class CapabilityManifest:
             platform=PlatformCompatibility.from_dict(payload.get("platform")),
             permissions=list(payload.get("permissions") or []),
             lifecycle_support=list(payload.get("lifecycle_support") or []),
+            resources=ResourceDeclaration.from_dict(payload.get("resources")),
             metadata=dict(payload.get("metadata") or {}),
         )
 
@@ -318,6 +328,7 @@ class CapabilityManifest:
             "platform": self.platform.to_dict(),
             "permissions": list(self.permissions),
             "lifecycle_support": list(self.lifecycle_support),
+            "resources": self.resources.to_dict(),
             "metadata": _stable_data(self.metadata),
         }
 
@@ -831,6 +842,7 @@ def build_service_manifest(
     dependencies: Optional[ManifestDependencies] = None,
     permissions: Optional[List[str]] = None,
     lifecycle_support: Optional[List[str]] = None,
+    resources: Optional[ResourceDeclaration | Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> CapabilityManifest:
     return CapabilityManifest(
@@ -860,6 +872,7 @@ def build_service_manifest(
             LIFECYCLE_OPERATION_EXECUTE,
             LIFECYCLE_OPERATION_STOP,
         ],
+        resources=resources or ResourceDeclaration(),
         metadata=metadata or {"source": "core_service"},
     )
 
@@ -871,6 +884,7 @@ def build_skill_manifest(
     provider: str = "ares",
     module_version: str = CONTRACT_VERSION_V1,
     enabled_by_default: bool = True,
+    resources: Optional[ResourceDeclaration | Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> CapabilityManifest:
     """Build a manifest for a skill registered through SkillRegistry."""
@@ -888,6 +902,7 @@ def build_skill_manifest(
         enabled_by_default=enabled_by_default,
         capabilities=capabilities or [f"skill.{clean_skill}"],
         lifecycle_support=[LIFECYCLE_OPERATION_EXECUTE],
+        resources=resources or ResourceDeclaration(),
         metadata=metadata or {"source": "skill_registry"},
     )
 
