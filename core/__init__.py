@@ -107,6 +107,15 @@ from core.VoiceLoop import (
     VoiceSingleTurnLoop,
     VoiceTextRequest,
 )
+from core.VoiceCommandRouter import (
+    DEFAULT_VOICE_COMMAND_CONFIDENCE_THRESHOLD,
+    DEFAULT_VOICE_ROUTE_CAPABILITY,
+    VOICE_COMMAND_REJECTED_EVENT,
+    VOICE_COMMAND_ROUTED_EVENT,
+    VoiceCommandRouter,
+    VoiceCommandRouterMetrics,
+    VoiceCommandRoutingResult,
+)
 
 __all__ = [
     "ConversationContextManager",
@@ -198,6 +207,13 @@ __all__ = [
     "VoiceSessionTurn",
     "VoiceSingleTurnLoop",
     "VoiceTextRequest",
+    "VoiceCommandRouter",
+    "VoiceCommandRouterMetrics",
+    "VoiceCommandRoutingResult",
+    "DEFAULT_VOICE_COMMAND_CONFIDENCE_THRESHOLD",
+    "DEFAULT_VOICE_ROUTE_CAPABILITY",
+    "VOICE_COMMAND_REJECTED_EVENT",
+    "VOICE_COMMAND_ROUTED_EVENT",
     "DEFAULT_VOICE_SESSION_MAX_TURNS",
     "VOICE_SESSION_STOP_PHRASES",
     "MAX_CHAIN_DEPTH",
