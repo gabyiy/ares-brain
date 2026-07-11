@@ -275,6 +275,7 @@ Implemented:
 - memory/database migrations
 - health checks and adapter fallback
 - measured resource budgets
+- final integration, recovery, and safety regression checkpoint
 
 Remaining hardening items:
 
@@ -312,15 +313,60 @@ Permanent resource rules:
 - Resource inspection must not activate inactive Cities.
 - Dangerous actions must never be repeated because of eviction, retry, or cancellation.
 
+# Final Integration, Recovery, And Safety Checkpoint
+
+The final checkpoint proves complete internal routes across subsystem boundaries before real Phase 3 voice hardware work. It is not a new feature phase and does not add real microphone access, speech engines, GPT, internet access, background listeners, remote control, notifications, or new Cities.
+
+Current pytest collection: 630 tests.
+
+Verified integration routes:
+
+- Safe voice/text requests flow through mock microphone/audio, mock STT, Voice City, VoiceCommandRouter, IntentParser, Planner, ExecutionPipeline, the selected local skill/service, and mock output.
+- Read-only PC status requests route through CoreService and PCService and return structured status without confirmation, shell commands, or unrelated adapter activation.
+- Confirmation-gated device actions pause before execution, reject expired/malformed/reused/wrong confirmations, and execute exactly once after a valid confirmation.
+
+Recovery order:
+
+1. validate request
+2. resolve capability
+3. validate interface version
+4. validate manifest
+5. check health
+6. reserve capacity
+7. activate selected module
+8. execute once
+9. produce structured result
+10. release task slot
+11. retain or unload according to lifecycle policy
+12. record bounded operational outcome
+
+Fallback may occur only before destructive execution, only when the fallback satisfies the same contract, only when policy permits it, only when resource capacity permits it, and only when confirmation remains valid for the exact action.
+
+Exactly-once destructive action protection is provided by `core.ExecutionGuard`. A confirmed destructive action receives a bounded local execution/idempotency token before the dangerous boundary is crossed. Completed tokens return the recorded structured result on duplicate submission; wrong-scope, uncertain, in-progress, malformed, expired, or reused confirmations fail closed. The guard stores no secrets or personal content and does not create automatic destructive retries.
+
+Safety regression guarantees:
+
+- The Brain cannot directly execute shell commands or select concrete adapters.
+- Voice commands cannot bypass CoreService or confirmation gates.
+- Fallback, retry, eviction, and cancellation cannot repeat dangerous actions.
+- Disabled, incompatible, unknown, or malformed modules fail closed before activation.
+- User-provided executable paths are rejected; app launch remains allowlist-only.
+- Status, capability, resource, and event inspection do not activate inactive Cities.
+- Operational events exclude API keys, tokens, passwords, transcripts, microphone audio, personal memory, and raw exception traces.
+- Resource reservations and task slots are released on success and failure paths.
+- Declared resource estimates are never reported as exact measured module usage.
+
 # Next Project Block
 
-After Architecture Hardening, Phase 3 real voice integration may proceed only after an explicit approval checkpoint. The planned sequence is:
+After Architecture Hardening, Phase 3 real voice integration may proceed only after explicit owner approval. The planned sequence is:
 
-1. integration/recovery/safety regression checkpoint
-2. real microphone adapter
-3. real STT adapter
-4. TTS adapter
-5. real end-to-end voice loop
+1. detect and select the real USB microphone
+2. implement one real microphone adapter
+3. verify raw audio capture
+4. implement the first real STT adapter
+5. implement a real TTS adapter
+6. run a real single-turn voice loop
+7. only later add wake-word/background listening
 
 This is a future implementation block. The current runtime still has no real microphone access, Whisper, Vosk, Piper, wake word, GPT, internet access, background listener, daemon, scheduler, or real audio output.
 

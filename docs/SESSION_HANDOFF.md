@@ -4,7 +4,7 @@ Last Updated: 2026-07-11
 
 Current Version
 
-ARES v1.69 - Measured Resource Budgets
+ARES v1.70 - Final Integration Safety Checkpoint
 
 ---
 
@@ -36,9 +36,10 @@ Confirmed Phase 3 foundation:
 - Memory/schema migrations
 - Health checks and controlled adapter fallback
 - Measured resource budgets
+- Final integration, recovery, and safety regression checkpoint
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 596 tests.
+Current pytest collection: 630 tests.
 
 Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
@@ -164,6 +165,33 @@ Permanent resource rules:
 - Declared estimates must never be represented as exact measurements.
 - Resource inspection must not activate inactive Cities.
 - Dangerous actions must never be repeated because of eviction, retry, or cancellation.
+
+Final integration, recovery, and safety regression checkpoint has been added.
+
+Checkpoint behavior:
+
+- Focused integration tests prove the complete mock voice/text route reaches VoicePipeline, VoiceCommandRouter, IntentParser, Planner, ExecutionPipeline, the selected local skill/service, and mock output.
+- Read-only PC status requests route through CoreService and PCService without dangerous confirmation, arbitrary shell command use, or unrelated adapter activation.
+- Confirmation-gated device actions pause before execution, reject expired/malformed/reused/wrong confirmations, and execute exactly once after valid confirmation.
+- `core.ExecutionGuard` provides bounded local exactly-once tokens for confirmed destructive actions. Duplicate tokens return the recorded structured result or fail closed without executing again.
+- Recovery tests cover microphone, STT, lifecycle, health, resource, execution, output, event-history, manifest, contract, disabled-city, unknown-city, cancellation, and fallback failures.
+- Safety regression tests cover confirmation bypass prevention, allowlist-only app launch, disabled/incompatible module fail-closed behavior, operational event redaction, resource/task cleanup, migration compatibility, and resource-estimate wording.
+- No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background listener, remote control, notifications, scheduler, daemon, or new product feature was added.
+
+Recovery order:
+
+1. validate request
+2. resolve capability
+3. validate interface version
+4. validate manifest
+5. check health
+6. reserve capacity
+7. activate selected module
+8. execute once
+9. produce structured result
+10. release task slot
+11. retain or unload according to lifecycle policy
+12. record bounded operational outcome
 
 Measured resource budgets have been added.
 
@@ -1611,34 +1639,48 @@ Text REPL
 
 Immediate Next Milestone
 
-Phase 3 real voice integration can be planned next, starting with an integration/recovery/safety regression checkpoint. Do not add real audio hardware access without explicit approval.
+Phase 3 real voice integration can be planned next, starting with real USB microphone detection and a single real microphone adapter. Do not add real audio hardware access without explicit approval.
 
 Next technical choices:
 
+- Detect and select the real USB microphone.
+- Implement one real microphone adapter.
+- Verify raw audio capture.
+- Implement the first real STT adapter.
+- Implement a real TTS adapter.
+- Run a real single-turn voice loop.
+- Only later add wake-word/background listening.
 - Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
 - Keep voice, GPT, embeddings, external weather/stocks/calendar APIs, real scheduling, notifications, and Raspberry Pi deployment out of scope until explicitly approved.
-- Keep real microphone, Whisper, Vosk, Piper, wake word, internet-backed adapters, notifications, and automatic PC actions out of scope until the real voice integration checkpoint is explicitly approved.
+- Keep real microphone, Whisper, Vosk, Piper, wake word, internet-backed adapters, notifications, and automatic PC actions out of scope until each real-audio step is explicitly approved.
 - Connect selected daily reflection scripts and future providers to MemoryStore v1 only after the memory contract is documented.
 
 ---
 
 Future Roadmap
 
-1. GPT fallback integration
-2. Voice interface
-3. Raspberry Pi deployment
-4. Robot body / sensors
-5. Vision
-6. Robotics
-7. Jetson Orin migration
-8. Autonomous ARES
+1. Phase 3 Real Voice Integration
+2. Detect and select the real USB microphone
+3. Implement one real microphone adapter
+4. Verify raw audio capture
+5. Implement the first real STT adapter
+6. Implement a real TTS adapter
+7. Run a real single-turn voice loop
+8. Only later add wake-word/background listening
+9. GPT fallback integration
+10. Raspberry Pi deployment
+11. Robot body / sensors
+12. Vision
+13. Robotics
+14. Jetson Orin migration
+15. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 596 tests.
+- Current pytest collection: 630 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1690,12 +1732,14 @@ Verification Notes
 - Contract tests cover V1 request/result acceptance, unsupported V2 rejection, missing/malformed contract headers, wrong contract type rejection, correlation id preservation, metadata round-trip, deterministic serialization, registry discovery, duplicate registration rejection, CoreService pre-activation rejection, lifecycle state preservation, VoicePipeline session reuse after rejection, and successful V1 VoicePipeline execution.
 - Capability manifest tests cover schema validation, deterministic serialization, duplicate rejection, capability/provider lookup, disabled modules, unsupported contracts, dependency validation, incompatible capabilities, platform mismatch, permission policy, lifecycle declaration mismatch, provider preference, skill manifest registration, CoreService manifest rejection, VoicePipeline compatibility, and CoreService usability after manifest failures.
 - Schema migration tests cover current schema load, known legacy import into v1, non-guessing malformed legacy inputs, v1 -> v2 fixture migration, multi-step order, future-version rejection, missing paths, duplicate/cyclic registration, dry-run behavior, backup creation, original preservation, temporary-file cleanup, malformed/truncated JSON rejection, wrong schema rejection, post-migration validation failure, metadata preservation, deterministic serialization, store usability after migration, unrelated city idleness, CoreService usability, event-history recording, concurrent lock failure, and content-safe inspection reports.
+- Final integration checkpoint tests cover the complete mock voice/text route, read-only PC status routing, confirmation-gated device actions, exactly-once destructive action protection, fallback boundaries, resource/task cleanup, unrelated-City idleness, disabled/incompatible fail-closed behavior, operational event redaction, migration/resource safety regressions, and recovery from isolated subsystem failures.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
 
 Latest Commits
 
+- `f8c5c95` Add final integration safety checkpoint
 - `6636b78` Add measured resource budgets
 - `ebaff5a` Add health checks and adapter fallback
 - `a269ff2` Document memory schema migrations
@@ -1786,7 +1830,7 @@ Latest Commits
 Next Planned Step
 
 - Architecture hardening before real hardware/adapters is complete: lifecycle, contracts, manifests, migrations, health/fallback, and measured resource budgets are implemented.
-- Plan Phase 3 real voice integration only after explicit approval, beginning with an integration/recovery/safety regression checkpoint.
+- Plan Phase 3 real voice integration only after explicit approval, beginning with real USB microphone detection and one real microphone adapter.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not enable default real weather/market API behavior, Google Calendar integration, GPT, embeddings, real voice/audio hardware, vision, scheduling, notifications, or background automation yet.

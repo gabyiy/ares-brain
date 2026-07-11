@@ -771,7 +771,7 @@ Phase 62: Versioned Interface Contracts
 - VoicePipeline and VoiceCommandRouter validate V1 contracts across microphone, STT, command routing, lifecycle, and core execution boundaries.
 - Event envelopes are versioned for future city event routing and event-history storage.
 - Unsupported or malformed contracts fail safely with structured compatibility errors and preserve correlation ids where available.
-- Current pytest collection is 471 tests.
+- Phase pytest collection at this point was 471 tests.
 - No real microphone access, Whisper, Vosk, Piper, wake word detection, GPT, internet access, background listeners, remote registries, plugin downloads, dynamic code loading, database migrations, or guessed hardware resource limits were added.
 
 Phase 63: Capability Manifest Foundation
@@ -783,7 +783,7 @@ Phase 63: Capability Manifest Foundation
 - Voice City, mock microphone adapter, mock speech-to-text adapter, mock voice output adapter, VoiceCommandRouter, and VoiceSessionSkill have registered manifests.
 - SkillRegistry registers skill manifests from explicit skill metadata.
 - `config/modules.example.json` documents safe local module configuration without remote config, package downloads, dynamic loading, secrets, internet discovery, or automatic dependency installation.
-- Current pytest collection is 502 tests.
+- Phase pytest collection at this point was 502 tests.
 - No real microphone access, Whisper, Vosk, Piper, wake word detection, GPT, internet access, background listeners, automatic dependency installation, dynamic plugin loading, database migrations, runtime provider fallback, Docker, daemon installation, or guessed hardware resource limits were added.
 
 Phase 64: Memory Schema Migration Foundation
@@ -797,7 +797,7 @@ Phase 64: Memory Schema Migration Foundation
 - Backup-before-write, temporary writes, atomic replacement where practical, final load verification, simple local write locks, and read-only inspection reports are implemented.
 - Corrupted files, truncated files, malformed envelopes, wrong schema names, future versions, downgrades, missing paths, failed migration steps, and validation failures fail closed without resetting memory to empty data.
 - Store integration covers profile, goals, notes, tasks, short/long memory, and event history.
-- Current pytest collection is 527 tests.
+- Phase pytest collection at this point was 527 tests.
 - No remote database, cloud synchronization, distributed locking, PostgreSQL, Docker, automatic cloud backup, GPT, internet access, health fallback, real audio, or guessed resource limits were added.
 
 Phase 65: Health Checks and Controlled Adapter Fallback
@@ -814,7 +814,7 @@ Phase 65: Health Checks and Controlled Adapter Fallback
 - Health cache supports TTL reuse, expiration, forced refresh, and disabled-adapter invalidation.
 - VoicePipeline can use candidate lists for mock microphone selection and mock speech-to-text fallback while preserving the default single-adapter path.
 - EventHistoryStore can record bounded health/fallback events for health-check failures, fallback selection, all-unavailable decisions, circuit-open events, half-open probes, and recovery.
-- Current pytest collection is 560 tests.
+- Phase pytest collection at this point was 560 tests.
 - No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet access, real weather/market calls, notifications, automatic PC actions, background listeners, or measured resource budgets were added.
 
 Phase 66: Measured Resource Budgets
@@ -832,7 +832,7 @@ Phase 66: Measured Resource Budgets
 - Cooperative cancellation tokens release task slots safely when cancellation is supported.
 - Observed metrics are process-level only: uptime, CPU time, optional RSS when available, active module/task counts, loaded City count, and declared reserved RAM.
 - EventHistoryStore can record bounded resource events without transcripts, secrets, personal memory, or raw exception traces.
-- Current pytest collection is 596 tests.
+- Phase pytest collection at this point was 596 tests.
 - No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet access, background listeners, threads, Docker, remote telemetry, distributed scheduler, operating-system process killing, real hardware benchmarking, or exact per-module memory measurement was added.
 
 Architecture Hardening Checkpoint
@@ -845,6 +845,7 @@ Architecture Hardening Checkpoint
   - memory/database migrations
   - health checks and adapter fallback
   - measured resource budgets
+  - final integration, recovery, and safety regression checkpoint
 - Remaining hardening items:
   - none. Architecture Hardening is complete before real Phase 3 voice hardware work.
 - Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
@@ -853,6 +854,16 @@ Architecture Hardening Checkpoint
 - Permanent memory rules: durable ARES data may never be rewritten without validation and backup; unknown future schema versions must never be silently downgraded; a failed load must never be interpreted as empty memory; hardware-specific paths must not become part of the durable memory schema.
 - Permanent health/fallback rules: the Brain never selects concrete adapters; automatic fallback is allowed only for explicitly retry-safe operations; a failed adapter must never cause unrelated Cities to activate; fallback must never hide the original failure; disabled or circuit-open adapters must not be selected; health checks must not perform destructive actions.
 - Permanent resource rules: the Brain never manages RAM, CPU, adapters, or hardware; CoreService controls activation and resource reservations; no module activates before capacity is reserved; no failed operation may leak a reservation or task slot; declared estimates must never be represented as exact measurements; resource inspection must not activate inactive Cities; dangerous actions must never be repeated because of eviction, retry, or cancellation.
+- Permanent execution-safety rule: confirmed destructive actions use bounded local idempotency tokens through `core.ExecutionGuard`; retries, duplicate confirmations, response failures, output failures, and wrong-scope submissions must not execute the action twice.
+
+Phase 67: Final Integration, Recovery, And Safety Regression Checkpoint
+
+- Deterministic integration tests now prove complete internal routes across VoicePipeline, VoiceCommandRouter, IntentParser, Planner, ExecutionPipeline, selected local skill/service, CoreService, PCService, confirmation-gated DeviceActionSkill, and mock voice output.
+- Recovery tests deliberately fail microphone, STT, lifecycle, health, resource, execution, output, event-history, manifest, contract, disabled-city, unknown-city, cancellation, and fallback paths while proving CoreService remains usable.
+- Safety regression tests cover no shell execution from the Brain path, no CoreService/confirmation bypass from Voice City, allowlist-only app launch, fail-closed disabled/incompatible modules, operational event redaction, bounded turns/tasks/heavy modules, migration compatibility, and resource-estimate wording.
+- `core.ExecutionGuard` provides exactly-once protection for confirmed destructive device actions.
+- Current pytest collection is 630 tests.
+- No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background listener, remote control, notifications, scheduler, daemon, or new product feature was added.
 
 Current State
 
@@ -871,7 +882,7 @@ The current deterministic answer paths are:
 - `CoreService`, `EventBus`, `EventHistoryStore`, `EventHistorySkill`, `HealthResult`, `AdapterCandidate`, `AdapterFallbackPolicy`, `CircuitBreaker`, `HealthCache`, `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, `MockMicrophoneAdapter`, `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, `VoiceCommandRouter`, `VoiceCommandRoutingResult`, `VoiceCommandRouterMetrics`, `VoicePipeline`, `VoicePipelineResult`, `VoiceService`, `VoiceInput`, `VoiceOutput`, `VoiceInputAdapter`, `VoiceOutputAdapter`, `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, `NullVoiceInput`, `NullVoiceOutput`, `PlaceholderVoiceService`, `VoiceTextRequest`, `VoiceLoop`, `VoiceLoopResult`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionSkill`, `VoiceSessionResult`, `VoiceSessionTurn`, `DeviceActionRegistry`, `LocalDeviceActionAdapter`, `PCService`, `PCStatus`, `PCCapabilities`, `WindowsPCService`, `AppLaunchConfig`, `AppAllowlistLoader`, and `DeviceActionSkill` for safe local Device/PC City and Voice City foundations, service registration, city lifecycle metadata, lazy capability routing, lazy health visibility, controlled adapter fallback, capability aggregation, internal future-use event reporting skeletons, internal CoreService event decision routing, optional CoreService event-history persistence, local internal event-history logging, read-only event-history queries, safe voice session event history records, read-only latest voice-session status summaries, structured local `system status`, structured placeholder voice status, adapter-backed placeholder voice input/output, adapter-backed microphone abstraction, adapter-backed speech-to-text abstraction, confidence-gated voice command routing, simulated end-to-end voice command routing, adapter-backed single-turn voice-style routing, bounded multi-turn mock session routing, text-command mock voice sessions, transcript/history output, one-shot placeholder voice text routing, dynamic local action/app/voice discovery, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated config-backed allowlisted Windows `open_app`, safe live routing, and stable confirmation-required/forbidden responses
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 596 tests.
+The current pytest collection is 630 tests.
 
 The current memory paths are:
 
@@ -903,15 +914,20 @@ Core Services City is a shared infrastructure city for scheduler, permissions, l
 
 Codex City is a future maintenance city. It should check the ARES GitHub repository, pull latest code, run tests, check compile, check docs freshness, report problems, and suggest fixes. Codex City must never auto-edit without owner approval.
 
-This roadmap entry documents the current safe VoiceService skeleton, VoiceInput/VoiceOutput contracts, one-shot VoiceLoop text bridge, microphone adapter abstraction, speech-to-text adapter abstraction, VoiceCommandRouter, simulated VoicePipeline, enforced module lifecycle, versioned interface contracts, capability manifests, memory schema migration foundation, health/fallback foundation, and measured resource budget foundation only. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, real voice/audio implementation, internet access, real APIs, notifications, daemon installation, background timers, threads, or background listening.
+This roadmap entry documents the current safe VoiceService skeleton, VoiceInput/VoiceOutput contracts, one-shot VoiceLoop text bridge, microphone adapter abstraction, speech-to-text adapter abstraction, VoiceCommandRouter, simulated VoicePipeline, enforced module lifecycle, versioned interface contracts, capability manifests, memory schema migration foundation, health/fallback foundation, measured resource budget foundation, and final integration/recovery/safety regression checkpoint only. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, real voice/audio implementation, internet access, real APIs, notifications, daemon installation, background timers, threads, or background listening.
 
 Next Priorities
 
-1. Phase 3 real voice integration: integration/recovery/safety regression checkpoint.
-2. Real microphone adapter.
-3. Real STT adapter.
-4. TTS adapter.
-5. Real end-to-end voice loop.
+NEXT:
+Phase 3 Real Voice Integration
+
+1. Detect and select the real USB microphone.
+2. Implement one real microphone adapter.
+3. Verify raw audio capture.
+4. Implement the first real STT adapter.
+5. Implement a real TTS adapter.
+6. Run a real single-turn voice loop.
+7. Only later add wake-word/background listening.
 
 What Must Not Be Started Yet
 

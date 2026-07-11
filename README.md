@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.69 - Measured Resource Budgets
+ARES v1.70 - Final Integration Safety Checkpoint
 
 ---
 
@@ -46,6 +46,8 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 
 `core.ResourceBudget` now provides measured-resource-budget foundations using declared logical estimates rather than pretending to know exact per-module RAM. Capability manifests can declare estimated RAM, CPU weight, startup/shutdown cost, heavy/persistent flags, inactivity timeout, maximum concurrent tasks, priority, network requirement, and hardware-acceleration requirement. `ResourceManager` enforces central resource policy before CoreService starts a module, reserves capacity, tracks task slots, records activity, supports explicit maintenance ticks for idle unloading, provides conservative optional eviction candidates, supports cooperative cancellation tokens, exposes safe resource status and observed process-level metrics, and records bounded resource events when an `EventHistoryStore` is configured. Platform profiles are local configuration data: `test`, `raspberry_pi_5`, `desktop`, and `future_orin`.
 
+The final integration, recovery, and safety regression checkpoint is now complete. Focused integration tests prove the simulated voice/text path reaches IntentParser, Planner, ExecutionPipeline, the selected skill/service, and mock output while only activating the required City; PC status requests route through CoreService and PCService as read-only structured data; and confirmation-gated device actions do not execute before explicit confirmation. `core.ExecutionGuard` protects confirmed destructive actions with bounded idempotency tokens so retries, duplicate confirmations, output failures, or response-generation failures cannot execute the same confirmed action twice.
+
 Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter layer is mock/local only and does not access audio hardware.
 
 Architecture Hardening Checkpoint
@@ -60,6 +62,7 @@ Implemented:
 - memory/database migrations
 - health checks and adapter fallback
 - measured resource budgets
+- final integration, recovery, and safety regression checkpoint
 
 Remaining:
 
@@ -78,6 +81,10 @@ Permanent memory rules: durable ARES data may never be rewritten without validat
 Permanent health/fallback rules: the Brain never selects concrete adapters; automatic fallback is allowed only for explicitly retry-safe operations; a failed adapter must never cause unrelated Cities to activate; fallback must never hide the original failure; disabled or circuit-open adapters must not be selected; health checks must not perform destructive actions.
 
 Permanent resource rules: the Brain never manages RAM, CPU, adapters, or hardware; CoreService controls activation and resource reservations; no module activates before capacity is reserved; no failed operation may leak a reservation or task slot; declared estimates must never be represented as exact measurements; resource inspection must not activate inactive Cities; dangerous actions must never be repeated because of eviction, retry, or cancellation.
+
+Permanent execution-safety rule: a confirmed destructive action must execute at most once for its confirmation/idempotency token. Duplicate, malformed, expired, reused, or wrong-scope confirmations fail closed or return the previously recorded structured result without repeating the action.
+
+Recovery order for routed work is: validate request, resolve capability, validate interface version, validate manifest, check health, reserve capacity, activate the selected module, execute once, produce a structured result, release the task slot, retain or unload according to lifecycle policy, and record a bounded operational outcome. Fallback may occur only before destructive execution, only across compatible providers, only when policy and resource capacity allow it, and only while preserving the original failure.
 
 Memory schema migrations now protect active JSON-backed durable stores. The current envelope fields are `schema_name`, `schema_version`, `created_at`, `updated_at`, `data`, and optional `metadata`. The current active schemas are `ares.user_profile`, `ares.goals`, `ares.notes`, `ares.tasks`, `ares.memory.short`, `ares.memory.long`, and `ares.event_history`. `ReminderScheduler` derives from tasks and has no separate file. Voice-session history is stored through `EventHistoryStore`; there is no separate voice-session store. Legacy `memory_manager.py` remains a separate script API over legacy files and is documented as legacy/disconnected from the active store path.
 
@@ -503,7 +510,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 596 tests across current core modules
+- Pytest automated coverage for 630 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -522,7 +529,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `596 tests`.
+Current pytest collection: `630 tests`.
 
 Manual Calculator Launch Verification
 
@@ -713,20 +720,24 @@ Completed:
 - Memory/database migrations
 - Health checks and adapter fallback
 - Measured resource budgets
+- Final integration, recovery, and safety regression checkpoint
 - Voice City foundation
 - Voice City input/output contracts
 - Voice City text loop foundation
 
 Next:
 
-1. Phase 3 real voice integration regression checkpoint
-2. Real microphone adapter
-3. Real STT adapter
-4. TTS adapter
-5. Real end-to-end voice loop
-2. GPT fallback integration
-3. Raspberry Pi deployment
-4. Robot body / sensors
+1. Phase 3 Real Voice Integration
+2. Detect and select the real USB microphone
+3. Implement one real microphone adapter
+4. Verify raw audio capture
+5. Implement the first real STT adapter
+6. Implement a real TTS adapter
+7. Run a real single-turn voice loop
+8. Only later add wake-word/background listening
+9. GPT fallback integration
+10. Raspberry Pi deployment
+11. Robot body / sensors
 
 ---
 
@@ -1399,7 +1410,7 @@ Phase 62
 - VoicePipeline and VoiceCommandRouter validate V1 contracts across microphone, STT, command routing, lifecycle, and core execution boundaries
 - Event envelopes are versioned for future city event routing and event-history storage
 - Unsupported or malformed contracts fail safely with structured compatibility errors and preserve correlation ids where available
-- Current pytest collection is 471 tests
+- Phase pytest collection at this point was 471 tests
 - No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background listeners, remote registries, plugin downloads, dynamic code loading, database migrations, or guessed hardware limits
 
 Phase 63
@@ -1411,7 +1422,7 @@ Phase 63
 - Voice City, mock microphone adapter, mock speech-to-text adapter, mock voice output adapter, VoiceCommandRouter, and VoiceSessionSkill have registered manifests
 - SkillRegistry registers manifests for skills from explicit skill metadata
 - `config/modules.example.json` documents local enable/disable flags, preferred providers, and allowed permissions
-- Current pytest collection is 502 tests
+- Phase pytest collection at this point was 502 tests
 - No real microphone access, Whisper, Vosk, Piper, wake word, GPT, internet access, remote config, plugin marketplace, dynamic loading, automatic dependency installation, database migrations, runtime provider fallback, or guessed hardware limits
 
 Phase 64
@@ -1423,7 +1434,7 @@ Phase 64
 - Known legacy formats import safely into v1 only when the structure matches the target store exactly
 - Unknown future versions, downgrades, malformed envelopes, invalid JSON, truncated files, wrong schema names, missing migration paths, failed migration steps, post-migration validation failures, and concurrent writes fail closed without resetting memories
 - Backups are stored under `.migration_backups` and are ignored by git
-- Current pytest collection is 527 tests
+- Phase pytest collection at this point was 527 tests
 - No remote databases, cloud sync, distributed locking, PostgreSQL, Docker, GPT, internet access, health fallback, real audio, or guessed resource limits
 
 Phase 65
@@ -1439,7 +1450,7 @@ Phase 65
 - Health cache supports TTL, forced refresh, and disabled-adapter invalidation
 - VoicePipeline can use candidate lists for mock microphone selection and mock STT fallback while preserving default single-adapter behavior
 - EventHistoryStore can record health-check failures, fallback selections, all-unavailable decisions, circuit opened, half-open probe, and circuit recovered events without transcript content or secrets
-- Current pytest collection is 560 tests
+- Phase pytest collection at this point was 560 tests
 - No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, real weather/market calls, notifications, automatic PC actions, resource budgets, or background listeners
 
 Phase 66
@@ -1454,32 +1465,45 @@ Phase 66
 - Optional eviction can stop only inactive, non-persistent, safe-to-stop, lower-priority modules
 - Cooperative cancellation releases task slots safely
 - Observed metrics include process uptime, CPU time, optional RSS when available, active module/task counts, and declared reserved RAM; declared estimates are never treated as exact measurements
-- Current pytest collection is 596 tests
+- Phase pytest collection at this point was 596 tests
 - No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background listener, threads, Docker, remote telemetry, distributed scheduler, process killing, or real hardware benchmarking was added
 
 Phase 67
 
-- Phase 3 real voice integration next block
-- Integration/recovery/safety regression checkpoint
-- Real microphone adapter
-- Real STT adapter
-- TTS adapter
-- Real end-to-end voice loop
+- Final integration, recovery, and safety regression checkpoint
+- Added deterministic focused integration, recovery, and safety test groups
+- Verified the voice/text route through VoicePipeline, VoiceCommandRouter, IntentParser, Planner, ExecutionPipeline, selected local skill/service, and mock output
+- Verified read-only PC status routing through CoreService and PCService
+- Verified confirmation-gated device actions do not execute before explicit confirmation and execute exactly once after valid confirmation
+- Verified fallback boundaries, resource/task cleanup, unrelated-City idleness, event redaction, disabled/incompatible module fail-closed behavior, and migration/resource safety regressions
+- Current pytest collection is 630 tests
+- No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background listener, remote control, notifications, scheduler, or new product feature was added
 
 Phase 68
+
+- Phase 3 Real Voice Integration next block
+- Detect and select the real USB microphone
+- Implement one real microphone adapter
+- Verify raw audio capture
+- Implement the first real STT adapter
+- Implement a real TTS adapter
+- Run a real single-turn voice loop
+- Only later add wake-word/background listening
+
+Phase 69
 
 - Future voice expansion
 - Wake word
 - Continuous conversation
 
-Phase 69
+Phase 70
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 70
+Phase 71
 
 - Robotics
 - ROS2
