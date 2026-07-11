@@ -217,6 +217,7 @@ Current placeholder implementations:
 
 - `AudioChunk` stores raw audio chunk metadata for future microphone adapters without binding to a speech engine.
 - `MockMicrophoneAdapter` provides deterministic local/test microphone lifecycle, chunk reads, timeout handling, cancellation support, and safe failure paths without hardware access.
+- `LinuxAlsaMicrophoneAdapter` is the first real Linux/Raspberry Pi microphone provider. It stays behind the `MicrophoneAdapter` boundary, uses `arecord` through a safe argument-list subprocess wrapper, can list ALSA capture devices, health-check `arecord` and selected devices, record bounded WAV files, validate the WAV output, and return structured `MicrophoneResult` data.
 - `TranscriptionResult` stores transcription text, status, error details, and bounded confidence values.
 - `MockSpeechToTextAdapter` converts `AudioChunk` objects into deterministic test transcriptions, including empty-audio, low-confidence, no-transcription, and failure results without a real speech engine.
 - `NullVoiceInput` is backed by a safe placeholder input adapter and does not access a microphone or run STT.
@@ -261,7 +262,39 @@ Current voice loop foundation:
 - The loop does not own routing, planning, or skill execution logic.
 - The loop does not start background listening, wake word detection, microphone access, speaker access, GPT, or internet access.
 
-VoiceService is a skeleton only. Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current microphone adapter abstraction, speech-to-text adapter abstraction, input/output adapter, single-turn, multi-turn session, VoiceSessionSkill, Voice Session event logging, Voice Session status query, VoiceCommandRouter, and VoicePipeline layers are mock/local only and do not start microphone access, speaker output, real speech-to-text, text-to-speech, wake word detection, GPT, internet, or background listening.
+VoiceService remains the boundary. The current real-audio surface is limited to explicit Linux ALSA one-shot capture through `LinuxAlsaMicrophoneAdapter`; it is disabled by default, replaceable, and not wired as the default runtime path. Real Whisper, Vosk, Piper, speaker/TTS, wake word, background listener, GPT, and internet integrations come later. Speech-to-text is still not implemented.
+
+# Linux ALSA Microphone Adapter
+
+`core.LinuxAlsaMicrophoneAdapter` is hardware-specific code for Linux/Raspberry Pi and must not be imported by the Brain. It implements the existing `MicrophoneAdapter` contract and can be injected into Voice City in place of `MockMicrophoneAdapter`.
+
+Responsibilities:
+
+- check whether `arecord` is available
+- list ALSA capture devices with `arecord -l`
+- run `health_check()`
+- select an optional ALSA device such as `hw:1,0`
+- record a bounded WAV file with `arecord`
+- validate missing, empty, invalid, or malformed WAV output
+- return structured `MicrophoneResult` objects
+
+Safety boundaries:
+
+- `SafeSubprocessRunner` calls `subprocess.run()` with argument lists and `shell=False`
+- no user text becomes a shell command
+- recording has bounded duration and timeout
+- `linux_alsa_microphone_adapter` is disabled by default in local module config
+- the adapter does not run STT, TTS, wake word detection, GPT, internet access, or background listening
+
+Manual Raspberry Pi verification:
+
+```bash
+python scripts/manual_verify_linux_alsa_microphone.py
+python scripts/manual_verify_linux_alsa_microphone.py --record --seconds 3 --output /tmp/ares_mic_test.wav
+python scripts/manual_verify_linux_alsa_microphone.py --device hw:1,0 --record --seconds 3 --output /tmp/ares_mic_hw_1_0.wav
+```
+
+Current pytest collection after this checkpoint: 646 tests.
 
 # Architecture Hardening Checkpoint
 
@@ -317,7 +350,7 @@ Permanent resource rules:
 
 The final checkpoint proves complete internal routes across subsystem boundaries before real Phase 3 voice hardware work. It is not a new feature phase and does not add real microphone access, speech engines, GPT, internet access, background listeners, remote control, notifications, or new Cities.
 
-Current pytest collection: 630 tests.
+Checkpoint pytest collection at this point was 630 tests.
 
 Verified integration routes:
 
@@ -358,17 +391,15 @@ Safety regression guarantees:
 
 # Next Project Block
 
-After Architecture Hardening, Phase 3 real voice integration may proceed only after explicit owner approval. The planned sequence is:
+After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice-hardware checkpoint is the Linux ALSA microphone adapter. The next planned sequence is:
 
-1. detect and select the real USB microphone
-2. implement one real microphone adapter
-3. verify raw audio capture
-4. implement the first real STT adapter
-5. implement a real TTS adapter
-6. run a real single-turn voice loop
-7. only later add wake-word/background listening
+1. verify real Raspberry Pi USB microphone capture with the manual ALSA script
+2. implement the first real STT adapter
+3. implement a real TTS adapter
+4. run a real single-turn voice loop
+5. only later add wake-word/background listening
 
-This is a future implementation block. The current runtime still has no real microphone access, Whisper, Vosk, Piper, wake word, GPT, internet access, background listener, daemon, scheduler, or real audio output.
+This is a future implementation block. The current runtime still has no Whisper, Vosk, Piper, speech-to-text, wake word, GPT, internet access, background listener, daemon, scheduler, or real audio output.
 
 # Measured Resource Budgets
 
@@ -614,7 +645,7 @@ CoreService activation gate:
 
 Failure before activation returns a structured manifest rejection, preserves the correlation id, does not start the module, does not alter unrelated city lifecycle state, and can record a `manifest.validation_failed` event-history entry when CoreService has an `EventHistoryStore` configured.
 
-Current registered manifest coverage includes PCService, Voice City, mock microphone adapter, mock speech-to-text adapter, mock voice output adapter, VoiceCommandRouter, VoiceSessionSkill, and skill manifests registered by SkillRegistry. `config/modules.example.json` documents safe local configuration for enabled modules, preferred providers, and allowed permissions. It is not remote configuration and does not enable package downloads, dynamic imports, API keys, internet discovery, or automatic dependency installation.
+Current registered manifest coverage includes PCService, Voice City, mock microphone adapter, disabled-by-default Linux ALSA microphone adapter, mock speech-to-text adapter, mock voice output adapter, VoiceCommandRouter, VoiceSessionSkill, and skill manifests registered by SkillRegistry. `config/modules.example.json` documents safe local configuration for enabled modules, preferred providers, and allowed permissions. It is not remote configuration and does not enable package downloads, dynamic imports, API keys, internet discovery, or automatic dependency installation.
 
 Future modules must register manifests through the central registry before activation. A future V2 contract must be introduced by registering its new contract version and updating manifests explicitly; unknown versions must be rejected rather than reinterpreted.
 

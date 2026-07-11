@@ -4,13 +4,13 @@ Last Updated: 2026-07-11
 
 Current Version
 
-ARES v1.70 - Final Integration Safety Checkpoint
+ARES v1.71 - Linux ALSA Microphone Adapter
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation before any real audio work.
+ARES is at the completed Architecture Hardening foundation plus the first real Phase 3 microphone adapter checkpoint.
 
 Confirmed Phase 3 foundation:
 
@@ -37,11 +37,12 @@ Confirmed Phase 3 foundation:
 - Health checks and controlled adapter fallback
 - Measured resource budgets
 - Final integration, recovery, and safety regression checkpoint
+- Linux ALSA microphone adapter for explicit Raspberry Pi capture tests
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 630 tests.
+Current pytest collection: 646 tests.
 
-Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
+The only real audio addition is explicit one-shot Linux ALSA microphone capture through `LinuxAlsaMicrophoneAdapter`. Speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
 `skills.VoiceSessionSkill` now starts a bounded mock voice session from text commands: "start voice session", "start mock voice", and "run voice test". It uses only `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop`, returns a transcript summary, and is wired through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path.
 
@@ -62,7 +63,31 @@ Microphone behavior:
 - `PlaceholderVoiceService`, `NullVoiceInput`, and `MockVoiceInputAdapter` accept microphone adapters through dependency injection.
 - Voice City can swap a future microphone implementation without changing the Brain, CoreService, skills, or current text loops.
 - Tests cover audio chunk serialization and validation, start/stop, read-before-start, queued chunk reads, timeout handling, cancellation callable/event support, failure modes, structured status/capabilities, and Voice City injection.
-- No Whisper, Vosk, Piper, wake word, hardware-specific code, real microphone access, real STT, speaker access, GPT, internet, or background listener was added.
+- No Whisper, Vosk, Piper, wake word, real STT, speaker access, GPT, internet, or background listener was added.
+
+Linux ALSA microphone adapter has been added.
+
+Linux ALSA behavior:
+
+- New module: `core.LinuxAlsaMicrophone`.
+- New adapter: `core.LinuxAlsaMicrophoneAdapter`.
+- New safe subprocess boundary: `SafeSubprocessRunner`.
+- The adapter implements the existing `MicrophoneAdapter` contract.
+- It checks whether `arecord` is available, lists capture devices with `arecord -l`, validates optional selected devices such as `hw:1,0`, performs `health_check()`, records bounded WAV samples, validates missing/empty/invalid WAV output, and returns structured `MicrophoneResult` data.
+- `SafeSubprocessRunner` uses argument lists with `shell=False`; no user text becomes a shell command.
+- `linux_alsa_microphone_adapter` is registered as a disabled-by-default capability manifest provider.
+- Manual script: `scripts/manual_verify_linux_alsa_microphone.py`.
+- Manual Raspberry Pi commands:
+
+```bash
+python scripts/manual_verify_linux_alsa_microphone.py
+python scripts/manual_verify_linux_alsa_microphone.py --record --seconds 3 --output /tmp/ares_mic_test.wav
+python scripts/manual_verify_linux_alsa_microphone.py --device hw:1,0 --record --seconds 3 --output /tmp/ares_mic_hw_1_0.wav
+```
+
+- Tests mock subprocess and filesystem behavior and do not require microphone hardware.
+- Speech-to-text is still not implemented.
+- No Whisper, Vosk, Piper, wake word, real STT, speaker/TTS, GPT, internet, or background listener was added.
 
 Speech-to-text adapter abstraction has been added.
 
@@ -1639,13 +1664,11 @@ Text REPL
 
 Immediate Next Milestone
 
-Phase 3 real voice integration can be planned next, starting with real USB microphone detection and a single real microphone adapter. Do not add real audio hardware access without explicit approval.
+Phase 3 real voice integration can continue next by verifying real Raspberry Pi USB microphone capture with the manual ALSA script, then adding the first real STT adapter. Do not add additional real audio hardware behavior without explicit approval.
 
 Next technical choices:
 
-- Detect and select the real USB microphone.
-- Implement one real microphone adapter.
-- Verify raw audio capture.
+- Verify real Raspberry Pi USB microphone capture with `scripts/manual_verify_linux_alsa_microphone.py`.
 - Implement the first real STT adapter.
 - Implement a real TTS adapter.
 - Run a real single-turn voice loop.
@@ -1660,27 +1683,25 @@ Next technical choices:
 Future Roadmap
 
 1. Phase 3 Real Voice Integration
-2. Detect and select the real USB microphone
-3. Implement one real microphone adapter
-4. Verify raw audio capture
-5. Implement the first real STT adapter
-6. Implement a real TTS adapter
-7. Run a real single-turn voice loop
-8. Only later add wake-word/background listening
-9. GPT fallback integration
-10. Raspberry Pi deployment
-11. Robot body / sensors
-12. Vision
-13. Robotics
-14. Jetson Orin migration
-15. Autonomous ARES
+2. Verify real Raspberry Pi USB microphone capture with the manual ALSA script
+3. Implement the first real STT adapter
+4. Implement a real TTS adapter
+5. Run a real single-turn voice loop
+6. Only later add wake-word/background listening
+7. GPT fallback integration
+8. Raspberry Pi deployment
+9. Robot body / sensors
+10. Vision
+11. Robotics
+12. Jetson Orin migration
+13. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 630 tests.
+- Current pytest collection: 646 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1733,12 +1754,14 @@ Verification Notes
 - Capability manifest tests cover schema validation, deterministic serialization, duplicate rejection, capability/provider lookup, disabled modules, unsupported contracts, dependency validation, incompatible capabilities, platform mismatch, permission policy, lifecycle declaration mismatch, provider preference, skill manifest registration, CoreService manifest rejection, VoicePipeline compatibility, and CoreService usability after manifest failures.
 - Schema migration tests cover current schema load, known legacy import into v1, non-guessing malformed legacy inputs, v1 -> v2 fixture migration, multi-step order, future-version rejection, missing paths, duplicate/cyclic registration, dry-run behavior, backup creation, original preservation, temporary-file cleanup, malformed/truncated JSON rejection, wrong schema rejection, post-migration validation failure, metadata preservation, deterministic serialization, store usability after migration, unrelated city idleness, CoreService usability, event-history recording, concurrent lock failure, and content-safe inspection reports.
 - Final integration checkpoint tests cover the complete mock voice/text route, read-only PC status routing, confirmation-gated device actions, exactly-once destructive action protection, fallback boundaries, resource/task cleanup, unrelated-City idleness, disabled/incompatible fail-closed behavior, operational event redaction, migration/resource safety regressions, and recovery from isolated subsystem failures.
+- Linux ALSA microphone adapter tests cover capture-device parsing, missing `arecord`, no devices, invalid selected devices, valid WAV recording, `read_chunk()` through the adapter contract, timeout, non-zero arecord exits, invalid device process errors, missing/empty WAV output, unsafe device identifier rejection, structured status/capabilities, and manual script no-record/explicit-record behavior.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
 
 Latest Commits
 
+- `692f3d2` Add Linux ALSA microphone adapter
 - `f8c5c95` Add final integration safety checkpoint
 - `6636b78` Add measured resource budgets
 - `ebaff5a` Add health checks and adapter fallback
