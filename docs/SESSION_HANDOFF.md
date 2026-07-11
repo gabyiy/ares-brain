@@ -4,13 +4,13 @@ Last Updated: 2026-07-10
 
 Current Version
 
-ARES v1.61 - Speech-to-Text Adapter Abstraction
+ARES v1.62 - Voice Command Router
 
 ---
 
 Current Status
 
-ARES is at the Speech-to-Text Adapter Abstraction foundation before any real audio work.
+ARES is at the Voice Command Router foundation before any real audio work.
 
 Confirmed Phase 3 foundation:
 
@@ -28,8 +28,9 @@ Confirmed Phase 3 foundation:
 - Voice Session status query
 - Microphone adapter abstraction
 - Speech-to-text adapter abstraction
+- Voice Command Router
 
-Current pytest collection: 412 tests.
+Current pytest collection: 418 tests.
 
 Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
@@ -69,6 +70,24 @@ Speech-to-text behavior:
 - Voice City can swap a future transcription implementation without changing the Brain, CoreService, skills, or current text loops.
 - Tests cover success, empty audio, low confidence, adapter failure, no transcription, confidence clamping, structured status/capabilities, and Voice City injection.
 - No Whisper, Vosk, wake word, hardware-specific code, real microphone access, real STT, speaker access, GPT, internet, or background listener was added.
+
+Voice Command Router has been added.
+
+Voice command routing behavior:
+
+- New module: `core.VoiceCommandRouter`.
+- New result model: `core.VoiceCommandRoutingResult`.
+- New metrics model: `core.VoiceCommandRouterMetrics`.
+- `VoiceCommandRouter.route(transcription)` accepts `TranscriptionResult` objects.
+- Empty transcriptions are ignored safely.
+- Low-confidence transcriptions are rejected before command handling.
+- Transcription adapter failures are propagated as structured routing failures.
+- Valid text routes through CoreService's `voice.text_loop` capability.
+- Unknown commands return safe structured `unknown_command` results.
+- Metrics track total, routed, rejected, unknown, and failed command counts.
+- Routed and rejected commands emit `voice_command.routed` and `voice_command.rejected` events.
+- Tests cover successful routing, empty transcription, low-confidence rejection, unknown command handling, transcription failure propagation, metrics, and event-bus publication.
+- No Whisper, Vosk, GPT, wake word, internet, hardware access, real microphone, real STT, or background listener was added.
 
 Phase 3 Voice Checkpoint
 
@@ -904,7 +923,7 @@ Voice adapter behavior:
 - Manual Voice City text simulation uses `MockVoiceInputAdapter` for typed text and still uses `NullVoiceOutput`.
 - `VoiceLoop` reports adapter failures safely and still ignores empty input safely.
 - Tests cover input capture, output speak, empty input, adapter injection, adapter failure, and no audio hardware access.
-- Current pytest collection: 412 tests.
+- Current pytest collection: 418 tests.
 - Real Whisper, Vosk, Piper, microphone, speaker, wake word, background listener, GPT, internet, and real audio hardware access remain future work.
 
 Voice City adapter-backed single-turn loop has been added.
@@ -982,7 +1001,7 @@ Voice session status behavior:
 - The response summarizes whether the latest mock voice session started, stopped, failed, or reached max turns.
 - No-session queries return `No voice session events found.`
 - Tests cover no session, normal stopped session, failed session, max-turn session, parser routing, planner routing, and SkillManager live path.
-- Current pytest collection: 412 tests.
+- Current pytest collection: 418 tests.
 - No microphone, speaker, wake word, background listener, real STT, real TTS, GPT, internet, notifications, or real audio hardware access was added.
 
 ARES Behavior Schematic has been documented in README and `docs/ARCHITECTURE.md`.
@@ -1387,7 +1406,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 412 tests.
+- Current pytest collection: 418 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1437,6 +1456,7 @@ Verification Notes
 
 Latest Commits
 
+- `20930a1` Add voice command router
 - `b02fc6a` Add speech-to-text adapter abstraction
 - `36a534b` Add microphone adapter abstraction
 - `3061509` Document Phase 3 voice checkpoint
