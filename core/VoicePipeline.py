@@ -533,7 +533,7 @@ class VoicePipeline:
                 "status": "output_produced",
                 "success": True,
                 "text_length": len(response_text),
-                "output": output_data,
+                "output": _safe_output_event_data(output_data),
             },
         )
         return VoicePipelineResult(
@@ -750,6 +750,18 @@ def _voice_result_to_dict(result: VoiceServiceResult) -> Dict[str, Any]:
         "data": dict(result.data),
         "error_message": result.error_message,
         "metadata": dict(result.metadata),
+    }
+
+
+def _safe_output_event_data(output_data: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "success": bool(output_data.get("success")),
+        "error_message": str(output_data.get("error_message") or ""),
+        "source": str(dict(output_data.get("metadata") or {}).get("source") or ""),
+        "speaker_access": "disabled",
+        "accepted_text_length": len(
+            str(dict(output_data.get("data") or {}).get("accepted_text") or "")
+        ),
     }
 
 

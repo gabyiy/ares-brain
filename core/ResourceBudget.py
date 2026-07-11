@@ -422,6 +422,7 @@ class ResourceManager:
         self.metrics_provider = metrics_provider
         self._reservations: Dict[str, ResourceReservation] = {}
         self._created_at = self.clock()
+        self._event_history_failures: List[Dict[str, Any]] = []
 
     def can_activate(self, manifest: Any) -> ResourceDecision:
         module_name, resources = _manifest_identity(manifest)
@@ -865,6 +866,9 @@ class ResourceManager:
             "note": "Process metrics are process-level observations, not per-module exact measurements.",
         }
 
+    def event_history_failures(self) -> List[Dict[str, Any]]:
+        return list(self._event_history_failures)
+
     def record_maintenance_completed(self, data: Dict[str, Any]) -> None:
         self._record_event(RESOURCE_EVENT_MAINTENANCE_COMPLETED, data)
 
@@ -979,7 +983,18 @@ class ResourceManager:
             "error_message": "",
             "metadata": _metadata("resource_manager"),
         }
-        self.event_history_store.add(event, result)
+        try:
+            self.event_history_store.add(event, result)
+        except (OSError, RuntimeError, ValueError) as error:
+            self._event_history_failures.append(
+                {
+                    "source": "resource_manager",
+                    "event_type": event_type,
+                    "error_type": type(error).__name__,
+                    "error_message": str(error)[:200],
+                }
+            )
+            self._event_history_failures = self._event_history_failures[-20:]
 
 
 def resource_policy_for_profile(profile: str) -> ResourcePolicy:

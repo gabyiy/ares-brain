@@ -1,10 +1,16 @@
 import json
 import re
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 from core.CoreService import PC_SERVICE_NAME, CoreService
+from core.ExecutionGuard import (
+    EXECUTION_GUARD_DUPLICATE_COMPLETED,
+    ExecutionGuard,
+    ExecutionGuardDecision,
+)
 from core.PCService import PCService, PCServiceResult, WindowsPCService
 
 
@@ -345,8 +351,10 @@ class LocalDeviceActionAdapter:
         platform_system: Optional[Callable[[], str]] = None,
         core_service: Optional[CoreService] = None,
         pc_service: Optional[PCService] = None,
+        execution_guard: Optional[ExecutionGuard] = None,
     ):
         self.registry = registry or DeviceActionRegistry()
+        self.execution_guard = execution_guard or ExecutionGuard()
         loaded_allowlist = (
             app_allowlist
             if app_allowlist is not None
@@ -476,20 +484,76 @@ class LocalDeviceActionAdapter:
         if not bool(parameters.get("confirmation_approved")):
             return _confirmation_required_result(classify_device_action("lock_pc"))
 
-        return _device_action_result("lock_pc", self._pc_service().lock())
+        return self._execute_confirmed_once(
+            "lock_pc",
+            parameters,
+            lambda: _device_action_result("lock_pc", self._pc_service().lock()),
+        )
 
     def _sleep_pc_action(self, parameters: Mapping[str, Any]) -> DeviceActionResult:
         if not bool(parameters.get("confirmation_approved")):
             return _confirmation_required_result(classify_device_action("sleep_pc"))
 
-        return _device_action_result("sleep_pc", self._pc_service().sleep())
+        return self._execute_confirmed_once(
+            "sleep_pc",
+            parameters,
+            lambda: _device_action_result("sleep_pc", self._pc_service().sleep()),
+        )
 
     def _open_app_action(self, parameters: Mapping[str, Any]) -> DeviceActionResult:
         if not bool(parameters.get("confirmation_approved")):
             return _confirmation_required_result(classify_device_action("open_app"))
 
         raw_app_id = parameters.get("app_id") or parameters.get("app") or parameters.get("name")
-        return _device_action_result("open_app", self._pc_service().open_app(raw_app_id))
+        return self._execute_confirmed_once(
+            "open_app",
+            parameters,
+            lambda: _device_action_result("open_app", self._pc_service().open_app(raw_app_id)),
+        )
+
+    def _execute_confirmed_once(
+        self,
+        action_name: str,
+        parameters: Mapping[str, Any],
+        operation: Callable[[], DeviceActionResult],
+    ) -> DeviceActionResult:
+        token = _execution_token(action_name, parameters)
+        action_key = _execution_action_key(action_name, parameters)
+        decision = self.execution_guard.begin(token, action_key)
+        if decision.status == EXECUTION_GUARD_DUPLICATE_COMPLETED and decision.record:
+            return _device_action_result_from_guard_record(action_name, decision)
+        if not decision.success:
+            return _device_action_guard_failure(action_name, decision)
+
+        try:
+            result = operation()
+        except (AttributeError, OSError, RuntimeError, ValueError) as error:
+            message = f"{type(error).__name__}: {error}"
+            record = self.execution_guard.mark_uncertain(token, action_key, message)
+            return DeviceActionResult(
+                action_name=action_name,
+                success=False,
+                text="Confirmed device action entered an uncertain state and requires owner review.",
+                error_message="uncertain_execution_state",
+                metadata={
+                    "safe": True,
+                    "source": "device_action_adapter",
+                    "executed": False,
+                    "execution_guard": record.to_dict(),
+                },
+            )
+
+        guarded_result = _with_execution_guard_metadata(result, decision)
+        if _device_action_executed(guarded_result) or guarded_result.success:
+            self.execution_guard.complete(token, action_key, guarded_result.to_dict())
+        else:
+            self.execution_guard.fail_before_execution(
+                token,
+                action_key,
+                guarded_result.to_dict(),
+                guarded_result.error_message or "failed_before_execution",
+            )
+        return guarded_result
 
 
 def _echo_action(parameters: Mapping[str, Any]) -> DeviceActionResult:
@@ -512,6 +576,96 @@ def _device_action_result(action_name: str, service_result: PCServiceResult) -> 
         error_message=service_result.error_message,
         metadata=dict(service_result.metadata),
     )
+
+
+def _execution_token(action_name: str, parameters: Mapping[str, Any]) -> str:
+    explicit = (
+        parameters.get("execution_token")
+        or parameters.get("idempotency_token")
+        or parameters.get("confirmation_id")
+    )
+    if explicit:
+        return str(explicit)
+    return f"local-device-action:{_normalize_action_name(action_name)}:{uuid.uuid4().hex}"
+
+
+def _execution_action_key(action_name: str, parameters: Mapping[str, Any]) -> str:
+    normalized = _normalize_action_name(action_name)
+    if normalized == "open_app":
+        app_id = _normalize_app_id(
+            parameters.get("app_id") or parameters.get("app") or parameters.get("name")
+        )
+        return f"{normalized}:{app_id}"
+    return normalized
+
+
+def _with_execution_guard_metadata(
+    result: DeviceActionResult,
+    decision: ExecutionGuardDecision,
+) -> DeviceActionResult:
+    metadata = dict(result.metadata)
+    metadata["execution_guard"] = {
+        "status": decision.status,
+        "token": decision.token,
+        "action_key": decision.action_key,
+        "exactly_once": True,
+        "duplicate": False,
+    }
+    return DeviceActionResult(
+        action_name=result.action_name,
+        success=result.success,
+        text=result.text,
+        data=dict(result.data),
+        error_message=result.error_message,
+        metadata=metadata,
+    )
+
+
+def _device_action_result_from_guard_record(
+    action_name: str,
+    decision: ExecutionGuardDecision,
+) -> DeviceActionResult:
+    record = decision.record
+    result_data = dict(record.result if record else {})
+    metadata = dict(result_data.get("metadata") or {})
+    metadata["execution_guard"] = {
+        "status": decision.status,
+        "token": decision.token,
+        "action_key": decision.action_key,
+        "exactly_once": True,
+        "duplicate": True,
+        "executed_again": False,
+    }
+    return DeviceActionResult(
+        action_name=str(result_data.get("action_name") or action_name),
+        success=bool(result_data.get("success", False)),
+        text=str(result_data.get("text") or decision.text),
+        data=dict(result_data.get("data") or {}),
+        error_message=str(result_data.get("error_message") or ""),
+        metadata=metadata,
+    )
+
+
+def _device_action_guard_failure(
+    action_name: str,
+    decision: ExecutionGuardDecision,
+) -> DeviceActionResult:
+    return DeviceActionResult(
+        action_name=action_name,
+        success=False,
+        text=decision.text or "Confirmed device action rejected by exactly-once guard.",
+        error_message=decision.error_message or decision.status,
+        metadata={
+            "safe": True,
+            "source": "device_action_adapter",
+            "executed": False,
+            "execution_guard": decision.to_dict(),
+        },
+    )
+
+
+def _device_action_executed(result: DeviceActionResult) -> bool:
+    return bool(result.metadata.get("executed"))
 
 
 def _list_actions_action(core_service: CoreService) -> DeviceActionResult:

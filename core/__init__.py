@@ -115,6 +115,18 @@ from core.CapabilityManifest import (
     register_default_voice_manifests,
 )
 from core.ExecutionPipeline import ExecutionPipeline, ExecutionResult, RollbackHook, StepResult
+from core.ExecutionGuard import (
+    EXECUTION_GUARD_COMPLETED,
+    EXECUTION_GUARD_DUPLICATE_COMPLETED,
+    EXECUTION_GUARD_FAILED_BEFORE_EXECUTION,
+    EXECUTION_GUARD_IN_PROGRESS,
+    EXECUTION_GUARD_STARTED,
+    EXECUTION_GUARD_TOKEN_SCOPE_MISMATCH,
+    EXECUTION_GUARD_UNCERTAIN,
+    ExecutionGuard,
+    ExecutionGuardDecision,
+    ExecutionGuardRecord,
+)
 from core.EventBus import (
     EVENT_PRIORITIES,
     PRIORITY_CRITICAL,
@@ -370,6 +382,16 @@ __all__ = [
     "VOICE_SERVICE_NAME",
     "ExecutionPipeline",
     "ExecutionResult",
+    "EXECUTION_GUARD_COMPLETED",
+    "EXECUTION_GUARD_DUPLICATE_COMPLETED",
+    "EXECUTION_GUARD_FAILED_BEFORE_EXECUTION",
+    "EXECUTION_GUARD_IN_PROGRESS",
+    "EXECUTION_GUARD_STARTED",
+    "EXECUTION_GUARD_TOKEN_SCOPE_MISMATCH",
+    "EXECUTION_GUARD_UNCERTAIN",
+    "ExecutionGuard",
+    "ExecutionGuardDecision",
+    "ExecutionGuardRecord",
     "EVENT_PRIORITIES",
     "Event",
     "EventBus",

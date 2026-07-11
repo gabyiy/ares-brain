@@ -136,6 +136,7 @@ class CoreService:
         self._services: Dict[str, Any] = {}
         self._service_metadata: Dict[str, Dict[str, Any]] = {}
         self._event_decisions: List[CoreEventDecisionResult] = []
+        self._event_history_failures: List[Dict[str, Any]] = []
         self._event_history_store = event_history_store
         self.lifecycle_manager = lifecycle_manager or ModuleLifecycleManager()
         self.manifest_registry = manifest_registry or CapabilityManifestRegistry(
@@ -934,6 +935,10 @@ class CoreService:
             if event_decision.decision == clean_decision
         ]
 
+    def event_history_failures(self) -> List[Dict[str, Any]]:
+        """Return bounded local diagnostics for optional event-history write failures."""
+        return list(self._event_history_failures)
+
     def get_capabilities(self) -> CoreServiceResult:
         capabilities_by_service: Dict[str, Dict[str, Any]] = {}
         services: List[Dict[str, Any]] = []
@@ -1291,7 +1296,18 @@ class CoreService:
 
     def _store_event_history(self, event: Event, result: CoreEventDecisionResult) -> None:
         if self._event_history_store is not None:
-            self._event_history_store.add(event, result)
+            try:
+                self._event_history_store.add(event, result)
+            except (OSError, RuntimeError, ValueError) as error:
+                self._event_history_failures.append(
+                    {
+                        "source": "core_service",
+                        "event_type": getattr(event, "type", ""),
+                        "error_type": type(error).__name__,
+                        "error_message": str(error)[:200],
+                    }
+                )
+                self._event_history_failures = self._event_history_failures[-20:]
 
     def _store_contract_rejection(
         self,

@@ -450,6 +450,7 @@ class AdapterFallbackPolicy:
             clock=self.clock,
         )
         self.event_history_store = event_history_store
+        self._event_history_failures: List[Dict[str, Any]] = []
 
     def select(
         self,
@@ -713,6 +714,9 @@ class AdapterFallbackPolicy:
             metadata={"source": "adapter_fallback_policy"},
         )
 
+    def event_history_failures(self) -> List[Dict[str, Any]]:
+        return list(self._event_history_failures)
+
     def _ordered_candidates(self, candidates: Sequence[AdapterCandidate | Any]) -> List[AdapterCandidate]:
         normalized = [
             candidate if isinstance(candidate, AdapterCandidate) else AdapterCandidate(
@@ -811,7 +815,18 @@ class AdapterFallbackPolicy:
             "error_message": "",
             "metadata": {"safe": True, "source": "adapter_fallback_policy"},
         }
-        self.event_history_store.add(event, result)
+        try:
+            self.event_history_store.add(event, result)
+        except (OSError, RuntimeError, ValueError) as error:
+            self._event_history_failures.append(
+                {
+                    "source": "adapter_fallback_policy",
+                    "event_type": event_type,
+                    "error_type": type(error).__name__,
+                    "error_message": str(error)[:200],
+                }
+            )
+            self._event_history_failures = self._event_history_failures[-20:]
 
 
 def check_component_health(
