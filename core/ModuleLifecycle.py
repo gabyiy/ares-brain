@@ -4,6 +4,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from core.Contracts import (
+    CONTRACT_LIFECYCLE_EXECUTION_REQUEST,
+    CONTRACT_LIFECYCLE_EXECUTION_RESULT,
+    CONTRACT_VERSION_V1,
+    ContractCompatibilityResult,
+    utc_contract_timestamp,
+    validate_contract,
+)
+
 
 LIFECYCLE_UNLOADED = "UNLOADED"
 LIFECYCLE_STARTING = "STARTING"
@@ -75,6 +84,9 @@ class LifecycleRequest:
     session_id: str = ""
     correlation_id: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
+    contract_name: str = CONTRACT_LIFECYCLE_EXECUTION_REQUEST
+    contract_version: str = CONTRACT_VERSION_V1
+    created_at: str = field(default_factory=utc_contract_timestamp)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "module_name", _normalize_module_name(self.module_name))
@@ -83,6 +95,9 @@ class LifecycleRequest:
         object.__setattr__(self, "session_id", str(self.session_id or "").strip())
         object.__setattr__(self, "correlation_id", str(self.correlation_id or "").strip())
         object.__setattr__(self, "metadata", dict(self.metadata or {}))
+        object.__setattr__(self, "contract_name", str(self.contract_name or "").strip())
+        object.__setattr__(self, "contract_version", str(self.contract_version or "").strip())
+        object.__setattr__(self, "created_at", str(self.created_at or "").strip() or utc_contract_timestamp())
         if not self.module_name:
             raise ValueError("Lifecycle request module_name is required")
         if not self.operation:
@@ -90,11 +105,14 @@ class LifecycleRequest:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "contract_name": self.contract_name,
+            "contract_version": self.contract_version,
+            "correlation_id": self.correlation_id,
+            "session_id": self.session_id,
+            "created_at": self.created_at,
             "module_name": self.module_name,
             "operation": self.operation,
             "payload": _stable_data(self.payload),
-            "session_id": self.session_id,
-            "correlation_id": self.correlation_id,
             "metadata": _stable_data(self.metadata),
         }
 
@@ -132,10 +150,22 @@ class LifecycleResult:
     error_message: str = ""
     data: Dict[str, Any] = field(default_factory=dict)
     request: Optional[LifecycleRequest] = None
+    contract_name: str = CONTRACT_LIFECYCLE_EXECUTION_RESULT
+    contract_version: str = CONTRACT_VERSION_V1
+    correlation_id: str = ""
+    session_id: str = ""
+    created_at: str = field(default_factory=utc_contract_timestamp)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
+        correlation_id = self.correlation_id or (self.request.correlation_id if self.request else "")
+        session_id = self.session_id or (self.request.session_id if self.request else "")
         return {
+            "contract_name": self.contract_name,
+            "contract_version": self.contract_version,
+            "correlation_id": correlation_id,
+            "session_id": session_id,
+            "created_at": self.created_at,
             "success": self.success,
             "status": self.status,
             "state": self.state,
@@ -242,6 +272,9 @@ class ModuleLifecycleManager:
     ) -> LifecycleResult:
         record = self._record(name)
         lifecycle_request = _request_for(record.module_name, "start", request)
+        compatibility = _validate_lifecycle_request(lifecycle_request)
+        if not compatibility.success:
+            return self._contract_rejected_result(record, lifecycle_request, compatibility)
 
         if record.state == LIFECYCLE_READY:
             return self._result(
@@ -309,6 +342,9 @@ class ModuleLifecycleManager:
     ) -> LifecycleResult:
         record = self._record(name)
         lifecycle_request = _request_for(record.module_name, "health_check", request)
+        compatibility = _validate_lifecycle_request(lifecycle_request)
+        if not compatibility.success:
+            return self._contract_rejected_result(record, lifecycle_request, compatibility)
         if record.state != LIFECYCLE_READY:
             return self._result(
                 False,
@@ -353,6 +389,9 @@ class ModuleLifecycleManager:
     ) -> LifecycleResult:
         record = self._record(name)
         lifecycle_request = _request_for(record.module_name, "execute", request)
+        compatibility = _validate_lifecycle_request(lifecycle_request)
+        if not compatibility.success:
+            return self._contract_rejected_result(record, lifecycle_request, compatibility)
         if record.state != LIFECYCLE_READY:
             return self._result(
                 False,
@@ -405,6 +444,9 @@ class ModuleLifecycleManager:
     ) -> LifecycleResult:
         record = self._record(name)
         lifecycle_request = _request_for(record.module_name, "stop", request)
+        compatibility = _validate_lifecycle_request(lifecycle_request)
+        if not compatibility.success:
+            return self._contract_rejected_result(record, lifecycle_request, compatibility)
         if record.state == LIFECYCLE_STOPPED:
             return self._result(
                 True,
@@ -460,6 +502,9 @@ class ModuleLifecycleManager:
     ) -> LifecycleResult:
         record = self._record(name)
         lifecycle_request = _request_for(record.module_name, "recover", request)
+        compatibility = _validate_lifecycle_request(lifecycle_request)
+        if not compatibility.success:
+            return self._contract_rejected_result(record, lifecycle_request, compatibility)
         if record.state not in _RECOVERY_REQUIRED_STATES:
             return self._result(
                 True,
@@ -496,6 +541,9 @@ class ModuleLifecycleManager:
         record = self._record(name)
         target_state = _normalize_state(to_state)
         lifecycle_request = _request_for(record.module_name, "transition", request)
+        compatibility = _validate_lifecycle_request(lifecycle_request)
+        if not compatibility.success:
+            return self._contract_rejected_result(record, lifecycle_request, compatibility)
         if target_state not in _ALLOWED_TRANSITIONS[record.state]:
             return self._illegal_transition_result(record, target_state, lifecycle_request)
 
@@ -631,6 +679,22 @@ class ModuleLifecycleManager:
             data={"from_state": record.state, "to_state": to_state},
         )
 
+    def _contract_rejected_result(
+        self,
+        record: _LifecycleRecord,
+        request: LifecycleRequest,
+        compatibility: ContractCompatibilityResult,
+    ) -> LifecycleResult:
+        return self._result(
+            False,
+            "contract_rejected",
+            record,
+            "Lifecycle request rejected by compatibility gate.",
+            error_message=compatibility.error_message or compatibility.status,
+            request=request,
+            data={"compatibility": compatibility.to_dict()},
+        )
+
     def _result(
         self,
         success: bool,
@@ -649,6 +713,8 @@ class ModuleLifecycleManager:
             error_message=error_message,
             data=dict(data or {}),
             request=request,
+            correlation_id=request.correlation_id if request else "",
+            session_id=request.session_id if request else "",
             metadata={
                 "safe": True,
                 "source": "module_lifecycle_manager",
@@ -670,8 +736,18 @@ def _request_for(
             session_id=request.session_id,
             correlation_id=request.correlation_id,
             metadata=request.metadata,
+            contract_name=request.contract_name,
+            contract_version=request.contract_version,
+            created_at=request.created_at,
         )
     return LifecycleRequest(module_name=module_name, operation=operation)
+
+
+def _validate_lifecycle_request(request: LifecycleRequest) -> ContractCompatibilityResult:
+    return validate_contract(
+        request,
+        expected_contract_name=CONTRACT_LIFECYCLE_EXECUTION_REQUEST,
+    )
 
 
 def _call_optional(module: Any, method_name: str) -> Any:

@@ -3,6 +3,11 @@ from datetime import datetime, timezone
 from threading import RLock
 from typing import Any, Callable, Dict, List, Optional
 
+from core.Contracts import (
+    CONTRACT_EVENT_PUBLICATION_ENVELOPE,
+    CONTRACT_VERSION_V1,
+)
+
 
 PRIORITY_LOW = "low"
 PRIORITY_NORMAL = "normal"
@@ -35,20 +40,35 @@ class Event:
     priority: str = PRIORITY_NORMAL
     payload: Dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=_utc_now)
+    contract_name: str = CONTRACT_EVENT_PUBLICATION_ENVELOPE
+    contract_version: str = CONTRACT_VERSION_V1
+    correlation_id: str = ""
+    session_id: str = ""
+    created_at: str = field(default_factory=_utc_now)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         object.__setattr__(self, "source", _clean_required(self.source, "Event source"))
         object.__setattr__(self, "type", _clean_required(self.type, "Event type"))
         object.__setattr__(self, "priority", _clean_priority(self.priority))
         object.__setattr__(self, "payload", dict(self.payload or {}))
+        object.__setattr__(self, "correlation_id", str(self.correlation_id or "").strip())
+        object.__setattr__(self, "session_id", str(self.session_id or "").strip())
+        object.__setattr__(self, "metadata", dict(self.metadata or {}))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "contract_name": self.contract_name,
+            "contract_version": self.contract_version,
+            "correlation_id": self.correlation_id,
+            "session_id": self.session_id,
+            "created_at": self.created_at,
             "source": self.source,
             "type": self.type,
             "priority": self.priority,
             "payload": dict(self.payload),
             "timestamp": self.timestamp,
+            "metadata": dict(self.metadata),
         }
 
 

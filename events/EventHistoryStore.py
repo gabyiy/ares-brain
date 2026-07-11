@@ -202,6 +202,11 @@ def _event_to_dict(event: Any) -> Dict[str, Any]:
 def _result_to_dict(result: Any) -> Dict[str, Any]:
     if isinstance(result, dict):
         return dict(result)
+    to_dict = getattr(result, "to_dict", None)
+    if callable(to_dict):
+        data = to_dict()
+        if isinstance(data, dict):
+            return dict(data)
     return {
         "success": bool(getattr(result, "success", False)),
         "decision": str(getattr(result, "decision", "") or ""),

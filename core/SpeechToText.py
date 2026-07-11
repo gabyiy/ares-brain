@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Optional
 
+from core.Contracts import (
+    CONTRACT_SPEECH_TO_TEXT_RESULT,
+    CONTRACT_VERSION_V1,
+    utc_contract_timestamp,
+)
 from core.Microphone import AudioChunk
 
 
@@ -14,6 +19,11 @@ class TranscriptionResult:
     confidence: float = 0.0
     error_message: str = ""
     data: Dict[str, Any] = field(default_factory=dict)
+    contract_name: str = CONTRACT_SPEECH_TO_TEXT_RESULT
+    contract_version: str = CONTRACT_VERSION_V1
+    correlation_id: str = ""
+    session_id: str = ""
+    created_at: str = field(default_factory=utc_contract_timestamp)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -23,6 +33,11 @@ class TranscriptionResult:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "contract_name": self.contract_name,
+            "contract_version": self.contract_version,
+            "correlation_id": self.correlation_id,
+            "session_id": self.session_id,
+            "created_at": self.created_at,
             "success": self.success,
             "status": self.status,
             "text": self.text,

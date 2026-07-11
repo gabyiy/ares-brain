@@ -3,6 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from core.Contracts import (
+    CONTRACT_SPEECH_TO_TEXT_RESULT,
+    CONTRACT_VERSION_V1,
+    CONTRACT_VOICE_COMMAND_REQUEST,
+    CONTRACT_VOICE_COMMAND_RESULT,
+    VoiceCommandRequestV1,
+    utc_contract_timestamp,
+    validate_contract,
+)
 from core.CoreService import CoreService, CoreServiceResult
 from core.EventBus import Event, EventBus, PRIORITY_NORMAL
 from core.SpeechToText import TranscriptionResult
@@ -27,10 +36,20 @@ class VoiceCommandRoutingResult:
     route: str = DEFAULT_VOICE_ROUTE_CAPABILITY
     error_message: str = ""
     data: Dict[str, Any] = field(default_factory=dict)
+    contract_name: str = CONTRACT_VOICE_COMMAND_RESULT
+    contract_version: str = CONTRACT_VERSION_V1
+    correlation_id: str = ""
+    session_id: str = ""
+    created_at: str = field(default_factory=utc_contract_timestamp)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "contract_name": self.contract_name,
+            "contract_version": self.contract_version,
+            "correlation_id": self.correlation_id,
+            "session_id": self.session_id,
+            "created_at": self.created_at,
             "success": self.success,
             "status": self.status,
             "text": self.text,
@@ -95,6 +114,7 @@ class VoiceCommandRouter:
         transcription: TranscriptionResult,
         session_id: str = "",
         correlation_id: str = "",
+        contract_version: str = CONTRACT_VERSION_V1,
     ) -> VoiceCommandRoutingResult:
         self._increment(total=1)
 
@@ -107,6 +127,28 @@ class VoiceCommandRouter:
                 error_message="invalid_transcription_result",
                 data={"transcription": repr(transcription)},
                 failed=True,
+                session_id=session_id,
+                correlation_id=correlation_id,
+            )
+
+        transcription_compatibility = validate_contract(
+            transcription,
+            expected_contract_name=CONTRACT_SPEECH_TO_TEXT_RESULT,
+        )
+        if not transcription_compatibility.success:
+            return self._rejected(
+                status="contract_rejected",
+                text="Voice command rejected because transcription contract is unsupported.",
+                confidence=0.0,
+                input_text="",
+                error_message=transcription_compatibility.error_message,
+                data={
+                    "transcription": transcription.to_dict(),
+                    "compatibility": transcription_compatibility.to_dict(),
+                },
+                failed=True,
+                session_id=session_id,
+                correlation_id=correlation_id,
             )
 
         transcription_data = transcription.to_dict()
@@ -119,6 +161,8 @@ class VoiceCommandRouter:
                 error_message=transcription.error_message or "transcription_failed",
                 data={"transcription": transcription_data},
                 failed=True,
+                session_id=session_id,
+                correlation_id=correlation_id,
             )
 
         command_text = transcription.text.strip()
@@ -129,6 +173,8 @@ class VoiceCommandRouter:
                 confidence=transcription.confidence,
                 input_text="",
                 data={"transcription": transcription_data},
+                session_id=session_id,
+                correlation_id=correlation_id,
             )
 
         if transcription.confidence < self.confidence_threshold:
@@ -142,6 +188,38 @@ class VoiceCommandRouter:
                     "transcription": transcription_data,
                     "confidence_threshold": self.confidence_threshold,
                 },
+                session_id=session_id,
+                correlation_id=correlation_id,
+            )
+
+        command_request = _voice_command_request(
+            text=command_text,
+            confidence=transcription.confidence,
+            transcription=transcription_data,
+            route=self.route_capability,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            contract_version=contract_version,
+        )
+        command_compatibility = validate_contract(
+            command_request,
+            expected_contract_name=CONTRACT_VOICE_COMMAND_REQUEST,
+        )
+        if not command_compatibility.success:
+            return self._rejected(
+                status="contract_rejected",
+                text="Voice command rejected by compatibility gate.",
+                confidence=transcription.confidence,
+                input_text=command_text,
+                error_message=command_compatibility.error_message,
+                data={
+                    "transcription": transcription_data,
+                    "request": _contract_payload(command_request),
+                    "compatibility": command_compatibility.to_dict(),
+                },
+                failed=True,
+                session_id=session_id,
+                correlation_id=correlation_id,
             )
 
         route_result = self.core_service.route_by_capability(
@@ -166,6 +244,8 @@ class VoiceCommandRouter:
                     "route_result": route_result.data,
                 },
                 failed=True,
+                session_id=session_id,
+                correlation_id=correlation_id,
             )
 
         command_result = dict(route_result.data.get("response", {}) or {})
@@ -183,6 +263,8 @@ class VoiceCommandRouter:
                     "command_result": command_result,
                 },
                 unknown=status == "unknown_command",
+                session_id=session_id,
+                correlation_id=correlation_id,
             )
 
         result = VoiceCommandRoutingResult(
@@ -193,8 +275,11 @@ class VoiceCommandRouter:
             response_text=str(command_result.get("response_text") or ""),
             confidence=transcription.confidence,
             route=self.route_capability,
+            correlation_id=correlation_id,
+            session_id=session_id,
             data={
                 "transcription": transcription_data,
+                "request": _contract_payload(command_request),
                 "route_result": route_result.data,
                 "command_result": command_result,
             },
@@ -265,6 +350,8 @@ class VoiceCommandRouter:
         data: Optional[Dict[str, Any]] = None,
         failed: bool = False,
         unknown: bool = False,
+        session_id: str = "",
+        correlation_id: str = "",
     ) -> VoiceCommandRoutingResult:
         result = VoiceCommandRoutingResult(
             success=False if (failed or error_message or unknown) else True,
@@ -275,6 +362,8 @@ class VoiceCommandRouter:
             route=self.route_capability,
             error_message=error_message,
             data=dict(data or {}),
+            correlation_id=correlation_id,
+            session_id=session_id,
             metadata={
                 "safe": True,
                 "source": "voice_command_router",
@@ -291,6 +380,8 @@ class VoiceCommandRouter:
 
     def _emit_event(self, event_type: str, result: VoiceCommandRoutingResult) -> Event:
         payload = {
+            "session_id": result.session_id,
+            "correlation_id": result.correlation_id,
             "status": result.status,
             "success": result.success,
             "confidence": result.confidence,
@@ -378,3 +469,49 @@ def _handler_response_to_data(response: Any) -> Dict[str, Any]:
 
 def _clamp_confidence(confidence: float) -> float:
     return max(0.0, min(1.0, float(confidence)))
+
+
+def _voice_command_request(
+    text: str,
+    confidence: float,
+    transcription: Dict[str, Any],
+    route: str,
+    session_id: str,
+    correlation_id: str,
+    contract_version: str,
+) -> Any:
+    try:
+        return VoiceCommandRequestV1(
+            text=text,
+            confidence=confidence,
+            transcription=dict(transcription or {}),
+            route=route,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            contract_version=contract_version,
+            metadata={"source": "voice_command_router"},
+        )
+    except ValueError:
+        return {
+            "contract_name": CONTRACT_VOICE_COMMAND_REQUEST,
+            "contract_version": str(contract_version or ""),
+            "correlation_id": str(correlation_id or ""),
+            "session_id": str(session_id or ""),
+            "created_at": utc_contract_timestamp(),
+            "metadata": {"source": "voice_command_router"},
+            "text": text,
+            "confidence": confidence,
+            "transcription": dict(transcription or {}),
+            "route": route,
+        }
+
+
+def _contract_payload(contract: Any) -> Dict[str, Any]:
+    if isinstance(contract, dict):
+        return dict(contract)
+    to_dict = getattr(contract, "to_dict", None)
+    if callable(to_dict):
+        payload = to_dict()
+        if isinstance(payload, dict):
+            return dict(payload)
+    return {}

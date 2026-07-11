@@ -4,6 +4,18 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
+from core.Contracts import (
+    CONTRACT_MICROPHONE_CAPTURE_RESULT,
+    CONTRACT_SPEECH_TO_TEXT_RESULT,
+    CONTRACT_VERSION_V1,
+    CONTRACT_VOICE_PIPELINE_REQUEST,
+    CONTRACT_VOICE_PIPELINE_RESULT,
+    MicrophoneCaptureRequestV1,
+    SpeechToTextRequestV1,
+    VoicePipelineRequestV1,
+    utc_contract_timestamp,
+    validate_contract,
+)
 from core.CoreService import CoreService
 from core.EventBus import Event, EventBus, PRIORITY_NORMAL
 from core.Microphone import AudioChunk, MicrophoneAdapter, MicrophoneResult
@@ -41,10 +53,18 @@ class VoicePipelineResult:
     error_message: str = ""
     data: Dict[str, Any] = field(default_factory=dict)
     events: List[Dict[str, Any]] = field(default_factory=list)
+    contract_name: str = CONTRACT_VOICE_PIPELINE_RESULT
+    contract_version: str = CONTRACT_VERSION_V1
+    created_at: str = field(default_factory=utc_contract_timestamp)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "contract_name": self.contract_name,
+            "contract_version": self.contract_version,
+            "correlation_id": self.correlation_id,
+            "session_id": self.session_id,
+            "created_at": self.created_at,
             "success": self.success,
             "status": self.status,
             "text": self.text,
@@ -97,14 +117,92 @@ class VoicePipeline:
         session_id: Optional[str] = None,
         correlation_id: Optional[str] = None,
         timeout_seconds: Optional[float] = None,
+        request: Optional[Any] = None,
+        contract_version: str = CONTRACT_VERSION_V1,
     ) -> VoicePipelineResult:
-        clean_session_id = _stable_id(session_id, "voice-session")
-        clean_correlation_id = _stable_id(correlation_id, "voice-correlation")
+        pipeline_request = _voice_pipeline_request(
+            request=request,
+            session_id=session_id,
+            correlation_id=correlation_id,
+            timeout_seconds=timeout_seconds,
+            contract_version=contract_version,
+        )
+        request_payload = _contract_payload(pipeline_request)
+        clean_session_id = _stable_id(request_payload.get("session_id") or session_id, "voice-session")
+        clean_correlation_id = _stable_id(
+            request_payload.get("correlation_id") or correlation_id,
+            "voice-correlation",
+        )
+        request_compatibility = validate_contract(
+            pipeline_request,
+            expected_contract_name=CONTRACT_VOICE_PIPELINE_REQUEST,
+        )
+        if not request_compatibility.success:
+            return VoicePipelineResult(
+                success=False,
+                status="contract_rejected",
+                text="Voice pipeline request rejected by compatibility gate.",
+                response_text="",
+                session_id=clean_session_id,
+                correlation_id=clean_correlation_id,
+                error_message=request_compatibility.error_message or request_compatibility.status,
+                data={
+                    "request": request_payload,
+                    "compatibility": request_compatibility.to_dict(),
+                    "microphone_started": False,
+                    "speech_to_text_started": False,
+                    "core_service_routed": False,
+                },
+                metadata=_metadata(),
+            )
+
+        timeout_seconds = request_payload.get("timeout_seconds")
         run_events: List[Dict[str, Any]] = []
-        microphone_data: Dict[str, Any] = {}
+        microphone_request = MicrophoneCaptureRequestV1(
+            timeout_seconds=timeout_seconds,
+            session_id=clean_session_id,
+            correlation_id=clean_correlation_id,
+            metadata={"source": "voice_pipeline"},
+        )
+        microphone_compatibility = validate_contract(microphone_request)
+        if not microphone_compatibility.success:
+            return VoicePipelineResult(
+                success=False,
+                status="contract_rejected",
+                text="Microphone capture request rejected by compatibility gate.",
+                session_id=clean_session_id,
+                correlation_id=clean_correlation_id,
+                error_message=microphone_compatibility.error_message or microphone_compatibility.status,
+                data={
+                    "request": request_payload,
+                    "microphone_request": microphone_request.to_dict(),
+                    "compatibility": microphone_compatibility.to_dict(),
+                },
+                metadata=_metadata(),
+            )
+        microphone_data: Dict[str, Any] = {"request": microphone_request.to_dict()}
 
         start_result = self._start_microphone()
         microphone_data["start"] = start_result.to_dict()
+        start_compatibility = validate_contract(
+            start_result,
+            expected_contract_name=CONTRACT_MICROPHONE_CAPTURE_RESULT,
+        )
+        if not start_compatibility.success:
+            return VoicePipelineResult(
+                success=False,
+                status="contract_rejected",
+                text="Microphone start result rejected by compatibility gate.",
+                session_id=clean_session_id,
+                correlation_id=clean_correlation_id,
+                error_message=start_compatibility.error_message or start_compatibility.status,
+                data={
+                    "request": request_payload,
+                    "microphone": microphone_data,
+                    "compatibility": start_compatibility.to_dict(),
+                },
+                metadata=_metadata(),
+            )
         if not start_result.success:
             return self._finish_with_output(
                 success=False,
@@ -123,6 +221,25 @@ class VoicePipeline:
         microphone_data["read"] = read_result.to_dict()
         stop_result = self._stop_microphone()
         microphone_data["stop"] = stop_result.to_dict()
+        read_compatibility = validate_contract(
+            read_result,
+            expected_contract_name=CONTRACT_MICROPHONE_CAPTURE_RESULT,
+        )
+        if not read_compatibility.success:
+            return VoicePipelineResult(
+                success=False,
+                status="contract_rejected",
+                text="Microphone read result rejected by compatibility gate.",
+                session_id=clean_session_id,
+                correlation_id=clean_correlation_id,
+                error_message=read_compatibility.error_message or read_compatibility.status,
+                data={
+                    "request": request_payload,
+                    "microphone": microphone_data,
+                    "compatibility": read_compatibility.to_dict(),
+                },
+                metadata=_metadata(),
+            )
 
         if not read_result.success:
             return self._finish_with_output(
@@ -156,8 +273,56 @@ class VoicePipeline:
             },
         )
 
+        stt_request = SpeechToTextRequestV1(
+            audio_chunk=audio_chunk.to_dict(),
+            session_id=clean_session_id,
+            correlation_id=clean_correlation_id,
+            metadata={"source": "voice_pipeline"},
+        )
+        stt_request_compatibility = validate_contract(stt_request)
+        if not stt_request_compatibility.success:
+            return VoicePipelineResult(
+                success=False,
+                status="contract_rejected",
+                text="Speech-to-text request rejected by compatibility gate.",
+                session_id=clean_session_id,
+                correlation_id=clean_correlation_id,
+                error_message=stt_request_compatibility.error_message or stt_request_compatibility.status,
+                data={
+                    "request": request_payload,
+                    "speech_to_text_request": stt_request.to_dict(),
+                    "compatibility": stt_request_compatibility.to_dict(),
+                },
+                metadata=_metadata(),
+            )
+
         transcription = self._transcribe(audio_chunk)
         transcription_data = transcription.to_dict()
+        transcription_compatibility = validate_contract(
+            transcription,
+            expected_contract_name=CONTRACT_SPEECH_TO_TEXT_RESULT,
+        )
+        if not transcription_compatibility.success:
+            return self._finish_with_output(
+                success=False,
+                status="contract_rejected",
+                text="Speech-to-text result rejected by compatibility gate.",
+                response_text="Speech-to-text result rejected by compatibility gate.",
+                error_message=transcription_compatibility.error_message or transcription_compatibility.status,
+                session_id=clean_session_id,
+                correlation_id=clean_correlation_id,
+                run_events=run_events,
+                data={
+                    "request": request_payload,
+                    "microphone": microphone_data,
+                    "audio": audio_chunk.to_dict(),
+                    "speech_to_text_request": stt_request.to_dict(),
+                    "transcription": transcription_data,
+                    "compatibility": transcription_compatibility.to_dict(),
+                },
+                execution_failed_stage="speech_to_text_contract",
+            )
+        transcription_data["request"] = stt_request.to_dict()
         transcription_event_type = (
             VOICE_PIPELINE_TRANSCRIPTION_ACCEPTED_EVENT
             if transcription.success and bool(transcription.text)
@@ -502,3 +667,43 @@ def _metadata() -> Dict[str, Any]:
         "internet": "disabled",
         "gpt": "disabled",
     }
+
+
+def _voice_pipeline_request(
+    request: Optional[Any],
+    session_id: Optional[str],
+    correlation_id: Optional[str],
+    timeout_seconds: Optional[float],
+    contract_version: str,
+) -> Any:
+    if request is not None:
+        return request
+    try:
+        return VoicePipelineRequestV1(
+            session_id=str(session_id or ""),
+            correlation_id=str(correlation_id or ""),
+            timeout_seconds=timeout_seconds,
+            contract_version=contract_version,
+            metadata={"source": "voice_pipeline"},
+        )
+    except ValueError:
+        return {
+            "contract_name": CONTRACT_VOICE_PIPELINE_REQUEST,
+            "contract_version": str(contract_version or ""),
+            "correlation_id": str(correlation_id or ""),
+            "session_id": str(session_id or ""),
+            "created_at": utc_contract_timestamp(),
+            "metadata": {"source": "voice_pipeline"},
+            "timeout_seconds": timeout_seconds,
+        }
+
+
+def _contract_payload(contract: Any) -> Dict[str, Any]:
+    if isinstance(contract, dict):
+        return dict(contract)
+    to_dict = getattr(contract, "to_dict", None)
+    if callable(to_dict):
+        payload = to_dict()
+        if isinstance(payload, dict):
+            return dict(payload)
+    return {}

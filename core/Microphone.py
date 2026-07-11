@@ -4,6 +4,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, Optional
 
+from core.Contracts import (
+    CONTRACT_MICROPHONE_CAPTURE_RESULT,
+    CONTRACT_VERSION_V1,
+    utc_contract_timestamp,
+)
+
 
 CancelCheck = Callable[[], bool]
 
@@ -68,10 +74,20 @@ class MicrophoneResult:
     chunk: Optional[AudioChunk] = None
     error_message: str = ""
     data: Dict[str, Any] = field(default_factory=dict)
+    contract_name: str = CONTRACT_MICROPHONE_CAPTURE_RESULT
+    contract_version: str = CONTRACT_VERSION_V1
+    correlation_id: str = ""
+    session_id: str = ""
+    created_at: str = field(default_factory=utc_contract_timestamp)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "contract_name": self.contract_name,
+            "contract_version": self.contract_version,
+            "correlation_id": self.correlation_id,
+            "session_id": self.session_id,
+            "created_at": self.created_at,
             "success": self.success,
             "status": self.status,
             "text": self.text,

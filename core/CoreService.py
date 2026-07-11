@@ -8,6 +8,15 @@ from core.EventBus import (
     PRIORITY_NORMAL,
     Event,
 )
+from core.Contracts import (
+    CONTRACT_CORE_EXECUTION_REQUEST,
+    CONTRACT_CORE_EXECUTION_RESULT,
+    CONTRACT_VERSION_V1,
+    CoreExecutionRequestV1,
+    ContractCompatibilityResult,
+    utc_contract_timestamp,
+    validate_contract,
+)
 from core.ModuleLifecycle import (
     LIFECYCLE_DEGRADED,
     LIFECYCLE_FAILED,
@@ -51,7 +60,26 @@ class CoreServiceResult:
     text: str = ""
     data: Dict[str, Any] = field(default_factory=dict)
     error_message: str = ""
+    contract_name: str = CONTRACT_CORE_EXECUTION_RESULT
+    contract_version: str = CONTRACT_VERSION_V1
+    correlation_id: str = ""
+    session_id: str = ""
+    created_at: str = field(default_factory=utc_contract_timestamp)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "contract_name": self.contract_name,
+            "contract_version": self.contract_version,
+            "correlation_id": self.correlation_id,
+            "session_id": self.session_id,
+            "created_at": self.created_at,
+            "success": self.success,
+            "text": self.text,
+            "data": _stable_data(self.data),
+            "error_message": self.error_message,
+            "metadata": _stable_data(self.metadata),
+        }
 
 
 @dataclass(frozen=True)
@@ -263,15 +291,47 @@ class CoreService:
         session_id: str = "",
         correlation_id: str = "",
         request_payload: Optional[Dict[str, Any]] = None,
+        contract_version: str = CONTRACT_VERSION_V1,
     ) -> CoreServiceResult:
         """Route one request to the first idle service registered for a capability."""
         clean_capability = _normalize_capability(capability)
+        core_request = _core_execution_request(
+            capability=clean_capability,
+            payload=dict(request_payload or {}),
+            session_id=session_id,
+            correlation_id=correlation_id,
+            contract_version=contract_version,
+        )
+        compatibility = validate_contract(
+            core_request,
+            expected_contract_name=CONTRACT_CORE_EXECUTION_REQUEST,
+        )
+        if not compatibility.success:
+            self._store_contract_rejection(core_request, compatibility)
+            return CoreServiceResult(
+                success=False,
+                text="Core execution request rejected by compatibility gate.",
+                error_message=compatibility.error_message or compatibility.status,
+                data={
+                    "source": "core_service",
+                    "status": "contract_rejected",
+                    "capability": clean_capability,
+                    "compatibility": compatibility.to_dict(),
+                    "request": _contract_payload(core_request),
+                    "city_statuses": self._city_statuses(),
+                },
+                correlation_id=str(_contract_payload(core_request).get("correlation_id") or ""),
+                session_id=str(_contract_payload(core_request).get("session_id") or ""),
+                metadata={"safe": True, "source": "core_service"},
+            )
         if not clean_capability:
             return CoreServiceResult(
                 success=False,
                 text="Capability is required for routing.",
                 error_message="missing_capability",
                 data={"source": "core_service", "city_statuses": self._city_statuses()},
+                correlation_id=correlation_id,
+                session_id=session_id,
                 metadata={"safe": True, "source": "core_service"},
             )
 
@@ -287,6 +347,8 @@ class CoreService:
                     "capability_registry": self._capability_registry(),
                     "city_statuses": self._city_statuses(),
                 },
+                correlation_id=correlation_id,
+                session_id=session_id,
                 metadata={"safe": True, "source": "core_service"},
             )
 
@@ -297,7 +359,8 @@ class CoreService:
             operation="route_by_capability",
             payload={
                 "capability": clean_capability,
-                **dict(request_payload or {}),
+                **dict(core_request.payload if isinstance(core_request, CoreExecutionRequestV1) else request_payload or {}),
+                "core_contract": _contract_payload(core_request),
             },
             session_id=session_id,
             correlation_id=correlation_id,
@@ -352,6 +415,8 @@ class CoreService:
                     },
                     "city_statuses": self._city_statuses(),
                 },
+                correlation_id=correlation_id,
+                session_id=session_id,
                 metadata={"safe": True, "source": "core_service"},
             )
 
@@ -378,6 +443,8 @@ class CoreService:
                 },
                 "city_statuses": self._city_statuses(),
             },
+            correlation_id=correlation_id,
+            session_id=session_id,
             metadata={"safe": True, "source": "core_service"},
         )
 
@@ -602,6 +669,40 @@ class CoreService:
         if self._event_history_store is not None:
             self._event_history_store.add(event, result)
 
+    def _store_contract_rejection(
+        self,
+        request: Any,
+        compatibility: ContractCompatibilityResult,
+    ) -> None:
+        payload = _contract_payload(request)
+        event = Event(
+            source="core_service",
+            type="contract.compatibility_rejected",
+            priority=PRIORITY_NORMAL,
+            payload={
+                "request": payload,
+                "compatibility": compatibility.to_dict(),
+            },
+            correlation_id=str(payload.get("correlation_id") or ""),
+            session_id=str(payload.get("session_id") or ""),
+            metadata={"safe": True, "source": "core_service"},
+        )
+        result = CoreEventDecisionResult(
+            success=False,
+            decision=EVENT_DECISION_FAILED,
+            text="Core execution request rejected by compatibility gate.",
+            error_message=compatibility.error_message or compatibility.status,
+            data={
+                "source": "core_service",
+                "event": event.to_dict(),
+                "compatibility": compatibility.to_dict(),
+                "city_statuses": self._city_statuses(),
+                "escalated": False,
+            },
+            metadata={"safe": True, "source": "core_service"},
+        )
+        self._store_event_history(event, result)
+
     def _route_lifecycle_failure(
         self,
         capability: str,
@@ -633,6 +734,8 @@ class CoreService:
                 },
                 "city_statuses": self._city_statuses(),
             },
+            correlation_id=str(getattr(lifecycle_result, "correlation_id", "") or ""),
+            session_id=str(getattr(lifecycle_result, "session_id", "") or ""),
             metadata={"safe": True, "source": "core_service"},
         )
 
@@ -692,6 +795,59 @@ def _route_response_to_data(response: Any) -> Dict[str, Any]:
         "error_message": getattr(response, "error_message", ""),
         "metadata": dict(getattr(response, "metadata", {}) or {}),
     }
+
+
+def _core_execution_request(
+    capability: str,
+    payload: Dict[str, Any],
+    session_id: str,
+    correlation_id: str,
+    contract_version: str,
+) -> Any:
+    try:
+        return CoreExecutionRequestV1(
+            capability=capability,
+            payload=dict(payload or {}),
+            session_id=session_id,
+            correlation_id=correlation_id,
+            contract_version=contract_version,
+            metadata={"source": "core_service"},
+        )
+    except ValueError:
+        return {
+            "contract_name": CONTRACT_CORE_EXECUTION_REQUEST,
+            "contract_version": str(contract_version or ""),
+            "correlation_id": str(correlation_id or ""),
+            "session_id": str(session_id or ""),
+            "created_at": utc_contract_timestamp(),
+            "metadata": {"source": "core_service"},
+            "capability": capability,
+            "payload": dict(payload or {}),
+        }
+
+
+def _contract_payload(contract: Any) -> Dict[str, Any]:
+    if isinstance(contract, dict):
+        return dict(contract)
+    to_dict = getattr(contract, "to_dict", None)
+    if callable(to_dict):
+        data = to_dict()
+        if isinstance(data, dict):
+            return dict(data)
+    return {}
+
+
+def _stable_data(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _stable_data(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_stable_data(item) for item in value]
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        return _stable_data(to_dict())
+    return repr(value)
 
 
 def _default_pc_capabilities() -> List[str]:
