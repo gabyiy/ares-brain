@@ -179,6 +179,24 @@ def test_linux_whisper_transcribes_wav_file_with_metadata(tmp_path):
     assert "whisper-cli" in result.data["process"]["command"]
 
 
+def test_linux_whisper_auto_language_resolves_to_en_for_english_only_model(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+    runner = FakeWhisperRunner(transcript_text="english model text")
+    adapter = create_adapter(tmp_path, runner=runner)
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is True
+    assert result.text == "english model text"
+    assert result.data["language_requested"] == "auto"
+    assert result.data["language_effective"] == "en"
+    assert result.data["language"] == "en"
+    assert result.data["model_english_only"] is True
+    command = runner.calls[0]["args"]
+    assert command[command.index("-l") + 1] == "en"
+
+
 def test_linux_whisper_parses_stdout_when_text_file_is_missing(tmp_path):
     wav_path = tmp_path / "sample.wav"
     write_valid_wav(wav_path)
@@ -193,7 +211,7 @@ def test_linux_whisper_parses_stdout_when_text_file_is_missing(tmp_path):
     assert result.success is True
     assert result.status == WHISPER_STATUS_TRANSCRIBED
     assert result.text == "stdout text"
-    assert result.data["language"] == "english"
+    assert result.data["language"] == "en"
 
 
 def test_linux_whisper_no_transcription_is_safe(tmp_path):
@@ -222,6 +240,61 @@ def test_linux_whisper_blank_audio_marker_is_not_success(tmp_path):
     assert result.status == WHISPER_STATUS_NO_USABLE_SPEECH
     assert result.error_message == "no_usable_speech"
     assert result.text == ""
+
+
+def test_linux_whisper_common_no_speech_markers_are_not_success(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+    markers = [
+        "[BLANK_AUDIO]",
+        "[ blank audio ]",
+        "<|nospeech|>",
+        "<|no_speech|>",
+        "(no speech)",
+        "SILENCE",
+    ]
+
+    for index, marker in enumerate(markers):
+        runner = FakeWhisperRunner(write_transcript=True, transcript_text=marker)
+        adapter = create_adapter(tmp_path, runner=runner)
+
+        result = adapter.transcribe_wav(wav_path)
+
+        assert result.success is False
+        assert result.status == WHISPER_STATUS_NO_USABLE_SPEECH
+        assert result.text == ""
+
+
+def test_linux_whisper_transcribe_missing_binary_fails_before_running(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+    runner = FakeWhisperRunner(available=False)
+    adapter = create_adapter(tmp_path, runner=runner)
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_BINARY_MISSING
+    assert result.error_message == "whisper_binary_missing"
+    assert runner.calls == []
+
+
+def test_linux_whisper_transcribe_missing_model_fails_before_running(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+    missing_model = tmp_path / "missing" / "ggml-tiny.en.bin"
+    runner = FakeWhisperRunner()
+    adapter = LinuxWhisperSpeechToTextAdapter(
+        model_path=missing_model,
+        runner=runner,
+    )
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_MODEL_MISSING
+    assert result.error_message == "whisper_model_missing"
+    assert runner.calls == []
 
 
 def test_linux_whisper_silent_wav_fails_before_whisper_runs(tmp_path):

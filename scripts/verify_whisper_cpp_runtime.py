@@ -75,7 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional recorded WAV sample. Defaults to the newest manual ALSA/Whisper sample.",
     )
-    parser.add_argument("--language", default="auto", help="Whisper language, or auto.")
+    parser.add_argument(
+        "--language",
+        default="en",
+        help="Whisper language. Default is en for the recommended ggml-tiny.en.bin model.",
+    )
     parser.add_argument("--timeout", type=float, default=120.0, help="Transcription timeout.")
     parser.add_argument(
         "--min-rms",
@@ -124,7 +128,7 @@ def verify_whisper_runtime(
     whisper_command: str = "",
     model_path: str | Path = "",
     wav_path: str | Path = "",
-    language: str = "auto",
+    language: str = "en",
     timeout_seconds: float = 120.0,
     minimum_rms: float = 50.0,
     output_func: Callable[[str], None] = print,
@@ -191,6 +195,7 @@ def verify_whisper_runtime(
     output_func(f"Selected WAV: {located_wav}")
     output_func(f"Model: {located_model}")
     output_func(f"whisper-cli: {located_command}")
+    output_func(f"Requested language: {language}")
     output_func("Running offline Whisper transcription...")
     stt = stt_factory(
         model_path=located_model,
@@ -220,6 +225,8 @@ def verify_whisper_runtime(
             wav_path=str(located_wav),
             data={"transcription": transcription.to_dict()},
         )
+    language_requested = transcription.data.get("language_requested", "")
+    language_effective = transcription.data.get("language_effective", "")
     return WhisperRuntimeVerificationResult(
         success=True,
         status="transcribed",
@@ -232,6 +239,8 @@ def verify_whisper_runtime(
             "processing_time_seconds": transcription.data.get("processing_time_seconds", 0.0),
             "language": transcription.data.get("language")
             or transcription.data.get("language_requested", ""),
+            "language_requested": language_requested,
+            "language_effective": language_effective,
             "wav": wav_diagnostics,
             "transcription": transcription.to_dict(),
         },

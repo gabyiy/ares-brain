@@ -31,6 +31,13 @@ WHISPER_STATUS_TRANSCRIBED = "transcribed"
 WHISPER_STATUS_AUDIO_SILENT = "audio_silent"
 WHISPER_STATUS_AUDIO_BELOW_THRESHOLD = "audio_below_threshold"
 WHISPER_STATUS_NO_USABLE_SPEECH = "no_usable_speech"
+NO_SPEECH_MARKERS = frozenset(
+    {
+        "blankaudio",
+        "nospeech",
+        "silence",
+    }
+)
 
 Clock = Callable[[], float]
 
@@ -188,13 +195,15 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
             timeout_seconds if timeout_seconds is not None else self.timeout_seconds
         )
         requested_language = str(language or self.language or DEFAULT_WHISPER_LANGUAGE).strip()
+        effective_language = _resolve_whisper_language(requested_language, self.model_path)
+        model_english_only = _is_english_only_whisper_model(self.model_path)
         with tempfile.TemporaryDirectory(prefix="ares_whisper_output_") as temp_dir:
             output_base = Path(temp_dir) / "transcript"
             command = self._transcribe_command(
                 binary_path=binary_path,
                 audio_path=audio_path,
                 output_base=output_base,
-                language=requested_language,
+                language=effective_language,
             )
             result = self.runner.run(command, timeout_seconds=timeout)
             self.speech_engine_accessed = True
@@ -220,8 +229,8 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
             transcript = _normalize_transcript_text(_read_transcript_text(output_base, result))
             detected_language = (
                 _detect_language(result.stdout, result.stderr)
-                if requested_language == "auto"
-                else requested_language
+                if effective_language == "auto"
+                else effective_language
             )
             if not transcript:
                 return self._failure(
@@ -234,7 +243,9 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                         "audio_validation": audio_validation,
                         "process": _safe_process_data(result),
                         "language_requested": requested_language,
+                        "language_effective": effective_language,
                         "language": detected_language,
+                        "model_english_only": model_english_only,
                     },
                 )
 
@@ -249,7 +260,9 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                     "audio_validation": audio_validation,
                     "process": _safe_process_data(result),
                     "language_requested": requested_language,
+                    "language_effective": effective_language,
                     "language": detected_language,
+                    "model_english_only": model_english_only,
                 },
             )
 
@@ -269,6 +282,7 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                 "model_available": model_exists,
                 "model_path": str(self.model_path),
                 "language": self.language,
+                "language_effective": _resolve_whisper_language(self.language, self.model_path),
                 "timeout_seconds": self.timeout_seconds,
                 "minimum_rms": self.minimum_rms,
             },
@@ -288,6 +302,7 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                 "recommended_model": "ggml-tiny.en.bin",
                 "confidence": "not_reported_by_whisper_cli",
                 "language": "auto_or_configured",
+                "language_resolution": "English-only GGML models resolve auto to en.",
                 "minimum_rms": self.minimum_rms,
                 "internet": "disabled",
                 "wake_word": "disabled",
@@ -326,6 +341,7 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                 "model_available": True,
                 "model_path": str(self.model_path),
                 "language": self.language,
+                "language_effective": _resolve_whisper_language(self.language, self.model_path),
                 "minimum_rms": self.minimum_rms,
             },
             metadata=self._metadata(),
@@ -552,9 +568,27 @@ def _normalize_transcript_text(text: str) -> str:
     clean = str(text or "").strip()
     if not clean:
         return ""
-    clean = re.sub(r"\[(?:BLANK_AUDIO|SILENCE|NO_SPEECH)\]", " ", clean, flags=re.IGNORECASE)
-    clean = re.sub(r"\((?:blank audio|silence|no speech)\)", " ", clean, flags=re.IGNORECASE)
+    clean = re.sub(
+        r"<\|\s*(?:blank[_\s-]*audio|no[_\s-]*speech|nospeech|silence)\s*\|>",
+        " ",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    clean = re.sub(
+        r"\[\s*(?:blank[_\s-]*audio|no[_\s-]*speech|nospeech|silence)\s*\]",
+        " ",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    clean = re.sub(
+        r"\(\s*(?:blank[_\s-]*audio|no[_\s-]*speech|nospeech|silence)\s*\)",
+        " ",
+        clean,
+        flags=re.IGNORECASE,
+    )
     clean = re.sub(r"\s+", " ", clean).strip()
+    if _is_no_speech_marker(clean):
+        return ""
     return clean
 
 
@@ -562,6 +596,25 @@ def _detect_language(stdout: str, stderr: str) -> str:
     combined = f"{stdout}\n{stderr}"
     match = re.search(r"detected language:\s*([A-Za-z_-]+)", combined, flags=re.IGNORECASE)
     return match.group(1).lower() if match else ""
+
+
+def _resolve_whisper_language(language: str, model_path: Path) -> str:
+    requested = str(language or DEFAULT_WHISPER_LANGUAGE).strip() or DEFAULT_WHISPER_LANGUAGE
+    if requested.lower() == "auto" and _is_english_only_whisper_model(model_path):
+        return "en"
+    return requested
+
+
+def _is_english_only_whisper_model(model_path: Path) -> bool:
+    name = Path(model_path).name.lower()
+    stem = name[:-4] if name.endswith(".bin") else name
+    return bool(re.search(r"\.en(?:[._-]|$)", stem))
+
+
+def _is_no_speech_marker(text: str) -> bool:
+    marker = re.sub(r"[\s_\-]+", "", str(text or "").strip().lower())
+    marker = marker.strip("[]()<>|")
+    return marker in NO_SPEECH_MARKERS
 
 
 def _safe_process_data(result: SafeProcessResult) -> Dict[str, Any]:

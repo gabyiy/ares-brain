@@ -48,7 +48,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="whisper-cli",
         help="Local Whisper executable, for example whisper-cli or /path/to/whisper-cli.",
     )
-    parser.add_argument("--language", default="auto", help="Whisper language, or auto.")
+    parser.add_argument(
+        "--language",
+        default="en",
+        help="Whisper language. Default is en for the recommended ggml-tiny.en.bin model.",
+    )
     parser.add_argument("--timeout", type=float, default=120.0, help="Whisper timeout in seconds.")
     parser.add_argument(
         "--min-rms",
@@ -142,6 +146,9 @@ def run_manual_verification(
     )
     language = transcription.data.get("language") or transcription.data.get("language_requested")
     output_func(f"Language: {language or 'unknown'}")
+    if transcription.data.get("language_requested") or transcription.data.get("language_effective"):
+        output_func(f"Requested language: {transcription.data.get('language_requested', '')}")
+        output_func(f"Effective language: {transcription.data.get('language_effective', '')}")
     _print_process_diagnostics(transcription.data, output_func)
 
     playback_code = 0

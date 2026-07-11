@@ -111,6 +111,30 @@ class FakeEmptyStt:
         )
 
 
+class CapturingStt:
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        CapturingStt.instances.append(self)
+
+    def transcribe_wav(self, wav_path, timeout_seconds=None):
+        return TranscriptionResult(
+            success=True,
+            status="transcribed",
+            text="captured language",
+            confidence=1.0,
+            data={
+                "processing_time_seconds": 0.5,
+                "language_requested": self.kwargs.get("language"),
+                "language_effective": self.kwargs.get("language"),
+                "language": self.kwargs.get("language"),
+                "wav_path": str(wav_path),
+                "timeout_seconds": timeout_seconds,
+            },
+        )
+
+
 def write_test_wav(path, amplitude=512, frames=160):
     with wave.open(str(path), "wb") as wav_file:
         wav_file.setnchannels(1)
@@ -334,6 +358,30 @@ def test_verify_whisper_runtime_empty_transcription_is_failure(tmp_path):
 
     assert result.success is False
     assert result.status == "empty_transcription"
+
+
+def test_verify_whisper_runtime_defaults_to_english_language_for_tiny_en_model(tmp_path):
+    CapturingStt.instances = []
+    command = tmp_path / "whisper-cli"
+    command.write_bytes(b"fake executable")
+    model = tmp_path / "ggml-tiny.en.bin"
+    model.write_bytes(b"fake model")
+    wav = tmp_path / "sample.wav"
+    write_test_wav(wav)
+
+    result = verifier.verify_whisper_runtime(
+        whisper_command=str(command),
+        model_path=model,
+        wav_path=wav,
+        output_func=lambda _line: None,
+        runner=FakeVerifyRunner(),
+        stt_factory=CapturingStt,
+    )
+
+    assert result.success is True
+    assert CapturingStt.instances[0].kwargs["language"] == "en"
+    assert result.data["language_requested"] == "en"
+    assert result.data["language_effective"] == "en"
 
 
 def test_verify_whisper_runtime_silent_wav_fails_before_stt(tmp_path):
