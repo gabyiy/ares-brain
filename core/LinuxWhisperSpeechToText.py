@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import os
 from pathlib import Path
 import re
@@ -27,6 +28,9 @@ WHISPER_STATUS_TRANSCRIPTION_TIMEOUT = "transcription_timeout"
 WHISPER_STATUS_TRANSCRIPTION_FAILED = "transcription_failed"
 WHISPER_STATUS_NO_TRANSCRIPTION = "no_transcription"
 WHISPER_STATUS_TRANSCRIBED = "transcribed"
+WHISPER_STATUS_AUDIO_SILENT = "audio_silent"
+WHISPER_STATUS_AUDIO_BELOW_THRESHOLD = "audio_below_threshold"
+WHISPER_STATUS_NO_USABLE_SPEECH = "no_usable_speech"
 
 Clock = Callable[[], float]
 
@@ -67,6 +71,7 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
         whisper_command: str = DEFAULT_WHISPER_COMMAND,
         language: str = DEFAULT_WHISPER_LANGUAGE,
         timeout_seconds: float = DEFAULT_WHISPER_TIMEOUT_SECONDS,
+        minimum_rms: float = 0.0,
         runner: Optional[SafeSubprocessRunner] = None,
         clock: Clock = time.perf_counter,
         source: str = "linux_whisper_speech_to_text_adapter",
@@ -83,6 +88,7 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
         ).strip()
         self.language = str(language or DEFAULT_WHISPER_LANGUAGE).strip()
         self.timeout_seconds = _bounded_timeout(timeout_seconds)
+        self.minimum_rms = _non_negative_float(minimum_rms, "minimum_rms")
         self.runner = runner or SafeSubprocessRunner()
         self.clock = clock
         self.source = source
@@ -158,6 +164,25 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                 processing_time_seconds=_elapsed(self.clock, start_time),
                 extra_data={"audio_validation": audio_validation},
             )
+        if int(audio_validation.get("peak_amplitude", 0)) <= 0:
+            return self._failure(
+                status=WHISPER_STATUS_AUDIO_SILENT,
+                error_message="audio_silent",
+                audio_path=str(audio_path),
+                processing_time_seconds=_elapsed(self.clock, start_time),
+                extra_data={"audio_validation": audio_validation},
+            )
+        if self.minimum_rms > 0 and float(audio_validation.get("rms_amplitude", 0.0)) < self.minimum_rms:
+            return self._failure(
+                status=WHISPER_STATUS_AUDIO_BELOW_THRESHOLD,
+                error_message="audio_below_threshold",
+                audio_path=str(audio_path),
+                processing_time_seconds=_elapsed(self.clock, start_time),
+                extra_data={
+                    "audio_validation": audio_validation,
+                    "minimum_rms": self.minimum_rms,
+                },
+            )
 
         timeout = _bounded_timeout(
             timeout_seconds if timeout_seconds is not None else self.timeout_seconds
@@ -192,17 +217,16 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                     extra_data={"process": _safe_process_data(result)},
                 )
 
-            transcript = _read_transcript_text(output_base, result)
+            transcript = _normalize_transcript_text(_read_transcript_text(output_base, result))
             detected_language = (
                 _detect_language(result.stdout, result.stderr)
                 if requested_language == "auto"
                 else requested_language
             )
             if not transcript:
-                return self._success(
-                    status=WHISPER_STATUS_NO_TRANSCRIPTION,
-                    text="",
-                    confidence=0.0,
+                return self._failure(
+                    status=WHISPER_STATUS_NO_USABLE_SPEECH,
+                    error_message="no_usable_speech",
                     audio_path=str(audio_path),
                     processing_time_seconds=elapsed,
                     extra_data={
@@ -246,6 +270,7 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                 "model_path": str(self.model_path),
                 "language": self.language,
                 "timeout_seconds": self.timeout_seconds,
+                "minimum_rms": self.minimum_rms,
             },
             metadata=self._metadata(),
         )
@@ -263,6 +288,7 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                 "recommended_model": "ggml-tiny.en.bin",
                 "confidence": "not_reported_by_whisper_cli",
                 "language": "auto_or_configured",
+                "minimum_rms": self.minimum_rms,
                 "internet": "disabled",
                 "wake_word": "disabled",
                 "background_listening": "disabled",
@@ -300,6 +326,7 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                 "model_available": True,
                 "model_path": str(self.model_path),
                 "language": self.language,
+                "minimum_rms": self.minimum_rms,
             },
             metadata=self._metadata(),
         )
@@ -448,6 +475,7 @@ def _validate_wav_audio(path: Path) -> Dict[str, Any]:
             frame_rate = wav_file.getframerate()
             channels = wav_file.getnchannels()
             sample_width = wav_file.getsampwidth()
+            frame_data = wav_file.readframes(frames)
     except (wave.Error, EOFError, OSError) as error:
         return {
             "success": False,
@@ -460,15 +488,30 @@ def _validate_wav_audio(path: Path) -> Dict[str, Any]:
             "error_message": "audio_has_no_frames",
             "path": str(path),
         }
+    try:
+        signal = _pcm_signal_stats(frame_data, sample_width)
+    except ValueError as error:
+        return {
+            "success": False,
+            "error_message": str(error),
+            "path": str(path),
+            "byte_count": size,
+        }
     return {
         "success": True,
         "path": str(path),
+        "byte_count": size,
         "frames": frames,
         "sample_rate_hz": frame_rate,
         "channels": channels,
         "sample_width_bytes": sample_width,
         "duration_seconds": frames / frame_rate if frame_rate else 0.0,
+        **signal,
     }
+
+
+def analyze_wav_audio(path: str | Path) -> Dict[str, Any]:
+    return _validate_wav_audio(Path(path).expanduser())
 
 
 def _read_transcript_text(output_base: Path, process_result: SafeProcessResult) -> str:
@@ -505,6 +548,16 @@ def _extract_transcript_from_stdout(stdout: str) -> str:
     return " ".join(lines).strip()
 
 
+def _normalize_transcript_text(text: str) -> str:
+    clean = str(text or "").strip()
+    if not clean:
+        return ""
+    clean = re.sub(r"\[(?:BLANK_AUDIO|SILENCE|NO_SPEECH)\]", " ", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\((?:blank audio|silence|no speech)\)", " ", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean
+
+
 def _detect_language(stdout: str, stderr: str) -> str:
     combined = f"{stdout}\n{stderr}"
     match = re.search(r"detected language:\s*([A-Za-z_-]+)", combined, flags=re.IGNORECASE)
@@ -514,9 +567,10 @@ def _detect_language(stdout: str, stderr: str) -> str:
 def _safe_process_data(result: SafeProcessResult) -> Dict[str, Any]:
     return {
         "args": list(result.args),
+        "command": " ".join(str(arg) for arg in result.args),
         "returncode": result.returncode,
-        "stdout_preview": _bounded_text(result.stdout),
-        "stderr_preview": _bounded_text(result.stderr),
+        "stdout_preview": _bounded_text(result.stdout, limit=4000),
+        "stderr_preview": _bounded_text(result.stderr, limit=4000),
         "timed_out": result.timed_out,
         "error_message": result.error_message,
     }
@@ -533,6 +587,41 @@ def _bounded_timeout(value: Any) -> float:
     if timeout > MAX_WHISPER_TIMEOUT_SECONDS:
         raise ValueError(f"timeout_seconds must be <= {MAX_WHISPER_TIMEOUT_SECONDS}")
     return timeout
+
+
+def _non_negative_float(value: Any, name: str) -> float:
+    parsed = float(value)
+    if parsed < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return parsed
+
+
+def _pcm_signal_stats(frame_data: bytes, sample_width: int) -> Dict[str, Any]:
+    samples = list(_iter_pcm_samples(frame_data, sample_width))
+    if not samples:
+        return {
+            "sample_count": 0,
+            "peak_amplitude": 0,
+            "rms_amplitude": 0.0,
+        }
+    peak = max(abs(sample) for sample in samples)
+    mean_square = sum(sample * sample for sample in samples) / len(samples)
+    return {
+        "sample_count": len(samples),
+        "peak_amplitude": int(peak),
+        "rms_amplitude": round(math.sqrt(mean_square), 6),
+    }
+
+
+def _iter_pcm_samples(frame_data: bytes, sample_width: int):
+    if sample_width not in (1, 2, 3, 4):
+        raise ValueError(f"unsupported_sample_width:{sample_width}")
+    for offset in range(0, len(frame_data) - sample_width + 1, sample_width):
+        raw = frame_data[offset : offset + sample_width]
+        if sample_width == 1:
+            yield int(raw[0]) - 128
+            continue
+        yield int.from_bytes(raw, byteorder="little", signed=True)
 
 
 def _elapsed(clock: Clock, start_time: float) -> float:

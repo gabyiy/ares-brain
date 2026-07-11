@@ -1,4 +1,5 @@
 from pathlib import Path
+import wave
 
 from core import SafeProcessResult, TranscriptionResult
 from scripts import install_whisper_cpp_raspberry_pi as installer
@@ -110,6 +111,19 @@ class FakeEmptyStt:
         )
 
 
+def write_test_wav(path, amplitude=512, frames=160):
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(
+            b"".join(
+                int(amplitude).to_bytes(2, byteorder="little", signed=True)
+                for _ in range(frames)
+            )
+        )
+
+
 def test_install_whisper_cpp_clones_builds_downloads_and_verifies(tmp_path):
     outputs = []
     repo_dir = tmp_path / "external" / "whisper.cpp"
@@ -198,7 +212,7 @@ def test_verify_whisper_runtime_transcribes_existing_sample(tmp_path):
     model = tmp_path / "ggml-tiny.en.bin"
     model.write_bytes(b"fake model")
     wav = tmp_path / "sample.wav"
-    wav.write_bytes(b"fake wav")
+    write_test_wav(wav)
 
     result = verifier.verify_whisper_runtime(
         whisper_command=str(command),
@@ -215,14 +229,16 @@ def test_verify_whisper_runtime_transcribes_existing_sample(tmp_path):
     assert result.whisper_command == str(command)
     assert result.model_path == str(model)
     assert result.wav_path == str(wav)
+    assert result.data["wav"]["rms_amplitude"] > 0
     assert any("does not record audio" in line for line in outputs)
+    assert any("RMS amplitude:" in line for line in outputs)
 
 
 def test_verify_whisper_runtime_missing_command_fails_safely(tmp_path):
     model = tmp_path / "ggml-tiny.en.bin"
     model.write_bytes(b"fake model")
     wav = tmp_path / "sample.wav"
-    wav.write_bytes(b"fake wav")
+    write_test_wav(wav)
 
     result = verifier.verify_whisper_runtime(
         whisper_command="missing-whisper-cli",
@@ -241,7 +257,7 @@ def test_verify_whisper_runtime_missing_model_fails_safely(tmp_path):
     command = tmp_path / "whisper-cli"
     command.write_bytes(b"fake executable")
     wav = tmp_path / "sample.wav"
-    wav.write_bytes(b"fake wav")
+    write_test_wav(wav)
 
     result = verifier.verify_whisper_runtime(
         whisper_command=str(command),
@@ -283,7 +299,7 @@ def test_verify_whisper_runtime_transcription_failure_is_reported(tmp_path):
     model = tmp_path / "ggml-tiny.en.bin"
     model.write_bytes(b"fake model")
     wav = tmp_path / "sample.wav"
-    wav.write_bytes(b"fake wav")
+    write_test_wav(wav)
 
     result = verifier.verify_whisper_runtime(
         whisper_command=str(command),
@@ -305,7 +321,7 @@ def test_verify_whisper_runtime_empty_transcription_is_failure(tmp_path):
     model = tmp_path / "ggml-tiny.en.bin"
     model.write_bytes(b"fake model")
     wav = tmp_path / "sample.wav"
-    wav.write_bytes(b"fake wav")
+    write_test_wav(wav)
 
     result = verifier.verify_whisper_runtime(
         whisper_command=str(command),
@@ -318,6 +334,72 @@ def test_verify_whisper_runtime_empty_transcription_is_failure(tmp_path):
 
     assert result.success is False
     assert result.status == "empty_transcription"
+
+
+def test_verify_whisper_runtime_silent_wav_fails_before_stt(tmp_path):
+    command = tmp_path / "whisper-cli"
+    command.write_bytes(b"fake executable")
+    model = tmp_path / "ggml-tiny.en.bin"
+    model.write_bytes(b"fake model")
+    wav = tmp_path / "silent.wav"
+    write_test_wav(wav, amplitude=0)
+
+    result = verifier.verify_whisper_runtime(
+        whisper_command=str(command),
+        model_path=model,
+        wav_path=wav,
+        output_func=lambda _line: None,
+        runner=FakeVerifyRunner(),
+        stt_factory=FakeSuccessfulStt,
+    )
+
+    assert result.success is False
+    assert result.status == "audio_silent"
+    assert result.data["wav"]["peak_amplitude"] == 0
+
+
+def test_verify_whisper_runtime_near_silent_wav_fails_threshold(tmp_path):
+    command = tmp_path / "whisper-cli"
+    command.write_bytes(b"fake executable")
+    model = tmp_path / "ggml-tiny.en.bin"
+    model.write_bytes(b"fake model")
+    wav = tmp_path / "near_silent.wav"
+    write_test_wav(wav, amplitude=1)
+
+    result = verifier.verify_whisper_runtime(
+        whisper_command=str(command),
+        model_path=model,
+        wav_path=wav,
+        minimum_rms=50.0,
+        output_func=lambda _line: None,
+        runner=FakeVerifyRunner(),
+        stt_factory=FakeSuccessfulStt,
+    )
+
+    assert result.success is False
+    assert result.status == "audio_below_threshold"
+    assert result.data["minimum_rms"] == 50.0
+
+
+def test_verify_whisper_runtime_corrupt_wav_fails(tmp_path):
+    command = tmp_path / "whisper-cli"
+    command.write_bytes(b"fake executable")
+    model = tmp_path / "ggml-tiny.en.bin"
+    model.write_bytes(b"fake model")
+    wav = tmp_path / "bad.wav"
+    wav.write_bytes(b"not wav")
+
+    result = verifier.verify_whisper_runtime(
+        whisper_command=str(command),
+        model_path=model,
+        wav_path=wav,
+        output_func=lambda _line: None,
+        runner=FakeVerifyRunner(),
+        stt_factory=FakeSuccessfulStt,
+    )
+
+    assert result.success is False
+    assert result.status == "invalid_wav"
 
 
 def test_verify_script_entrypoint_is_import_safe():

@@ -15,6 +15,7 @@ from core import (  # noqa: E402
     DEFAULT_WHISPER_MODEL_PATH,
     LinuxWhisperSpeechToTextAdapter,
     SafeSubprocessRunner,
+    analyze_wav_audio,
 )
 
 
@@ -76,6 +77,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--language", default="auto", help="Whisper language, or auto.")
     parser.add_argument("--timeout", type=float, default=120.0, help="Transcription timeout.")
+    parser.add_argument(
+        "--min-rms",
+        type=float,
+        default=50.0,
+        help="Minimum RMS amplitude required before running Whisper.",
+    )
     return parser
 
 
@@ -92,6 +99,7 @@ def run_runtime_verification(
         wav_path=args.wav,
         language=args.language,
         timeout_seconds=args.timeout,
+        minimum_rms=args.min_rms,
         output_func=output_func,
         runner=runner,
         stt_factory=stt_factory,
@@ -118,6 +126,7 @@ def verify_whisper_runtime(
     wav_path: str | Path = "",
     language: str = "auto",
     timeout_seconds: float = 120.0,
+    minimum_rms: float = 50.0,
     output_func: Callable[[str], None] = print,
     runner: Optional[SafeSubprocessRunner] = None,
     stt_factory=LinuxWhisperSpeechToTextAdapter,
@@ -149,15 +158,50 @@ def verify_whisper_runtime(
             model_path=str(located_model),
         )
 
+    wav_diagnostics = analyze_wav_audio(located_wav)
+    _print_wav_diagnostics(wav_diagnostics, output_func)
+    if not wav_diagnostics.get("success"):
+        return _failure(
+            "invalid_wav",
+            str(wav_diagnostics.get("error_message", "invalid_wav")),
+            whisper_command=located_command,
+            model_path=str(located_model),
+            wav_path=str(located_wav),
+            data={"wav": wav_diagnostics},
+        )
+    if int(wav_diagnostics.get("peak_amplitude", 0)) <= 0:
+        return _failure(
+            "audio_silent",
+            "Selected WAV is silent.",
+            whisper_command=located_command,
+            model_path=str(located_model),
+            wav_path=str(located_wav),
+            data={"wav": wav_diagnostics},
+        )
+    if minimum_rms > 0 and float(wav_diagnostics.get("rms_amplitude", 0.0)) < minimum_rms:
+        return _failure(
+            "audio_below_threshold",
+            f"Selected WAV RMS is below threshold: {wav_diagnostics.get('rms_amplitude')} < {minimum_rms}",
+            whisper_command=located_command,
+            model_path=str(located_model),
+            wav_path=str(located_wav),
+            data={"wav": wav_diagnostics, "minimum_rms": minimum_rms},
+        )
+
+    output_func(f"Selected WAV: {located_wav}")
+    output_func(f"Model: {located_model}")
+    output_func(f"whisper-cli: {located_command}")
     output_func("Running offline Whisper transcription...")
     stt = stt_factory(
         model_path=located_model,
         whisper_command=located_command,
         language=language,
         timeout_seconds=timeout_seconds,
+        minimum_rms=minimum_rms,
         runner=runner,
     )
     transcription = stt.transcribe_wav(located_wav, timeout_seconds=timeout_seconds)
+    _print_process_diagnostics(transcription.data, output_func)
     if not transcription.success:
         return _failure(
             "transcription_failed",
@@ -188,6 +232,7 @@ def verify_whisper_runtime(
             "processing_time_seconds": transcription.data.get("processing_time_seconds", 0.0),
             "language": transcription.data.get("language")
             or transcription.data.get("language_requested", ""),
+            "wav": wav_diagnostics,
             "transcription": transcription.to_dict(),
         },
     )
@@ -252,6 +297,36 @@ def _file_exists_nonempty(path: Path) -> bool:
         return path.exists() and path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
+
+
+def _print_wav_diagnostics(
+    wav_diagnostics: Dict[str, Any],
+    output_func: Callable[[str], None],
+) -> None:
+    output_func(f"WAV valid: {wav_diagnostics.get('success')}")
+    output_func(f"WAV path: {wav_diagnostics.get('path', '')}")
+    output_func(f"WAV size: {wav_diagnostics.get('byte_count', 0)} bytes")
+    output_func(f"Duration: {wav_diagnostics.get('duration_seconds', 0.0)} seconds")
+    output_func(f"Sample rate: {wav_diagnostics.get('sample_rate_hz', 0)} Hz")
+    output_func(f"Channels: {wav_diagnostics.get('channels', 0)}")
+    output_func(f"Sample width: {wav_diagnostics.get('sample_width_bytes', 0)} bytes")
+    output_func(f"Peak amplitude: {wav_diagnostics.get('peak_amplitude', 0)}")
+    output_func(f"RMS amplitude: {wav_diagnostics.get('rms_amplitude', 0.0)}")
+
+
+def _print_process_diagnostics(
+    transcription_data: Dict[str, Any],
+    output_func: Callable[[str], None],
+) -> None:
+    process = dict(transcription_data.get("process") or {})
+    if not process:
+        return
+    output_func(f"Whisper command: {process.get('command', '')}")
+    output_func(f"Whisper exit code: {process.get('returncode', '')}")
+    if process.get("stdout_preview"):
+        output_func(f"Raw stdout: {process.get('stdout_preview')}")
+    if process.get("stderr_preview"):
+        output_func(f"Raw stderr: {process.get('stderr_preview')}")
 
 
 def _failure(

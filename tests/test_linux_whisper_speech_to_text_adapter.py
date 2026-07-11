@@ -5,10 +5,13 @@ from core import (
     LinuxAlsaMicrophoneAdapter,
     LinuxWhisperSpeechToTextAdapter,
     SafeProcessResult,
+    WHISPER_STATUS_AUDIO_BELOW_THRESHOLD,
+    WHISPER_STATUS_AUDIO_SILENT,
     WHISPER_STATUS_BINARY_MISSING,
     WHISPER_STATUS_INVALID_AUDIO,
     WHISPER_STATUS_MODEL_MISSING,
     WHISPER_STATUS_NO_TRANSCRIPTION,
+    WHISPER_STATUS_NO_USABLE_SPEECH,
     WHISPER_STATUS_TRANSCRIBED,
     WHISPER_STATUS_TRANSCRIPTION_FAILED,
     WHISPER_STATUS_TRANSCRIPTION_TIMEOUT,
@@ -85,13 +88,18 @@ def write_valid_wav(path, frames=b"\x00\x01" * 160):
         wav_file.writeframes(frames)
 
 
+def pcm16_frames(amplitude, count=160):
+    value = int(amplitude)
+    return b"".join(value.to_bytes(2, byteorder="little", signed=True) for _ in range(count))
+
+
 def create_model(tmp_path):
     model = tmp_path / "ggml-tiny.en.bin"
     model.write_bytes(b"fake model")
     return model
 
 
-def create_adapter(tmp_path, runner=None, clock_values=None):
+def create_adapter(tmp_path, runner=None, clock_values=None, minimum_rms=0.0):
     model = create_model(tmp_path)
     values = list(clock_values or [10.0, 10.25])
 
@@ -102,6 +110,7 @@ def create_adapter(tmp_path, runner=None, clock_values=None):
         model_path=model,
         runner=runner or FakeWhisperRunner(),
         clock=clock,
+        minimum_rms=minimum_rms,
     )
 
 
@@ -155,6 +164,8 @@ def test_linux_whisper_transcribes_wav_file_with_metadata(tmp_path):
     assert result.data["processing_time_seconds"] == 0.42
     assert result.data["language"] == "en"
     assert result.data["audio_validation"]["success"] is True
+    assert result.data["audio_validation"]["peak_amplitude"] > 0
+    assert result.data["audio_validation"]["rms_amplitude"] > 0
     assert result.metadata["subprocess_shell"] is False
     assert result.metadata["speech_engine_accessed"] is True
     assert adapter.transcription_count == 1
@@ -165,6 +176,7 @@ def test_linux_whisper_transcribes_wav_file_with_metadata(tmp_path):
     assert "-otxt" in command
     assert "-of" in command
     assert runner.calls[0]["timeout_seconds"] == 33
+    assert "whisper-cli" in result.data["process"]["command"]
 
 
 def test_linux_whisper_parses_stdout_when_text_file_is_missing(tmp_path):
@@ -192,10 +204,53 @@ def test_linux_whisper_no_transcription_is_safe(tmp_path):
 
     result = adapter.transcribe_wav(wav_path)
 
-    assert result.success is True
-    assert result.status == WHISPER_STATUS_NO_TRANSCRIPTION
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_NO_USABLE_SPEECH
     assert result.text == ""
     assert result.confidence == 0.0
+
+
+def test_linux_whisper_blank_audio_marker_is_not_success(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+    runner = FakeWhisperRunner(write_transcript=True, transcript_text="[BLANK_AUDIO]")
+    adapter = create_adapter(tmp_path, runner=runner)
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_NO_USABLE_SPEECH
+    assert result.error_message == "no_usable_speech"
+    assert result.text == ""
+
+
+def test_linux_whisper_silent_wav_fails_before_whisper_runs(tmp_path):
+    wav_path = tmp_path / "silent.wav"
+    write_valid_wav(wav_path, frames=pcm16_frames(0))
+    runner = FakeWhisperRunner(transcript_text="should not run")
+    adapter = create_adapter(tmp_path, runner=runner)
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_AUDIO_SILENT
+    assert result.data["audio_validation"]["peak_amplitude"] == 0
+    assert runner.calls == []
+
+
+def test_linux_whisper_near_silent_wav_fails_with_configured_threshold(tmp_path):
+    wav_path = tmp_path / "near_silent.wav"
+    write_valid_wav(wav_path, frames=pcm16_frames(1))
+    runner = FakeWhisperRunner(transcript_text="should not run")
+    adapter = create_adapter(tmp_path, runner=runner, minimum_rms=50.0)
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_AUDIO_BELOW_THRESHOLD
+    assert result.data["audio_validation"]["rms_amplitude"] < 50.0
+    assert result.data["minimum_rms"] == 50.0
+    assert runner.calls == []
 
 
 def test_linux_whisper_invalid_audio_fails_safely(tmp_path):
@@ -344,6 +399,8 @@ def test_manual_linux_whisper_script_records_and_transcribes_with_mocks(tmp_path
     def stt_factory(**kwargs):
         return LinuxWhisperSpeechToTextAdapter(runner=whisper_runner, **kwargs)
 
+    playback_runner = FakePlaybackRunner()
+
     exit_code = manual_whisper.run_manual_verification(
         argv=[
             "--record",
@@ -357,12 +414,15 @@ def test_manual_linux_whisper_script_records_and_transcribes_with_mocks(tmp_path
         output_func=outputs.append,
         microphone_factory=microphone_factory,
         stt_factory=stt_factory,
+        runner=playback_runner,
     )
 
     assert exit_code == 0
     assert wav_path.exists()
     assert any("Recognized text: manual recognized text" in line for line in outputs)
     assert any("Processing time:" in line for line in outputs)
+    assert any("RMS amplitude:" in line for line in outputs)
+    assert playback_runner.calls == []
 
 
 def test_manual_linux_whisper_script_does_not_record_without_flag(tmp_path):
@@ -388,3 +448,55 @@ def test_manual_linux_whisper_script_does_not_record_without_flag(tmp_path):
     assert any("No recording requested" in line for line in outputs)
     assert all(call["args"][-1] == "-l" for call in alsa_runner.calls)
     assert whisper_runner.calls == []
+
+
+class FakePlaybackRunner:
+    def __init__(self, available=True, returncode=0):
+        self.available = available
+        self.returncode = returncode
+        self.calls = []
+
+    def which(self, executable):
+        return "/usr/bin/aplay" if self.available else None
+
+    def run(self, args, timeout_seconds):
+        safe_args = list(args)
+        self.calls.append({"args": safe_args, "timeout_seconds": timeout_seconds})
+        return SafeProcessResult(args=safe_args, returncode=self.returncode)
+
+
+def test_manual_linux_whisper_script_playback_requires_explicit_flag(tmp_path):
+    outputs = []
+    alsa_runner = FakeAlsaRunner()
+    whisper_runner = FakeWhisperRunner(transcript_text="manual recognized text")
+    playback_runner = FakePlaybackRunner()
+    model = create_model(tmp_path)
+    wav_path = tmp_path / "manual.wav"
+
+    def microphone_factory(**kwargs):
+        return LinuxAlsaMicrophoneAdapter(runner=alsa_runner, **kwargs)
+
+    def stt_factory(**kwargs):
+        return LinuxWhisperSpeechToTextAdapter(runner=whisper_runner, **kwargs)
+
+    exit_code = manual_whisper.run_manual_verification(
+        argv=[
+            "--record",
+            "--playback",
+            "--model",
+            str(model),
+            "--seconds",
+            "1",
+            "--output",
+            str(wav_path),
+        ],
+        output_func=outputs.append,
+        microphone_factory=microphone_factory,
+        stt_factory=stt_factory,
+        runner=playback_runner,
+    )
+
+    assert exit_code == 0
+    assert playback_runner.calls
+    assert playback_runner.calls[0]["args"] == ["/usr/bin/aplay", str(wav_path)]
+    assert any("Playback command:" in line for line in outputs)

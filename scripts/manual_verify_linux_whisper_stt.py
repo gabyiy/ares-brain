@@ -10,7 +10,12 @@ from typing import Callable, Optional, Sequence
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from core import LinuxAlsaMicrophoneAdapter, LinuxWhisperSpeechToTextAdapter  # noqa: E402
+from core import (  # noqa: E402
+    LinuxAlsaMicrophoneAdapter,
+    LinuxWhisperSpeechToTextAdapter,
+    SafeSubprocessRunner,
+    analyze_wav_audio,
+)
 
 
 WARNING = (
@@ -45,6 +50,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--language", default="auto", help="Whisper language, or auto.")
     parser.add_argument("--timeout", type=float, default=120.0, help="Whisper timeout in seconds.")
+    parser.add_argument(
+        "--min-rms",
+        type=float,
+        default=50.0,
+        help="Minimum RMS amplitude required before running Whisper.",
+    )
+    parser.add_argument(
+        "--playback",
+        action="store_true",
+        help="Explicitly play the recorded WAV with aplay after transcription diagnostics.",
+    )
+    parser.add_argument("--aplay-command", default="aplay", help="Local aplay executable.")
     return parser
 
 
@@ -53,8 +70,10 @@ def run_manual_verification(
     output_func: Callable[[str], None] = print,
     microphone_factory=LinuxAlsaMicrophoneAdapter,
     stt_factory=LinuxWhisperSpeechToTextAdapter,
+    runner: Optional[SafeSubprocessRunner] = None,
 ) -> int:
     args = build_parser().parse_args(list(argv or []))
+    runner = runner or SafeSubprocessRunner()
     output_func(WARNING)
 
     microphone = microphone_factory(
@@ -67,6 +86,7 @@ def run_manual_verification(
         whisper_command=args.whisper_command,
         language=args.language,
         timeout_seconds=args.timeout,
+        minimum_rms=args.min_rms,
     )
 
     output_func("Checking ALSA microphone health...")
@@ -100,6 +120,20 @@ def run_manual_verification(
         output_func(record.error_message or record.text)
         return 4
 
+    wav_diagnostics = analyze_wav_audio(output_path)
+    _print_wav_diagnostics(wav_diagnostics, output_func)
+    if not wav_diagnostics.get("success"):
+        output_func(str(wav_diagnostics.get("error_message", "invalid_wav")))
+        return 5
+    if int(wav_diagnostics.get("peak_amplitude", 0)) <= 0:
+        output_func("Recorded WAV is silent.")
+        return 5
+    if args.min_rms > 0 and float(wav_diagnostics.get("rms_amplitude", 0.0)) < args.min_rms:
+        output_func(
+            f"Recorded WAV RMS is below threshold: {wav_diagnostics.get('rms_amplitude')} < {args.min_rms}"
+        )
+        return 5
+
     output_func("Transcribing recorded WAV with offline Whisper...")
     transcription = stt.transcribe_wav(output_path)
     output_func(f"Transcription status: {transcription.status}")
@@ -108,12 +142,61 @@ def run_manual_verification(
     )
     language = transcription.data.get("language") or transcription.data.get("language_requested")
     output_func(f"Language: {language or 'unknown'}")
-    if transcription.success:
+    _print_process_diagnostics(transcription.data, output_func)
+
+    playback_code = 0
+    if args.playback:
+        playback_code = _playback_wav(output_path, args.aplay_command, runner, output_func)
+
+    if transcription.success and transcription.text:
         output_func(f"Recognized text: {transcription.text}")
-        return 0
+        return playback_code
 
     output_func(transcription.error_message or transcription.text)
     return 5
+
+
+def _print_wav_diagnostics(wav_diagnostics: dict, output_func: Callable[[str], None]) -> None:
+    output_func(f"WAV path: {wav_diagnostics.get('path', '')}")
+    output_func(f"WAV size: {wav_diagnostics.get('byte_count', 0)} bytes")
+    output_func(f"Duration: {wav_diagnostics.get('duration_seconds', 0.0)} seconds")
+    output_func(f"Sample rate: {wav_diagnostics.get('sample_rate_hz', 0)} Hz")
+    output_func(f"Channels: {wav_diagnostics.get('channels', 0)}")
+    output_func(f"Sample width: {wav_diagnostics.get('sample_width_bytes', 0)} bytes")
+    output_func(f"Peak amplitude: {wav_diagnostics.get('peak_amplitude', 0)}")
+    output_func(f"RMS amplitude: {wav_diagnostics.get('rms_amplitude', 0.0)}")
+
+
+def _print_process_diagnostics(transcription_data: dict, output_func: Callable[[str], None]) -> None:
+    process = dict(transcription_data.get("process") or {})
+    if not process:
+        return
+    output_func(f"Whisper command: {process.get('command', '')}")
+    output_func(f"Whisper exit code: {process.get('returncode', '')}")
+    if process.get("stdout_preview"):
+        output_func(f"Raw stdout: {process.get('stdout_preview')}")
+    if process.get("stderr_preview"):
+        output_func(f"Raw stderr: {process.get('stderr_preview')}")
+
+
+def _playback_wav(
+    wav_path: Path,
+    aplay_command: str,
+    runner: SafeSubprocessRunner,
+    output_func: Callable[[str], None],
+) -> int:
+    aplay_path = runner.which(aplay_command)
+    if not aplay_path:
+        output_func("Playback requested but aplay was not found.")
+        return 6
+    command = [aplay_path, str(wav_path)]
+    output_func(f"Playback command: {' '.join(command)}")
+    result = runner.run(command, timeout_seconds=120.0)
+    output_func(f"Playback exit code: {result.returncode}")
+    if result.returncode != 0 or result.timed_out:
+        output_func(result.error_message or result.stderr or "aplay_failed")
+        return 6
+    return 0
 
 
 def main() -> None:
