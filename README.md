@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.74 - Raspberry Pi Speech Input Verification Hardening
+ARES v1.75 - Reliable Offline Speech Recognition
 
 ---
 
@@ -40,11 +40,11 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 
 `core.SpeechToText` now defines the speech-to-text adapter abstraction for converting microphone `AudioChunk` objects into text without binding ARES to Whisper, Vosk, wake word detection, internet services, GPT, or hardware-specific code. `TranscriptionResult` includes transcription text, status, error details, and a bounded `confidence` field. `SpeechToTextAdapter` defines `transcribe(audio_chunk)`, `get_status()`, and `get_capabilities()`, and `MockSpeechToTextAdapter` provides deterministic success, empty-audio, low-confidence, no-transcription, and failure behavior. `PlaceholderVoiceService`, `NullVoiceInput`, and `MockVoiceInputAdapter` accept the speech-to-text adapter through dependency injection.
 
-`core.LinuxWhisperSpeechToTextAdapter` is the first offline speech-to-text provider for Raspberry Pi/Linux. It implements the existing `SpeechToTextAdapter` contract, accepts WAV files recorded by `LinuxAlsaMicrophoneAdapter` or `AudioChunk` input, runs a local Whisper/whisper.cpp-style executable with `shell=False`, requires a local model file such as `ggml-tiny.en.bin`, and returns structured `TranscriptionResult` data with text, processing time, language metadata when available, and safe failure statuses. It is disabled by default in `config/modules.example.json` and registered as `linux_whisper_speech_to_text_adapter` so another STT engine can replace it later without changing the Brain.
+`core.LinuxWhisperSpeechToTextAdapter` is the first offline speech-to-text provider for Raspberry Pi/Linux. It implements the existing `SpeechToTextAdapter` contract, accepts WAV files recorded by `LinuxAlsaMicrophoneAdapter` or `AudioChunk` input, runs a local Whisper/whisper.cpp-style executable with `shell=False`, requires a local model file such as `ggml-tiny.en.bin`, resolves English-only GGML models to `-l en`, and returns structured `TranscriptionResult` data with text, processing time, requested/effective language metadata, and safe failure statuses. It is disabled by default in `config/modules.example.json` and registered as `linux_whisper_speech_to_text_adapter` so another STT engine can replace it later without changing the Brain.
 
 Raspberry Pi Whisper runtime preparation is now documented and scriptable. `scripts/install_whisper_cpp_raspberry_pi.py` clones `whisper.cpp` into `external/whisper.cpp` if missing, builds `whisper-cli` with CMake, downloads the recommended tiny English GGML model into `models/whisper/ggml-tiny.en.bin`, and verifies both files exist. `scripts/verify_whisper_cpp_runtime.py` locates `whisper-cli`, locates the model, transcribes an existing recorded WAV sample, and prints PASS/FAIL diagnostics. These are owner-run setup/verification scripts only; they do not start wake-word detection, background listening, GPT, internet runtime calls, TTS, or a conversation loop.
 
-Raspberry Pi speech-input verification is now hardened for real recordings. The Whisper adapter measures WAV file size, duration, sample rate, channel count, sample width, peak amplitude, and RMS amplitude before transcription; rejects silent or below-threshold recordings; prints the exact `whisper-cli` command, exit code, stdout, and stderr diagnostics on failures; and treats Whisper's `[BLANK_AUDIO]` marker as `no_usable_speech` instead of a successful transcription. `scripts/manual_verify_linux_whisper_stt.py` now records, validates, transcribes that exact WAV, and only plays it back when `--playback` is explicitly provided. `scripts/configure_linux_alsa_monitoring.py` documents and applies a safe ALSA mixer state that mutes microphone playback monitoring while preserving microphone capture and speaker playback for future explicit output.
+Raspberry Pi speech-input verification is now hardened for real recordings. The root cause of the repeated `[BLANK_AUDIO]` blocker was a verification-command mismatch: the scripts defaulted to `--language auto` while the installed recommended model is the English-only `ggml-tiny.en.bin`; direct manual Whisper runs used the effective English mode. The verifier and manual STT script now default to `--language en`, and the adapter also resolves English-only GGML models to `en` when configured as `auto`. The Whisper adapter measures WAV file size, duration, sample rate, channel count, sample width, peak amplitude, and RMS amplitude before transcription; rejects silent or below-threshold recordings; prints the exact `whisper-cli` command, exit code, stdout, and stderr diagnostics on failures; and treats Whisper no-speech markers such as `[BLANK_AUDIO]`, `<|nospeech|>`, and `(no speech)` as `no_usable_speech` instead of a successful transcription. `scripts/manual_verify_linux_whisper_stt.py` records, validates, transcribes that exact WAV, and only plays it back when `--playback` is explicitly provided. `scripts/configure_linux_alsa_monitoring.py` documents and applies a safe ALSA mixer state that mutes microphone playback monitoring while preserving microphone capture and speaker playback for future explicit output.
 
 `core.VoiceCommandRouter` now routes `TranscriptionResult` objects into Voice City without any speech engine dependency. It validates a configurable confidence threshold, ignores empty transcriptions safely, propagates transcription failures, routes valid text through CoreService's `voice.text_loop` capability, handles unknown commands with structured safe results, and records local routed/rejected metrics plus `voice_command.routed` and `voice_command.rejected` events.
 
@@ -518,7 +518,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 688 tests across current core modules
+- Pytest automated coverage for 693 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -537,7 +537,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `688 tests`.
+Current pytest collection: `693 tests`.
 
 Manual Calculator Launch Verification
 
@@ -612,7 +612,8 @@ If needed, pass explicit paths:
 python scripts/verify_whisper_cpp_runtime.py \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --model models/whisper/ggml-tiny.en.bin \
-  --wav /tmp/ares_mic_test.wav
+  --wav /tmp/ares_mic_test.wav \
+  --language en
 ```
 
 These scripts prepare and verify the offline speech-recognition runtime. They do not add wake words, background listening, GPT, TTS, or a conversation loop.
@@ -632,7 +633,8 @@ python scripts/manual_verify_linux_whisper_stt.py \
   --seconds 3 \
   --model models/whisper/ggml-tiny.en.bin \
   --whisper-command whisper-cli \
-  --output /tmp/ares_whisper_test.wav
+  --output /tmp/ares_whisper_test.wav \
+  --language en
 
 python scripts/manual_verify_linux_whisper_stt.py \
   --record \
@@ -640,7 +642,8 @@ python scripts/manual_verify_linux_whisper_stt.py \
   --seconds 3 \
   --model models/whisper/ggml-tiny.en.bin \
   --whisper-command /path/to/whisper-cli \
-  --output /tmp/ares_whisper_hw_1_0.wav
+  --output /tmp/ares_whisper_hw_1_0.wav \
+  --language en
 ```
 
 The script records only when `--record` is provided, validates the exact WAV, sends that WAV to the offline Whisper adapter, prints recognized text, and reports processing time/language metadata. It does not start wake-word detection, background listening, GPT, internet access, TTS, or a conversation loop.
@@ -654,6 +657,7 @@ python scripts/manual_verify_linux_whisper_stt.py \
   --model models/whisper/ggml-tiny.en.bin \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --output /tmp/ares_speech_input.wav \
+  --language en \
   --min-rms 50
 ```
 
@@ -666,7 +670,8 @@ python scripts/manual_verify_linux_whisper_stt.py \
   --seconds 3 \
   --model models/whisper/ggml-tiny.en.bin \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
-  --output /tmp/ares_speech_input.wav
+  --output /tmp/ares_speech_input.wav \
+  --language en
 ```
 
 Disable USB microphone monitoring while preserving capture:
@@ -1656,18 +1661,19 @@ Phase 70
 
 Phase 71
 
-- Raspberry Pi speech-input verification hardening
-- `LinuxWhisperSpeechToTextAdapter` now rejects silent WAVs, configurable below-threshold RMS recordings, and `[BLANK_AUDIO]` as no usable speech
-- Whisper verification prints selected WAV diagnostics, exact `whisper-cli` command, exit code, and stdout/stderr previews on failures
+- Raspberry Pi speech-input verification hardening and reliable Whisper defaults
+- `LinuxWhisperSpeechToTextAdapter` now rejects silent WAVs, configurable below-threshold RMS recordings, and Whisper no-speech markers as no usable speech
+- Whisper verification prints selected WAV diagnostics, exact `whisper-cli` command, effective language, exit code, and stdout/stderr previews on failures
+- The verifier and manual STT script default to `--language en` for the recommended English-only `ggml-tiny.en.bin` model
 - `scripts/manual_verify_linux_whisper_stt.py` records, validates, transcribes the exact WAV, and only plays it with `aplay` when `--playback` is explicitly provided
 - `scripts/configure_linux_alsa_monitoring.py` mutes microphone playback monitoring while preserving capture and speaker playback controls
-- Current pytest collection is 688 tests
+- Current pytest collection is 693 tests
 - No wake word, background listener, GPT, internet runtime path, speaker/TTS output, autonomous loop, or conversation loop was added
 
 Phase 72
 
 - Phase 3 Real Voice Integration next block
-- Run the hardened speech-input verification on the Raspberry Pi
+- Re-run reliable speech-input verification on the Raspberry Pi
 - Implement a real TTS adapter
 - Run a real single-turn voice loop
 - Only later add wake-word/background listening

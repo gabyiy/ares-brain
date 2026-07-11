@@ -4,13 +4,13 @@ Last Updated: 2026-07-11
 
 Current Version
 
-ARES v1.74 - Raspberry Pi Speech Input Verification Hardening
+ARES v1.75 - Reliable Offline Speech Recognition
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus the first real Phase 3 microphone, offline STT adapter, Raspberry Pi Whisper runtime preparation, and speech-input hardening checkpoints.
+ARES is at the completed Architecture Hardening foundation plus the first real Phase 3 microphone, offline STT adapter, Raspberry Pi Whisper runtime preparation, speech-input hardening, and reliable English-only Whisper verification checkpoints.
 
 Confirmed Phase 3 foundation:
 
@@ -41,11 +41,12 @@ Confirmed Phase 3 foundation:
 - Offline Whisper speech-to-text adapter for explicit Raspberry Pi WAV transcription
 - Raspberry Pi whisper.cpp runtime setup and verification scripts
 - Hardened speech-input verification and ALSA monitoring helper
+- Reliable English-mode Whisper verification defaults for `ggml-tiny.en.bin`
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 688 tests.
+Current pytest collection: 693 tests.
 
-The only real audio/STT additions are explicit one-shot Linux ALSA microphone capture through `LinuxAlsaMicrophoneAdapter`, explicit offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, owner-run whisper.cpp setup/runtime verification scripts, hardened WAV diagnostics, and an owner-run ALSA monitoring helper. Speaker output for ARES responses, wake word detection, real TTS, Vosk, Piper, background listening, notifications, GPT, internet runtime access, conversation loops, and real device/event automation remain disabled until explicitly approved.
+The only real audio/STT additions are explicit one-shot Linux ALSA microphone capture through `LinuxAlsaMicrophoneAdapter`, explicit offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, owner-run whisper.cpp setup/runtime verification scripts, hardened WAV diagnostics, reliable `--language en` verification defaults for the recommended English-only model, and an owner-run ALSA monitoring helper. Speaker output for ARES responses, wake word detection, real TTS, Vosk, Piper, background listening, notifications, GPT, internet runtime access, conversation loops, and real device/event automation remain disabled until explicitly approved.
 
 `skills.VoiceSessionSkill` now starts a bounded mock voice session from text commands: "start voice session", "start mock voice", and "run voice test". It uses only `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop`, returns a transcript summary, and is wired through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path.
 
@@ -161,7 +162,8 @@ Explicit runtime verifier paths:
 python scripts/verify_whisper_cpp_runtime.py \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --model models/whisper/ggml-tiny.en.bin \
-  --wav /tmp/ares_mic_test.wav
+  --wav /tmp/ares_mic_test.wav \
+  --language en
 ```
 
 Raspberry Pi speech-input verification has been hardened.
@@ -170,6 +172,7 @@ Root cause addressed:
 
 - The previous verifier accepted any non-empty Whisper transcript as success.
 - Whisper's `[BLANK_AUDIO]` marker is non-empty text, so it could be reported as a successful transcription.
+- The verification scripts used `--language auto` while the recommended installed model is the English-only `ggml-tiny.en.bin`; reliable direct manual Whisper runs use English mode.
 - The previous verifier did not print enough WAV signal diagnostics or exact process diagnostics to distinguish wrong-file selection, silence, near-silence, or Whisper output parsing.
 
 Current hardened behavior:
@@ -177,8 +180,10 @@ Current hardened behavior:
 - `LinuxWhisperSpeechToTextAdapter` measures WAV file size, duration, sample rate, channels, sample width, peak amplitude, and RMS amplitude.
 - Silent WAVs fail before `whisper-cli` runs.
 - Near-silent WAVs fail when below the configured RMS threshold.
-- `[BLANK_AUDIO]`, `[SILENCE]`, and `[NO_SPEECH]` style output is treated as `no_usable_speech`.
-- `scripts/verify_whisper_cpp_runtime.py` prints selected WAV diagnostics, exact `whisper-cli` command, exit code, and stdout/stderr previews on failures.
+- `[BLANK_AUDIO]`, `<|nospeech|>`, `<|no_speech|>`, `(no speech)`, `[SILENCE]`, and `[NO_SPEECH]` style output is treated as `no_usable_speech`.
+- English-only GGML model filenames resolve automatic language configuration to effective language `en`.
+- `scripts/verify_whisper_cpp_runtime.py` and `scripts/manual_verify_linux_whisper_stt.py` default to `--language en` for the recommended `ggml-tiny.en.bin` model.
+- `scripts/verify_whisper_cpp_runtime.py` prints selected WAV diagnostics, exact `whisper-cli` command, requested/effective language, exit code, and stdout/stderr previews on failures.
 - `scripts/manual_verify_linux_whisper_stt.py` records, validates, and transcribes the exact WAV, and only plays it with `aplay` when `--playback` is explicitly provided.
 - `scripts/configure_linux_alsa_monitoring.py` mutes mic playback monitoring while preserving mic capture and speaker playback mixer controls.
 
@@ -191,6 +196,7 @@ python scripts/manual_verify_linux_whisper_stt.py \
   --model models/whisper/ggml-tiny.en.bin \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --output /tmp/ares_speech_input.wav \
+  --language en \
   --min-rms 50
 ```
 
@@ -203,7 +209,8 @@ python scripts/manual_verify_linux_whisper_stt.py \
   --seconds 3 \
   --model models/whisper/ggml-tiny.en.bin \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
-  --output /tmp/ares_speech_input.wav
+  --output /tmp/ares_speech_input.wav \
+  --language en
 ```
 
 Disable USB mic monitoring while preserving capture:
@@ -1831,7 +1838,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 688 tests.
+- Current pytest collection: 693 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1887,13 +1894,14 @@ Verification Notes
 - Linux ALSA microphone adapter tests cover capture-device parsing, missing `arecord`, no devices, invalid selected devices, valid WAV recording, `read_chunk()` through the adapter contract, timeout, non-zero arecord exits, invalid device process errors, missing/empty WAV output, unsafe device identifier rejection, structured status/capabilities, and manual script no-record/explicit-record behavior.
 - Offline Whisper STT tests cover health checks, missing binary, missing model, WAV transcription metadata, stdout parsing, no-transcription results, invalid/missing audio, timeout, non-zero process exit, `AudioChunk` transcription with and without existing WAV metadata, structured status/capabilities, mocked Raspberry Pi ALSA-to-Whisper integration, and manual script record/transcribe behavior.
 - Whisper runtime setup tests cover clone/build/download/verification success, existing checkout/model reuse, missing dependency failure, build failure, import safety, runtime verifier success, missing command, missing model, missing WAV sample, transcription failure, empty transcription, and PASS/FAIL output paths without real network, Whisper, or Raspberry Pi hardware.
-- Speech-input hardening tests cover valid speech WAV diagnostics, silent WAV rejection, near-silent RMS rejection, corrupt WAV rejection, `[BLANK_AUDIO]` no-usable-speech handling, exact command diagnostics, runtime verifier diagnostics, playback disabled by default, explicit playback opt-in, ALSA monitoring command planning, dry-run behavior, apply behavior, missing `amixer`, and preserving capture while muting mic playback monitoring.
+- Speech-input hardening tests cover valid speech WAV diagnostics, silent WAV rejection, near-silent RMS rejection, corrupt WAV rejection, no-speech marker handling, English-only model language resolution, missing model/binary failures before subprocess execution, exact command diagnostics, runtime verifier diagnostics, runtime verifier `--language en` defaults, playback disabled by default, explicit playback opt-in, ALSA monitoring command planning, dry-run behavior, apply behavior, missing `amixer`, and preserving capture while muting mic playback monitoring.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
 
 Latest Commits
 
+- `f5b4d1f` Fix Whisper speech input verification
 - `34e6bfa` Harden Raspberry Pi speech input verification
 - `67942dc` Add Raspberry Pi whisper runtime setup scripts
 - `cb510c9` Add offline Whisper speech to text adapter

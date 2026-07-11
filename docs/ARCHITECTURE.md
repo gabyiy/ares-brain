@@ -308,12 +308,13 @@ Responsibilities:
 - verify that a local Whisper executable is installed
 - verify that the configured local model file exists
 - run offline transcription through a local command-line Whisper engine
-- return recognized text, processing time, requested/detected language metadata, status, and structured failure data
+- return recognized text, processing time, requested/effective/detected language metadata, status, and structured failure data
 
 Safety boundaries:
 
 - command execution uses argument lists with `shell=False`
 - the recommended first Raspberry Pi model is `ggml-tiny.en.bin`
+- English-only GGML models such as `ggml-tiny.en.bin` resolve automatic language configuration to `en`
 - no model is downloaded automatically
 - no internet access, GPT, wake word detection, TTS, background listening, or conversation loop is started
 - `linux_whisper_speech_to_text_adapter` is disabled by default in local module config
@@ -328,7 +329,8 @@ python scripts/manual_verify_linux_whisper_stt.py \
   --seconds 3 \
   --model models/whisper/ggml-tiny.en.bin \
   --whisper-command whisper-cli \
-  --output /tmp/ares_whisper_test.wav
+  --output /tmp/ares_whisper_test.wav \
+  --language en
 
 python scripts/manual_verify_linux_whisper_stt.py \
   --record \
@@ -336,7 +338,8 @@ python scripts/manual_verify_linux_whisper_stt.py \
   --seconds 3 \
   --model models/whisper/ggml-tiny.en.bin \
   --whisper-command /path/to/whisper-cli \
-  --output /tmp/ares_whisper_hw_1_0.wav
+  --output /tmp/ares_whisper_hw_1_0.wav \
+  --language en
 ```
 
 Phase pytest collection after this checkpoint was 663 tests.
@@ -365,7 +368,7 @@ Runtime verification flow:
 
 ```bash
 python scripts/manual_verify_linux_alsa_microphone.py --record --seconds 3 --output /tmp/ares_mic_test.wav
-python scripts/verify_whisper_cpp_runtime.py --wav /tmp/ares_mic_test.wav
+python scripts/verify_whisper_cpp_runtime.py --wav /tmp/ares_mic_test.wav --language en
 ```
 
 `scripts/verify_whisper_cpp_runtime.py` locates `whisper-cli`, locates the model, sends an existing recorded WAV sample to `LinuxWhisperSpeechToTextAdapter`, and prints clear PASS/FAIL diagnostics with recognized text and timing.
@@ -386,6 +389,7 @@ Root cause fixed in ARES code:
 
 - the previous verifier treated any non-empty Whisper transcript text as success
 - Whisper's `[BLANK_AUDIO]` marker is non-empty text, so it could be reported as a successful transcription
+- the verification scripts used `--language auto` even though the recommended installed model is the English-only `ggml-tiny.en.bin`; direct reliable manual commands use English mode
 - the verifier did not print enough WAV signal diagnostics or exact process diagnostics to distinguish wrong-file selection, a silent recording, a below-threshold recording, or Whisper output parsing
 
 Current behavior:
@@ -394,7 +398,8 @@ Current behavior:
 - diagnostics include selected path, file size, duration, sample rate, channels, sample width, peak amplitude, and RMS amplitude
 - silent WAV files fail before `whisper-cli` runs
 - below-threshold RMS files fail when `minimum_rms` is configured
-- `[BLANK_AUDIO]`, `[SILENCE]`, and `[NO_SPEECH]` style output is normalized to no usable speech
+- `[BLANK_AUDIO]`, `<|nospeech|>`, `(no speech)`, `[SILENCE]`, and `[NO_SPEECH]` style output is normalized to no usable speech
+- the verifier and manual STT script default to `--language en`, and the adapter records requested/effective language diagnostics
 - failures include the exact `whisper-cli` argument list, exit code, stdout preview, and stderr preview where available
 
 Controlled manual verification:
@@ -406,6 +411,7 @@ python scripts/manual_verify_linux_whisper_stt.py \
   --model models/whisper/ggml-tiny.en.bin \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --output /tmp/ares_speech_input.wav \
+  --language en \
   --min-rms 50
 ```
 
@@ -418,7 +424,8 @@ python scripts/manual_verify_linux_whisper_stt.py \
   --seconds 3 \
   --model models/whisper/ggml-tiny.en.bin \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
-  --output /tmp/ares_speech_input.wav
+  --output /tmp/ares_speech_input.wav \
+  --language en
 ```
 
 Microphone monitoring control is a separate ALSA mixer helper and not part of the Brain or CoreService:
@@ -442,7 +449,7 @@ Design boundary:
 - speaker output remains behind Voice City output contracts and explicit owner-run manual tools
 - the Brain and CoreService do not call ALSA, `amixer`, `aplay`, or `whisper-cli` directly
 
-Current pytest collection after this checkpoint: 688 tests.
+Current pytest collection after this checkpoint: 693 tests.
 
 # Architecture Hardening Checkpoint
 
@@ -539,7 +546,7 @@ Safety regression guarantees:
 
 # Next Project Block
 
-After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice checkpoints are the Linux ALSA microphone adapter, offline Whisper STT adapter, Raspberry Pi whisper.cpp runtime preparation scripts, and speech-input verification hardening. The next planned sequence is:
+After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice checkpoints are the Linux ALSA microphone adapter, offline Whisper STT adapter, Raspberry Pi whisper.cpp runtime preparation scripts, speech-input verification hardening, and reliable English-only Whisper verification defaults. The next planned sequence is:
 
 1. run the hardened speech-input verification on the Raspberry Pi
 2. implement a real TTS adapter
