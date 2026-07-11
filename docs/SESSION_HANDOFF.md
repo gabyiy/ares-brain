@@ -4,13 +4,13 @@ Last Updated: 2026-07-11
 
 Current Version
 
-ARES v1.65 - Versioned Interface Contracts
+ARES v1.66 - Capability Manifests
 
 ---
 
 Current Status
 
-ARES is at the versioned interface contract foundation before any real audio work.
+ARES is at the capability manifest foundation before any real audio work.
 
 Confirmed Phase 3 foundation:
 
@@ -32,9 +32,10 @@ Confirmed Phase 3 foundation:
 - Simulated VoicePipeline
 - Enforced module lifecycle
 - Versioned interface contracts
+- Capability manifests
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 471 tests.
+Current pytest collection: 502 tests.
 
 Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
@@ -120,17 +121,19 @@ Implemented:
 
 - enforced module lifecycle
 - versioned interface contracts
+- capability manifests
 
 Remaining hardening items:
 
-1. capability manifests
-2. memory/database migrations
-3. health checks and adapter fallback
-4. measured resource budgets
+1. memory/database migrations
+2. health checks and adapter fallback
+3. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
 Permanent contract rule: No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
+
+Permanent manifest rule: No independently loadable ARES module may start without a valid registered capability manifest.
 
 Enforced module lifecycle has been added.
 
@@ -189,6 +192,27 @@ Current V1 contracts:
 - `EventPublicationEnvelopeV1`
 
 No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background listeners, remote registries, plugin downloads, dynamic code loading, database migrations, or guessed resource limits were added.
+
+Capability manifests have been added.
+
+Manifest behavior:
+
+- New module: `core.CapabilityManifest`.
+- New models: `CapabilityManifest`, `ManifestDependencies`, `PlatformCompatibility`, `ManifestPolicy`, `ManifestValidationResult`, and `ProviderSelectionResult`.
+- New registry: `CapabilityManifestRegistry`.
+- Manifests declare module identity, module type, module version, manifest version, description, provider, enabled state, explicit capabilities, consumed and produced contract versions, dependencies, platform compatibility, permissions, lifecycle support, and metadata.
+- Supported module types are `city`, `skill`, `adapter`, and `service`.
+- Supported permissions are `microphone.read`, `speaker.write`, `camera.read`, `network.outbound`, `filesystem.read`, `filesystem.write`, `process.launch`, `device.control`, and `gpio.control`.
+- Any permission not declared is denied by policy.
+- The registry validates duplicate module names, duplicate provider/version combinations, malformed manifest versions, unknown module types, unsupported contract versions, unknown required capabilities, missing required modules, incompatible capabilities, platform mismatch, permission policy, and lifecycle declaration compatibility.
+- Provider selection respects explicit preferred-provider policy and otherwise uses deterministic ordering.
+- CoreService validates the selected module manifest before lifecycle start.
+- Manifest rejection happens before module activation, preserves correlation ids, leaves lifecycle state unchanged, keeps unrelated cities idle, and can record `manifest.validation_failed` entries in `EventHistoryStore`.
+- Voice City, mock microphone adapter, mock speech-to-text adapter, mock voice output adapter, VoiceCommandRouter, and VoiceSessionSkill have registered manifests.
+- SkillRegistry now registers skill manifests from explicit skill metadata without changing skill execution behavior.
+- `config/modules.example.json` documents safe local enable/disable flags, preferred providers, and allowed permissions.
+- Tests cover manifest validation, dependency handling, permission policy, provider selection, skill manifest registration, CoreService manifest rejection, VoicePipeline compatibility, and CoreService usability after manifest failures.
+- No real microphone access, Whisper, Vosk, Piper, wake word, GPT, internet, background listeners, automatic dependency installation, dynamic plugin loading, database migrations, runtime provider fallback, Docker, daemon installation, or guessed hardware limits were added.
 
 Phase 3 Voice Checkpoint
 
@@ -1481,7 +1505,7 @@ Text REPL
 
 Immediate Next Milestone
 
-Voice wake word/STT/TTS planning on top of the safe Voice City contracts, audio adapter contracts, and one-shot text loop. Do not add real audio hardware access without explicit approval.
+Memory/database migrations are the next Architecture Hardening Checkpoint item. Do not add real audio hardware access without explicit approval.
 
 Next technical choices:
 
@@ -1507,7 +1531,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 471 tests.
+- Current pytest collection: 502 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1555,12 +1579,15 @@ Verification Notes
 - Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
 - Intent parser tests cover intent detection, confidence values, entity extraction, goal commands, ambiguous local phrasing, unknown intent, ToolSelector integration, SkillManager integration, live REPL parser use, and the REPL task path.
 - Contract tests cover V1 request/result acceptance, unsupported V2 rejection, missing/malformed contract headers, wrong contract type rejection, correlation id preservation, metadata round-trip, deterministic serialization, registry discovery, duplicate registration rejection, CoreService pre-activation rejection, lifecycle state preservation, VoicePipeline session reuse after rejection, and successful V1 VoicePipeline execution.
+- Capability manifest tests cover schema validation, deterministic serialization, duplicate rejection, capability/provider lookup, disabled modules, unsupported contracts, dependency validation, incompatible capabilities, platform mismatch, permission policy, lifecycle declaration mismatch, provider preference, skill manifest registration, CoreService manifest rejection, VoicePipeline compatibility, and CoreService usability after manifest failures.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
 
 Latest Commits
 
+- `80df88b` Add capability manifest foundation
+- `98d8dea` Document versioned interface contracts
 - `2c61d59` Add versioned interface contracts
 - `35da573` Add enforced module lifecycle foundation
 - `9365d76` Add simulated voice command pipeline
@@ -1644,8 +1671,8 @@ Latest Commits
 
 Next Planned Step
 
-- Architecture hardening before real hardware/adapters: capability manifests.
-- Remaining hardening after manifests: memory/database migrations, health checks and adapter fallback, and measured resource budgets.
+- Architecture hardening before real hardware/adapters: memory/database migrations.
+- Remaining hardening after migrations: health checks and adapter fallback, and measured resource budgets.
 - Plan Voice wake word/STT/TTS integration only after explicit approval and after the hardening scope is handled.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.

@@ -138,6 +138,8 @@ Current responsibilities:
 - provide `list_services()` metadata
 - aggregate capabilities with `get_capabilities()`
 - route a request to one matching city with `route_by_capability()`
+- validate capability manifests before module activation
+- expose `get_manifest(name)` and `list_manifests()`
 - enforce module lifecycle through `ModuleLifecycleManager`
 - expose `get_lifecycle_status()`
 - expose `get_lifecycle_history()`
@@ -268,17 +270,19 @@ Implemented:
 
 - enforced module lifecycle
 - versioned interface contracts
+- capability manifests
 
 Remaining hardening items:
 
-1. capability manifests
-2. memory/database migrations
-3. health checks and adapter fallback
-4. measured resource budgets
+1. memory/database migrations
+2. health checks and adapter fallback
+3. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
 Permanent contract rule: No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
+
+Permanent manifest rule: No independently loadable ARES module may start without a valid registered capability manifest.
 
 # Versioned Interface Contracts
 
@@ -337,6 +341,66 @@ Safe rejection behavior:
 Future V2 contracts must be added as new registered versions, with explicit conversion or dual-version support where needed. V2 must not replace or reinterpret V1 silently, and Brain code must not depend on adapter-specific contract details.
 
 PCService and VoiceService are the current services registered by default. Future services should follow the same registration and capability pattern.
+
+# Capability Manifests
+
+`core.CapabilityManifest` is the declaration every independently loadable ARES module must provide before CoreService may activate it. Manifests make module compatibility explicit instead of relying on filenames, Python class names, or implicit behavior.
+
+Supported module types are:
+
+- `city`
+- `skill`
+- `adapter`
+- `service`
+
+Each manifest declares:
+
+- identity: module name, module type, module version, manifest version, description, provider, and default enabled state
+- capabilities: explicit capability strings such as `voice.capture`, `voice.transcribe`, `voice.command_route`, `voice.session`, `device.lock`, `device.sleep`, `weather.current`, and `market.quote`
+- contract support: consumed and produced contract names with supported versions
+- dependencies: required capabilities, optional capabilities, incompatible capabilities, required modules, and optional modules
+- platform compatibility: supported operating systems, supported architectures, minimum Python version, and factual hardware flags such as microphone, speaker, camera, GPIO, GPU optional, and network optional
+- permissions: declared permission identifiers such as `microphone.read`, `speaker.write`, `camera.read`, `network.outbound`, `filesystem.read`, `filesystem.write`, `process.launch`, `device.control`, and `gpio.control`
+- lifecycle support: declared operations from `start`, `health_check`, `execute`, `stop`, and `recover`
+- metadata: optional JSON-compatible metadata preserved through deterministic serialization
+
+Any permission not declared is denied by policy. The current implementation validates declarations and policy compatibility; it does not implement OS-level permission enforcement yet.
+
+`CapabilityManifestRegistry` is the central registry used by CoreService. It supports registering and unregistering manifests, retrieving manifests, listing enabled modules, listing modules by type or capability, finding providers for a capability, deterministic provider selection, and preferred-provider configuration through safe local policy.
+
+Manifest validation covers:
+
+- duplicate module names
+- duplicate provider/version combinations
+- malformed manifest versions
+- unknown module types
+- unknown or unsupported contract versions
+- unknown required capabilities
+- missing required modules
+- incompatible capabilities
+- platform mismatch
+- undeclared permissions blocked by policy
+- lifecycle declaration mismatch with the implementation
+
+Provider selection returns all valid candidates, respects explicit preferred-provider configuration, and otherwise uses deterministic ordering. ARES must not silently select an incompatible provider. Runtime fallback after provider failure is intentionally not implemented yet; it belongs to the later health-check and adapter fallback checkpoint.
+
+CoreService activation gate:
+
+1. Locate the selected module manifest.
+2. Verify the module is enabled.
+3. Verify the requested capability is declared.
+4. Verify contract compatibility.
+5. Verify required capabilities and modules.
+6. Verify platform compatibility.
+7. Verify requested permissions are allowed by policy.
+8. Verify lifecycle implementation compatibility.
+9. Start the module only after every manifest check passes.
+
+Failure before activation returns a structured manifest rejection, preserves the correlation id, does not start the module, does not alter unrelated city lifecycle state, and can record a `manifest.validation_failed` event-history entry when CoreService has an `EventHistoryStore` configured.
+
+Current registered manifest coverage includes PCService, Voice City, mock microphone adapter, mock speech-to-text adapter, mock voice output adapter, VoiceCommandRouter, VoiceSessionSkill, and skill manifests registered by SkillRegistry. `config/modules.example.json` documents safe local configuration for enabled modules, preferred providers, and allowed permissions. It is not remote configuration and does not enable package downloads, dynamic imports, API keys, internet discovery, or automatic dependency installation.
+
+Future modules must register manifests through the central registry before activation. A future V2 contract must be introduced by registering its new contract version and updating manifests explicitly; unknown versions must be rejected rather than reinterpreted.
 
 # Device Action Pipeline
 
