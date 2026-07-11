@@ -274,10 +274,11 @@ Implemented:
 - capability manifests
 - memory/database migrations
 - health checks and adapter fallback
+- measured resource budgets
 
 Remaining hardening items:
 
-1. measured resource budgets
+- none. Architecture Hardening is complete before real Phase 3 voice hardware work.
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
@@ -300,6 +301,95 @@ Permanent health/fallback rules:
 - Fallback must never hide the original failure.
 - Disabled or circuit-open adapters must not be selected.
 - Health checks must not perform destructive actions.
+
+Permanent resource rules:
+
+- The Brain never manages RAM, CPU, adapters, or hardware.
+- CoreService controls activation and resource reservations.
+- No module activates before capacity is reserved.
+- No failed operation may leak a reservation or task slot.
+- Declared estimates must never be represented as exact measurements.
+- Resource inspection must not activate inactive Cities.
+- Dangerous actions must never be repeated because of eviction, retry, or cancellation.
+
+# Next Project Block
+
+After Architecture Hardening, Phase 3 real voice integration may proceed only after an explicit approval checkpoint. The planned sequence is:
+
+1. integration/recovery/safety regression checkpoint
+2. real microphone adapter
+3. real STT adapter
+4. TTS adapter
+5. real end-to-end voice loop
+
+This is a future implementation block. The current runtime still has no real microphone access, Whisper, Vosk, Piper, wake word, GPT, internet access, background listener, daemon, scheduler, or real audio output.
+
+# Measured Resource Budgets
+
+`core.ResourceBudget` is the common resource-budget boundary for CoreService-managed modules. It enforces declared logical costs and task slots before lifecycle activation. It does not claim to measure exact per-module RAM or CPU.
+
+Capability manifests can now declare resource metadata:
+
+- `estimated_ram_mb`
+- `estimated_cpu_weight`: `tiny`, `low`, `normal`, `high`, or `extreme`
+- `startup_cost`: `instant`, `light`, `medium`, or `heavy`
+- `shutdown_cost`: `instant`, `light`, `medium`, or `heavy`
+- `heavy_module`
+- `persistent_module`
+- `inactivity_timeout_seconds`
+- `maximum_concurrent_tasks`
+- `task_priority`: `background`, `low`, `normal`, `high`, or `critical`
+- `network_required`
+- `hardware_acceleration_required`
+
+`ResourcePolicy` defines global capacity rules. Local profiles are configuration data:
+
+- `test`
+- `raspberry_pi_5`
+- `desktop`
+- `future_orin`
+
+The Raspberry Pi 5 profile keeps a conservative one-heavy-module limit. These profiles are declared logical budgets, not verified hardware benchmarks.
+
+`ResourceManager` owns:
+
+- activation checks with `can_activate()`
+- reservations with `reserve()` and `release()`
+- bounded task slots with acquire/release APIs
+- activity tracking
+- inactive-module discovery
+- conservative eviction candidate selection
+- cooperative cancellation tokens
+- read-only current usage and reservation reports
+- optional observed process-level metrics
+
+CoreService integrates the resource gate into lazy routing:
+
+request -> route to City/module -> inspect manifest -> validate compatibility and health/lifecycle prerequisites -> reserve capacity -> start lifecycle -> health-check selected module -> acquire task slot -> execute -> record activity -> release task slot -> retain or release reservation according to lifecycle/resource policy.
+
+If reservation fails, the module does not start, unrelated Cities remain inactive, and the structured result explains the blocking limit. Failed startup, health failure, task-slot failure, and execution failure release task slots and newly created reservations safely.
+
+Idle unloading is explicit only. `CoreService.run_resource_maintenance()` stops inactive non-persistent modules during owner/test-triggered ticks. No thread, scheduler, daemon, or background timer is added. Persistent modules and active tasks are not unloaded.
+
+Eviction is optional and conservative. Candidates must be inactive, non-persistent, not processing a task, lower priority than the incoming request, and safe to stop. Critical-priority modules, active sessions, unsafe-stop modules, Brain/CoreService, and dangerous actions are not evicted automatically.
+
+Observed metrics are process-level and read-only. ARES may report process uptime, CPU time, optional RSS when the platform exposes it, active module count, active heavy module count, active task count, declared reserved RAM, and loaded City count. Missing metrics remain unavailable instead of being faked.
+
+Resource events can be stored in `EventHistoryStore`:
+
+- `resource.reservation_created`
+- `resource.reservation_released`
+- `resource.activation_denied`
+- `resource.heavy_module_limit_reached`
+- `resource.idle_module_unloaded`
+- `resource.eviction_performed`
+- `resource.eviction_refused`
+- `resource.task_slot_acquired`
+- `resource.task_slot_released`
+- `resource.task_cancelled`
+- `resource.maintenance_completed`
+
+Payloads are bounded operational metadata only. They must not include transcripts, secrets, personal memory contents, raw stack traces, or microphone recordings.
 
 # Health Checks and Adapter Fallback
 

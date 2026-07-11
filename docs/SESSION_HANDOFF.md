@@ -4,13 +4,13 @@ Last Updated: 2026-07-11
 
 Current Version
 
-ARES v1.68 - Health Checks and Adapter Fallback
+ARES v1.69 - Measured Resource Budgets
 
 ---
 
 Current Status
 
-ARES is at the health checks and controlled adapter fallback foundation before any real audio work.
+ARES is at the completed Architecture Hardening foundation before any real audio work.
 
 Confirmed Phase 3 foundation:
 
@@ -35,9 +35,10 @@ Confirmed Phase 3 foundation:
 - Capability manifests
 - Memory/schema migrations
 - Health checks and controlled adapter fallback
+- Measured resource budgets
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 560 tests.
+Current pytest collection: 596 tests.
 
 Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
@@ -126,10 +127,11 @@ Implemented:
 - capability manifests
 - memory/database migrations
 - health checks and adapter fallback
+- measured resource budgets
 
 Remaining hardening items:
 
-1. measured resource budgets
+- none. Architecture Hardening is complete before real Phase 3 voice hardware work.
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
@@ -152,6 +154,39 @@ Permanent health/fallback rules:
 - Fallback must never hide the original failure.
 - Disabled or circuit-open adapters must not be selected.
 - Health checks must not perform destructive actions.
+
+Permanent resource rules:
+
+- The Brain never manages RAM, CPU, adapters, or hardware.
+- CoreService controls activation and resource reservations.
+- No module activates before capacity is reserved.
+- No failed operation may leak a reservation or task slot.
+- Declared estimates must never be represented as exact measurements.
+- Resource inspection must not activate inactive Cities.
+- Dangerous actions must never be repeated because of eviction, retry, or cancellation.
+
+Measured resource budgets have been added.
+
+Resource budget behavior:
+
+- New module: `core.ResourceBudget`.
+- New models: `ResourceDeclaration`, `ResourcePolicy`, `ResourceManager`, `ResourceReservation`, `ResourceDecision`, and `CancellationToken`.
+- Capability manifests now include optional validated resource declarations.
+- Declared resource fields include estimated RAM, CPU weight, startup cost, shutdown cost, heavy module flag, persistent module flag, inactivity timeout, maximum concurrent tasks, task priority, network requirement, hardware acceleration requirement, and safe-to-stop metadata.
+- Platform profiles are `test`, `raspberry_pi_5`, `desktop`, and `future_orin`.
+- The Raspberry Pi 5 profile keeps a conservative one-heavy-module policy as declared config data, not as an exact benchmark.
+- CoreService now reserves capacity before lifecycle start, acquires a bounded task slot before execution, releases task slots on every path, records activity after successful execution, and releases newly created reservations after failed activation or failed execution.
+- CoreService exposes `get_resource_status()`, `get_module_resource_status(name)`, `list_loaded_modules()`, `list_resource_reservations()`, `explain_activation(name)`, and `run_resource_maintenance()`.
+- Idle unloading runs only during explicit maintenance ticks and never through a background timer.
+- Persistent modules and active tasks are not idle-unloaded.
+- Optional eviction selects only inactive, non-persistent, lower-priority, safe-to-stop modules.
+- Critical modules, active tasks, unsafe-stop modules, Brain/CoreService, and dangerous actions are not automatic eviction candidates.
+- Cooperative cancellation is token-based and releases task slots only when cancellation is supported.
+- Observed process metrics are read-only process-level fields: uptime, CPU time, optional RSS when available, active module/task counts, loaded City count, and declared reserved RAM.
+- Declared estimates are kept separate from observed process metrics.
+- EventHistoryStore can record resource reservation, release, activation denial, heavy-limit, idle-unload, eviction, task-slot, cancellation, and maintenance events without transcripts, secrets, personal memory, or raw exception traces.
+- Tests cover manifest resource declarations, budget rejections, heavy-module limits, task limits, idle unloading, maintenance ticks, eviction selection, cancellation, metrics, event payload safety, CoreService routing gates, VoicePipeline compatibility, and health/fallback compatibility.
+- No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background listener, threads, Docker, remote telemetry, distributed scheduler, OS process killing, real hardware benchmarking, or exact per-module memory measurement was added.
 
 Enforced module lifecycle has been added.
 
@@ -283,7 +318,7 @@ Health/fallback behavior:
 - `VoicePipeline` can use optional candidate lists for mock microphone selection and mock STT fallback while preserving its default single-adapter path.
 - EventHistoryStore can record safe operational events for health check failures, fallback selections, all-unavailable decisions, circuit opened, half-open probes, and circuit recovery.
 - Tests cover health normalization, selection, rejection reasons, degraded policy, bounded fallback attempts, retry-safety, circuit breaker transitions, cache behavior, event-history safety, CoreService lazy health visibility, VoicePipeline compatibility, and STT fallback.
-- No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, real weather/market calls, notifications, automatic PC actions, background listeners, or measured resource budgets were added.
+- No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, real weather/market calls, notifications, automatic PC actions, background listeners, threads, Docker, remote telemetry, distributed scheduler, operating-system process killing, real hardware benchmarking, or exact per-module memory measurement was added.
 
 Phase 3 Voice Checkpoint
 
@@ -1576,13 +1611,13 @@ Text REPL
 
 Immediate Next Milestone
 
-Measured resource budgets are the next Architecture Hardening Checkpoint item. Do not add real audio hardware access without explicit approval.
+Phase 3 real voice integration can be planned next, starting with an integration/recovery/safety regression checkpoint. Do not add real audio hardware access without explicit approval.
 
 Next technical choices:
 
 - Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
 - Keep voice, GPT, embeddings, external weather/stocks/calendar APIs, real scheduling, notifications, and Raspberry Pi deployment out of scope until explicitly approved.
-- Keep real microphone, Whisper, Vosk, Piper, wake word, internet-backed adapters, notifications, and automatic PC actions out of scope until measured resource budgets are handled and explicitly approved.
+- Keep real microphone, Whisper, Vosk, Piper, wake word, internet-backed adapters, notifications, and automatic PC actions out of scope until the real voice integration checkpoint is explicitly approved.
 - Connect selected daily reflection scripts and future providers to MemoryStore v1 only after the memory contract is documented.
 
 ---
@@ -1603,7 +1638,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 560 tests.
+- Current pytest collection: 596 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1624,6 +1659,7 @@ Verification Notes
 - ModuleLifecycle tests cover UNLOADED -> STARTING -> READY startup, READY -> BUSY -> READY execution, READY -> STOPPING -> STOPPED shutdown, idempotent start/stop, execution rejection before start, health-check DEGRADED/FAILED policy behavior, startup failure, execution failure isolation, illegal transition rejection, explicit recovery, transition history, monotonic timestamps, correlation id preservation, and lifecycle status queries.
 - CoreService lifecycle tests cover lifecycle health gating, explicit recovery, unrelated-module failure isolation, lifecycle status/history queries, and Voice City activation without activating PC City.
 - Health fallback tests cover HealthResult normalization, healthy/degraded/unavailable/failed/disabled states, primary/secondary adapter selection, disabled/capability/version rejection, degraded strict/permissive policy, all-unavailable failure, rejection reasons, bounded fallback attempts, retry-safe fallback, retry-unsafe no-fallback, circuit open/half-open/recovery behavior, deterministic clocks, health cache TTL/refresh/invalidations, malformed/timeout/exception health failures, event-history safety, lazy CoreService health visibility, active probes without lifecycle activation, VoicePipeline compatibility, and mock STT fallback.
+- Resource budget tests cover manifest resource declarations, invalid resource values, RAM budget rejection, network/hardware policy rejection, heavy-module limits, reservation release, CoreService budget gates, failed activation cleanup, execution exception cleanup, global and per-module task limits, idle detection, maintenance unloading, persistent/active unload prevention, eviction candidate selection, eviction-disabled behavior, cooperative cancellation, process metrics availability, status inspection without activation, resource event safety, health/fallback compatibility, and simulated VoicePipeline compatibility.
 - Core EventBus tests cover event dataclass normalization, publish, subscribe, unsubscribe, no-subscriber safety, priority ordering, invalid priority rejection, and stable priority levels.
 - CoreService event decision tests cover low, normal, high, critical, unknown-source, and disabled-source event handling.
 - EventHistoryStore tests cover add, query by source/type/priority, bounded max size, empty history, persistence after reload, invalid priority rejection, and zero-size history.
@@ -1660,6 +1696,7 @@ Verification Notes
 
 Latest Commits
 
+- `6636b78` Add measured resource budgets
 - `ebaff5a` Add health checks and adapter fallback
 - `a269ff2` Document memory schema migrations
 - `dc2526d` Add versioned memory schema migrations
@@ -1748,9 +1785,8 @@ Latest Commits
 
 Next Planned Step
 
-- Architecture hardening before real hardware/adapters: measured resource budgets.
-- Health checks and controlled adapter fallback are implemented.
-- Plan Voice wake word/STT/TTS integration only after explicit approval and after the hardening scope is handled.
+- Architecture hardening before real hardware/adapters is complete: lifecycle, contracts, manifests, migrations, health/fallback, and measured resource budgets are implemented.
+- Plan Phase 3 real voice integration only after explicit approval, beginning with an integration/recovery/safety regression checkpoint.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not enable default real weather/market API behavior, Google Calendar integration, GPT, embeddings, real voice/audio hardware, vision, scheduling, notifications, or background automation yet.

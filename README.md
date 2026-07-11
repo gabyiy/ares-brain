@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.68 - Health Checks and Adapter Fallback
+ARES v1.69 - Measured Resource Budgets
 
 ---
 
@@ -44,6 +44,8 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 
 `core.Health` normalizes service, city, skill, and adapter health behind `HealthResult` with explicit statuses: `healthy`, `degraded`, `unavailable`, `failed`, `disabled`, and `unknown`. `AdapterFallbackPolicy` selects only enabled, capability-compatible, interface-version-compatible, healthy adapters, can use degraded adapters only when policy allows, reports every rejection reason, and records bounded health/fallback events when an `EventHistoryStore` is provided. Runtime fallback is allowed only for explicitly `retry_safe` operations, preserves the original failure, and is bounded by configured maximum attempts. `CircuitBreaker` tracks `closed`, `open`, and `half_open` states with injected clocks for deterministic tests. `HealthCache` supports short-lived cached health results with forced refresh and disabled-adapter invalidation. The simulated VoicePipeline can use candidate lists for mock microphone/STT adapter selection and STT fallback; default single-adapter behavior remains compatible.
 
+`core.ResourceBudget` now provides measured-resource-budget foundations using declared logical estimates rather than pretending to know exact per-module RAM. Capability manifests can declare estimated RAM, CPU weight, startup/shutdown cost, heavy/persistent flags, inactivity timeout, maximum concurrent tasks, priority, network requirement, and hardware-acceleration requirement. `ResourceManager` enforces central resource policy before CoreService starts a module, reserves capacity, tracks task slots, records activity, supports explicit maintenance ticks for idle unloading, provides conservative optional eviction candidates, supports cooperative cancellation tokens, exposes safe resource status and observed process-level metrics, and records bounded resource events when an `EventHistoryStore` is configured. Platform profiles are local configuration data: `test`, `raspberry_pi_5`, `desktop`, and `future_orin`.
+
 Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listener integrations come later. The current adapter layer is mock/local only and does not access audio hardware.
 
 Architecture Hardening Checkpoint
@@ -57,10 +59,11 @@ Implemented:
 - capability manifests
 - memory/database migrations
 - health checks and adapter fallback
+- measured resource budgets
 
 Remaining:
 
-1. measured resource budgets
+- none. Architecture Hardening is complete before real Phase 3 voice hardware work.
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
@@ -73,6 +76,8 @@ Capability manifests now describe ARES modules before activation. Each manifest 
 Permanent memory rules: durable ARES data may never be rewritten without validation and backup; unknown future schema versions must never be silently downgraded; a failed load must never be interpreted as empty memory; hardware-specific paths must not become part of the durable memory schema.
 
 Permanent health/fallback rules: the Brain never selects concrete adapters; automatic fallback is allowed only for explicitly retry-safe operations; a failed adapter must never cause unrelated Cities to activate; fallback must never hide the original failure; disabled or circuit-open adapters must not be selected; health checks must not perform destructive actions.
+
+Permanent resource rules: the Brain never manages RAM, CPU, adapters, or hardware; CoreService controls activation and resource reservations; no module activates before capacity is reserved; no failed operation may leak a reservation or task slot; declared estimates must never be represented as exact measurements; resource inspection must not activate inactive Cities; dangerous actions must never be repeated because of eviction, retry, or cancellation.
 
 Memory schema migrations now protect active JSON-backed durable stores. The current envelope fields are `schema_name`, `schema_version`, `created_at`, `updated_at`, `data`, and optional `metadata`. The current active schemas are `ares.user_profile`, `ares.goals`, `ares.notes`, `ares.tasks`, `ares.memory.short`, `ares.memory.long`, and `ares.event_history`. `ReminderScheduler` derives from tasks and has no separate file. Voice-session history is stored through `EventHistoryStore`; there is no separate voice-session store. Legacy `memory_manager.py` remains a separate script API over legacy files and is documented as legacy/disconnected from the active store path.
 
@@ -472,7 +477,7 @@ Implemented Features
 - Speech-to-text adapter abstraction with `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, confidence scores, empty transcription handling, low-confidence handling, safe failure results, and Voice City dependency injection
 - Voice Command Router with confidence gating, empty-transcription handling, unknown-command handling, CoreService `voice.text_loop` routing, routed/rejected metrics, and routed/rejected events
 - Simulated VoicePipeline connecting mock microphone audio, mock speech-to-text, VoiceCommandRouter, CoreService route-by-capability, mock output, session/correlation ids, and structured stage events
-- Architecture Hardening Checkpoint before real hardware/adapters with enforced lifecycle, versioned interface contracts, capability manifests, memory/database migrations, and health checks plus controlled adapter fallback implemented, with measured resource budgets remaining
+- Architecture Hardening Checkpoint before real hardware/adapters with enforced lifecycle, versioned interface contracts, capability manifests, memory/database migrations, health checks plus controlled adapter fallback, and measured resource budgets implemented
 - Built-in `VoiceSessionSkill` for starting bounded mock Voice City sessions from text commands through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path
 - Safe Voice Session event logging to `EventHistoryStore` for session start, stop, adapter failure, and max-turn completion events
 - Read-only Voice Session status queries for the latest mock session event group
@@ -498,7 +503,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 560 tests across current core modules
+- Pytest automated coverage for 596 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -517,7 +522,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `560 tests`.
+Current pytest collection: `596 tests`.
 
 Manual Calculator Launch Verification
 
@@ -702,13 +707,23 @@ Completed:
 - PCService capability discovery
 - CoreService orchestration layer
 - Phase 2 architecture stabilization
+- Enforced module lifecycle
+- Versioned interface contracts
+- Capability manifests
+- Memory/database migrations
+- Health checks and adapter fallback
+- Measured resource budgets
 - Voice City foundation
 - Voice City input/output contracts
 - Voice City text loop foundation
 
 Next:
 
-1. Voice wake word/STT/TTS planning
+1. Phase 3 real voice integration regression checkpoint
+2. Real microphone adapter
+3. Real STT adapter
+4. TTS adapter
+5. Real end-to-end voice loop
 2. GPT fallback integration
 3. Raspberry Pi deployment
 4. Robot body / sensors
@@ -1363,13 +1378,15 @@ Architecture Hardening Checkpoint
   - capability manifests
   - memory/database migrations
   - health checks and adapter fallback
+  - measured resource budgets
 - Remaining hardening items:
-  1. measured resource budgets
+  - none. Architecture Hardening is complete before real Phase 3 voice hardware work.
 - Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 - Permanent contract rule: No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
 - Permanent manifest rule: No independently loadable ARES module may start without a valid registered capability manifest.
 - Permanent memory rule: Durable ARES data may never be rewritten without validation and backup.
 - Permanent health/fallback rules: the Brain never selects concrete adapters; automatic fallback is allowed only for explicitly retry-safe operations; a failed adapter must never cause unrelated Cities to activate; fallback must never hide the original failure; disabled or circuit-open adapters must not be selected; health checks must not perform destructive actions.
+- Permanent resource rules: the Brain never manages RAM, CPU, adapters, or hardware; CoreService controls activation and resource reservations; no module activates before capacity is reserved; no failed operation may leak a reservation or task slot; declared estimates must never be represented as exact measurements; resource inspection must not activate inactive Cities; dangerous actions must never be repeated because of eviction, retry, or cancellation.
 
 Phase 62
 
@@ -1427,20 +1444,42 @@ Phase 65
 
 Phase 66
 
-- Future real voice planning only
-- Wake word
-- Real speech-to-text
-- Real text-to-speech
-- Continuous conversation
+- Measured resource budgets
+- `core.ResourceBudget` defines declared logical resource estimates, `ResourcePolicy`, `ResourceManager`, `ResourceReservation`, `ResourceDecision`, and `CancellationToken`
+- Capability manifests now include validated optional resource declarations
+- CoreService reserves declared capacity before lifecycle start, acquires bounded task slots before execution, releases task slots on success/failure, and releases reservations after failed activation/execution
+- CoreService exposes `get_resource_status()`, `get_module_resource_status()`, `list_loaded_modules()`, `list_resource_reservations()`, `explain_activation()`, and `run_resource_maintenance()`
+- Platform profiles are `test`, `raspberry_pi_5`, `desktop`, and `future_orin`; Raspberry Pi 5 keeps a conservative one-heavy-module policy
+- Explicit maintenance ticks unload inactive non-persistent modules without background threads
+- Optional eviction can stop only inactive, non-persistent, safe-to-stop, lower-priority modules
+- Cooperative cancellation releases task slots safely
+- Observed metrics include process uptime, CPU time, optional RSS when available, active module/task counts, and declared reserved RAM; declared estimates are never treated as exact measurements
+- Current pytest collection is 596 tests
+- No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background listener, threads, Docker, remote telemetry, distributed scheduler, process killing, or real hardware benchmarking was added
 
 Phase 67
+
+- Phase 3 real voice integration next block
+- Integration/recovery/safety regression checkpoint
+- Real microphone adapter
+- Real STT adapter
+- TTS adapter
+- Real end-to-end voice loop
+
+Phase 68
+
+- Future voice expansion
+- Wake word
+- Continuous conversation
+
+Phase 69
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 68
+Phase 70
 
 - Robotics
 - ROS2
