@@ -376,7 +376,73 @@ Safety boundaries:
 - no wake word detection, background listening, TTS, GPT, internet runtime path, autonomous loop, or conversation loop is started
 - downloaded GGML binaries, local manual samples, and the cloned whisper.cpp checkout are ignored by git
 
-Current pytest collection after this checkpoint: 675 tests.
+Phase pytest collection after this checkpoint was 675 tests.
+
+# Raspberry Pi Speech Input Verification Hardening
+
+The real speech-input path is still manual and explicit, but it is now hardened for Raspberry Pi recordings that are audible through `aplay` yet may be reported by Whisper as `[BLANK_AUDIO]`.
+
+Root cause fixed in ARES code:
+
+- the previous verifier treated any non-empty Whisper transcript text as success
+- Whisper's `[BLANK_AUDIO]` marker is non-empty text, so it could be reported as a successful transcription
+- the verifier did not print enough WAV signal diagnostics or exact process diagnostics to distinguish wrong-file selection, a silent recording, a below-threshold recording, or Whisper output parsing
+
+Current behavior:
+
+- `LinuxWhisperSpeechToTextAdapter` validates WAV headers and PCM statistics before transcription
+- diagnostics include selected path, file size, duration, sample rate, channels, sample width, peak amplitude, and RMS amplitude
+- silent WAV files fail before `whisper-cli` runs
+- below-threshold RMS files fail when `minimum_rms` is configured
+- `[BLANK_AUDIO]`, `[SILENCE]`, and `[NO_SPEECH]` style output is normalized to no usable speech
+- failures include the exact `whisper-cli` argument list, exit code, stdout preview, and stderr preview where available
+
+Controlled manual verification:
+
+```bash
+python scripts/manual_verify_linux_whisper_stt.py \
+  --record \
+  --seconds 3 \
+  --model models/whisper/ggml-tiny.en.bin \
+  --whisper-command external/whisper.cpp/build/bin/whisper-cli \
+  --output /tmp/ares_speech_input.wav \
+  --min-rms 50
+```
+
+Speaker playback is disabled by default. To hear the recorded file for troubleshooting, playback must be explicit:
+
+```bash
+python scripts/manual_verify_linux_whisper_stt.py \
+  --record \
+  --playback \
+  --seconds 3 \
+  --model models/whisper/ggml-tiny.en.bin \
+  --whisper-command external/whisper.cpp/build/bin/whisper-cli \
+  --output /tmp/ares_speech_input.wav
+```
+
+Microphone monitoring control is a separate ALSA mixer helper and not part of the Brain or CoreService:
+
+```bash
+python scripts/configure_linux_alsa_monitoring.py --card 1 --apply
+```
+
+Equivalent commands:
+
+```bash
+amixer -c 1 sset Mic 0% mute
+amixer -c 1 sset Capture 80% cap
+amixer -c 1 sset Speaker 70% unmute
+```
+
+Design boundary:
+
+- microphone capture remains in `LinuxAlsaMicrophoneAdapter`
+- offline Whisper remains in `LinuxWhisperSpeechToTextAdapter`
+- speaker output remains behind Voice City output contracts and explicit owner-run manual tools
+- the Brain and CoreService do not call ALSA, `amixer`, `aplay`, or `whisper-cli` directly
+
+Current pytest collection after this checkpoint: 688 tests.
 
 # Architecture Hardening Checkpoint
 
@@ -473,9 +539,9 @@ Safety regression guarantees:
 
 # Next Project Block
 
-After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice checkpoints are the Linux ALSA microphone adapter, offline Whisper STT adapter, and Raspberry Pi whisper.cpp runtime preparation scripts. The next planned sequence is:
+After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice checkpoints are the Linux ALSA microphone adapter, offline Whisper STT adapter, Raspberry Pi whisper.cpp runtime preparation scripts, and speech-input verification hardening. The next planned sequence is:
 
-1. run the whisper.cpp installer and runtime verifier on the Raspberry Pi
+1. run the hardened speech-input verification on the Raspberry Pi
 2. implement a real TTS adapter
 3. run a real single-turn voice loop
 4. only later add wake-word/background listening

@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.73 - Raspberry Pi Whisper Runtime Preparation
+ARES v1.74 - Raspberry Pi Speech Input Verification Hardening
 
 ---
 
@@ -44,6 +44,8 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 
 Raspberry Pi Whisper runtime preparation is now documented and scriptable. `scripts/install_whisper_cpp_raspberry_pi.py` clones `whisper.cpp` into `external/whisper.cpp` if missing, builds `whisper-cli` with CMake, downloads the recommended tiny English GGML model into `models/whisper/ggml-tiny.en.bin`, and verifies both files exist. `scripts/verify_whisper_cpp_runtime.py` locates `whisper-cli`, locates the model, transcribes an existing recorded WAV sample, and prints PASS/FAIL diagnostics. These are owner-run setup/verification scripts only; they do not start wake-word detection, background listening, GPT, internet runtime calls, TTS, or a conversation loop.
 
+Raspberry Pi speech-input verification is now hardened for real recordings. The Whisper adapter measures WAV file size, duration, sample rate, channel count, sample width, peak amplitude, and RMS amplitude before transcription; rejects silent or below-threshold recordings; prints the exact `whisper-cli` command, exit code, stdout, and stderr diagnostics on failures; and treats Whisper's `[BLANK_AUDIO]` marker as `no_usable_speech` instead of a successful transcription. `scripts/manual_verify_linux_whisper_stt.py` now records, validates, transcribes that exact WAV, and only plays it back when `--playback` is explicitly provided. `scripts/configure_linux_alsa_monitoring.py` documents and applies a safe ALSA mixer state that mutes microphone playback monitoring while preserving microphone capture and speaker playback for future explicit output.
+
 `core.VoiceCommandRouter` now routes `TranscriptionResult` objects into Voice City without any speech engine dependency. It validates a configurable confidence threshold, ignores empty transcriptions safely, propagates transcription failures, routes valid text through CoreService's `voice.text_loop` capability, handles unknown commands with structured safe results, and records local routed/rejected metrics plus `voice_command.routed` and `voice_command.rejected` events.
 
 `core.VoicePipeline` now provides the simulated end-to-end Voice City command pipeline. It accepts audio through an injected `MicrophoneAdapter`, transcribes through an injected `SpeechToTextAdapter`, passes `TranscriptionResult` through `VoiceCommandRouter`, routes valid commands through CoreService, activates only the required city, sends final text through an injected `VoiceOutputAdapter`, preserves session and correlation ids through every stage, and records structured local events for audio capture, transcription accepted/rejected, command routed/rejected, city activation, execution completion/failure, and output production. The pipeline is mock/local only and does not import concrete adapters into the Brain or CoreService.
@@ -54,7 +56,7 @@ Raspberry Pi Whisper runtime preparation is now documented and scriptable. `scri
 
 The final integration, recovery, and safety regression checkpoint is now complete. Focused integration tests prove the simulated voice/text path reaches IntentParser, Planner, ExecutionPipeline, the selected skill/service, and mock output while only activating the required City; PC status requests route through CoreService and PCService as read-only structured data; and confirmation-gated device actions do not execute before explicit confirmation. `core.ExecutionGuard` protects confirmed destructive actions with bounded idempotency tokens so retries, duplicate confirmations, output failures, or response-generation failures cannot execute the same confirmed action twice.
 
-Real Vosk, Piper, speaker/TTS, wake word, background listener, GPT conversation, and internet integrations come later. The current real audio/STT surface is limited to explicit Linux ALSA one-shot capture plus explicit offline Whisper transcription; neither is the default runtime path, and no wake word, background listening, TTS, GPT, or conversation loop was added.
+Real Vosk, Piper, speaker/TTS, wake word, background listener, GPT conversation, and internet integrations come later. The current real audio/STT surface is limited to explicit Linux ALSA one-shot capture, explicit offline Whisper transcription, hardened manual verification, and manual ALSA monitoring control; none of these are the default autonomous runtime path, and no wake word, background listening, TTS, GPT, or conversation loop was added.
 
 Architecture Hardening Checkpoint
 
@@ -516,7 +518,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 675 tests across current core modules
+- Pytest automated coverage for 688 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -535,7 +537,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `675 tests`.
+Current pytest collection: `688 tests`.
 
 Manual Calculator Launch Verification
 
@@ -641,7 +643,58 @@ python scripts/manual_verify_linux_whisper_stt.py \
   --output /tmp/ares_whisper_hw_1_0.wav
 ```
 
-The script records only when `--record` is provided, sends the WAV to the offline Whisper adapter, prints recognized text, and reports processing time/language metadata. It does not start wake-word detection, background listening, GPT, internet access, TTS, or a conversation loop.
+The script records only when `--record` is provided, validates the exact WAV, sends that WAV to the offline Whisper adapter, prints recognized text, and reports processing time/language metadata. It does not start wake-word detection, background listening, GPT, internet access, TTS, or a conversation loop.
+
+Recommended hardened speech-input check:
+
+```bash
+python scripts/manual_verify_linux_whisper_stt.py \
+  --record \
+  --seconds 3 \
+  --model models/whisper/ggml-tiny.en.bin \
+  --whisper-command external/whisper.cpp/build/bin/whisper-cli \
+  --output /tmp/ares_speech_input.wav \
+  --min-rms 50
+```
+
+Playback is disabled by default so the speaker stays silent while the user speaks and while Whisper processes. To troubleshoot a recording, opt in explicitly:
+
+```bash
+python scripts/manual_verify_linux_whisper_stt.py \
+  --record \
+  --playback \
+  --seconds 3 \
+  --model models/whisper/ggml-tiny.en.bin \
+  --whisper-command external/whisper.cpp/build/bin/whisper-cli \
+  --output /tmp/ares_speech_input.wav
+```
+
+Disable USB microphone monitoring while preserving capture:
+
+```bash
+python scripts/configure_linux_alsa_monitoring.py --card 1 --apply
+```
+
+Equivalent ALSA commands:
+
+```bash
+amixer -c 1 sset Mic 0% mute
+amixer -c 1 sset Capture 80% cap
+amixer -c 1 sset Speaker 70% unmute
+```
+
+If the USB device exposes different control names, pass them explicitly:
+
+```bash
+python scripts/configure_linux_alsa_monitoring.py \
+  --card 1 \
+  --mic-playback-control Mic \
+  --capture-control Capture \
+  --speaker-control Speaker \
+  --capture-volume 80% \
+  --speaker-volume 70% \
+  --apply
+```
 
 Continuous Integration
 
@@ -816,13 +869,14 @@ Completed:
 - Linux ALSA microphone adapter for explicit Raspberry Pi capture tests
 - Offline Whisper speech-to-text adapter for explicit Raspberry Pi WAV transcription
 - Raspberry Pi whisper.cpp runtime preparation and verification scripts
+- Hardened Raspberry Pi speech-input verification and ALSA monitoring helper
 - Voice City foundation
 - Voice City input/output contracts
 - Voice City text loop foundation
 
 Next:
 
-1. Run whisper.cpp installer and runtime verifier on the Raspberry Pi
+1. Run the hardened speech-input verification on the Raspberry Pi
 2. Implement a real TTS adapter
 3. Run a real single-turn voice loop
 4. Only later add wake-word/background listening
@@ -1597,31 +1651,41 @@ Phase 70
 - `scripts/install_whisper_cpp_raspberry_pi.py` clones whisper.cpp if missing, builds `whisper-cli`, downloads the recommended `tiny.en` GGML model into `models/whisper/ggml-tiny.en.bin`, and verifies the executable/model outputs
 - `scripts/verify_whisper_cpp_runtime.py` locates `whisper-cli`, locates the model, runs offline transcription on an existing recorded WAV sample, and prints PASS/FAIL diagnostics
 - Generated local samples, the cloned whisper.cpp tree, and downloaded GGML binaries are ignored by git
-- Current pytest collection is 675 tests
+- Phase pytest collection at this point was 675 tests
 - No wake word, background listener, GPT, internet runtime path, speaker/TTS, autonomous loop, or conversation loop was added
 
 Phase 71
 
+- Raspberry Pi speech-input verification hardening
+- `LinuxWhisperSpeechToTextAdapter` now rejects silent WAVs, configurable below-threshold RMS recordings, and `[BLANK_AUDIO]` as no usable speech
+- Whisper verification prints selected WAV diagnostics, exact `whisper-cli` command, exit code, and stdout/stderr previews on failures
+- `scripts/manual_verify_linux_whisper_stt.py` records, validates, transcribes the exact WAV, and only plays it with `aplay` when `--playback` is explicitly provided
+- `scripts/configure_linux_alsa_monitoring.py` mutes microphone playback monitoring while preserving capture and speaker playback controls
+- Current pytest collection is 688 tests
+- No wake word, background listener, GPT, internet runtime path, speaker/TTS output, autonomous loop, or conversation loop was added
+
+Phase 72
+
 - Phase 3 Real Voice Integration next block
-- Run whisper.cpp installer and runtime verifier on the Raspberry Pi
+- Run the hardened speech-input verification on the Raspberry Pi
 - Implement a real TTS adapter
 - Run a real single-turn voice loop
 - Only later add wake-word/background listening
 
-Phase 72
+Phase 73
 
 - Future voice expansion
 - Wake word
 - Continuous conversation
 
-Phase 73
+Phase 74
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 74
+Phase 75
 
 - Robotics
 - ROS2
