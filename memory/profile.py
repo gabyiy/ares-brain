@@ -1,4 +1,3 @@
-import json
 import os
 import re
 from dataclasses import dataclass
@@ -7,6 +6,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from events import get_global_bus
+from memory.schema_migrations import (
+    MigrationError,
+    SCHEMA_USER_PROFILE,
+    load_store_data,
+    publish_migration_failure,
+    save_store_data,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -95,29 +101,22 @@ class UserProfileStore:
         return self.get_value(key)
 
     def _load(self) -> Dict[str, Any]:
-        if not self.path.exists():
-            return {"version": 1, "facts": {}}
-
         try:
-            with self.path.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, json.JSONDecodeError):
-            return {"version": 1, "facts": {}}
-
-        if not isinstance(data, dict):
-            return {"version": 1, "facts": {}}
+            data = load_store_data(
+                self.path,
+                SCHEMA_USER_PROFILE,
+                {"version": 1, "facts": {}},
+            )
+        except MigrationError as error:
+            publish_migration_failure(self.events, SCHEMA_USER_PROFILE, self.path, error)
+            raise
 
         data.setdefault("version", 1)
         data.setdefault("facts", {})
         return data
 
     def _save(self, profile: Dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
-        with temp_path.open("w", encoding="utf-8") as handle:
-            json.dump(profile, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        temp_path.replace(self.path)
+        save_store_data(self.path, SCHEMA_USER_PROFILE, profile)
 
     def _publish(self, name: str, payload: Dict[str, Any]) -> None:
         if self.events:

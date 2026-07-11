@@ -16,3 +16,4 @@ data/goals.json
 data/event_history.json
 data/notes.json
 data/tasks.json
+data/.migration_backups/

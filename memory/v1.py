@@ -1,5 +1,4 @@
 import hashlib
-import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -7,6 +6,14 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from events import get_global_bus
+from memory.schema_migrations import (
+    MigrationError,
+    SCHEMA_MEMORY_LONG,
+    SCHEMA_MEMORY_SHORT,
+    load_store_data,
+    publish_migration_failure,
+    save_store_data,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -259,17 +266,12 @@ class MemoryStore:
         return records
 
     def _load_file(self, path: Path, long_term: bool) -> List[MemoryRecord]:
-        if not path.exists():
-            return []
-
+        schema_name = SCHEMA_MEMORY_LONG if long_term else SCHEMA_MEMORY_SHORT
         try:
-            with path.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, json.JSONDecodeError):
-            return []
-
-        if not isinstance(data, list):
-            return []
+            data = load_store_data(path, schema_name, [])
+        except MigrationError as error:
+            publish_migration_failure(self.events, schema_name, path, error)
+            raise
 
         return [
             MemoryRecord.from_dict(entry, index=index, long_term=long_term)
@@ -278,15 +280,9 @@ class MemoryStore:
         ]
 
     def _save_file(self, path: Path, records: List[MemoryRecord]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        schema_name = SCHEMA_MEMORY_LONG if records and records[0].long_term else SCHEMA_MEMORY_LONG if path == self.long_path else SCHEMA_MEMORY_SHORT
         payload = [record.to_dict() for record in records]
-        temp_path = path.with_suffix(path.suffix + ".tmp")
-
-        with temp_path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-
-        temp_path.replace(path)
+        save_store_data(path, schema_name, payload)
 
     def _publish(self, name: str, payload: Dict[str, Any]) -> None:
         if not self.events:

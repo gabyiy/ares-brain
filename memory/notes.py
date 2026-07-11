@@ -1,4 +1,3 @@
-import json
 import os
 import uuid
 from dataclasses import dataclass
@@ -7,6 +6,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from events import get_global_bus
+from memory.schema_migrations import (
+    MigrationError,
+    SCHEMA_NOTES,
+    load_store_data,
+    publish_migration_failure,
+    save_store_data,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -111,17 +117,11 @@ class NotesStore:
         return count
 
     def _load(self) -> List[NoteRecord]:
-        if not self.path.exists():
-            return []
-
         try:
-            with self.path.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, json.JSONDecodeError):
-            return []
-
-        if not isinstance(data, list):
-            return []
+            data = load_store_data(self.path, SCHEMA_NOTES, [])
+        except MigrationError as error:
+            publish_migration_failure(self.events, SCHEMA_NOTES, self.path, error)
+            raise
 
         notes = []
         for entry in data:
@@ -133,15 +133,8 @@ class NotesStore:
         return notes
 
     def _save(self, notes: List[NoteRecord]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
         payload = [note.to_dict() for note in notes]
-
-        with temp_path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-
-        temp_path.replace(self.path)
+        save_store_data(self.path, SCHEMA_NOTES, payload)
 
     def _publish(self, name: str, payload: Dict[str, Any]) -> None:
         if self.events:

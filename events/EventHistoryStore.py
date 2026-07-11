@@ -1,9 +1,10 @@
-import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from memory.schema_migrations import SCHEMA_EVENT_HISTORY, load_store_data, save_store_data
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -143,17 +144,7 @@ class EventHistoryStore:
         self._save([])
 
     def _load(self) -> List[EventHistoryRecord]:
-        if not self.path.exists():
-            return []
-
-        try:
-            with self.path.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, json.JSONDecodeError):
-            return []
-
-        if not isinstance(data, list):
-            return []
+        data = load_store_data(self.path, SCHEMA_EVENT_HISTORY, [])
 
         records = []
         for entry in data:
@@ -166,15 +157,8 @@ class EventHistoryStore:
         return self._bounded(records)
 
     def _save(self, records: List[EventHistoryRecord]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.path.with_suffix(self.path.suffix + ".tmp")
         payload = [record.to_dict() for record in self._bounded(records)]
-
-        with temp_path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-
-        temp_path.replace(self.path)
+        save_store_data(self.path, SCHEMA_EVENT_HISTORY, payload)
 
     def _bounded(self, records: List[EventHistoryRecord]) -> List[EventHistoryRecord]:
         if self.max_records == 0:
