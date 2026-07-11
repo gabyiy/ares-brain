@@ -1,0 +1,28 @@
+{
+  "enabled_modules": {
+    "voice": true,
+    "mock_microphone_adapter": true,
+    "mock_speech_to_text_adapter": true,
+    "mock_voice_output_adapter": true,
+    "voice_command_router": true,
+    "voice_session_skill": true
+  },
+  "preferred_providers": {
+    "voice.capture": "mock_microphone_adapter",
+    "voice.transcribe": "mock_speech_to_text_adapter",
+    "voice.output": "mock_voice_output_adapter",
+    "voice.command_route": "voice_command_router",
+    "voice.session": "voice_session_skill"
+  },
+  "allowed_permissions": [
+    "microphone.read",
+    "speaker.write",
+    "camera.read",
+    "network.outbound",
+    "filesystem.read",
+    "filesystem.write",
+    "process.launch",
+    "device.control",
+    "gpio.control"
+  ]
+}
