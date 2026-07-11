@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.64 - Enforced Module Lifecycle
+ARES v1.65 - Versioned Interface Contracts
 
 ---
 
@@ -20,7 +20,7 @@ The active runtime includes `core.IntentParser` for structured local intents, `c
 
 The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the Brain/CoreService capital city model, current CoreService and PCService boundaries, capability discovery, future cities, upgrade philosophy, design rules, and long-term vision.
 
-`core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, `get_capabilities()`, `route_by_capability()`, `get_lifecycle_status()`, `get_lifecycle_history()`, and `recover_service()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior. CoreService keeps compatibility city states as `idle`, `active`, `failed`, and `disabled`, and now owns `core.ModuleLifecycleManager` for strict module lifecycle enforcement with `UNLOADED`, `STARTING`, `READY`, `BUSY`, `DEGRADED`, `STOPPING`, `STOPPED`, and `FAILED`. Lazy capability routing starts and health-checks only the selected module, executes it only when READY, and leaves unused modules inactive.
+`core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, `get_capabilities()`, `route_by_capability()`, `get_lifecycle_status()`, `get_lifecycle_history()`, and `recover_service()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior. CoreService keeps compatibility city states as `idle`, `active`, `failed`, and `disabled`, and now owns `core.ModuleLifecycleManager` for strict module lifecycle enforcement with `UNLOADED`, `STARTING`, `READY`, `BUSY`, `DEGRADED`, `STOPPING`, `STOPPED`, and `FAILED`. Lazy capability routing starts and health-checks only the selected module, executes it only when READY, and leaves unused modules inactive. `core.Contracts` now provides versioned V1 public request/result contracts, a central compatibility registry, deterministic serialization, and safe rejection before module execution for unsupported contracts.
 
 `core.EventBus` now provides an internal future city event skeleton with `Event` records shaped as source, type, priority, payload, and timestamp. Supported priorities are `low`, `normal`, `high`, and `critical`. This is future-use infrastructure only; it does not start background listeners, notifications, camera loops, internet access, GPT, or any daemon.
 
@@ -51,16 +51,36 @@ The simulated Phase 3 voice pipeline is the checkpoint before real hardware adap
 Implemented:
 
 - enforced module lifecycle
+- versioned interface contracts
 
 Remaining:
 
 1. capability manifests
-2. versioned interface contracts
-3. memory/database migrations
-4. health checks and adapter fallback
-5. measured resource budgets
+2. memory/database migrations
+3. health checks and adapter fallback
+4. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
+
+Permanent contract rule: No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
+
+Current V1 contracts:
+
+- `MicrophoneCaptureRequestV1`
+- `MicrophoneCaptureResultV1`
+- `SpeechToTextRequestV1`
+- `SpeechToTextResultV1`
+- `VoiceCommandRequestV1`
+- `VoiceCommandResultV1`
+- `CoreExecutionRequestV1`
+- `CoreExecutionResultV1`
+- `LifecycleExecutionRequestV1`
+- `LifecycleExecutionResultV1`
+- `VoicePipelineRequestV1`
+- `VoicePipelineResultV1`
+- `EventPublicationEnvelopeV1`
+
+Every public contract exposes `contract_name`, `contract_version`, `correlation_id`, optional `session_id`, `created_at`, and `metadata`. Runtime compatibility currently uses integer major versions such as `v1`; unsupported versions are rejected, not reinterpreted. Future V2 contracts must be registered alongside V1, validated centrally, and introduced without changing the Brain.
 
 `skills.VoiceSessionSkill` now exposes the safe mock voice session through the normal text command path. It recognizes "start voice session", "start mock voice", and "run voice test", then uses `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop` with a bounded `max_turns` limit. It returns a transcript summary through the existing IntentParser, Planner, ExecutionPipeline, SkillManager, and REPL path. It does not access a microphone, speaker, wake word, background listener, GPT, internet, or real audio provider.
 
@@ -434,7 +454,7 @@ Implemented Features
 - Speech-to-text adapter abstraction with `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, confidence scores, empty transcription handling, low-confidence handling, safe failure results, and Voice City dependency injection
 - Voice Command Router with confidence gating, empty-transcription handling, unknown-command handling, CoreService `voice.text_loop` routing, routed/rejected metrics, and routed/rejected events
 - Simulated VoicePipeline connecting mock microphone audio, mock speech-to-text, VoiceCommandRouter, CoreService route-by-capability, mock output, session/correlation ids, and structured stage events
-- Architecture Hardening Checkpoint before real hardware/adapters with enforced lifecycle implemented and manifest, interface versioning, migration, health-check/fallback, and resource-budget follow-up items remaining
+- Architecture Hardening Checkpoint before real hardware/adapters with enforced lifecycle and versioned interface contracts implemented, and manifest, migration, health-check/fallback, and resource-budget follow-up items remaining
 - Built-in `VoiceSessionSkill` for starting bounded mock Voice City sessions from text commands through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path
 - Safe Voice Session event logging to `EventHistoryStore` for session start, stop, adapter failure, and max-turn completion events
 - Read-only Voice Session status queries for the latest mock session event group
@@ -460,7 +480,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 452 tests across current core modules
+- Pytest automated coverage for 471 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -479,7 +499,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `452 tests`.
+Current pytest collection: `471 tests`.
 
 Manual Calculator Launch Verification
 
@@ -1313,7 +1333,7 @@ Phase 61
 - Failed modules require explicit `recover_service()` before retry
 - Lifecycle status and transition history are queryable through CoreService
 - Voice City is integrated through CoreService lifecycle gating
-- Current pytest collection is 452 tests
+- Phase pytest collection at this point was 452 tests
 - No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background timers, daemon/service installation, process spawning, Docker, or guessed resource limits
 
 Architecture Hardening Checkpoint
@@ -1321,15 +1341,30 @@ Architecture Hardening Checkpoint
 - This checkpoint comes after the simulated Phase 3 voice pipeline and before real hardware/adapters
 - Implemented:
   - enforced module lifecycle
+  - versioned interface contracts
 - Remaining hardening items:
   1. capability manifests
-  2. versioned interface contracts
-  3. memory/database migrations
-  4. health checks and adapter fallback
-  5. measured resource budgets
+  2. memory/database migrations
+  3. health checks and adapter fallback
+  4. measured resource budgets
 - Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
+- Permanent contract rule: No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
 
 Phase 62
+
+- Versioned interface contracts
+- `core.Contracts` defines the central contract registry and V1 public boundary contracts
+- Every public request/result contract exposes contract name, version, correlation id, optional session id, created timestamp, and metadata
+- Supported runtime version format is integer major versions such as `v1`
+- CoreService rejects unsupported core execution contracts before city lookup or activation
+- ModuleLifecycleManager rejects unsupported lifecycle contracts before state transitions
+- VoicePipeline and VoiceCommandRouter validate V1 contracts across microphone, STT, command routing, lifecycle, and core execution boundaries
+- Event envelopes are versioned for future city event routing and event-history storage
+- Unsupported or malformed contracts fail safely with structured compatibility errors and preserve correlation ids where available
+- Current pytest collection is 471 tests
+- No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background listeners, remote registries, plugin downloads, dynamic code loading, database migrations, or guessed hardware limits
+
+Phase 63
 
 - Future real voice planning only
 - Wake word
@@ -1337,14 +1372,14 @@ Phase 62
 - Real text-to-speech
 - Continuous conversation
 
-Phase 63
+Phase 64
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 64
+Phase 65
 
 - Robotics
 - ROS2

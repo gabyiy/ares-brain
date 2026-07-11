@@ -1,16 +1,16 @@
 ARES Session Handoff
 
-Last Updated: 2026-07-10
+Last Updated: 2026-07-11
 
 Current Version
 
-ARES v1.64 - Enforced Module Lifecycle
+ARES v1.65 - Versioned Interface Contracts
 
 ---
 
 Current Status
 
-ARES is at the enforced module lifecycle foundation before any real audio work.
+ARES is at the versioned interface contract foundation before any real audio work.
 
 Confirmed Phase 3 foundation:
 
@@ -31,9 +31,10 @@ Confirmed Phase 3 foundation:
 - Voice Command Router
 - Simulated VoicePipeline
 - Enforced module lifecycle
+- Versioned interface contracts
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 452 tests.
+Current pytest collection: 471 tests.
 
 Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
@@ -118,16 +119,18 @@ This checkpoint comes after the simulated Phase 3 Voice City command pipeline an
 Implemented:
 
 - enforced module lifecycle
+- versioned interface contracts
 
 Remaining hardening items:
 
 1. capability manifests
-2. versioned interface contracts
-3. memory/database migrations
-4. health checks and adapter fallback
-5. measured resource budgets
+2. memory/database migrations
+3. health checks and adapter fallback
+4. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
+
+Permanent contract rule: No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
 
 Enforced module lifecycle has been added.
 
@@ -151,6 +154,41 @@ Lifecycle behavior:
 - CoreService exposes `get_lifecycle_status()` and `get_lifecycle_history()`.
 - Voice City is integrated with lifecycle gating, and the simulated VoicePipeline still passes.
 - No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background listening, background timers, daemon/service installation, process spawning, Docker, or guessed resource limits were added.
+
+Versioned interface contracts have been added.
+
+Contract behavior:
+
+- New module: `core.Contracts`.
+- Current runtime version format: integer major versions such as `v1`.
+- Every public request/result contract exposes `contract_name`, `contract_version`, `correlation_id`, optional `session_id`, `created_at`, and `metadata`.
+- `ContractRegistry` lists known contracts, supported versions, current versions, and contract consumers.
+- Unsupported major versions are rejected before execution and are not silently reinterpreted.
+- Optional metadata is preserved through deterministic dictionary serialization.
+- CoreService rejects unsupported core execution contracts before city lookup or activation.
+- ModuleLifecycleManager rejects unsupported lifecycle contracts before state transitions.
+- VoicePipeline and VoiceCommandRouter validate V1 contracts across microphone, STT, command routing, lifecycle, and CoreService execution boundaries.
+- Event envelopes are versioned for future city event routing and event-history storage.
+- CoreService can record compatibility rejection entries in `EventHistoryStore` when one is configured.
+- Rejected contracts preserve correlation ids where available, do not activate unrelated cities, do not alter lifecycle state, and do not corrupt later VoicePipeline turns.
+
+Current V1 contracts:
+
+- `MicrophoneCaptureRequestV1`
+- `MicrophoneCaptureResultV1`
+- `SpeechToTextRequestV1`
+- `SpeechToTextResultV1`
+- `VoiceCommandRequestV1`
+- `VoiceCommandResultV1`
+- `CoreExecutionRequestV1`
+- `CoreExecutionResultV1`
+- `LifecycleExecutionRequestV1`
+- `LifecycleExecutionResultV1`
+- `VoicePipelineRequestV1`
+- `VoicePipelineResultV1`
+- `EventPublicationEnvelopeV1`
+
+No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background listeners, remote registries, plugin downloads, dynamic code loading, database migrations, or guessed resource limits were added.
 
 Phase 3 Voice Checkpoint
 
@@ -1469,7 +1507,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 452 tests.
+- Current pytest collection: 471 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1516,12 +1554,14 @@ Verification Notes
 - ToolChain tests cover memory plus calculator, note plus memory, task/reminder plus memory, ordering, max depth enforcement, repeated-step loop prevention, and REPL chain display/history.
 - Conversation context tests cover history ordering, max history size, clear, retrieval APIs, SkillManager integration, and REPL integration.
 - Intent parser tests cover intent detection, confidence values, entity extraction, goal commands, ambiguous local phrasing, unknown intent, ToolSelector integration, SkillManager integration, live REPL parser use, and the REPL task path.
+- Contract tests cover V1 request/result acceptance, unsupported V2 rejection, missing/malformed contract headers, wrong contract type rejection, correlation id preservation, metadata round-trip, deterministic serialization, registry discovery, duplicate registration rejection, CoreService pre-activation rejection, lifecycle state preservation, VoicePipeline session reuse after rejection, and successful V1 VoicePipeline execution.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
 
 Latest Commits
 
+- `2c61d59` Add versioned interface contracts
 - `35da573` Add enforced module lifecycle foundation
 - `9365d76` Add simulated voice command pipeline
 - `20930a1` Add voice command router
@@ -1605,7 +1645,7 @@ Latest Commits
 Next Planned Step
 
 - Architecture hardening before real hardware/adapters: capability manifests.
-- Remaining hardening after manifests: versioned interface contracts, memory/database migrations, health checks and adapter fallback, and measured resource budgets.
+- Remaining hardening after manifests: memory/database migrations, health checks and adapter fallback, and measured resource budgets.
 - Plan Voice wake word/STT/TTS integration only after explicit approval and after the hardening scope is handled.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.

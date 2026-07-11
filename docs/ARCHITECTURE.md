@@ -267,16 +267,74 @@ This checkpoint comes after the simulated Phase 3 Voice City command pipeline an
 Implemented:
 
 - enforced module lifecycle
+- versioned interface contracts
 
 Remaining hardening items:
 
 1. capability manifests
-2. versioned interface contracts
-3. memory/database migrations
-4. health checks and adapter fallback
-5. measured resource budgets
+2. memory/database migrations
+3. health checks and adapter fallback
+4. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
+
+Permanent contract rule: No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
+
+# Versioned Interface Contracts
+
+ARES public boundaries now use explicit V1 contracts through `core.Contracts`.
+
+Every public request and response contract exposes:
+
+- `contract_name`
+- `contract_version`
+- `correlation_id`
+- optional `session_id`
+- `created_at`
+- `metadata`
+
+Runtime compatibility uses integer major versions such as `v1`, `v2`, and `v3`. The current runtime supports V1 contracts only. Unsupported major versions are rejected before execution; ARES does not silently reinterpret unknown versions.
+
+Current V1 contracts:
+
+- `MicrophoneCaptureRequestV1`
+- `MicrophoneCaptureResultV1`
+- `SpeechToTextRequestV1`
+- `SpeechToTextResultV1`
+- `VoiceCommandRequestV1`
+- `VoiceCommandResultV1`
+- `CoreExecutionRequestV1`
+- `CoreExecutionResultV1`
+- `LifecycleExecutionRequestV1`
+- `LifecycleExecutionResultV1`
+- `VoicePipelineRequestV1`
+- `VoicePipelineResultV1`
+- `EventPublicationEnvelopeV1`
+
+`ContractRegistry` is the central compatibility registry. It can list known contracts, report supported versions, report the current version, identify consumers, and validate whether a requested contract is compatible. Duplicate incompatible registrations are rejected.
+
+Compatibility validation is integrated into:
+
+- VoicePipeline
+- VoiceCommandRouter
+- CoreService
+- ModuleLifecycleManager
+- microphone adapter boundary
+- speech-to-text adapter boundary
+- event publication envelope
+
+Safe rejection behavior:
+
+- unsupported or malformed contracts fail before module execution
+- CoreService rejects incompatible core execution contracts before city lookup or activation
+- lifecycle rejects incompatible requests before state transition
+- unrelated cities remain idle
+- lifecycle state is not corrupted
+- Voice sessions remain reusable after rejection
+- correlation ids are preserved where available
+- contract rejection can be recorded in EventHistoryStore when CoreService has one configured
+
+Future V2 contracts must be added as new registered versions, with explicit conversion or dual-version support where needed. V2 must not replace or reinterpret V1 silently, and Brain code must not depend on adapter-specific contract details.
 
 PCService and VoiceService are the current services registered by default. Future services should follow the same registration and capability pattern.
 
@@ -471,6 +529,8 @@ The Brain remains unchanged because identity, memory, personality, goals, reason
 - Unused cities must stay idle unless explicitly triggered.
 - Services hide implementation details.
 - Communication uses structured data.
+- Public architectural boundaries use versioned contracts.
+- No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
 - No hardcoded dependencies in the Brain.
 - Discovery over assumptions.
 - Small independent modules.
