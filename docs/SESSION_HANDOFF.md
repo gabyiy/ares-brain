@@ -4,13 +4,13 @@ Last Updated: 2026-07-10
 
 Current Version
 
-ARES v1.63 - Simulated Voice Pipeline
+ARES v1.64 - Enforced Module Lifecycle
 
 ---
 
 Current Status
 
-ARES is at the simulated VoicePipeline foundation before any real audio work.
+ARES is at the enforced module lifecycle foundation before any real audio work.
 
 Confirmed Phase 3 foundation:
 
@@ -30,9 +30,10 @@ Confirmed Phase 3 foundation:
 - Speech-to-text adapter abstraction
 - Voice Command Router
 - Simulated VoicePipeline
+- Enforced module lifecycle
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 432 tests.
+Current pytest collection: 452 tests.
 
 Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
@@ -114,16 +115,42 @@ Architecture Hardening Checkpoint
 
 This checkpoint comes after the simulated Phase 3 Voice City command pipeline and before real hardware/adapters.
 
-Future hardening items:
+Implemented:
 
-1. enforced module lifecycle
-2. capability manifests
-3. versioned interface contracts
-4. memory/database migrations
-5. health checks and adapter fallback
-6. measured resource budgets
+- enforced module lifecycle
+
+Remaining hardening items:
+
+1. capability manifests
+2. versioned interface contracts
+3. memory/database migrations
+4. health checks and adapter fallback
+5. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
+
+Enforced module lifecycle has been added.
+
+Lifecycle behavior:
+
+- New module: `core.ModuleLifecycle`.
+- New manager: `core.ModuleLifecycleManager`.
+- New structured models: `LifecycleRequest`, `LifecycleResult`, `LifecycleStatus`, and `LifecycleTransition`.
+- Required states: `UNLOADED`, `STARTING`, `READY`, `BUSY`, `DEGRADED`, `STOPPING`, `STOPPED`, and `FAILED`.
+- Required operations: `start()`, `health_check()`, `execute(request)`, and `stop()`.
+- CoreService registers every service with the lifecycle manager.
+- CoreService `route_by_capability()` starts and health-checks only the selected module before execution.
+- Execution is rejected unless the selected module is `READY`.
+- Starting an already `READY` module and stopping an already `STOPPED` module are idempotent.
+- Startup exceptions leave the module in `FAILED`.
+- Health-check failures move the module to `DEGRADED` or `FAILED` according to policy.
+- Execution exceptions mark only the selected module `FAILED`; unrelated modules remain usable.
+- Failed/degraded modules require explicit `recover_service()` before retry.
+- Inactivity policy metadata is present, but no background lifecycle timer was added.
+- Lifecycle transitions record timestamps, operation names, reasons, session ids, and correlation ids.
+- CoreService exposes `get_lifecycle_status()` and `get_lifecycle_history()`.
+- Voice City is integrated with lifecycle gating, and the simulated VoicePipeline still passes.
+- No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background listening, background timers, daemon/service installation, process spawning, Docker, or guessed resource limits were added.
 
 Phase 3 Voice Checkpoint
 
@@ -1442,7 +1469,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 432 tests.
+- Current pytest collection: 452 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1460,6 +1487,8 @@ Verification Notes
 - Goals tests cover add, list, show, complete, pause, delete, add milestone, persistence after reload, ToolSelector routing, IntentParser routing, Planner path, ExecutionPipeline path, ToolChain goal chains, SkillManager path, REPL lifecycle commands, and the REPL routing path.
 - ToolAdapter tests cover adapter registration, lookup, missing adapter responses, mock weather responses, mock market responses, no-network/no-auth metadata, Planner registry wiring, and ExecutionPipeline adapter execution.
 - CoreService tests cover service registration, lifecycle metadata, capability registry metadata, lazy route-by-capability behavior, unused city idle behavior, disabled city routing prevention, and failed route state handling.
+- ModuleLifecycle tests cover UNLOADED -> STARTING -> READY startup, READY -> BUSY -> READY execution, READY -> STOPPING -> STOPPED shutdown, idempotent start/stop, execution rejection before start, health-check DEGRADED/FAILED policy behavior, startup failure, execution failure isolation, illegal transition rejection, explicit recovery, transition history, monotonic timestamps, correlation id preservation, and lifecycle status queries.
+- CoreService lifecycle tests cover lifecycle health gating, explicit recovery, unrelated-module failure isolation, lifecycle status/history queries, and Voice City activation without activating PC City.
 - Core EventBus tests cover event dataclass normalization, publish, subscribe, unsubscribe, no-subscriber safety, priority ordering, invalid priority rejection, and stable priority levels.
 - CoreService event decision tests cover low, normal, high, critical, unknown-source, and disabled-source event handling.
 - EventHistoryStore tests cover add, query by source/type/priority, bounded max size, empty history, persistence after reload, invalid priority rejection, and zero-size history.
@@ -1493,6 +1522,7 @@ Verification Notes
 
 Latest Commits
 
+- `35da573` Add enforced module lifecycle foundation
 - `9365d76` Add simulated voice command pipeline
 - `20930a1` Add voice command router
 - `b02fc6a` Add speech-to-text adapter abstraction
@@ -1574,7 +1604,8 @@ Latest Commits
 
 Next Planned Step
 
-- Architecture hardening before real hardware/adapters: enforced module lifecycle, capability manifests, versioned interface contracts, memory/database migrations, health checks and adapter fallback, and measured resource budgets.
+- Architecture hardening before real hardware/adapters: capability manifests.
+- Remaining hardening after manifests: versioned interface contracts, memory/database migrations, health checks and adapter fallback, and measured resource budgets.
 - Plan Voice wake word/STT/TTS integration only after explicit approval and after the hardening scope is handled.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.

@@ -138,6 +138,10 @@ Current responsibilities:
 - provide `list_services()` metadata
 - aggregate capabilities with `get_capabilities()`
 - route a request to one matching city with `route_by_capability()`
+- enforce module lifecycle through `ModuleLifecycleManager`
+- expose `get_lifecycle_status()`
+- expose `get_lifecycle_history()`
+- expose explicit `recover_service()` for failed or degraded modules
 - receive internal city events with `handle_event(event)`
 - track city lifecycle states: `idle`, `active`, `failed`, and `disabled`
 - register PCService as the default `pc` service
@@ -260,14 +264,17 @@ VoiceService is a skeleton only. Real Whisper, Vosk, Piper, microphone, speaker,
 
 This checkpoint comes after the simulated Phase 3 Voice City command pipeline and before real hardware/adapters.
 
-Future hardening items:
+Implemented:
 
-1. enforced module lifecycle
-2. capability manifests
-3. versioned interface contracts
-4. memory/database migrations
-5. health checks and adapter fallback
-6. measured resource budgets
+- enforced module lifecycle
+
+Remaining hardening items:
+
+1. capability manifests
+2. versioned interface contracts
+3. memory/database migrations
+4. health checks and adapter fallback
+5. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
@@ -314,27 +321,50 @@ The Brain discovers services dynamically through CoreService instead of assuming
 
 Discovery over assumptions is a core design rule. If a service is missing or incomplete, ARES should report that safely instead of guessing.
 
-# City Lifecycle and Lazy Routing
+# Enforced Module Lifecycle
 
-ARES uses city lifecycle metadata to keep services quiet until they are needed.
+ARES uses `core.ModuleLifecycleManager` to give every CoreService-managed module an explicit, testable lifecycle before real hardware/adapters are added.
 
-Current lifecycle states:
+Required lifecycle states:
 
-- `idle`: the city is registered and available, but it is not currently handling a request.
-- `active`: the city is handling the current routed request.
-- `failed`: the city failed while handling a routed request and should not be assumed healthy.
-- `disabled`: the city is registered but unavailable for routing.
+- `UNLOADED`
+- `STARTING`
+- `READY`
+- `BUSY`
+- `DEGRADED`
+- `STOPPING`
+- `STOPPED`
+- `FAILED`
 
-CoreService stores capability registry metadata for each city:
+Required lifecycle operations:
 
-- service name
-- service type
-- city lifecycle state
-- registered capabilities
+- `start()`
+- `health_check()`
+- `execute(request)`
+- `stop()`
 
-`CoreService.route_by_capability(capability, handler)` uses that registry to find the first matching `idle` city and calls only that city. Non-matching cities are not probed, called, or activated. Disabled cities are skipped. If the selected handler fails, only that city is marked `failed`.
+CoreService owns the lifecycle manager and registers each service as a managed module. `route_by_capability()` now performs this sequence for the selected city only:
 
-This preserves the rule: only the needed city activates; everything else stays idle unless explicitly triggered.
+1. start the module, idempotently if already `READY`
+2. run health check
+3. execute only if the module is `READY`
+4. return the module to `READY`/idle after successful execution
+5. mark only that module `FAILED` when startup or execution fails
+
+Health-check failure moves the module to `DEGRADED` or `FAILED` according to policy. Failed modules are not retried automatically; they require explicit `CoreService.recover_service(name)`.
+
+Lifecycle transition records include timestamps, operation names, session ids, correlation ids, and structured reasons for `DEGRADED` and `FAILED` states. `CoreService.get_lifecycle_status()` and `CoreService.get_lifecycle_history()` expose the query interface.
+
+CoreService still preserves compatibility city states:
+
+- `idle`
+- `active`
+- `failed`
+- `disabled`
+
+Those compatibility states are used for existing lazy city routing and user-facing service metadata. The enforced module lifecycle is the stricter internal gate.
+
+This preserves the rule: only the needed city activates; everything else stays inactive unless explicitly triggered.
 
 Capability aggregation through `get_capabilities()` is still an inventory operation. It can ask registered services for their advertised capabilities. Lazy request execution should use route-by-capability behavior when the caller needs one city to handle one request.
 

@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.63 - Simulated Voice Pipeline
+ARES v1.64 - Enforced Module Lifecycle
 
 ---
 
@@ -20,7 +20,7 @@ The active runtime includes `core.IntentParser` for structured local intents, `c
 
 The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the Brain/CoreService capital city model, current CoreService and PCService boundaries, capability discovery, future cities, upgrade philosophy, design rules, and long-term vision.
 
-`core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, `get_capabilities()`, and `route_by_capability()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior. CoreService tracks city lifecycle states as `idle`, `active`, `failed`, and `disabled`; lazy capability routing activates only the selected city for a request and leaves unused cities idle.
+`core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, `get_capabilities()`, `route_by_capability()`, `get_lifecycle_status()`, `get_lifecycle_history()`, and `recover_service()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior. CoreService keeps compatibility city states as `idle`, `active`, `failed`, and `disabled`, and now owns `core.ModuleLifecycleManager` for strict module lifecycle enforcement with `UNLOADED`, `STARTING`, `READY`, `BUSY`, `DEGRADED`, `STOPPING`, `STOPPED`, and `FAILED`. Lazy capability routing starts and health-checks only the selected module, executes it only when READY, and leaves unused modules inactive.
 
 `core.EventBus` now provides an internal future city event skeleton with `Event` records shaped as source, type, priority, payload, and timestamp. Supported priorities are `low`, `normal`, `high`, and `critical`. This is future-use infrastructure only; it does not start background listeners, notifications, camera loops, internet access, GPT, or any daemon.
 
@@ -46,14 +46,19 @@ Real Whisper, Vosk, Piper, microphone, speaker, wake word, and background listen
 
 Architecture Hardening Checkpoint
 
-The simulated Phase 3 voice pipeline is the checkpoint before real hardware adapters. Future hardening items to complete before real audio or broader city activation:
+The simulated Phase 3 voice pipeline is the checkpoint before real hardware adapters. This is the current hardening status before real audio or broader city activation:
 
-1. enforced module lifecycle
-2. capability manifests
-3. versioned interface contracts
-4. memory/database migrations
-5. health checks and adapter fallback
-6. measured resource budgets
+Implemented:
+
+- enforced module lifecycle
+
+Remaining:
+
+1. capability manifests
+2. versioned interface contracts
+3. memory/database migrations
+4. health checks and adapter fallback
+5. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
@@ -417,6 +422,7 @@ Implemented Features
 - Structured PCService status provider with `PCStatus` and safe local `get_status()` fields for operating system, hostname, current user, Python version, optional uptime, and available actions
 - Dynamic PCService capability discovery with `PCCapabilities` and safe local `get_capabilities()` fields for supported device actions, supported applications, available status providers, and available services
 - CoreService orchestration layer with service registration, default `PCService` registration as `pc`, `get_service(name)`, `list_services()`, aggregate `get_capabilities()` over registered services, city lifecycle metadata, and lazy `route_by_capability()` execution
+- Enforced module lifecycle foundation with `ModuleLifecycleManager`, `LifecycleRequest`, `LifecycleResult`, `LifecycleStatus`, transition history, explicit recovery, idempotent start/stop, health gating, execution isolation, and CoreService query APIs
 - Internal `core.EventBus` skeleton with event source, type, priority, payload, timestamp, publish/subscribe, and priority-ordered history
 - CoreService internal event handling with `ignored`, `recorded`, and `escalated` decisions for city events
 - Local `events.EventHistoryStore` for persisted internal event decisions/results with source/type/priority queries and bounded history size
@@ -428,7 +434,7 @@ Implemented Features
 - Speech-to-text adapter abstraction with `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, confidence scores, empty transcription handling, low-confidence handling, safe failure results, and Voice City dependency injection
 - Voice Command Router with confidence gating, empty-transcription handling, unknown-command handling, CoreService `voice.text_loop` routing, routed/rejected metrics, and routed/rejected events
 - Simulated VoicePipeline connecting mock microphone audio, mock speech-to-text, VoiceCommandRouter, CoreService route-by-capability, mock output, session/correlation ids, and structured stage events
-- Architecture Hardening Checkpoint before real hardware/adapters with lifecycle, manifest, interface versioning, migration, health-check/fallback, and resource-budget follow-up items
+- Architecture Hardening Checkpoint before real hardware/adapters with enforced lifecycle implemented and manifest, interface versioning, migration, health-check/fallback, and resource-budget follow-up items remaining
 - Built-in `VoiceSessionSkill` for starting bounded mock Voice City sessions from text commands through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path
 - Safe Voice Session event logging to `EventHistoryStore` for session start, stop, adapter failure, and max-turn completion events
 - Read-only Voice Session status queries for the latest mock session event group
@@ -454,7 +460,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 432 tests across current core modules
+- Pytest automated coverage for 452 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -473,7 +479,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `432 tests`.
+Current pytest collection: `452 tests`.
 
 Manual Calculator Launch Verification
 
@@ -1291,22 +1297,39 @@ Phase 60
 - Preserves session ids and correlation ids through stage data and structured events
 - Records audio captured, transcription accepted/rejected, command routed/rejected, city activated, execution completed/failed, and output produced events
 - Tests cover complete success, empty audio, microphone failure, STT failure, empty transcription, low confidence, unknown command, CoreService routing failure, target city failure, output failure, reusable session state, requested-city activation only, stable correlation ids, and unrelated city idleness
-- Current pytest collection is 432 tests
+- Phase pytest collection at this point was 432 tests
 - No real microphone, Whisper, Vosk, Piper, GPT, wake-word detection, internet, background listening, daemon/service installation, or guessed resource limits
+
+Phase 61
+
+- Enforced module lifecycle foundation
+- `core.ModuleLifecycleManager` owns lifecycle state for CoreService-managed modules
+- Required states are `UNLOADED`, `STARTING`, `READY`, `BUSY`, `DEGRADED`, `STOPPING`, `STOPPED`, and `FAILED`
+- Required operations are `start()`, `health_check()`, `execute(request)`, and `stop()`
+- CoreService starts and health-checks the selected module before execution
+- Execution is rejected unless the module is READY
+- Start and stop are idempotent for READY/STOPPED modules
+- Failed startup and failed execution isolate the selected module and preserve unrelated modules
+- Failed modules require explicit `recover_service()` before retry
+- Lifecycle status and transition history are queryable through CoreService
+- Voice City is integrated through CoreService lifecycle gating
+- Current pytest collection is 452 tests
+- No real microphone, Whisper, Vosk, Piper, wake word, GPT, internet, background timers, daemon/service installation, process spawning, Docker, or guessed resource limits
 
 Architecture Hardening Checkpoint
 
 - This checkpoint comes after the simulated Phase 3 voice pipeline and before real hardware/adapters
-- Future hardening items:
-  1. enforced module lifecycle
-  2. capability manifests
-  3. versioned interface contracts
-  4. memory/database migrations
-  5. health checks and adapter fallback
-  6. measured resource budgets
+- Implemented:
+  - enforced module lifecycle
+- Remaining hardening items:
+  1. capability manifests
+  2. versioned interface contracts
+  3. memory/database migrations
+  4. health checks and adapter fallback
+  5. measured resource budgets
 - Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
-Phase 61
+Phase 62
 
 - Future real voice planning only
 - Wake word
@@ -1314,14 +1337,14 @@ Phase 61
 - Real text-to-speech
 - Continuous conversation
 
-Phase 62
+Phase 63
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 63
+Phase 64
 
 - Robotics
 - ROS2

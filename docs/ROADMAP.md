@@ -737,24 +737,45 @@ Phase 60: Simulated VoicePipeline
 - `VoicePipelineResult` preserves success/status, final text, response text, session id, correlation id, stage data, events, and safe metadata.
 - Structured events are recorded for audio captured, transcription accepted/rejected, command routed/rejected, city activated, execution completed/failed, and output produced.
 - Tests cover successful complete command, empty audio, microphone failure, STT failure, empty transcription, low-confidence transcription, unknown command, CoreService routing failure, target city failure, output adapter failure, reusable session state after failure, requested-city activation only, stable correlation id propagation, and unrelated city idleness.
-- Current pytest collection is 432 tests.
+- Phase pytest collection at this point was 432 tests.
 - No real microphone access, Whisper, Vosk, Piper, GPT, wake-word detection, internet access, background listening, daemon/service installation, or guessed RAM/CPU limits were added.
+
+Phase 61: Enforced Module Lifecycle Foundation
+
+- `core.ModuleLifecycleManager` enforces lifecycle for CoreService-managed modules.
+- `core.LifecycleRequest`, `core.LifecycleResult`, `core.LifecycleStatus`, and `core.LifecycleTransition` provide structured lifecycle data.
+- Required states are `UNLOADED`, `STARTING`, `READY`, `BUSY`, `DEGRADED`, `STOPPING`, `STOPPED`, and `FAILED`.
+- Required operations are `start()`, `health_check()`, `execute(request)`, and `stop()`.
+- CoreService registers every service with the lifecycle manager.
+- `route_by_capability()` starts and health-checks only the selected module before execution.
+- Execution is rejected until a module is successfully started and healthy.
+- Idempotent start and stop behavior is implemented for already READY and STOPPED modules.
+- Failed startup leaves the module in `FAILED`.
+- Failed execution marks only the selected module `FAILED` and leaves unrelated modules usable.
+- Failed or degraded modules require explicit `recover_service()` before retry.
+- Lifecycle status and transition history are queryable through CoreService.
+- Transition records preserve session ids and correlation ids.
+- Inactivity policy metadata exists, but no background lifecycle timer was added.
+- Voice City is integrated through the lifecycle gate, and the simulated VoicePipeline continues to pass.
+- Current pytest collection is 452 tests.
+- No real microphone access, Whisper, Vosk, Piper, wake word detection, GPT, internet access, background listening, background lifecycle timers, daemon/service installation, process spawning, Docker, or guessed RAM/CPU limits were added.
 
 Architecture Hardening Checkpoint
 
 - This checkpoint comes after the simulated Phase 3 Voice City command pipeline and before real hardware/adapters.
-- Future hardening items:
-  1. enforced module lifecycle
-  2. capability manifests
-  3. versioned interface contracts
-  4. memory/database migrations
-  5. health checks and adapter fallback
-  6. measured resource budgets
+- Implemented:
+  - enforced module lifecycle
+- Remaining hardening items:
+  1. capability manifests
+  2. versioned interface contracts
+  3. memory/database migrations
+  4. health checks and adapter fallback
+  5. measured resource budgets
 - Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
 Current State
 
-ARES is currently at the simulated VoicePipeline foundation: a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a CoreService orchestration boundary for service registration, city lifecycle metadata, lazy route-by-capability handling, capability aggregation, internal city event decision routing, local internal event-history storage, optional CoreService event-history persistence, read-only EventHistorySkill queries, an internal future-use `core.EventBus` skeleton, `SkillContext` access to that CoreService boundary, a PCService boundary for all current PC operations, a VoiceService placeholder boundary for Voice City, explicit VoiceInput/VoiceOutput contracts with adapter-backed null implementations, `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, `MockMicrophoneAdapter`, `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, `VoiceCommandRouter`, `VoiceCommandRoutingResult`, `VoiceCommandRouterMetrics`, `VoicePipeline`, `VoicePipelineResult`, mock VoiceInputAdapter/VoiceOutputAdapter implementations, `VoiceTextRequest`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionSkill`, safe Voice Session event logging to `EventHistoryStore`, read-only Voice Session status summaries from latest local event history, transcript/history output for mock sessions, transcript summaries from text-started mock sessions, a one-shot VoiceLoop text bridge, structured safe PC status responses, dynamic safe PC capability discovery, structured safe Voice City placeholder status/capability discovery, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
+ARES is currently at the enforced module lifecycle foundation: a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a CoreService orchestration boundary for service registration, enforced module lifecycle gating, lazy route-by-capability handling, lifecycle status/history queries, explicit recovery, capability aggregation, internal city event decision routing, local internal event-history storage, optional CoreService event-history persistence, read-only EventHistorySkill queries, an internal future-use `core.EventBus` skeleton, `SkillContext` access to that CoreService boundary, a PCService boundary for all current PC operations, a VoiceService placeholder boundary for Voice City, explicit VoiceInput/VoiceOutput contracts with adapter-backed null implementations, `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, `MockMicrophoneAdapter`, `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, `VoiceCommandRouter`, `VoiceCommandRoutingResult`, `VoiceCommandRouterMetrics`, `VoicePipeline`, `VoicePipelineResult`, `ModuleLifecycleManager`, `LifecycleRequest`, `LifecycleResult`, `LifecycleStatus`, mock VoiceInputAdapter/VoiceOutputAdapter implementations, `VoiceTextRequest`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionSkill`, safe Voice Session event logging to `EventHistoryStore`, read-only Voice Session status summaries from latest local event history, transcript/history output for mock sessions, transcript summaries from text-started mock sessions, a one-shot VoiceLoop text bridge, structured safe PC status responses, dynamic safe PC capability discovery, structured safe Voice City placeholder status/capability discovery, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -769,7 +790,7 @@ The current deterministic answer paths are:
 - `CoreService`, `EventBus`, `EventHistoryStore`, `EventHistorySkill`, `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, `MockMicrophoneAdapter`, `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, `VoiceCommandRouter`, `VoiceCommandRoutingResult`, `VoiceCommandRouterMetrics`, `VoicePipeline`, `VoicePipelineResult`, `VoiceService`, `VoiceInput`, `VoiceOutput`, `VoiceInputAdapter`, `VoiceOutputAdapter`, `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, `NullVoiceInput`, `NullVoiceOutput`, `PlaceholderVoiceService`, `VoiceTextRequest`, `VoiceLoop`, `VoiceLoopResult`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionSkill`, `VoiceSessionResult`, `VoiceSessionTurn`, `DeviceActionRegistry`, `LocalDeviceActionAdapter`, `PCService`, `PCStatus`, `PCCapabilities`, `WindowsPCService`, `AppLaunchConfig`, `AppAllowlistLoader`, and `DeviceActionSkill` for safe local Device/PC City and Voice City foundations, service registration, city lifecycle metadata, lazy capability routing, capability aggregation, internal future-use event reporting skeletons, internal CoreService event decision routing, optional CoreService event-history persistence, local internal event-history logging, read-only event-history queries, safe voice session event history records, read-only latest voice-session status summaries, structured local `system status`, structured placeholder voice status, adapter-backed placeholder voice input/output, adapter-backed microphone abstraction, adapter-backed speech-to-text abstraction, confidence-gated voice command routing, simulated end-to-end voice command routing, adapter-backed single-turn voice-style routing, bounded multi-turn mock session routing, text-command mock voice sessions, transcript/history output, one-shot placeholder voice text routing, dynamic local action/app/voice discovery, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated config-backed allowlisted Windows `open_app`, safe live routing, and stable confirmation-required/forbidden responses
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 432 tests.
+The current pytest collection is 452 tests.
 
 The current memory paths are:
 
@@ -801,19 +822,20 @@ Core Services City is a shared infrastructure city for scheduler, permissions, l
 
 Codex City is a future maintenance city. It should check the ARES GitHub repository, pull latest code, run tests, check compile, check docs freshness, report problems, and suggest fixes. Codex City must never auto-edit without owner approval.
 
-This roadmap entry documents the current safe VoiceService skeleton, VoiceInput/VoiceOutput contracts, one-shot VoiceLoop text bridge, microphone adapter abstraction, speech-to-text adapter abstraction, VoiceCommandRouter, and simulated VoicePipeline only. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, real voice/audio implementation, internet access, real APIs, notifications, daemon installation, or background listening.
+This roadmap entry documents the current safe VoiceService skeleton, VoiceInput/VoiceOutput contracts, one-shot VoiceLoop text bridge, microphone adapter abstraction, speech-to-text adapter abstraction, VoiceCommandRouter, simulated VoicePipeline, and enforced module lifecycle only. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, real voice/audio implementation, internet access, real APIs, notifications, daemon installation, background timers, or background listening.
 
 Next Priorities
 
-1. Architecture hardening before real hardware/adapters.
-2. Voice wake word/STT/TTS planning after hardening scope is approved.
-3. GPT fallback integration.
-4. Raspberry Pi deployment.
-5. Robot body / sensors.
+1. Capability manifests.
+2. Versioned interface contracts.
+3. Memory/database migrations.
+4. Health checks and adapter fallback.
+5. Measured resource budgets.
+6. Voice wake word/STT/TTS planning after hardening scope is approved.
 
 What Must Not Be Started Yet
 
-- No real voice/audio implementation beyond the safe VoiceService placeholder, microphone adapter abstraction, speech-to-text adapter abstraction, VoiceCommandRouter, VoicePipeline, null input/output components, and one-shot VoiceLoop text bridge.
+- No real voice/audio implementation beyond the safe VoiceService placeholder, microphone adapter abstraction, speech-to-text adapter abstraction, VoiceCommandRouter, VoicePipeline, ModuleLifecycleManager, null input/output components, and one-shot VoiceLoop text bridge.
 - No GPT or LLM integration.
 - No embeddings.
 - No notification scheduling or delivery.
