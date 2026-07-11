@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.71 - Linux ALSA Microphone Adapter
+ARES v1.72 - Offline Whisper Speech-to-Text Adapter
 
 ---
 
@@ -36,9 +36,11 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 
 `core.Microphone` now defines the microphone adapter abstraction for future real audio capture without binding ARES to Whisper, Vosk, Piper, wake word detection, or any hardware-specific implementation. `AudioChunk` models raw audio chunk metadata, `MicrophoneAdapter` defines `start()`, `stop()`, and `read_chunk(timeout_seconds, cancel_requested)`, and `MockMicrophoneAdapter` provides deterministic test behavior for lifecycle, timeout, cancellation, and safe failure paths. `PlaceholderVoiceService`, `NullVoiceInput`, and `MockVoiceInputAdapter` accept the microphone adapter through dependency injection so Voice City can swap implementations later without changing the Brain or current text/skill path.
 
-`core.LinuxAlsaMicrophoneAdapter` is the first real microphone adapter checkpoint for Raspberry Pi/Linux. It implements the existing `MicrophoneAdapter` contract through a narrow `arecord` subprocess wrapper that always uses argument lists and never `shell=True`. It can check whether `arecord` is available, list ALSA capture devices, run health checks, select an optional ALSA device such as `hw:1,0`, record a bounded WAV sample, validate the WAV output, and return structured `MicrophoneResult` data. It is disabled by default in `config/modules.example.json`, registered as a `linux_alsa_microphone_adapter` capability manifest provider, and is intended for explicit manual verification only at this checkpoint. Speech-to-text is still not implemented.
+`core.LinuxAlsaMicrophoneAdapter` is the first real microphone adapter checkpoint for Raspberry Pi/Linux. It implements the existing `MicrophoneAdapter` contract through a narrow `arecord` subprocess wrapper that always uses argument lists and never `shell=True`. It can check whether `arecord` is available, list ALSA capture devices, run health checks, select an optional ALSA device such as `hw:1,0`, record a bounded WAV sample, validate the WAV output, and return structured `MicrophoneResult` data. It is disabled by default in `config/modules.example.json`, registered as a `linux_alsa_microphone_adapter` capability manifest provider, and is intended for explicit manual verification.
 
 `core.SpeechToText` now defines the speech-to-text adapter abstraction for converting microphone `AudioChunk` objects into text without binding ARES to Whisper, Vosk, wake word detection, internet services, GPT, or hardware-specific code. `TranscriptionResult` includes transcription text, status, error details, and a bounded `confidence` field. `SpeechToTextAdapter` defines `transcribe(audio_chunk)`, `get_status()`, and `get_capabilities()`, and `MockSpeechToTextAdapter` provides deterministic success, empty-audio, low-confidence, no-transcription, and failure behavior. `PlaceholderVoiceService`, `NullVoiceInput`, and `MockVoiceInputAdapter` accept the speech-to-text adapter through dependency injection.
+
+`core.LinuxWhisperSpeechToTextAdapter` is the first offline speech-to-text provider for Raspberry Pi/Linux. It implements the existing `SpeechToTextAdapter` contract, accepts WAV files recorded by `LinuxAlsaMicrophoneAdapter` or `AudioChunk` input, runs a local Whisper/whisper.cpp-style executable with `shell=False`, requires a local model file such as `ggml-tiny.en.bin`, and returns structured `TranscriptionResult` data with text, processing time, language metadata when available, and safe failure statuses. It is disabled by default in `config/modules.example.json` and registered as `linux_whisper_speech_to_text_adapter` so another STT engine can replace it later without changing the Brain.
 
 `core.VoiceCommandRouter` now routes `TranscriptionResult` objects into Voice City without any speech engine dependency. It validates a configurable confidence threshold, ignores empty transcriptions safely, propagates transcription failures, routes valid text through CoreService's `voice.text_loop` capability, handles unknown commands with structured safe results, and records local routed/rejected metrics plus `voice_command.routed` and `voice_command.rejected` events.
 
@@ -50,7 +52,7 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 
 The final integration, recovery, and safety regression checkpoint is now complete. Focused integration tests prove the simulated voice/text path reaches IntentParser, Planner, ExecutionPipeline, the selected skill/service, and mock output while only activating the required City; PC status requests route through CoreService and PCService as read-only structured data; and confirmation-gated device actions do not execute before explicit confirmation. `core.ExecutionGuard` protects confirmed destructive actions with bounded idempotency tokens so retries, duplicate confirmations, output failures, or response-generation failures cannot execute the same confirmed action twice.
 
-Real Whisper, Vosk, Piper, speech-to-text, speaker/TTS, wake word, and background listener integrations come later. The only real audio addition is the explicit Linux ALSA microphone capture adapter; it is not the default runtime path, does not run STT, and does not start background listening.
+Real Vosk, Piper, speaker/TTS, wake word, background listener, GPT conversation, and internet integrations come later. The current real audio/STT surface is limited to explicit Linux ALSA one-shot capture plus explicit offline Whisper transcription; neither is the default runtime path, and no wake word, background listening, TTS, GPT, or conversation loop was added.
 
 Architecture Hardening Checkpoint
 
@@ -512,7 +514,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 646 tests across current core modules
+- Pytest automated coverage for 663 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -531,7 +533,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `646 tests`.
+Current pytest collection: `663 tests`.
 
 Manual Calculator Launch Verification
 
@@ -570,6 +572,34 @@ py scripts\manual_verify_linux_alsa_microphone.py
 ```
 
 The script uses the same `LinuxAlsaMicrophoneAdapter` path as Voice City. It does not run Whisper, Vosk, speech-to-text, wake word, GPT, internet access, speaker/TTS, or background listening.
+
+Manual Raspberry Pi Offline Whisper STT Verification
+
+Install or build a local offline Whisper runtime such as `whisper.cpp`, place a small Raspberry Pi-appropriate model locally, and pass both to the manual script. Recommended first model: `ggml-tiny.en.bin`.
+
+Example Raspberry Pi commands:
+
+```bash
+# From the ARES repo root, after installing/building whisper.cpp separately:
+python scripts/manual_verify_linux_whisper_stt.py --model models/whisper/ggml-tiny.en.bin --whisper-command whisper-cli
+
+python scripts/manual_verify_linux_whisper_stt.py \
+  --record \
+  --seconds 3 \
+  --model models/whisper/ggml-tiny.en.bin \
+  --whisper-command whisper-cli \
+  --output /tmp/ares_whisper_test.wav
+
+python scripts/manual_verify_linux_whisper_stt.py \
+  --record \
+  --device hw:1,0 \
+  --seconds 3 \
+  --model models/whisper/ggml-tiny.en.bin \
+  --whisper-command /path/to/whisper-cli \
+  --output /tmp/ares_whisper_hw_1_0.wav
+```
+
+The script records only when `--record` is provided, sends the WAV to the offline Whisper adapter, prints recognized text, and reports processing time/language metadata. It does not start wake-word detection, background listening, GPT, internet access, TTS, or a conversation loop.
 
 Continuous Integration
 
@@ -670,7 +700,7 @@ Latest Architecture Status
 - Supported due phrases include `today`, `tomorrow`, `next week`, `in 10 minutes`, `in 2 hours`, and `at 18:00`.
 - ConversationContextManager keeps only the last 20 skill turns in RAM and does not write to disk.
 - GitHub Actions CI now enforces the local verification suite on `main`.
-- Voice City has a safe service skeleton only; real microphone, speaker, STT, TTS, wake word, GPT, internet, and background listening have not started.
+- Voice City has explicit manual Linux ALSA microphone capture and offline Whisper STT adapters, both disabled by default. Speaker/TTS, wake word, GPT, internet, conversation loops, and background listening have not started.
 
 Engineering Rules
 
@@ -742,20 +772,20 @@ Completed:
 - Measured resource budgets
 - Final integration, recovery, and safety regression checkpoint
 - Linux ALSA microphone adapter for explicit Raspberry Pi capture tests
+- Offline Whisper speech-to-text adapter for explicit Raspberry Pi WAV transcription
 - Voice City foundation
 - Voice City input/output contracts
 - Voice City text loop foundation
 
 Next:
 
-1. Verify real Raspberry Pi USB microphone capture with the manual ALSA script
-2. Implement the first real STT adapter
-3. Implement a real TTS adapter
-4. Run a real single-turn voice loop
-5. Only later add wake-word/background listening
-6. GPT fallback integration
-7. Raspberry Pi deployment
-8. Robot body / sensors
+1. Verify real Raspberry Pi USB microphone plus offline Whisper transcription with the manual STT script
+2. Implement a real TTS adapter
+3. Run a real single-turn voice loop
+4. Only later add wake-word/background listening
+5. GPT fallback integration
+6. Raspberry Pi deployment
+7. Robot body / sensors
 
 ---
 
@@ -1505,32 +1535,41 @@ Phase 68
 - The adapter checks `arecord`, lists ALSA capture devices, health-checks selected devices, records bounded WAV samples, validates WAV output, and returns structured `MicrophoneResult` data
 - `linux_alsa_microphone_adapter` is registered as a disabled-by-default capability manifest provider
 - `scripts/manual_verify_linux_alsa_microphone.py` lists devices and health status by default and records only with explicit `--record`
-- Current pytest collection is 646 tests
+- Phase pytest collection at this point was 646 tests
 - No Whisper, Vosk, speech-to-text, wake word, background listener, GPT, internet, speaker/TTS, or default live voice loop was added
 
 Phase 69
 
+- Offline Whisper speech-to-text adapter
+- `core.LinuxWhisperSpeechToTextAdapter` implements the existing `SpeechToTextAdapter` contract for local WAV transcription
+- The adapter accepts WAV files from `LinuxAlsaMicrophoneAdapter` or `AudioChunk` input, requires a local Whisper model, uses a local whisper.cpp-style executable with `shell=False`, and returns structured transcription text, processing time, language metadata, and safe failure statuses
+- `linux_whisper_speech_to_text_adapter` is registered as a disabled-by-default capability manifest provider
+- `scripts/manual_verify_linux_whisper_stt.py` records a short WAV through ALSA only when `--record` is provided, transcribes it with offline Whisper, and prints recognized text/timing
+- Current pytest collection is 663 tests
+- No wake word, background listener, GPT, internet, speaker/TTS, autonomous loop, or conversation loop was added
+
+Phase 70
+
 - Phase 3 Real Voice Integration next block
-- Verify real Raspberry Pi USB microphone capture with the manual ALSA script
-- Implement the first real STT adapter
+- Verify real Raspberry Pi USB microphone plus offline Whisper transcription with the manual STT script
 - Implement a real TTS adapter
 - Run a real single-turn voice loop
 - Only later add wake-word/background listening
 
-Phase 70
+Phase 71
 
 - Future voice expansion
 - Wake word
 - Continuous conversation
 
-Phase 71
+Phase 72
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 72
+Phase 73
 
 - Robotics
 - ROS2

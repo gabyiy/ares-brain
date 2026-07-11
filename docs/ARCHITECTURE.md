@@ -220,6 +220,7 @@ Current placeholder implementations:
 - `LinuxAlsaMicrophoneAdapter` is the first real Linux/Raspberry Pi microphone provider. It stays behind the `MicrophoneAdapter` boundary, uses `arecord` through a safe argument-list subprocess wrapper, can list ALSA capture devices, health-check `arecord` and selected devices, record bounded WAV files, validate the WAV output, and return structured `MicrophoneResult` data.
 - `TranscriptionResult` stores transcription text, status, error details, and bounded confidence values.
 - `MockSpeechToTextAdapter` converts `AudioChunk` objects into deterministic test transcriptions, including empty-audio, low-confidence, no-transcription, and failure results without a real speech engine.
+- `LinuxWhisperSpeechToTextAdapter` is the first real offline STT provider. It stays behind the `SpeechToTextAdapter` boundary, accepts WAV files from `LinuxAlsaMicrophoneAdapter` or `AudioChunk` input, runs a local Whisper/whisper.cpp executable with `shell=False`, requires a local model file, and returns structured transcription text, timing, language metadata, and safe failure statuses.
 - `NullVoiceInput` is backed by a safe placeholder input adapter and does not access a microphone or run STT.
 - `NullVoiceOutput` is backed by a safe placeholder output adapter and does not access speakers or run TTS.
 - `MockVoiceInputAdapter` provides deterministic local/test text capture without microphone access and accepts injected microphone and speech-to-text adapters for future provider wiring.
@@ -262,7 +263,7 @@ Current voice loop foundation:
 - The loop does not own routing, planning, or skill execution logic.
 - The loop does not start background listening, wake word detection, microphone access, speaker access, GPT, or internet access.
 
-VoiceService remains the boundary. The current real-audio surface is limited to explicit Linux ALSA one-shot capture through `LinuxAlsaMicrophoneAdapter`; it is disabled by default, replaceable, and not wired as the default runtime path. Real Whisper, Vosk, Piper, speaker/TTS, wake word, background listener, GPT, and internet integrations come later. Speech-to-text is still not implemented.
+VoiceService remains the boundary. The current real-audio/STT surface is limited to explicit Linux ALSA one-shot capture through `LinuxAlsaMicrophoneAdapter` and explicit offline Whisper transcription through `LinuxWhisperSpeechToTextAdapter`; both are disabled by default, replaceable, and not wired as autonomous runtime paths. Real Vosk, Piper, speaker/TTS, wake word, background listener, GPT, internet, and conversation-loop integrations come later.
 
 # Linux ALSA Microphone Adapter
 
@@ -294,7 +295,51 @@ python scripts/manual_verify_linux_alsa_microphone.py --record --seconds 3 --out
 python scripts/manual_verify_linux_alsa_microphone.py --device hw:1,0 --record --seconds 3 --output /tmp/ares_mic_hw_1_0.wav
 ```
 
-Current pytest collection after this checkpoint: 646 tests.
+Phase pytest collection after this checkpoint was 646 tests.
+
+# Offline Whisper Speech-To-Text Adapter
+
+`core.LinuxWhisperSpeechToTextAdapter` is hardware/runtime-specific code for Linux/Raspberry Pi and must not be imported by the Brain. It implements the existing `SpeechToTextAdapter` contract and can be injected into Voice City in place of `MockSpeechToTextAdapter`.
+
+Responsibilities:
+
+- accept WAV files recorded by `LinuxAlsaMicrophoneAdapter`
+- accept `AudioChunk` input and use its WAV path metadata where available
+- verify that a local Whisper executable is installed
+- verify that the configured local model file exists
+- run offline transcription through a local command-line Whisper engine
+- return recognized text, processing time, requested/detected language metadata, status, and structured failure data
+
+Safety boundaries:
+
+- command execution uses argument lists with `shell=False`
+- the recommended first Raspberry Pi model is `ggml-tiny.en.bin`
+- no model is downloaded automatically
+- no internet access, GPT, wake word detection, TTS, background listening, or conversation loop is started
+- `linux_whisper_speech_to_text_adapter` is disabled by default in local module config
+
+Manual Raspberry Pi verification:
+
+```bash
+python scripts/manual_verify_linux_whisper_stt.py --model models/whisper/ggml-tiny.en.bin --whisper-command whisper-cli
+
+python scripts/manual_verify_linux_whisper_stt.py \
+  --record \
+  --seconds 3 \
+  --model models/whisper/ggml-tiny.en.bin \
+  --whisper-command whisper-cli \
+  --output /tmp/ares_whisper_test.wav
+
+python scripts/manual_verify_linux_whisper_stt.py \
+  --record \
+  --device hw:1,0 \
+  --seconds 3 \
+  --model models/whisper/ggml-tiny.en.bin \
+  --whisper-command /path/to/whisper-cli \
+  --output /tmp/ares_whisper_hw_1_0.wav
+```
+
+Current pytest collection after this checkpoint: 663 tests.
 
 # Architecture Hardening Checkpoint
 
@@ -391,15 +436,14 @@ Safety regression guarantees:
 
 # Next Project Block
 
-After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice-hardware checkpoint is the Linux ALSA microphone adapter. The next planned sequence is:
+After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice checkpoints are the Linux ALSA microphone adapter and offline Whisper STT adapter. The next planned sequence is:
 
-1. verify real Raspberry Pi USB microphone capture with the manual ALSA script
-2. implement the first real STT adapter
-3. implement a real TTS adapter
-4. run a real single-turn voice loop
-5. only later add wake-word/background listening
+1. verify real Raspberry Pi USB microphone plus offline Whisper transcription with the manual STT script
+2. implement a real TTS adapter
+3. run a real single-turn voice loop
+4. only later add wake-word/background listening
 
-This is a future implementation block. The current runtime still has no Whisper, Vosk, Piper, speech-to-text, wake word, GPT, internet access, background listener, daemon, scheduler, or real audio output.
+This is a future implementation block. The current runtime still has no Vosk, Piper, TTS, wake word, GPT, internet access, background listener, daemon, scheduler, autonomous loop, conversation loop, or real audio output.
 
 # Measured Resource Budgets
 
@@ -645,7 +689,7 @@ CoreService activation gate:
 
 Failure before activation returns a structured manifest rejection, preserves the correlation id, does not start the module, does not alter unrelated city lifecycle state, and can record a `manifest.validation_failed` event-history entry when CoreService has an `EventHistoryStore` configured.
 
-Current registered manifest coverage includes PCService, Voice City, mock microphone adapter, disabled-by-default Linux ALSA microphone adapter, mock speech-to-text adapter, mock voice output adapter, VoiceCommandRouter, VoiceSessionSkill, and skill manifests registered by SkillRegistry. `config/modules.example.json` documents safe local configuration for enabled modules, preferred providers, and allowed permissions. It is not remote configuration and does not enable package downloads, dynamic imports, API keys, internet discovery, or automatic dependency installation.
+Current registered manifest coverage includes PCService, Voice City, mock microphone adapter, disabled-by-default Linux ALSA microphone adapter, mock speech-to-text adapter, disabled-by-default Linux Whisper speech-to-text adapter, mock voice output adapter, VoiceCommandRouter, VoiceSessionSkill, and skill manifests registered by SkillRegistry. `config/modules.example.json` documents safe local configuration for enabled modules, preferred providers, and allowed permissions. It is not remote configuration and does not enable package downloads, dynamic imports, API keys, internet discovery, or automatic dependency installation.
 
 Future modules must register manifests through the central registry before activation. A future V2 contract must be introduced by registering its new contract version and updating manifests explicitly; unknown versions must be rejected rather than reinterpreted.
 
@@ -861,7 +905,7 @@ Current boundary:
 
 ## Voice City
 
-Voice City has started with a safe service skeleton, a one-shot text loop, adapter contracts for future audio providers, a VoiceCommandRouter, and a simulated end-to-end VoicePipeline. The current placeholder service exposes status and capability discovery, and the current adapters are mock/local only. Future Voice City work will own wake word detection, real speech-to-text, real text-to-speech, microphones, speakers, and voice session state through adapters such as Whisper, Vosk, or Piper. The Brain should receive structured user text and return structured responses; it should not contain microphone, speaker, speech-engine, or audio driver code.
+Voice City has started with a safe service skeleton, a one-shot text loop, adapter contracts, a VoiceCommandRouter, and a simulated end-to-end VoicePipeline. The current placeholder service exposes status and capability discovery. Mock/null adapters remain the default automated path, while explicit disabled-by-default Linux adapters now cover one-shot ALSA microphone capture and offline Whisper WAV transcription for Raspberry Pi verification. Future Voice City work will own real text-to-speech, wake word detection, continuous voice session state, and alternate speech engines such as Vosk or Piper. The Brain should receive structured user text and return structured responses; it should not contain microphone, speaker, speech-engine, or audio driver code.
 
 ## Vision City
 
