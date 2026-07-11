@@ -11,6 +11,8 @@ from core import (
     VOICE_PIPELINE_TRANSCRIPTION_REJECTED_EVENT,
     VOICE_SERVICE_NAME,
     CoreService,
+    LIFECYCLE_READY,
+    LIFECYCLE_UNLOADED,
     MockMicrophoneAdapter,
     MockSpeechToTextAdapter,
     MockVoiceOutputAdapter,
@@ -81,6 +83,10 @@ def test_voice_pipeline_runs_successful_complete_simulated_command():
     assert stt.transcription_count == 1
     assert output.spoken_texts == ["Hello from the text path."]
     assert result.data["activated_city"] == VOICE_SERVICE_NAME
+    lifecycle = result.data["routing"]["data"]["route_result"]["module_lifecycle"]
+    assert lifecycle["start"]["request"]["session_id"] == "session-1"
+    assert lifecycle["execute"]["request"]["correlation_id"] == "corr-1"
+    assert lifecycle["execute"]["state"] == LIFECYCLE_READY
     assert _event_types(result) == [
         VOICE_PIPELINE_AUDIO_CAPTURED_EVENT,
         VOICE_PIPELINE_TRANSCRIPTION_ACCEPTED_EVENT,
@@ -292,6 +298,9 @@ def test_voice_pipeline_session_remains_usable_after_failed_command():
     assert microphone.start_count == 2
     assert microphone.read_count == 2
     assert microphone.stop_count == 2
+    second_lifecycle = second.data["routing"]["data"]["route_result"]["module_lifecycle"]
+    assert second_lifecycle["execute"]["request"]["session_id"] == "session-reuse"
+    assert second_lifecycle["execute"]["request"]["correlation_id"] == "corr-second"
 
 
 def test_voice_pipeline_only_requested_city_is_activated():
@@ -308,6 +317,12 @@ def test_voice_pipeline_only_requested_city_is_activated():
     assert result.data["activated_city"] == VOICE_SERVICE_NAME
     assert result.data["city_statuses"][VOICE_SERVICE_NAME] == "idle"
     assert result.data["city_statuses"][PC_SERVICE_NAME] == "idle"
+    assert core_service.get_lifecycle_status(VOICE_SERVICE_NAME).data["lifecycle_status"][
+        "state"
+    ] == LIFECYCLE_READY
+    assert core_service.get_lifecycle_status(PC_SERVICE_NAME).data["lifecycle_status"][
+        "state"
+    ] == LIFECYCLE_UNLOADED
     city_events = _event_payloads(result, VOICE_PIPELINE_CITY_ACTIVATED_EVENT)
     assert [event["city"] for event in city_events] == [VOICE_SERVICE_NAME]
     assert core_service.get_service_status(PC_SERVICE_NAME) == "idle"

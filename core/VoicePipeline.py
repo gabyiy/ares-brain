@@ -178,7 +178,11 @@ class VoicePipeline:
             },
         )
 
-        routing_result = self.command_router.route(transcription)
+        routing_result = self.command_router.route(
+            transcription,
+            session_id=clean_session_id,
+            correlation_id=clean_correlation_id,
+        )
         routing_data = routing_result.to_dict()
         command_event_type = (
             VOICE_PIPELINE_COMMAND_ROUTED_EVENT

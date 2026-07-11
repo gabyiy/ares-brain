@@ -9,6 +9,9 @@ from core import (
     EVENT_DECISION_FAILED,
     EVENT_DECISION_IGNORED,
     EVENT_DECISION_RECORDED,
+    LIFECYCLE_FAILED,
+    LIFECYCLE_READY,
+    LIFECYCLE_UNLOADED,
     PC_SERVICE_NAME,
     PRIORITY_CRITICAL,
     PRIORITY_HIGH,
@@ -61,6 +64,17 @@ class CountingCity:
             success=True,
             text=f"{self.name} handled {text}",
             data={"city": self.name, "text": text},
+            metadata={"safe": True},
+        )
+
+
+class FailingHealthCity(CountingCity):
+    def get_status(self):
+        return PCServiceResult(
+            success=False,
+            text=f"{self.name} health failed.",
+            error_message="health_failed",
+            data={"city": self.name},
             metadata={"safe": True},
         )
 
@@ -299,6 +313,12 @@ def test_core_service_route_by_capability_keeps_unused_cities_idle():
     assert voice_city.calls == ["hello"]
     assert core_service.get_service_status("pc") == CITY_STATE_IDLE
     assert core_service.get_service_status("voice") == CITY_STATE_IDLE
+    assert core_service.get_lifecycle_status("pc").data["lifecycle_status"]["state"] == (
+        LIFECYCLE_UNLOADED
+    )
+    assert core_service.get_lifecycle_status("voice").data["lifecycle_status"]["state"] == (
+        LIFECYCLE_READY
+    )
 
 
 def test_core_service_disabled_city_is_not_routed():
@@ -340,6 +360,101 @@ def test_core_service_failed_route_marks_city_failed_safely():
         "after": CITY_STATE_FAILED,
     }
     assert core_service.get_service_status("weather") == CITY_STATE_FAILED
+    assert core_service.get_lifecycle_status("weather").data["lifecycle_status"]["state"] == (
+        LIFECYCLE_FAILED
+    )
+
+
+def test_core_service_lifecycle_rejects_execution_when_health_fails():
+    city = FailingHealthCity("voice")
+    core_service = CoreService(register_default_pc=False, register_default_voice=False)
+    core_service.register_service("voice", city, capabilities=["voice.text_loop"])
+
+    result = core_service.route_by_capability(
+        "voice.text_loop",
+        lambda service: service.handle("hello"),
+    )
+
+    assert result.success is False
+    assert result.error_message == "health_failed"
+    assert city.calls == []
+    assert core_service.get_service_status("voice") == CITY_STATE_FAILED
+    lifecycle = core_service.get_lifecycle_status("voice").data["lifecycle_status"]
+    assert lifecycle["state"] == "DEGRADED"
+    assert lifecycle["reason"] == "health_failed"
+
+
+def test_core_service_explicit_recovery_restores_failed_module():
+    city = CountingCity("voice")
+    core_service = CoreService(register_default_pc=False, register_default_voice=False)
+    core_service.register_service("voice", city, capabilities=["voice.text_loop"])
+
+    failed = core_service.route_by_capability(
+        "voice.text_loop",
+        lambda service: (_ for _ in ()).throw(RuntimeError("route boom")),
+    )
+    recovered = core_service.recover_service("voice")
+    routed = core_service.route_by_capability(
+        "voice.text_loop",
+        lambda service: service.handle("hello"),
+    )
+
+    assert failed.success is False
+    assert failed.error_message == "RuntimeError: route boom"
+    assert recovered.success is True
+    assert recovered.data["lifecycle_status"]["state"] == LIFECYCLE_READY
+    assert core_service.get_service_status("voice") == CITY_STATE_IDLE
+    assert routed.success is True
+    assert city.calls == ["hello"]
+
+
+def test_core_service_remains_usable_after_unrelated_module_failure():
+    failing_city = CountingCity("voice")
+    healthy_city = CountingCity("weather")
+    core_service = CoreService(register_default_pc=False, register_default_voice=False)
+    core_service.register_service("voice", failing_city, capabilities=["voice.text_loop"])
+    core_service.register_service("weather", healthy_city, capabilities=["weather.current"])
+
+    failed = core_service.route_by_capability(
+        "voice.text_loop",
+        lambda service: (_ for _ in ()).throw(RuntimeError("voice failure")),
+    )
+    healthy = core_service.route_by_capability(
+        "weather.current",
+        lambda service: service.handle("weather today"),
+    )
+
+    assert failed.success is False
+    assert core_service.get_service_status("voice") == CITY_STATE_FAILED
+    assert healthy.success is True
+    assert healthy.data["service"] == "weather"
+    assert healthy_city.calls == ["weather today"]
+
+
+def test_core_service_lifecycle_query_returns_structured_status_and_history():
+    voice = CountingCity("voice")
+    core_service = CoreService(register_default_pc=False, register_default_voice=False)
+    core_service.register_service("voice", voice, capabilities=["voice.text_loop"])
+    core_service.route_by_capability(
+        "voice.text_loop",
+        lambda service: service.handle("hello"),
+        session_id="session-1",
+        correlation_id="corr-1",
+    )
+
+    status = core_service.get_lifecycle_status("voice")
+    history = core_service.get_lifecycle_history("voice")
+
+    assert status.success is True
+    assert status.data["lifecycle_status"]["state"] == LIFECYCLE_READY
+    assert status.data["lifecycle_status"]["healthy"] is True
+    assert history.success is True
+    assert [item["correlation_id"] for item in history.data["history"]] == [
+        "corr-1",
+        "corr-1",
+        "corr-1",
+        "corr-1",
+    ]
 
 
 def test_core_service_records_low_priority_city_event():

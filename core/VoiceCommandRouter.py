@@ -90,7 +90,12 @@ class VoiceCommandRouter:
             return list(self._events)
         return self._events[-max(0, int(limit)) :]
 
-    def route(self, transcription: TranscriptionResult) -> VoiceCommandRoutingResult:
+    def route(
+        self,
+        transcription: TranscriptionResult,
+        session_id: str = "",
+        correlation_id: str = "",
+    ) -> VoiceCommandRoutingResult:
         self._increment(total=1)
 
         if not isinstance(transcription, TranscriptionResult):
@@ -142,6 +147,12 @@ class VoiceCommandRouter:
         route_result = self.core_service.route_by_capability(
             self.route_capability,
             lambda voice_service: self._handle_command(command_text, voice_service),
+            session_id=session_id,
+            correlation_id=correlation_id,
+            request_payload={
+                "text_length": len(command_text),
+                "transcription_status": transcription.status,
+            },
         )
         if not route_result.success:
             return self._rejected(
