@@ -786,6 +786,20 @@ Phase 63: Capability Manifest Foundation
 - Current pytest collection is 502 tests.
 - No real microphone access, Whisper, Vosk, Piper, wake word detection, GPT, internet access, background listeners, automatic dependency installation, dynamic plugin loading, database migrations, runtime provider fallback, Docker, daemon installation, or guessed hardware resource limits were added.
 
+Phase 64: Memory Schema Migration Foundation
+
+- `memory.schema_migrations` centralizes durable-store schema migration behavior.
+- `SchemaEnvelope` wraps durable JSON stores with `schema_name`, `schema_version`, `created_at`, `updated_at`, `data`, and optional `metadata`.
+- `MigrationRegistry` handles schema registration, current-version lookup, supported-version lookup, migration-path calculation, sequential execution, dry-run mode, duplicate edge rejection, cycle rejection, missing path rejection, and pre/post migration validation.
+- Active schemas are `ares.user_profile`, `ares.goals`, `ares.notes`, `ares.tasks`, `ares.memory.short`, `ares.memory.long`, and `ares.event_history`.
+- Current production schemas remain v1; a controlled test fixture demonstrates v1 -> v2 migration without inventing a destructive production schema change.
+- Known legacy unversioned JSON formats import into v1 only when the structure matches the requested store exactly.
+- Backup-before-write, temporary writes, atomic replacement where practical, final load verification, simple local write locks, and read-only inspection reports are implemented.
+- Corrupted files, truncated files, malformed envelopes, wrong schema names, future versions, downgrades, missing paths, failed migration steps, and validation failures fail closed without resetting memory to empty data.
+- Store integration covers profile, goals, notes, tasks, short/long memory, and event history.
+- Current pytest collection is 527 tests.
+- No remote database, cloud synchronization, distributed locking, PostgreSQL, Docker, automatic cloud backup, GPT, internet access, health fallback, real audio, or guessed resource limits were added.
+
 Architecture Hardening Checkpoint
 
 - This checkpoint comes after the simulated Phase 3 Voice City command pipeline and before real hardware/adapters.
@@ -793,17 +807,18 @@ Architecture Hardening Checkpoint
   - enforced module lifecycle
   - versioned interface contracts
   - capability manifests
+  - memory/database migrations
 - Remaining hardening items:
-  1. memory/database migrations
-  2. health checks and adapter fallback
-  3. measured resource budgets
+  1. health checks and adapter fallback
+  2. measured resource budgets
 - Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 - Permanent contract rule: No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
 - Permanent manifest rule: No independently loadable ARES module may start without a valid registered capability manifest.
+- Permanent memory rules: durable ARES data may never be rewritten without validation and backup; unknown future schema versions must never be silently downgraded; a failed load must never be interpreted as empty memory; hardware-specific paths must not become part of the durable memory schema.
 
 Current State
 
-ARES is currently at the capability manifest foundation: a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a CoreService orchestration boundary for service registration, enforced module lifecycle gating, versioned V1 interface contracts, capability manifests, manifest-gated module activation, lazy route-by-capability handling, lifecycle status/history queries, explicit recovery, capability aggregation, internal city event decision routing, local internal event-history storage, optional CoreService event-history persistence, read-only EventHistorySkill queries, an internal future-use `core.EventBus` skeleton, `SkillContext` access to that CoreService boundary, a PCService boundary for all current PC operations, a VoiceService placeholder boundary for Voice City, explicit VoiceInput/VoiceOutput contracts with adapter-backed null implementations, `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, `MockMicrophoneAdapter`, `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, `VoiceCommandRouter`, `VoiceCommandRoutingResult`, `VoiceCommandRouterMetrics`, `VoicePipeline`, `VoicePipelineResult`, `ModuleLifecycleManager`, `LifecycleRequest`, `LifecycleResult`, `LifecycleStatus`, `CapabilityManifest`, `CapabilityManifestRegistry`, `ManifestPolicy`, mock VoiceInputAdapter/VoiceOutputAdapter implementations, `VoiceTextRequest`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionSkill`, safe Voice Session event logging to `EventHistoryStore`, read-only Voice Session status summaries from latest local event history, transcript/history output for mock sessions, transcript summaries from text-started mock sessions, a one-shot VoiceLoop text bridge, structured safe PC status responses, dynamic safe PC capability discovery, structured safe Voice City placeholder status/capability discovery, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
+ARES is currently at the memory schema migration foundation: a text-first assistant with deterministic routing, structured local intent parsing, explicit multi-step planning, context-aware planning through safe local store interfaces, an action confirmation layer for destructive or important actions, bounded local tool chaining, sequential local plan execution with aggregated responses and partial-result reporting, deterministic skills, event publishing, conversation memory, user profile memory, long-term local goals, local calculator arithmetic, persistent local notes, offline tasks, adapter-backed mock weather answers, an opt-in real-weather HTTP adapter gated by config and env keys, adapter-backed mock market quotes, an opt-in real-market HTTP adapter gated by config and env keys, adapter-backed mock calendar answers, local device action live routing with safe mock actions, dangerous-action classifications, confirmed Windows-only `lock_pc`/`sleep_pc`, a confirmation-gated config-backed Windows app launcher with only calculator enabled, a CoreService orchestration boundary for service registration, enforced module lifecycle gating, versioned V1 interface contracts, capability manifests, manifest-gated module activation, versioned durable store envelopes, centralized JSON schema migrations, legacy importers, backup-before-write, atomic replacement where practical, corruption rejection, lazy route-by-capability handling, lifecycle status/history queries, explicit recovery, capability aggregation, internal city event decision routing, local internal event-history storage, optional CoreService event-history persistence, read-only EventHistorySkill queries, an internal future-use `core.EventBus` skeleton, `SkillContext` access to that CoreService boundary, a PCService boundary for all current PC operations, a VoiceService placeholder boundary for Voice City, explicit VoiceInput/VoiceOutput contracts with adapter-backed null implementations, `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, `MockMicrophoneAdapter`, `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, `VoiceCommandRouter`, `VoiceCommandRoutingResult`, `VoiceCommandRouterMetrics`, `VoicePipeline`, `VoicePipelineResult`, `ModuleLifecycleManager`, `LifecycleRequest`, `LifecycleResult`, `LifecycleStatus`, `CapabilityManifest`, `CapabilityManifestRegistry`, `ManifestPolicy`, `SchemaEnvelope`, `MigrationRegistry`, mock VoiceInputAdapter/VoiceOutputAdapter implementations, `VoiceTextRequest`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionSkill`, safe Voice Session event logging to `EventHistoryStore`, read-only Voice Session status summaries from latest local event history, transcript/history output for mock sessions, transcript summaries from text-started mock sessions, a one-shot VoiceLoop text bridge, structured safe PC status responses, dynamic safe PC capability discovery, structured safe Voice City placeholder status/capability discovery, external tool adapter contracts with offline mocks, external adapter config and secrets guarding for future real APIs, and short-term in-memory conversation context for handled skill turns.
 
 The current active interface is:
 
@@ -818,7 +833,7 @@ The current deterministic answer paths are:
 - `CoreService`, `EventBus`, `EventHistoryStore`, `EventHistorySkill`, `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, `MockMicrophoneAdapter`, `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, `VoiceCommandRouter`, `VoiceCommandRoutingResult`, `VoiceCommandRouterMetrics`, `VoicePipeline`, `VoicePipelineResult`, `VoiceService`, `VoiceInput`, `VoiceOutput`, `VoiceInputAdapter`, `VoiceOutputAdapter`, `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, `NullVoiceInput`, `NullVoiceOutput`, `PlaceholderVoiceService`, `VoiceTextRequest`, `VoiceLoop`, `VoiceLoopResult`, `VoiceSingleTurnLoop`, `VoiceSessionLoop`, `VoiceSessionSkill`, `VoiceSessionResult`, `VoiceSessionTurn`, `DeviceActionRegistry`, `LocalDeviceActionAdapter`, `PCService`, `PCStatus`, `PCCapabilities`, `WindowsPCService`, `AppLaunchConfig`, `AppAllowlistLoader`, and `DeviceActionSkill` for safe local Device/PC City and Voice City foundations, service registration, city lifecycle metadata, lazy capability routing, capability aggregation, internal future-use event reporting skeletons, internal CoreService event decision routing, optional CoreService event-history persistence, local internal event-history logging, read-only event-history queries, safe voice session event history records, read-only latest voice-session status summaries, structured local `system status`, structured placeholder voice status, adapter-backed placeholder voice input/output, adapter-backed microphone abstraction, adapter-backed speech-to-text abstraction, confidence-gated voice command routing, simulated end-to-end voice command routing, adapter-backed single-turn voice-style routing, bounded multi-turn mock session routing, text-command mock voice sessions, transcript/history output, one-shot placeholder voice text routing, dynamic local action/app/voice discovery, confirmation-gated `lock_pc`/`sleep_pc`, confirmation-gated config-backed allowlisted Windows `open_app`, safe live routing, and stable confirmation-required/forbidden responses
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 502 tests.
+The current pytest collection is 527 tests.
 
 The current memory paths are:
 
@@ -850,14 +865,13 @@ Core Services City is a shared infrastructure city for scheduler, permissions, l
 
 Codex City is a future maintenance city. It should check the ARES GitHub repository, pull latest code, run tests, check compile, check docs freshness, report problems, and suggest fixes. Codex City must never auto-edit without owner approval.
 
-This roadmap entry documents the current safe VoiceService skeleton, VoiceInput/VoiceOutput contracts, one-shot VoiceLoop text bridge, microphone adapter abstraction, speech-to-text adapter abstraction, VoiceCommandRouter, simulated VoicePipeline, enforced module lifecycle, versioned interface contracts, and capability manifest foundation only. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, real voice/audio implementation, internet access, real APIs, notifications, daemon installation, background timers, or background listening.
+This roadmap entry documents the current safe VoiceService skeleton, VoiceInput/VoiceOutput contracts, one-shot VoiceLoop text bridge, microphone adapter abstraction, speech-to-text adapter abstraction, VoiceCommandRouter, simulated VoicePipeline, enforced module lifecycle, versioned interface contracts, capability manifests, and memory schema migration foundation only. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, real voice/audio implementation, internet access, real APIs, notifications, daemon installation, background timers, or background listening.
 
 Next Priorities
 
-1. Memory/database migrations.
-2. Health checks and adapter fallback.
-3. Measured resource budgets.
-4. Voice wake word/STT/TTS planning after hardening scope is approved.
+1. Health checks and adapter fallback.
+2. Measured resource budgets.
+3. Voice wake word/STT/TTS planning after hardening scope is approved.
 
 What Must Not Be Started Yet
 

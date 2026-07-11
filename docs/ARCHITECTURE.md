@@ -271,18 +271,25 @@ Implemented:
 - enforced module lifecycle
 - versioned interface contracts
 - capability manifests
+- memory/database migrations
 
 Remaining hardening items:
 
-1. memory/database migrations
-2. health checks and adapter fallback
-3. measured resource budgets
+1. health checks and adapter fallback
+2. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
 Permanent contract rule: No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
 
 Permanent manifest rule: No independently loadable ARES module may start without a valid registered capability manifest.
+
+Permanent memory rules:
+
+- Durable ARES data may never be rewritten without validation and backup.
+- Unknown future schema versions must never be silently downgraded.
+- A failed load must never be interpreted as empty memory.
+- Hardware-specific paths must not become part of the durable memory schema.
 
 # Versioned Interface Contracts
 
@@ -401,6 +408,78 @@ Failure before activation returns a structured manifest rejection, preserves the
 Current registered manifest coverage includes PCService, Voice City, mock microphone adapter, mock speech-to-text adapter, mock voice output adapter, VoiceCommandRouter, VoiceSessionSkill, and skill manifests registered by SkillRegistry. `config/modules.example.json` documents safe local configuration for enabled modules, preferred providers, and allowed permissions. It is not remote configuration and does not enable package downloads, dynamic imports, API keys, internet discovery, or automatic dependency installation.
 
 Future modules must register manifests through the central registry before activation. A future V2 contract must be introduced by registering its new contract version and updating manifests explicitly; unknown versions must be rejected rather than reinterpreted.
+
+# Memory Schema Migrations
+
+`memory.schema_migrations` is the centralized migration framework for active JSON-backed persistent stores. Store modules call this shared layer instead of implementing ad hoc version checks.
+
+Durable data classes:
+
+- Durable identity/memory: `UserProfileStore`, `MemoryStore` short-term memory, `MemoryStore` long-term memory, `GoalsStore`, `NotesStore`, and `TasksStore`.
+- Operational history: `EventHistoryStore`.
+- Derived state: `ReminderScheduler` reads tasks and has no separate persisted file.
+- Voice-session history: stored as event-history records; no separate voice-session store exists.
+- Disposable cache: cache data is not identity memory and is not migrated as durable owner memory.
+- Configuration: app allowlists, adapter examples, module examples, and other config files are configuration-backed durable state, not owner identity memory.
+- Legacy/disconnected: `memory_manager.py` and `memory/memories.json` are legacy script-era formats. The active runtime uses `memory.v1.MemoryStore` and explicit store paths.
+
+Current active schemas:
+
+- `ares.user_profile`
+- `ares.goals`
+- `ares.notes`
+- `ares.tasks`
+- `ares.memory.short`
+- `ares.memory.long`
+- `ares.event_history`
+
+Every active durable JSON store uses this envelope:
+
+```json
+{
+  "schema_name": "ares.notes",
+  "schema_version": 1,
+  "created_at": "2026-07-11T00:00:00Z",
+  "updated_at": "2026-07-11T00:00:00Z",
+  "data": [],
+  "metadata": {}
+}
+```
+
+Schema versions are integer major versions. Missing schema versions are accepted only by explicit legacy importers for known structures. Unknown future versions fail closed. Downgrades are rejected. Migrations must be sequential; a future v1 -> v3 migration must run v1 -> v2 and then v2 -> v3. Current production schemas remain v1. A test fixture demonstrates v1 -> v2 behavior without inventing a production schema change.
+
+`MigrationRegistry` supports:
+
+- schema registration
+- migration registration
+- known schema lookup
+- current-version lookup
+- supported-version lookup
+- migration-path calculation
+- sequential migration execution
+- dry-run mode
+- duplicate edge rejection
+- cycle rejection
+- missing path rejection
+- schema-specific legacy importers
+- pre/post migration validation
+
+File migration and writes follow this safety sequence:
+
+1. Read and validate source.
+2. Create a local backup under `.migration_backups`.
+3. Migrate in memory.
+4. Validate after every migration step.
+5. Write a temporary file.
+6. Flush safely where practical.
+7. Atomically replace the original where practical.
+8. Verify the final file can be loaded.
+
+If a migration or write fails, the original file is preserved, the backup is preserved, incomplete temporary output is removed where possible, and the error is returned as structured data. Store load failures are not converted into empty memory. Where a store has an event bus, it publishes `storage.migration_failed`. Where an `EventHistoryStore` is provided, migration failures can also be recorded as local event-history records.
+
+Inspection reports are read-only and include path, schema name, detected version, current target version, migration needed, migration path, latest backup, and validation state. They do not dump personal memory contents.
+
+This migration layer is local-only. It does not add remote databases, cloud synchronization, distributed locking, PostgreSQL, Docker, automatic cloud backup, or hardware-specific paths. It prepares the future home-server model by keeping durable identity and memory upgradeable independently of Raspberry Pi, PC, phone, robot body, or other replaceable clients.
 
 # Device Action Pipeline
 

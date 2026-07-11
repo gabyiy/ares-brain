@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.66 - Capability Manifests
+ARES v1.67 - Memory Schema Migrations
 
 ---
 
@@ -20,7 +20,7 @@ The active runtime includes `core.IntentParser` for structured local intents, `c
 
 The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the Brain/CoreService capital city model, current CoreService and PCService boundaries, capability discovery, future cities, upgrade philosophy, design rules, and long-term vision.
 
-`core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, `get_capabilities()`, `route_by_capability()`, `get_lifecycle_status()`, `get_lifecycle_history()`, `recover_service()`, `get_manifest(name)`, and `list_manifests()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior. CoreService keeps compatibility city states as `idle`, `active`, `failed`, and `disabled`, and now owns `core.ModuleLifecycleManager` for strict module lifecycle enforcement with `UNLOADED`, `STARTING`, `READY`, `BUSY`, `DEGRADED`, `STOPPING`, `STOPPED`, and `FAILED`. Lazy capability routing starts and health-checks only the selected module, executes it only when READY, and leaves unused modules inactive. `core.Contracts` now provides versioned V1 public request/result contracts, a central compatibility registry, deterministic serialization, and safe rejection before module execution for unsupported contracts. `core.CapabilityManifest` and `CapabilityManifestRegistry` now require CoreService-managed modules to declare identity, capabilities, contracts, dependencies, platform compatibility, permissions, lifecycle support, and provider metadata before activation.
+`core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, `get_capabilities()`, `route_by_capability()`, `get_lifecycle_status()`, `get_lifecycle_history()`, `recover_service()`, `get_manifest(name)`, and `list_manifests()`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior. CoreService keeps compatibility city states as `idle`, `active`, `failed`, and `disabled`, and now owns `core.ModuleLifecycleManager` for strict module lifecycle enforcement with `UNLOADED`, `STARTING`, `READY`, `BUSY`, `DEGRADED`, `STOPPING`, `STOPPED`, and `FAILED`. Lazy capability routing starts and health-checks only the selected module, executes it only when READY, and leaves unused modules inactive. `core.Contracts` now provides versioned V1 public request/result contracts, a central compatibility registry, deterministic serialization, and safe rejection before module execution for unsupported contracts. `core.CapabilityManifest` and `CapabilityManifestRegistry` now require CoreService-managed modules to declare identity, capabilities, contracts, dependencies, platform compatibility, permissions, lifecycle support, and provider metadata before activation. `memory.schema_migrations` now provides centralized durable-store schema envelopes, migration registration, legacy import, backup-before-write, atomic replacement, write locking, corruption rejection, and read-only inspection for active JSON-backed persistent stores.
 
 `core.EventBus` now provides an internal future city event skeleton with `Event` records shaped as source, type, priority, payload, and timestamp. Supported priorities are `low`, `normal`, `high`, and `critical`. This is future-use infrastructure only; it does not start background listeners, notifications, camera loops, internet access, GPT, or any daemon.
 
@@ -53,12 +53,12 @@ Implemented:
 - enforced module lifecycle
 - versioned interface contracts
 - capability manifests
+- memory/database migrations
 
 Remaining:
 
-1. memory/database migrations
-2. health checks and adapter fallback
-3. measured resource budgets
+1. health checks and adapter fallback
+2. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
@@ -67,6 +67,14 @@ Permanent contract rule: No City, Skill, adapter, device, or service may exchang
 Permanent manifest rule: No independently loadable ARES module may start without a valid registered capability manifest.
 
 Capability manifests now describe ARES modules before activation. Each manifest declares module identity, module type, explicit capabilities, consumed and produced contract versions, dependencies, supported platforms, requested permissions, lifecycle operations, provider information, and metadata. `CapabilityManifestRegistry` validates duplicates, contract support, required capabilities, required modules, incompatible capabilities, platform compatibility, permission policy, and lifecycle compatibility. CoreService checks manifests before module lifecycle start, records safe manifest rejection events when an `EventHistoryStore` is configured, and leaves unrelated cities idle. `SkillRegistry` also registers skill manifests from explicit skill metadata. `config/modules.example.json` documents local enable/disable flags, preferred providers, and allowed permissions without remote configuration, package downloads, dynamic loading, secrets, or internet discovery.
+
+Permanent memory rules: durable ARES data may never be rewritten without validation and backup; unknown future schema versions must never be silently downgraded; a failed load must never be interpreted as empty memory; hardware-specific paths must not become part of the durable memory schema.
+
+Memory schema migrations now protect active JSON-backed durable stores. The current envelope fields are `schema_name`, `schema_version`, `created_at`, `updated_at`, `data`, and optional `metadata`. The current active schemas are `ares.user_profile`, `ares.goals`, `ares.notes`, `ares.tasks`, `ares.memory.short`, `ares.memory.long`, and `ares.event_history`. `ReminderScheduler` derives from tasks and has no separate file. Voice-session history is stored through `EventHistoryStore`; there is no separate voice-session store. Legacy `memory_manager.py` remains a separate script API over legacy files and is documented as legacy/disconnected from the active store path.
+
+Durable identity and memory stores are user profile, short/long memory, goals, notes, and tasks. Operational history is event history. Disposable caches are not treated as identity data. Configuration files such as app allowlists and adapter examples are configuration-backed durable state, not owner memory, and are not migrated as identity stores.
+
+Legacy unversioned formats are imported only when they match known store structures. Unknown future versions, malformed envelopes, invalid JSON, truncated files, wrong root types, wrong schema names, missing migration paths, post-migration validation failures, and concurrent writes fail closed without resetting memories. Migrations create local backups under `.migration_backups`, write temporary files, atomically replace where practical, and verify the final file can be loaded.
 
 Current V1 contracts:
 
@@ -448,6 +456,7 @@ Implemented Features
 - CoreService orchestration layer with service registration, default `PCService` registration as `pc`, `get_service(name)`, `list_services()`, aggregate `get_capabilities()` over registered services, city lifecycle metadata, and lazy `route_by_capability()` execution
 - Enforced module lifecycle foundation with `ModuleLifecycleManager`, `LifecycleRequest`, `LifecycleResult`, `LifecycleStatus`, transition history, explicit recovery, idempotent start/stop, health gating, execution isolation, and CoreService query APIs
 - Capability manifest foundation with `CapabilityManifest`, `CapabilityManifestRegistry`, `ManifestPolicy`, explicit module identity/capability/contract/dependency/platform/permission/lifecycle declarations, provider selection, CoreService activation gating, Voice City manifests, skill manifest registration, and safe local `config/modules.example.json` defaults
+- Versioned memory schema migration foundation with `memory.schema_migrations`, schema envelopes, migration registry, legacy importers, backup-before-write, atomic replacement, write locks, corruption rejection, store inspection reports, and integration for profile, goals, notes, tasks, short/long memory, and event history
 - Internal `core.EventBus` skeleton with event source, type, priority, payload, timestamp, publish/subscribe, and priority-ordered history
 - CoreService internal event handling with `ignored`, `recorded`, and `escalated` decisions for city events
 - Local `events.EventHistoryStore` for persisted internal event decisions/results with source/type/priority queries and bounded history size
@@ -459,7 +468,7 @@ Implemented Features
 - Speech-to-text adapter abstraction with `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, confidence scores, empty transcription handling, low-confidence handling, safe failure results, and Voice City dependency injection
 - Voice Command Router with confidence gating, empty-transcription handling, unknown-command handling, CoreService `voice.text_loop` routing, routed/rejected metrics, and routed/rejected events
 - Simulated VoicePipeline connecting mock microphone audio, mock speech-to-text, VoiceCommandRouter, CoreService route-by-capability, mock output, session/correlation ids, and structured stage events
-- Architecture Hardening Checkpoint before real hardware/adapters with enforced lifecycle, versioned interface contracts, and capability manifests implemented, and migration, health-check/fallback, and resource-budget follow-up items remaining
+- Architecture Hardening Checkpoint before real hardware/adapters with enforced lifecycle, versioned interface contracts, capability manifests, and memory/database migrations implemented, and health-check/fallback plus resource-budget follow-up items remaining
 - Built-in `VoiceSessionSkill` for starting bounded mock Voice City sessions from text commands through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path
 - Safe Voice Session event logging to `EventHistoryStore` for session start, stop, adapter failure, and max-turn completion events
 - Read-only Voice Session status queries for the latest mock session event group
@@ -485,7 +494,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 502 tests across current core modules
+- Pytest automated coverage for 527 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -504,7 +513,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `502 tests`.
+Current pytest collection: `527 tests`.
 
 Manual Calculator Launch Verification
 
@@ -1348,13 +1357,14 @@ Architecture Hardening Checkpoint
   - enforced module lifecycle
   - versioned interface contracts
   - capability manifests
+  - memory/database migrations
 - Remaining hardening items:
-  1. memory/database migrations
-  2. health checks and adapter fallback
-  3. measured resource budgets
+  1. health checks and adapter fallback
+  2. measured resource budgets
 - Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 - Permanent contract rule: No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
 - Permanent manifest rule: No independently loadable ARES module may start without a valid registered capability manifest.
+- Permanent memory rule: Durable ARES data may never be rewritten without validation and backup.
 
 Phase 62
 
@@ -1384,20 +1394,32 @@ Phase 63
 
 Phase 64
 
+- Memory schema migrations
+- `memory.schema_migrations` defines `SchemaEnvelope`, `MigrationRegistry`, `MigrationResult`, `MigrationError`, store inspection reports, legacy importers, migration path calculation, dry-run support, backup-before-write, atomic replacement, and simple local write locks
+- Active durable schemas: `ares.user_profile`, `ares.goals`, `ares.notes`, `ares.tasks`, `ares.memory.short`, `ares.memory.long`, and `ares.event_history`
+- Current production schemas are v1; a test fixture demonstrates v1 -> v2 migration without inventing a destructive production schema change
+- Known legacy formats import safely into v1 only when the structure matches the target store exactly
+- Unknown future versions, downgrades, malformed envelopes, invalid JSON, truncated files, wrong schema names, missing migration paths, failed migration steps, post-migration validation failures, and concurrent writes fail closed without resetting memories
+- Backups are stored under `.migration_backups` and are ignored by git
+- Current pytest collection is 527 tests
+- No remote databases, cloud sync, distributed locking, PostgreSQL, Docker, GPT, internet access, health fallback, real audio, or guessed resource limits
+
+Phase 65
+
 - Future real voice planning only
 - Wake word
 - Real speech-to-text
 - Real text-to-speech
 - Continuous conversation
 
-Phase 65
+Phase 66
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 66
+Phase 67
 
 - Robotics
 - ROS2

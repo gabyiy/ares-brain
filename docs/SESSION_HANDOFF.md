@@ -4,13 +4,13 @@ Last Updated: 2026-07-11
 
 Current Version
 
-ARES v1.66 - Capability Manifests
+ARES v1.67 - Memory Schema Migrations
 
 ---
 
 Current Status
 
-ARES is at the capability manifest foundation before any real audio work.
+ARES is at the memory schema migration foundation before any real audio work.
 
 Confirmed Phase 3 foundation:
 
@@ -33,9 +33,10 @@ Confirmed Phase 3 foundation:
 - Enforced module lifecycle
 - Versioned interface contracts
 - Capability manifests
+- Memory/schema migrations
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 502 tests.
+Current pytest collection: 527 tests.
 
 Real microphone access, speaker output, wake word detection, real STT, real TTS, Whisper, Vosk, Piper, background listening, notifications, GPT, internet access, and real device/event automation remain disabled until explicitly approved.
 
@@ -122,18 +123,25 @@ Implemented:
 - enforced module lifecycle
 - versioned interface contracts
 - capability manifests
+- memory/database migrations
 
 Remaining hardening items:
 
-1. memory/database migrations
-2. health checks and adapter fallback
-3. measured resource budgets
+1. health checks and adapter fallback
+2. measured resource budgets
 
 Permanent rule: Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 
 Permanent contract rule: No City, Skill, adapter, device, or service may exchange an unversioned public request or response across an ARES architectural boundary.
 
 Permanent manifest rule: No independently loadable ARES module may start without a valid registered capability manifest.
+
+Permanent memory rules:
+
+- Durable ARES data may never be rewritten without validation and backup.
+- Unknown future schema versions must never be silently downgraded.
+- A failed load must never be interpreted as empty memory.
+- Hardware-specific paths must not become part of the durable memory schema.
 
 Enforced module lifecycle has been added.
 
@@ -213,6 +221,34 @@ Manifest behavior:
 - `config/modules.example.json` documents safe local enable/disable flags, preferred providers, and allowed permissions.
 - Tests cover manifest validation, dependency handling, permission policy, provider selection, skill manifest registration, CoreService manifest rejection, VoicePipeline compatibility, and CoreService usability after manifest failures.
 - No real microphone access, Whisper, Vosk, Piper, wake word, GPT, internet, background listeners, automatic dependency installation, dynamic plugin loading, database migrations, runtime provider fallback, Docker, daemon installation, or guessed hardware limits were added.
+
+Versioned memory schema migrations have been added.
+
+Migration behavior:
+
+- New module: `memory.schema_migrations`.
+- New models: `SchemaEnvelope`, `MigrationResult`, `StoreInspectionReport`, and `MigrationError`.
+- New registry: `MigrationRegistry`.
+- Every active durable JSON store now uses an envelope with `schema_name`, `schema_version`, `created_at`, `updated_at`, `data`, and optional `metadata`.
+- Active durable schemas are `ares.user_profile`, `ares.goals`, `ares.notes`, `ares.tasks`, `ares.memory.short`, `ares.memory.long`, and `ares.event_history`.
+- Durable identity/memory stores are user profile, short/long memory, goals, notes, and tasks.
+- Operational history is event history.
+- `ReminderScheduler` has no separate persistence; it derives due/upcoming reminders from tasks.
+- Voice session persistence is event-history based; there is no separate voice-session store.
+- Disposable caches are not migrated as identity data.
+- Configuration files are treated as configuration-backed durable state, not owner memory.
+- Legacy `memory_manager.py` and `memory/memories.json` are documented as legacy/disconnected from the active `MemoryStore` path.
+- Known legacy unversioned JSON formats import into v1 only when the target store structure matches exactly.
+- Current production schemas remain v1.
+- A controlled test fixture demonstrates v1 -> v2 migration support without inventing a destructive production schema change.
+- Migrations validate before migration and after every step.
+- Migration writes create local backups under `.migration_backups`, write temporary files, flush safely where practical, atomically replace where practical, and verify the final file can be loaded.
+- Invalid JSON, truncated files, malformed envelopes, wrong root types, wrong schema names, future schema versions, downgrade attempts, missing migration paths, failed migration steps, post-migration validation failure, and concurrent write attempts fail closed without resetting memories.
+- Store load failures publish `storage.migration_failed` on the configured event bus where available.
+- Migration failure can be recorded in `EventHistoryStore` via `record_migration_failure`.
+- Inspection reports show store path, schema name, detected version, target version, migration needed, path, latest backup, and validation state without dumping personal memory contents.
+- Tests use temporary directories only and do not touch real user data.
+- No real microphone access, Whisper, Vosk, Piper, wake word, GPT, internet, remote databases, cloud synchronization, distributed locking, PostgreSQL, Docker, automatic cloud backup, health fallback, or guessed resource limits were added.
 
 Phase 3 Voice Checkpoint
 
@@ -1505,7 +1541,7 @@ Text REPL
 
 Immediate Next Milestone
 
-Memory/database migrations are the next Architecture Hardening Checkpoint item. Do not add real audio hardware access without explicit approval.
+Health checks and adapter fallback are the next Architecture Hardening Checkpoint item. Do not add real audio hardware access without explicit approval.
 
 Next technical choices:
 
@@ -1531,7 +1567,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 502 tests.
+- Current pytest collection: 527 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1580,12 +1616,14 @@ Verification Notes
 - Intent parser tests cover intent detection, confidence values, entity extraction, goal commands, ambiguous local phrasing, unknown intent, ToolSelector integration, SkillManager integration, live REPL parser use, and the REPL task path.
 - Contract tests cover V1 request/result acceptance, unsupported V2 rejection, missing/malformed contract headers, wrong contract type rejection, correlation id preservation, metadata round-trip, deterministic serialization, registry discovery, duplicate registration rejection, CoreService pre-activation rejection, lifecycle state preservation, VoicePipeline session reuse after rejection, and successful V1 VoicePipeline execution.
 - Capability manifest tests cover schema validation, deterministic serialization, duplicate rejection, capability/provider lookup, disabled modules, unsupported contracts, dependency validation, incompatible capabilities, platform mismatch, permission policy, lifecycle declaration mismatch, provider preference, skill manifest registration, CoreService manifest rejection, VoicePipeline compatibility, and CoreService usability after manifest failures.
+- Schema migration tests cover current schema load, known legacy import into v1, non-guessing malformed legacy inputs, v1 -> v2 fixture migration, multi-step order, future-version rejection, missing paths, duplicate/cyclic registration, dry-run behavior, backup creation, original preservation, temporary-file cleanup, malformed/truncated JSON rejection, wrong schema rejection, post-migration validation failure, metadata preservation, deterministic serialization, store usability after migration, unrelated city idleness, CoreService usability, event-history recording, concurrent lock failure, and content-safe inspection reports.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
 
 Latest Commits
 
+- `dc2526d` Add versioned memory schema migrations
 - `80df88b` Add capability manifest foundation
 - `98d8dea` Document versioned interface contracts
 - `2c61d59` Add versioned interface contracts
@@ -1671,8 +1709,8 @@ Latest Commits
 
 Next Planned Step
 
-- Architecture hardening before real hardware/adapters: memory/database migrations.
-- Remaining hardening after migrations: health checks and adapter fallback, and measured resource budgets.
+- Architecture hardening before real hardware/adapters: health checks and adapter fallback.
+- Remaining hardening after fallback: measured resource budgets.
 - Plan Voice wake word/STT/TTS integration only after explicit approval and after the hardening scope is handled.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
