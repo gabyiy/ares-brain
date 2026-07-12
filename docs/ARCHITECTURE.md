@@ -221,7 +221,7 @@ Current placeholder implementations:
 - `TranscriptionResult` stores transcription text, status, error details, and bounded confidence values.
 - `MockSpeechToTextAdapter` converts `AudioChunk` objects into deterministic test transcriptions, including empty-audio, low-confidence, no-transcription, and failure results without a real speech engine.
 - `LinuxWhisperSpeechToTextAdapter` is the first real offline STT provider. It stays behind the `SpeechToTextAdapter` boundary, accepts WAV files from `LinuxAlsaMicrophoneAdapter` or `AudioChunk` input, runs a local Whisper/whisper.cpp executable with `shell=False`, requires a local model file, and returns structured transcription text, timing, language metadata, and safe failure statuses.
-- `TextToSpeechAdapter` is the speech-output engine boundary. `LinuxPiperTextToSpeechAdapter` is the first real offline TTS provider. It stays behind the TTS adapter boundary, accepts versioned TTS requests, runs a local Piper executable with `shell=False`, requires a local ONNX voice model and JSON config, writes a WAV file, and returns structured generation/playback status.
+- `TextToSpeechAdapter` is the speech-output engine boundary. `LinuxPiperTextToSpeechAdapter` is the first real offline TTS provider. It stays behind the TTS adapter boundary, accepts versioned TTS requests, resolves validated profile identifiers through `VoiceProfileRegistry`, runs a local Piper executable with `shell=False`, writes a WAV file, and returns structured profile/generation/playback status.
 - `SpeakerOutputAdapter` is the playback-device boundary. `LinuxAlsaSpeakerAdapter` owns explicit `aplay` WAV playback, validates WAV output, supports optional ALSA device selection, and never enables microphone monitoring or automatic playback.
 - `NullVoiceInput` is backed by a safe placeholder input adapter and does not access a microphone or run STT.
 - `NullVoiceOutput` is backed by a safe placeholder output adapter and does not access speakers or run TTS.
@@ -459,14 +459,18 @@ Design boundary:
 Adapter responsibilities:
 
 - verify that a local Piper executable is installed and executable
-- verify the selected ONNX voice model exists and is readable
-- verify the voice configuration JSON exists and is readable
+- resolve a requested profile or the one configured enabled default through `VoiceProfileRegistry`
+- verify the resolved ONNX voice model and JSON config exist, are readable, and stay inside approved model directories
 - verify that the actual output directory is writable
 - validate text length and voice selection
 - generate a WAV file from explicit text using `shell=False`
-- return structured `TextToSpeechResultV1` data with normalized text, engine, voice, generated WAV path, duration, processing time, playback status, and safe errors
+- return structured `TextToSpeechResultV1` data with requested/resolved profile, display name, language, locale, gender metadata, quality, engine, model/config paths, generated WAV path, duration, processing time, playback status, and safe errors
 - preserve text output fallback if generation or playback fails
 - never download models or call cloud services at runtime
+
+`core.VoiceProfiles` is the only Piper voice-resolution boundary. Its immutable `VoiceProfile` model and `VoiceProfileRegistry` validate schema identity/version, unique profile identifiers, supported engine/language/locale fields, exactly one enabled default, enabled selection, approved model paths, source metadata, and optional file size/checksum data. `config/voice_profiles.json` configures the official `en_US-hfc_male-medium` profile as the default ARES voice and retains `en_US-amy-low` as an optional profile. Brain and CoreService receive structured TTS contracts and never know Piper paths or choose ONNX files.
+
+The default profile was selected from the [official Piper voice catalog](https://github.com/rhasspy/piper/blob/master/VOICES.md) and [official `hfc_male` model card](https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/hfc_male/medium/MODEL_CARD). It is a single-speaker U.S. English male voice, medium quality, 22,050 Hz, with an approximately 63 MB model. This is configuration metadata, not automatic runtime installation.
 
 `core.LinuxAlsaSpeakerAdapter` is the playback-device boundary. It validates an explicitly configured ALSA device against structured `aplay -l` output, validates generated WAV files, and plays them with `aplay` only when requested by an explicit TTS request or owner-run script. It never enables microphone monitoring, never plays during capture, and never runs shell commands.
 
@@ -483,28 +487,33 @@ python scripts/install_piper_raspberry_pi.py
 Default local paths:
 
 - Piper runtime: `external/piper/`
-- Voice model: `models/piper/en_US-amy-low.onnx`
-- Voice config: `models/piper/en_US-amy-low.onnx.json`
+- Voice registry: `config/voice_profiles.json`
+- Default model: `models/piper/en_US-hfc_male-medium.onnx`
+- Default config: `models/piper/en_US-hfc_male-medium.onnx.json`
+- Optional Amy model/config: `models/piper/en_US-amy-low.onnx` and `models/piper/en_US-amy-low.onnx.json`
 - Generated samples: `data/manual_tts_samples/`
+
+List and install registered profiles:
+
+```bash
+python scripts/manual_verify_linux_tts.py --list-voices
+python scripts/install_piper_raspberry_pi.py
+python scripts/install_piper_raspberry_pi.py --voice en_US-hfc_male-medium
+```
 
 Manual verification without playback:
 
 ```bash
 python scripts/manual_verify_linux_tts.py \
-  --text "Hello Gabriel. Ares voice output is working." \
-  --piper-command external/piper/piper/piper \
-  --model models/piper/en_US-amy-low.onnx \
-  --config models/piper/en_US-amy-low.onnx.json
+  --text "Hello Gabriel. I am Ares, and my new voice is working."
 ```
 
 Manual verification with explicit USB speaker playback:
 
 ```bash
 python scripts/manual_verify_linux_tts.py \
-  --text "Hello Gabriel. Ares voice output is working." \
-  --piper-command external/piper/piper/piper \
-  --model models/piper/en_US-amy-low.onnx \
-  --config models/piper/en_US-amy-low.onnx.json \
+  --text "Hello Gabriel. I am Ares, and my new voice is working." \
+  --voice-profile en_US-hfc_male-medium \
   --playback \
   --device plughw:CARD=Device,DEV=0
 ```
@@ -518,12 +527,13 @@ Real Raspberry Pi 5 evidence for this checkpoint:
 - Piper generated a valid WAV.
 - Direct ALSA playback through `plughw:CARD=Device,DEV=0` succeeded.
 - The owner confirmed the generated voice was audible through the USB speaker.
+- The corrected profile-aware verifier has not yet been run audibly with `en_US-hfc_male-medium`; that remains the next explicit hardware check.
 
 The previous `FAIL: TTS health check failed.` result was isolated to the manual verifier: it serialized the valid V1 result and queried a nonexistent `healthy` key. Piper generation and ALSA playback were already healthy. The verifier now checks the explicit V1 success/status fields and nested speaker health result.
 
 This checkpoint does not add GPT, wake-word detection, background listening, automatic microphone activation, memory writes based on voice, a conversation loop, cloud fallback, or robot movement.
 
-Current pytest collection after this checkpoint: 742 tests.
+Current pytest collection after the voice-profile checkpoint: 771 tests.
 
 # Architecture Hardening Checkpoint
 
@@ -620,9 +630,9 @@ Safety regression guarantees:
 
 # Next Project Block
 
-After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice checkpoints are the Linux ALSA microphone adapter, offline Whisper STT adapter, Raspberry Pi whisper.cpp runtime preparation scripts, speech-input verification hardening, reliable English-only Whisper verification defaults, offline Piper TTS adapter, and explicit ALSA speaker playback adapter. The next planned sequence is:
+After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice checkpoints are the Linux ALSA microphone adapter, offline Whisper STT adapter, Raspberry Pi whisper.cpp runtime preparation scripts, speech-input verification hardening, reliable English-only Whisper verification defaults, offline Piper TTS adapter, explicit ALSA speaker playback adapter, and validated configurable Piper voice profiles. The next planned sequence is:
 
-1. pull latest `main` and rerun the corrected manual Raspberry Pi TTS verifier with playback
+1. install and audibly verify the configured `en_US-hfc_male-medium` profile on Raspberry Pi
 2. run a real single-turn voice loop
 3. only later add wake-word/background listening
 
