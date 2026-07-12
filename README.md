@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.76 - Modular Offline Text-To-Speech Output
+ARES v1.77 - Reliable Raspberry Pi Text-To-Speech Verification
 
 ---
 
@@ -46,7 +46,7 @@ Raspberry Pi Whisper runtime preparation is now documented and scriptable. `scri
 
 Raspberry Pi speech-input verification is now hardened for real recordings. The root cause of the repeated `[BLANK_AUDIO]` blocker was a verification-command mismatch: the scripts defaulted to `--language auto` while the installed recommended model is the English-only `ggml-tiny.en.bin`; direct manual Whisper runs used the effective English mode. The verifier and manual STT script now default to `--language en`, and the adapter also resolves English-only GGML models to `en` when configured as `auto`. The Whisper adapter measures WAV file size, duration, sample rate, channel count, sample width, peak amplitude, and RMS amplitude before transcription; rejects silent or below-threshold recordings; prints the exact `whisper-cli` command, exit code, stdout, and stderr diagnostics on failures; and treats Whisper no-speech markers such as `[BLANK_AUDIO]`, `<|nospeech|>`, and `(no speech)` as `no_usable_speech` instead of a successful transcription. `scripts/manual_verify_linux_whisper_stt.py` records, validates, transcribes that exact WAV, and only plays it back when `--playback` is explicitly provided. `scripts/configure_linux_alsa_monitoring.py` documents and applies a safe ALSA mixer state that mutes microphone playback monitoring while preserving microphone capture and speaker playback for future explicit output.
 
-`core.TextToSpeech` now defines the text-to-speech adapter boundary and V1 request/result contracts. `core.LinuxPiperTextToSpeechAdapter` is the first real offline TTS provider for Raspberry Pi/Linux. It stays behind the adapter boundary, accepts explicit text, runs a local Piper executable with `shell=False`, requires a local ONNX voice model and JSON config, writes a WAV file, and reports structured timing, duration, playback status, and safe failure data. `core.LinuxAlsaSpeakerAdapter` owns explicit ALSA playback through `aplay`; speaker playback is disabled by default and happens only when a TTS request enables playback. Both adapters are disabled by default in `config/modules.example.json`, have capability manifests and resource metadata, and are replaceable without changing Brain or CoreService.
+`core.TextToSpeech` now defines the text-to-speech adapter boundary and V1 request/result contracts. `core.LinuxPiperTextToSpeechAdapter` is the first real offline TTS provider for Raspberry Pi/Linux. It stays behind the adapter boundary, accepts explicit text, runs a local Piper executable with `shell=False`, requires a readable local ONNX voice model and JSON config, writes and validates a WAV file, and reports structured timing, duration, playback status, and safe failure data. `core.LinuxAlsaSpeakerAdapter` owns explicit ALSA playback through `aplay`; it verifies an explicitly selected device against `aplay -l`, speaker playback is disabled by default, and playback happens only when a TTS request enables it. `scripts/manual_verify_linux_tts.py` now evaluates `TextToSpeechResultV1.success` plus the `healthy` status and nested speaker result correctly, prints exact commands and WAV/process diagnostics, and returns a failing exit code for genuine health, synthesis, WAV, or requested-playback failures. Both adapters remain disabled by default in `config/modules.example.json`, have capability manifests and resource metadata, and are replaceable without changing Brain or CoreService.
 
 `core.VoiceCommandRouter` now routes `TranscriptionResult` objects into Voice City without any speech engine dependency. It validates a configurable confidence threshold, ignores empty transcriptions safely, propagates transcription failures, routes valid text through CoreService's `voice.text_loop` capability, handles unknown commands with structured safe results, and records local routed/rejected metrics plus `voice_command.routed` and `voice_command.rejected` events.
 
@@ -493,8 +493,9 @@ Implemented Features
 - Microphone adapter abstraction with `AudioChunk`, `MicrophoneAdapter`, `MicrophoneResult`, `MockMicrophoneAdapter`, safe lifecycle methods, timeout handling, cancellation support, and Voice City dependency injection
 - Speech-to-text adapter abstraction with `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, confidence scores, empty transcription handling, low-confidence handling, safe failure results, and Voice City dependency injection
 - Text-to-speech adapter abstraction with `TextToSpeechRequestV1`, `TextToSpeechResultV1`, `TextToSpeechAdapter`, `MockTextToSpeechAdapter`, offline Piper generation support, safe text normalization, playback-disabled defaults, and Voice City dependency injection
-- Linux ALSA speaker adapter with explicit `aplay` WAV playback, optional device selection, safe argument-list subprocess execution, WAV validation, playback timeouts, and no microphone monitoring
+- Linux ALSA speaker adapter with explicit `aplay` WAV playback, selected-device discovery through `aplay -l`, safe argument-list subprocess execution, WAV validation, playback timeouts, and no microphone monitoring
 - Disabled-by-default Linux Piper TTS adapter with local ONNX voice model/config validation, offline WAV generation, optional explicit ALSA playback through the speaker adapter, structured failure results, and no cloud fallback
+- Hardened Raspberry Pi TTS verifier with correct nested V1 health evaluation, explicit WAV metadata checks, exact Piper/ALSA command diagnostics, raw subprocess failure output, deterministic exit codes, and generated-WAV preservation after playback failure
 - Voice Command Router with confidence gating, empty-transcription handling, unknown-command handling, CoreService `voice.text_loop` routing, routed/rejected metrics, and routed/rejected events
 - Simulated VoicePipeline connecting mock microphone audio, mock speech-to-text, VoiceCommandRouter, CoreService route-by-capability, mock output, session/correlation ids, and structured stage events
 - Architecture Hardening Checkpoint before real hardware/adapters with enforced lifecycle, versioned interface contracts, capability manifests, memory/database migrations, health checks plus controlled adapter fallback, and measured resource budgets implemented
@@ -523,7 +524,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 723 tests across current core modules
+- Pytest automated coverage for 742 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -542,7 +543,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `723 tests`.
+Current pytest collection: `742 tests`.
 
 Manual Calculator Launch Verification
 
@@ -750,7 +751,9 @@ python scripts/manual_verify_linux_tts.py \
   --device plughw:CARD=Device,DEV=0
 ```
 
-Generated WAV samples are written under `data/manual_tts_samples/` by default and are ignored by git. This checkpoint does not add GPT, wake-word detection, background listening, automatic microphone activation, a conversation loop, or cloud fallback.
+Verified Raspberry Pi 5 result before this checkpoint: the local Piper runtime loaded `en_US-amy-low`, generated a valid WAV, direct `aplay -D plughw:CARD=Device,DEV=0` playback succeeded through the USB speaker, and the owner confirmed the generated voice was audible. The former script-only failure was a verifier predicate bug, not a Piper, model, WAV, ALSA, or speaker failure.
+
+The corrected verifier treats health as valid only when the V1 TTS result has `success=true` and `status=healthy`, its nested speaker health is also successful and healthy, the Piper/model/config/output checks pass, and the selected ALSA device is present. It prints the resolved paths, selected device, exact Piper command, exact `aplay` command when playback is requested, process exit codes, raw failure output, and WAV duration/sample rate/channels/sample width/file size. Generated WAV samples are written under `data/manual_tts_samples/` by default and are ignored by git. This checkpoint does not add GPT, wake-word detection, background listening, automatic microphone activation, a conversation loop, or cloud fallback.
 
 Continuous Integration
 
@@ -927,13 +930,14 @@ Completed:
 - Raspberry Pi whisper.cpp runtime preparation and verification scripts
 - Hardened Raspberry Pi speech-input verification and ALSA monitoring helper
 - Offline Piper text-to-speech adapter and explicit ALSA speaker playback
+- Hardened real Raspberry Pi TTS verification and selected-device health validation
 - Voice City foundation
 - Voice City input/output contracts
 - Voice City text loop foundation
 
 Next:
 
-1. Run the manual Raspberry Pi TTS verification with playback
+1. Pull latest `main` and rerun the corrected manual Raspberry Pi TTS verifier with playback
 2. Run a real single-turn voice loop
 3. Only later add wake-word/background listening
 4. GPT fallback integration
@@ -1729,23 +1733,33 @@ Phase 72
 - `core.LinuxAlsaSpeakerAdapter` plays WAV files through `aplay` only when playback is explicitly requested
 - `scripts/install_piper_raspberry_pi.py` prepares Piper and the `en_US-amy-low` voice model/config when manually run
 - `scripts/manual_verify_linux_tts.py` validates generation and optionally plays through a configured USB ALSA device with `--playback`
-- Current pytest collection is 723 tests
+- Phase pytest collection at this point was 723 tests
 - No GPT, wake word, background listener, automatic microphone activation, memory writes based on voice, cloud fallback, autonomous loop, or conversation loop was added
 
 Phase 73
 
+- Reliable Raspberry Pi text-to-speech verification
+- Fixed the false health failure caused by checking a nonexistent serialized `healthy` key instead of the V1 result's `success` and `status` fields
+- `LinuxAlsaSpeakerAdapter` now verifies a selected ALSA playback device through `aplay -l`
+- The manual verifier validates generated WAV metadata, prints exact Piper/ALSA commands and failure output, preserves WAVs after playback failure, and returns deterministic exit codes
+- Direct Piper generation and USB ALSA playback were verified on Raspberry Pi 5; the owner confirmed audible speech
+- Current pytest collection is 742 tests
+- No GPT, wake word, background listener, automatic microphone activation, memory writes based on voice, cloud fallback, autonomous loop, or conversation loop was added
+
+Phase 74
+
 - Phase 3 Real Voice Integration next block
-- Run manual TTS verification on the Raspberry Pi
+- Pull latest `main` and rerun the corrected ARES manual TTS verifier on the Raspberry Pi
 - Run a real single-turn voice loop
 - Only later add wake-word/background listening
 
-Phase 74
+Phase 75
 
 - Future voice expansion
 - Wake word
 - Continuous conversation
 
-Phase 75
+Phase 76
 
 - Future vision
 - Camera understanding

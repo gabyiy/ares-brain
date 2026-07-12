@@ -458,16 +458,19 @@ Design boundary:
 
 Adapter responsibilities:
 
-- verify that a local Piper executable is installed
-- verify the selected ONNX voice model exists
-- verify the voice configuration JSON exists
+- verify that a local Piper executable is installed and executable
+- verify the selected ONNX voice model exists and is readable
+- verify the voice configuration JSON exists and is readable
+- verify that the actual output directory is writable
 - validate text length and voice selection
 - generate a WAV file from explicit text using `shell=False`
 - return structured `TextToSpeechResultV1` data with normalized text, engine, voice, generated WAV path, duration, processing time, playback status, and safe errors
 - preserve text output fallback if generation or playback fails
 - never download models or call cloud services at runtime
 
-`core.LinuxAlsaSpeakerAdapter` is the playback-device boundary. It validates generated WAV files and plays them with `aplay` only when requested by an explicit TTS request or owner-run script. It never enables microphone monitoring, never plays during capture, and never runs shell commands.
+`core.LinuxAlsaSpeakerAdapter` is the playback-device boundary. It validates an explicitly configured ALSA device against structured `aplay -l` output, validates generated WAV files, and plays them with `aplay` only when requested by an explicit TTS request or owner-run script. It never enables microphone monitoring, never plays during capture, and never runs shell commands.
+
+The composite Piper health contract uses the existing V1 structured result. A healthy adapter returns `success=true` and `status=healthy`, with the nested `SpeakerPlaybackResult` also reporting `success=true` and `status=healthy`. Callers must inspect those contract fields explicitly; serialized result dictionaries do not contain a separate top-level `healthy` boolean.
 
 Manual Raspberry Pi setup:
 
@@ -506,9 +509,21 @@ python scripts/manual_verify_linux_tts.py \
   --device plughw:CARD=Device,DEV=0
 ```
 
+The verifier resolves and prints the Piper/model/config/output paths, selected speaker device, exact Piper command, exact `aplay` command when enabled, process exit codes, raw stdout/stderr on process failures, and generated WAV duration, sample rate, channels, sample width, and file size. It exits nonzero for genuine health, synthesis, WAV validation, or requested-playback failures. Playback failure does not delete the generated WAV.
+
+Real Raspberry Pi 5 evidence for this checkpoint:
+
+- Piper runtime installation completed successfully.
+- The `en_US-amy-low` model and configuration loaded successfully.
+- Piper generated a valid WAV.
+- Direct ALSA playback through `plughw:CARD=Device,DEV=0` succeeded.
+- The owner confirmed the generated voice was audible through the USB speaker.
+
+The previous `FAIL: TTS health check failed.` result was isolated to the manual verifier: it serialized the valid V1 result and queried a nonexistent `healthy` key. Piper generation and ALSA playback were already healthy. The verifier now checks the explicit V1 success/status fields and nested speaker health result.
+
 This checkpoint does not add GPT, wake-word detection, background listening, automatic microphone activation, memory writes based on voice, a conversation loop, cloud fallback, or robot movement.
 
-Current pytest collection after this checkpoint: 723 tests.
+Current pytest collection after this checkpoint: 742 tests.
 
 # Architecture Hardening Checkpoint
 
@@ -607,7 +622,7 @@ Safety regression guarantees:
 
 After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice checkpoints are the Linux ALSA microphone adapter, offline Whisper STT adapter, Raspberry Pi whisper.cpp runtime preparation scripts, speech-input verification hardening, reliable English-only Whisper verification defaults, offline Piper TTS adapter, and explicit ALSA speaker playback adapter. The next planned sequence is:
 
-1. run the manual Raspberry Pi TTS verification with playback
+1. pull latest `main` and rerun the corrected manual Raspberry Pi TTS verifier with playback
 2. run a real single-turn voice loop
 3. only later add wake-word/background listening
 

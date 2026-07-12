@@ -4,13 +4,13 @@ Last Updated: 2026-07-12
 
 Current Version
 
-ARES v1.76 - Modular Offline Text-To-Speech Output
+ARES v1.77 - Reliable Raspberry Pi Text-To-Speech Verification
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus the first real Phase 3 microphone, offline STT adapter, Raspberry Pi Whisper runtime preparation, speech-input hardening, reliable English-only Whisper verification, and modular offline TTS output checkpoints.
+ARES is at the completed Architecture Hardening foundation plus the first real Phase 3 microphone, offline STT adapter, Raspberry Pi Whisper runtime preparation, speech-input hardening, reliable English-only Whisper verification, modular offline TTS output, and hardened real Raspberry Pi TTS verification checkpoints.
 
 Confirmed Phase 3 foundation:
 
@@ -46,9 +46,12 @@ Confirmed Phase 3 foundation:
 - Linux Piper offline TTS adapter for explicit Raspberry Pi WAV generation
 - Linux ALSA speaker adapter for explicit USB speaker playback
 - Raspberry Pi Piper setup and manual TTS verification scripts
+- Correct V1/nested speaker health evaluation in the Raspberry Pi TTS verifier
+- Selected ALSA playback-device validation through `aplay -l`
+- Verified direct Piper WAV generation and audible USB speaker playback on Raspberry Pi 5
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 723 tests.
+Current pytest collection: 742 tests.
 
 The only real audio additions are explicit one-shot Linux ALSA microphone capture through `LinuxAlsaMicrophoneAdapter`, explicit offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, explicit offline Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run whisper.cpp and Piper setup/runtime verification scripts, hardened WAV diagnostics, reliable `--language en` verification defaults for the recommended English-only model, and an owner-run ALSA monitoring helper. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, conversation loops, memory writes based on voice, automatic microphone activation, and real device/event automation remain disabled until explicitly approved.
 
@@ -243,7 +246,10 @@ TTS behavior:
 - New speaker boundary: `core.SpeakerOutputAdapter`.
 - New Linux speaker adapter: `core.LinuxAlsaSpeakerAdapter`.
 - `LinuxPiperTextToSpeechAdapter` generates WAV files from explicit text through a local Piper executable with `shell=False`.
-- `LinuxAlsaSpeakerAdapter` plays WAV files through `aplay` only when playback is explicitly requested.
+- `LinuxAlsaSpeakerAdapter` validates an explicitly selected device through `aplay -l` and plays WAV files through `aplay` only when playback is explicitly requested.
+- `scripts/manual_verify_linux_tts.py` checks the V1 result's `success` and `status` fields plus nested speaker health, validates generated WAV metadata, and reports deterministic process exit codes.
+- The verifier prints resolved paths, selected device, exact Piper and requested `aplay` commands, WAV duration/sample rate/channels/sample width/file size, and raw stdout/stderr when a subprocess fails.
+- Playback failure preserves the generated WAV for diagnosis.
 - Playback is disabled by default and no microphone monitoring is enabled.
 - `linux_piper_text_to_speech_adapter` and `linux_alsa_speaker_adapter` are disabled by default in module config and have capability manifests/resource metadata.
 - Tests mock subprocess and filesystem behavior and do not require Raspberry Pi hardware, Piper, a real model, or a speaker.
@@ -285,6 +291,16 @@ python scripts/manual_verify_linux_tts.py \
   --playback \
   --device plughw:CARD=Device,DEV=0
 ```
+
+Verified Raspberry Pi result supplied by the owner:
+
+- Piper runtime installed successfully.
+- The `en_US-amy-low` model loaded successfully.
+- Piper generated a valid WAV.
+- Direct ALSA playback through `plughw:CARD=Device,DEV=0` succeeded.
+- The generated voice was clearly audible through the USB speaker.
+
+False-health root cause: the old manual verifier called `to_dict()` on a healthy `TextToSpeechResultV1` and then queried `health.get("healthy")`. That key is not part of the V1 contract, so it returned `None` and forced failure even though the contract contained `success=true`, `status=healthy`, and healthy nested speaker data. The corrected verifier evaluates those explicit structured fields.
 
 Speech-to-text adapter abstraction exists.
 
@@ -1861,11 +1877,11 @@ Text REPL
 
 Immediate Next Milestone
 
-Phase 3 real voice integration can continue next by running the manual Raspberry Pi TTS verification with playback, then wiring the first real single-turn voice loop. Do not add additional real audio hardware behavior without explicit approval.
+Phase 3 real voice integration can continue next by pulling latest `main`, rerunning the corrected manual Raspberry Pi TTS verifier with playback, and then wiring the first real single-turn voice loop. Do not add additional real audio hardware behavior without explicit approval.
 
 Next technical choices:
 
-- Run manual TTS verification with `scripts/manual_verify_linux_tts.py --playback`.
+- Pull latest `main` and rerun manual TTS verification with `scripts/manual_verify_linux_tts.py --playback`.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
 - Run a real single-turn voice loop.
 - Only later add wake-word/background listening.
@@ -1879,7 +1895,7 @@ Next technical choices:
 Future Roadmap
 
 1. Phase 3 Real Voice Integration
-2. Run manual TTS verification on the Raspberry Pi
+2. Rerun the corrected manual TTS verification on the Raspberry Pi
 3. Run a real single-turn voice loop
 4. Only later add wake-word/background listening
 5. GPT fallback integration
@@ -1895,7 +1911,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 723 tests.
+- Current pytest collection: 742 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1958,6 +1974,9 @@ Verification Notes
 
 Latest Commits
 
+- `73dd9d6` Fix Raspberry Pi TTS verification
+- `93ea0eb` Document modular offline TTS checkpoint
+- `cdfbbea` Add modular offline Linux TTS output
 - `f5b4d1f` Fix Whisper speech input verification
 - `34e6bfa` Harden Raspberry Pi speech input verification
 - `67942dc` Add Raspberry Pi whisper runtime setup scripts
