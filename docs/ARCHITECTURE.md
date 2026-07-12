@@ -527,13 +527,58 @@ Real Raspberry Pi 5 evidence for this checkpoint:
 - Piper generated a valid WAV.
 - Direct ALSA playback through `plughw:CARD=Device,DEV=0` succeeded.
 - The owner confirmed the generated voice was audible through the USB speaker.
-- The corrected profile-aware verifier has not yet been run audibly with `en_US-hfc_male-medium`; that remains the next explicit hardware check.
+- The configured `en_US-hfc_male-medium` default loaded and played successfully; the owner audibly confirmed the male voice on Raspberry Pi 5.
 
 The previous `FAIL: TTS health check failed.` result was isolated to the manual verifier: it serialized the valid V1 result and queried a nonexistent `healthy` key. Piper generation and ALSA playback were already healthy. The verifier now checks the explicit V1 success/status fields and nested speaker health result.
 
 This checkpoint does not add GPT, wake-word detection, background listening, automatic microphone activation, memory writes based on voice, a conversation loop, cloud fallback, or robot movement.
 
-Current pytest collection after the voice-profile checkpoint: 771 tests.
+Voice-profile checkpoint collection: 771 tests.
+
+# Controlled Single-Turn Voice Pipeline
+
+`core.SingleTurnVoicePipeline` is an owner-triggered orchestration service. It runs exactly one request and stops; it does not own a wake word, loop, daemon, scheduler, or background microphone.
+
+Runtime route:
+
+```text
+SingleTurnVoiceRequestV1
+  -> LinuxAlsaMicrophoneAdapter
+  -> SpeechToTextAdapter / LinuxWhisperSpeechToTextAdapter
+  -> VoiceCommandRouter
+  -> CoreService voice.text_loop
+  -> SkillManager
+  -> IntentParser
+  -> Planner / ExecutionPipeline
+  -> selected local Skill
+  -> TextToSpeechAdapter / LinuxPiperTextToSpeechAdapter
+  -> SpeakerOutputAdapter / LinuxAlsaSpeakerAdapter
+  -> SingleTurnVoiceResultV1
+```
+
+The orchestration is split into focused boundaries:
+
+- `SingleTurnVoicePipeline` owns lifecycle, resource reservation, task-slot release, health preflight, bounded event logging, cleanup, and final V1 result assembly.
+- `SingleTurnVoiceStageMixin` owns the ordered capture, transcription, Brain, synthesis, and playback stages.
+- `VoiceStageCoordinator` rejects capture/playback overlap and concurrent Whisper/Piper stages.
+- `core.WavAudio` provides engine-neutral WAV read/write and PCM signal diagnostics.
+- `scripts/manual_verify_single_turn_voice.py` only creates adapters/contracts and invokes the pipeline; it contains no ALSA, Whisper, Piper, or subprocess implementation.
+
+The `single_turn_voice_pipeline` capability manifest declares its contracts, lifecycle operations, permissions, and a logical 160 MB heavy-module reservation with one task slot. The Raspberry Pi resource profile permits only one heavy module, so one turn cannot overlap another local heavy speech turn. Declared estimates remain policy values, not exact per-module measurements.
+
+Execution order is enforced:
+
+1. validate the V1 request, reserve capacity, start lifecycle, and health-check required components
+2. reject pre-existing speaker playback, then capture one WAV and stop the microphone
+3. validate WAV metadata/RMS and run Whisper only for usable audio
+4. route recognized text through the existing local Brain/text path
+5. run Piper only after Whisper has released the heavy stage
+6. run ALSA playback only after capture is inactive and only when explicitly requested
+7. stop adapters, release task/resource state, apply cleanup policy, and return
+
+Silence and blank transcription stop before Brain/TTS. Brain failures produce the local fallback `I could not process that request.` without cloud services. TTS failures preserve and print the Brain response. Playback failures preserve the generated WAV. Cancellation and adapter timeouts release task slots and invoke adapter cleanup hooks. Operational events contain stage/status/timing metadata, not raw audio or transcript contents.
+
+The current collection after this checkpoint is 812 tests.
 
 # Architecture Hardening Checkpoint
 
@@ -630,11 +675,11 @@ Safety regression guarantees:
 
 # Next Project Block
 
-After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice checkpoints are the Linux ALSA microphone adapter, offline Whisper STT adapter, Raspberry Pi whisper.cpp runtime preparation scripts, speech-input verification hardening, reliable English-only Whisper verification defaults, offline Piper TTS adapter, explicit ALSA speaker playback adapter, and validated configurable Piper voice profiles. The next planned sequence is:
+After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. Completed checkpoints now include ALSA capture/playback, offline Whisper, offline Piper, validated voice profiles, and the controlled single-turn pipeline. The next planned sequence is:
 
-1. install and audibly verify the configured `en_US-hfc_male-medium` profile on Raspberry Pi
-2. run a real single-turn voice loop
-3. only later add wake-word/background listening
+1. run and validate the controlled single-turn command on Raspberry Pi hardware
+2. measure real stage timing and tune RMS thresholds from observed results
+3. only later consider wake-word/background listening
 
 This is a future implementation block. The current runtime still has no Vosk, wake word, GPT, internet access, background listener, daemon, scheduler, autonomous loop, conversation loop, automatic microphone activation, or cloud TTS fallback.
 
@@ -1098,7 +1143,7 @@ Current boundary:
 
 ## Voice City
 
-Voice City has started with a safe service skeleton, a one-shot text loop, adapter contracts, a VoiceCommandRouter, and a simulated end-to-end VoicePipeline. The current placeholder service exposes status and capability discovery. Mock/null adapters remain the default automated path, while explicit disabled-by-default Linux adapters now cover one-shot ALSA microphone capture, offline Whisper WAV transcription, offline Piper WAV generation, and explicit ALSA speaker playback for Raspberry Pi verification. Future Voice City work will own wake word detection, continuous voice session state, and alternate speech engines such as Vosk. The Brain should receive structured user text and return structured responses; it should not contain microphone, speaker, speech-engine, or audio driver code.
+Voice City includes a safe service skeleton, mock session loops, adapter contracts, VoiceCommandRouter, the simulated VoicePipeline, and an explicit controlled `SingleTurnVoicePipeline`. Mock/null adapters remain the default automated path; owner-run Linux adapters cover one-shot ALSA capture, offline Whisper transcription, offline Piper synthesis, and explicit ALSA playback. Future Voice City work may own wake-word and continuous-session behavior only after separate approval. The Brain receives structured text and responses; it contains no microphone, speaker, speech-engine, model-path, or audio-driver code.
 
 ## Vision City
 

@@ -4,13 +4,13 @@ Last Updated: 2026-07-12
 
 Current Version
 
-ARES v1.78 - Configurable Piper Voice Profiles
+ARES v1.79 - Controlled Single-Turn Voice Pipeline
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus the first real Phase 3 microphone, offline STT adapter, Raspberry Pi Whisper runtime preparation, speech-input hardening, reliable English-only Whisper verification, modular offline TTS output, hardened real Raspberry Pi TTS verification, and configurable Piper voice-profile checkpoints.
+ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, and a controlled owner-triggered single-turn voice pipeline.
 
 Confirmed Phase 3 foundation:
 
@@ -53,9 +53,13 @@ Confirmed Phase 3 foundation:
 - Official `en_US-hfc_male-medium` configured as the default ARES voice
 - Previously verified `en_US-amy-low` retained as an optional profile
 - Profile-aware Piper installer, health checks, result metadata, and manual verifier/listing
+- Owner-confirmed real Raspberry Pi playback of the default `en_US-hfc_male-medium` profile
+- Versioned controlled single-turn voice request/result contracts
+- Lifecycle/resource-gated microphone -> Whisper -> Brain -> Piper -> speaker orchestration
+- Owner-run `scripts/manual_verify_single_turn_voice.py` with real and simulated-text modes
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 771 tests.
+Current pytest collection: 812 tests.
 
 The only real audio additions are explicit one-shot Linux ALSA microphone capture through `LinuxAlsaMicrophoneAdapter`, explicit offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, explicit offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, and an owner-run ALSA monitoring helper. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know Piper model paths. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, conversation loops, memory writes based on voice, automatic microphone activation, and real device/event automation remain disabled until explicitly approved.
 
@@ -313,9 +317,45 @@ Verified Raspberry Pi result supplied by the owner:
 - Piper generated a valid WAV.
 - Direct ALSA playback through `plughw:CARD=Device,DEV=0` succeeded.
 - The generated voice was clearly audible through the USB speaker.
-- The new default male profile is configuration/test verified but has not yet been installed and audibly verified by the owner on Raspberry Pi.
+- The configured `en_US-hfc_male-medium` default loaded and played successfully; the owner audibly confirmed the male voice.
 
 False-health root cause: the old manual verifier called `to_dict()` on a healthy `TextToSpeechResultV1` and then queried `health.get("healthy")`. That key is not part of the V1 contract, so it returned `None` and forced failure even though the contract contained `success=true`, `status=healthy`, and healthy nested speaker data. The corrected verifier evaluates those explicit structured fields.
+
+Controlled single-turn voice pipeline has been added.
+
+Single-turn behavior:
+
+- New contracts: `SingleTurnVoiceRequestV1` and `SingleTurnVoiceResultV1`.
+- New orchestration modules: `core.SingleTurnVoicePipeline`, `core.SingleTurnVoiceStages`, and `core.SingleTurnVoiceSupport`.
+- New common WAV boundary: `core.WavAudio`.
+- Route: microphone -> local Whisper -> VoiceCommandRouter -> CoreService `voice.text_loop` -> SkillManager -> IntentParser -> Planner/ExecutionPipeline -> selected skill -> local Piper -> ALSA speaker.
+- The script never implements subprocess logic; ALSA, Whisper, and Piper remain inside their existing adapters.
+- One heavy pipeline reservation and one task slot cover the full turn; the reservation/task slot are released in success, failure, timeout, and cancellation paths.
+- `VoiceStageCoordinator` prevents microphone/speaker overlap and Whisper/Piper overlap.
+- Silence and corrupt WAVs stop before Whisper; blank transcription stops before Brain; Brain failure uses a local response; TTS/playback failure preserves useful diagnostics.
+- Operational events are bounded and exclude raw audio/transcript text.
+- Text simulation uses the real SkillManager path while skipping microphone and Whisper; without `--playback` it also skips TTS/speaker.
+- Current pytest collection: 812 tests.
+
+Exact commands:
+
+```bash
+git pull origin main
+python scripts/manual_verify_single_turn_voice.py --text-input "calculate 2 + 2"
+python scripts/manual_verify_single_turn_voice.py \
+  --record-seconds 5 \
+  --microphone-device hw:2,0 \
+  --speaker-device plughw:CARD=Device,DEV=0 \
+  --language en \
+  --whisper-command external/whisper.cpp/build/bin/whisper-cli \
+  --whisper-model models/whisper/ggml-tiny.en.bin \
+  --voice-profile en_US-hfc_male-medium \
+  --min-rms 25 \
+  --timeout 300 \
+  --playback
+```
+
+The automated Windows text simulation produced `Result: 4` through the live SkillManager path. Real Raspberry Pi end-to-end execution of this new combined command remains the next owner-run hardware verification.
 
 Speech-to-text adapter abstraction exists.
 
@@ -1892,13 +1932,13 @@ Text REPL
 
 Immediate Next Milestone
 
-Phase 3 real voice integration can continue next by installing and audibly verifying the configured `en_US-hfc_male-medium` profile on Raspberry Pi, then wiring the first real single-turn voice loop. Do not add additional real audio hardware behavior without explicit approval.
+Run the controlled single-turn command once on the verified Raspberry Pi devices, record measured stage timing/RMS results, and fix only real integration defects found by that explicit test. Do not add wake words, background listening, or continuous conversation without separate approval.
 
 Next technical choices:
 
-- Pull latest `main`, run `python scripts/install_piper_raspberry_pi.py`, list profiles, and verify the default male profile with explicit playback.
+- Pull latest `main` and run `scripts/manual_verify_single_turn_voice.py` with `hw:2,0`, `plughw:CARD=Device,DEV=0`, tiny English Whisper, the configured male profile, and explicit playback.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
-- Run a real single-turn voice loop.
+- Measure the controlled turn on real hardware and tune thresholds only from observed results.
 - Only later add wake-word/background listening.
 - Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
 - Keep voice, GPT, embeddings, external weather/stocks/calendar APIs, real scheduling, notifications, and Raspberry Pi deployment out of scope until explicitly approved.
@@ -1910,8 +1950,8 @@ Next technical choices:
 Future Roadmap
 
 1. Phase 3 Real Voice Integration
-2. Install and audibly verify `en_US-hfc_male-medium` on the Raspberry Pi
-3. Run a real single-turn voice loop
+2. Controlled single-turn voice pipeline completed
+3. Run the complete controlled command on Raspberry Pi hardware
 4. Only later add wake-word/background listening
 5. GPT fallback integration
 6. Raspberry Pi deployment
@@ -1926,7 +1966,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 771 tests.
+- Current pytest collection: 812 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -1989,6 +2029,7 @@ Verification Notes
 
 Latest Commits
 
+- `305117a` Add controlled single-turn voice pipeline
 - `3ea316e` Add configurable Piper voice profiles
 - `58915cb` Document reliable Raspberry Pi TTS verification
 - `73dd9d6` Fix Raspberry Pi TTS verification

@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.78 - Configurable Piper Voice Profiles
+ARES v1.79 - Controlled Single-Turn Voice Pipeline
 
 ---
 
@@ -49,6 +49,8 @@ Raspberry Pi speech-input verification is now hardened for real recordings. The 
 `core.TextToSpeech` now defines the text-to-speech adapter boundary and V1 request/result contracts. `core.LinuxPiperTextToSpeechAdapter` is the first real offline TTS provider for Raspberry Pi/Linux. It stays behind the adapter boundary, accepts explicit text, runs a local Piper executable with `shell=False`, requires a readable local ONNX voice model and JSON config, writes and validates a WAV file, and reports structured timing, duration, playback status, and safe failure data. `core.LinuxAlsaSpeakerAdapter` owns explicit ALSA playback through `aplay`; it verifies an explicitly selected device against `aplay -l`, speaker playback is disabled by default, and playback happens only when a TTS request enables it. `scripts/manual_verify_linux_tts.py` now evaluates `TextToSpeechResultV1.success` plus the `healthy` status and nested speaker result correctly, prints exact commands and WAV/process diagnostics, and returns a failing exit code for genuine health, synthesis, WAV, or requested-playback failures. Both adapters remain disabled by default in `config/modules.example.json`, have capability manifests and resource metadata, and are replaceable without changing Brain or CoreService.
 
 `core.VoiceProfiles` now provides the single validated Piper voice-profile boundary. `config/voice_profiles.json` selects the official `en_US-hfc_male-medium` profile as the default ARES voice and retains the previously verified `en_US-amy-low` profile as an optional voice. Profiles own model/config paths, locale, language, gender metadata, quality, sample rate, source metadata, enabled/default state, and file-integrity metadata. The Piper adapter resolves a requested profile or the one configured default and fails safely for unknown, disabled, malformed, missing, or unapproved-path profiles; Brain and CoreService never select ONNX files.
+
+`core.SingleTurnVoicePipeline` now performs one bounded owner-triggered voice turn and exits. It composes the existing microphone, STT, VoiceCommandRouter/CoreService, SkillManager text path, TTS, and speaker boundaries; lifecycle and resource managers gate execution, `VoiceStageCoordinator` prevents capture/playback and Whisper/Piper overlap, and versioned V1 contracts report every stage. The recognized text reaches the same `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path used by existing local text execution. No wake word, continuous loop, background service, GPT, cloud call, or automatic transcript memory write was added.
 
 `core.VoiceCommandRouter` now routes `TranscriptionResult` objects into Voice City without any speech engine dependency. It validates a configurable confidence threshold, ignores empty transcriptions safely, propagates transcription failures, routes valid text through CoreService's `voice.text_loop` capability, handles unknown commands with structured safe results, and records local routed/rejected metrics plus `voice_command.routed` and `voice_command.rejected` events.
 
@@ -526,7 +528,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 771 tests across current core modules
+- Pytest automated coverage for 812 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -545,7 +547,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `771 tests`.
+Current pytest collection: `812 tests`.
 
 Manual Calculator Launch Verification
 
@@ -765,9 +767,39 @@ python scripts/manual_verify_linux_tts.py \
 
 Select the male profile explicitly with `--voice-profile en_US-hfc_male-medium`. Unknown or disabled profile identifiers fail instead of silently switching voices. To add another voice safely, add one validated unique profile to `config/voice_profiles.json`, keep exactly one enabled default, use official model/config URLs, keep files under `models/piper/`, and run the profile, installer, and TTS test suites before use.
 
-Verified Raspberry Pi 5 baseline: the local Piper runtime loaded `en_US-amy-low`, generated a valid WAV, direct `aplay -D plughw:CARD=Device,DEV=0` playback succeeded through the USB speaker, the corrected verifier returned success, and the owner confirmed the generated voice was audible. The new `en_US-hfc_male-medium` profile is configured and test-verified but still requires the owner-run Raspberry Pi install and audible verification commands above.
+Verified Raspberry Pi 5 baseline: the local Piper runtime and profile registry work, `en_US-hfc_male-medium` is installed as the default ARES profile, Piper generated a valid WAV, ALSA playback succeeded through the USB speaker, and the owner audibly confirmed the male voice. The previously verified `en_US-amy-low` profile remains optional.
 
 The corrected verifier treats health as valid only when the V1 TTS result has `success=true` and `status=healthy`, its nested speaker health is also successful and healthy, the Piper/model/config/output checks pass, and the selected ALSA device is present. It prints the resolved paths, selected device, exact Piper command, exact `aplay` command when playback is requested, process exit codes, raw failure output, and WAV duration/sample rate/channels/sample width/file size. Generated WAV samples are written under `data/manual_tts_samples/` by default and are ignored by git. This checkpoint does not add GPT, wake-word detection, background listening, automatic microphone activation, a conversation loop, or cloud fallback.
+
+Controlled Single-Turn Voice Verification
+
+The owner-run single-turn command records once, stops capture, validates the WAV and RMS level, transcribes locally, routes recognized text through the existing ARES text pipeline, synthesizes the response with the configured Piper profile, optionally plays it, releases lifecycle/resource state, and exits. Playback is disabled unless `--playback` is supplied.
+
+Pull and run a hardware-free text simulation through the real Brain path:
+
+```bash
+git pull origin main
+python scripts/manual_verify_single_turn_voice.py \
+  --text-input "calculate 2 + 2"
+```
+
+Run one real Raspberry Pi turn with the verified devices, local tiny English Whisper model, configured male voice, and explicit playback:
+
+```bash
+python scripts/manual_verify_single_turn_voice.py \
+  --record-seconds 5 \
+  --microphone-device hw:2,0 \
+  --speaker-device plughw:CARD=Device,DEV=0 \
+  --language en \
+  --whisper-command external/whisper.cpp/build/bin/whisper-cli \
+  --whisper-model models/whisper/ggml-tiny.en.bin \
+  --voice-profile en_US-hfc_male-medium \
+  --min-rms 25 \
+  --timeout 300 \
+  --playback
+```
+
+Use `--keep-audio` to retain successful input/response WAVs and `--verbose` for the full structured V1 result. Failures preserve useful diagnostic audio automatically. Operational events store stage/status metadata, not transcript or audio contents.
 
 Continuous Integration
 
@@ -946,15 +978,16 @@ Completed:
 - Offline Piper text-to-speech adapter and explicit ALSA speaker playback
 - Hardened real Raspberry Pi TTS verification and selected-device health validation
 - Validated Piper voice-profile registry with `en_US-hfc_male-medium` as the configured default and Amy retained as optional
+- Controlled owner-triggered single-turn microphone -> Whisper -> Brain -> Piper -> ALSA pipeline
 - Voice City foundation
 - Voice City input/output contracts
 - Voice City text loop foundation
 
 Next:
 
-1. Install and audibly verify the configured `en_US-hfc_male-medium` profile on Raspberry Pi
-2. Run a real single-turn voice loop
-3. Only later add wake-word/background listening
+1. Run and validate the controlled single-turn command on Raspberry Pi hardware
+2. Harden real-device timing and audio thresholds from measured results
+3. Only later consider wake-word/background listening
 4. GPT fallback integration
 5. Raspberry Pi deployment
 6. Robot body / sensors
@@ -1768,30 +1801,37 @@ Phase 74
 - The official `en_US-hfc_male-medium` profile is the configured default ARES voice; the verified `en_US-amy-low` profile remains optional
 - The installer supports default or explicit profile installation and skips valid existing files
 - The manual verifier lists profiles and resolves default/explicit profile identifiers without exposing ONNX paths to Brain or CoreService
-- Current pytest collection is 771 tests
+- Phase pytest collection at this point was 771 tests
 - No GPT, cloud TTS, wake word, background listener, automatic voice switching, autonomous loop, or conversation loop was added
 
 Phase 75
 
-- Phase 3 Real Voice Integration next block
-- Install and audibly verify `en_US-hfc_male-medium` on the Raspberry Pi
-- Run a real single-turn voice loop
-- Only later add wake-word/background listening
+- Controlled single-turn voice pipeline
+- Versioned request/result contracts cover capture, transcription, Brain execution, synthesis, playback, timing, profile resolution, and structured errors
+- The owner-run script composes existing adapters and routes recognized text through SkillManager, IntentParser, Planner, ExecutionPipeline, and the selected local skill
+- Lifecycle/resource gates allow one heavy speech turn, while stage coordination prevents simultaneous capture/playback and Whisper/Piper execution
+- Current pytest collection is 812 tests
+- No GPT, cloud calls, wake word, background listener, automatic transcript memory writes, autonomous loop, or continuous conversation was added
 
 Phase 76
+
+- Explicit Raspberry Pi hardware validation of the controlled single-turn command
+- Measure real stage timing and tune RMS threshold only from observed hardware results
+
+Phase 77
 
 - Future voice expansion
 - Wake word
 - Continuous conversation
 
-Phase 77
+Phase 78
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 78
+Phase 79
 
 - Robotics
 - ROS2

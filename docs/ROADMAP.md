@@ -951,13 +951,25 @@ Phase 74: Configurable Piper Voice Profiles
 - `LinuxPiperTextToSpeechAdapter` resolves requested/default profile identifiers and reports full profile metadata in `TextToSpeechResultV1`; invalid profile selection never silently falls back.
 - `scripts/install_piper_raspberry_pi.py` installs the configured default or an explicit registered profile, verifies files, skips valid downloads, and fails safely for unknown or partial profiles.
 - `scripts/manual_verify_linux_tts.py --list-voices` reports registered/installed/default status without starting Piper or ALSA; `--voice-profile` selects an explicit profile.
-- Current pytest collection is 771 tests.
+- Phase pytest collection at this point was 771 tests.
 - The male profile is implementation/test verified but still requires explicit owner-run installation and audible Raspberry Pi validation.
 - No GPT, cloud TTS, wake word, background listener, automatic voice switching, autonomous loop, or conversation loop was added.
 
+Phase 75: Controlled Single-Turn Voice Pipeline
+
+- `SingleTurnVoiceRequestV1` and `SingleTurnVoiceResultV1` define one complete owner-triggered turn.
+- `SingleTurnVoicePipeline` composes existing microphone, STT, VoiceCommandRouter/CoreService, SkillManager text execution, TTS, and speaker boundaries.
+- Recognized text uses `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill`; unsupported requests return a safe local response.
+- Lifecycle and resource managers gate the pipeline, reserve one heavy module, enforce one task slot, and release state after the turn.
+- `VoiceStageCoordinator` prevents simultaneous microphone/speaker activity and concurrent Whisper/Piper execution.
+- Silence, blank transcription, adapter failures, Brain fallback, cancellation, per-stage/total timeouts, diagnostic WAV preservation, and bounded redacted events are covered.
+- `scripts/manual_verify_single_turn_voice.py` supports real capture and hardware-free `--text-input` simulation without subprocess code in the script.
+- Current pytest collection is 812 tests.
+- No wake word, background microphone, infinite loop, GPT, internet, automatic transcript memory write, robot movement, or boot service was added.
+
 Current State
 
-ARES is currently at the completed Architecture Hardening foundation plus the first real Phase 3 microphone, STT adapter, Raspberry Pi Whisper runtime preparation, speech-input hardening, reliable English-only Whisper verification, modular offline TTS output, reliable Raspberry Pi TTS verification, and configurable Piper voice-profile checkpoints. The assistant remains text-first and deterministic; real audio is available only through explicit owner-run adapters and verification scripts. Voice model selection now stays inside `VoiceProfileRegistry`, with `en_US-hfc_male-medium` configured as the default and `en_US-amy-low` retained as optional. Brain and CoreService do not know Piper paths or select ONNX files.
+ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, and a controlled owner-triggered single-turn voice pipeline. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, Whisper, Piper, model paths, and subprocess details.
 
 The current active interface is:
 
@@ -972,7 +984,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `VoiceProfile`, `VoiceProfileRegistry`, profile-aware `TextToSpeechRequestV1`/`TextToSpeechResultV1`, `LinuxPiperTextToSpeechAdapter`, and `LinuxAlsaSpeakerAdapter` while preserving mock/null adapters and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 771 tests.
+The current pytest collection is 812 tests.
 
 The current memory paths are:
 
@@ -1018,18 +1030,20 @@ Phase 3 Real Voice Integration
 5. Reliable English-mode Whisper verification defaults. Completed.
 6. Modular offline Piper TTS and explicit ALSA speaker playback. Completed.
 7. Configurable Piper voice profiles with `en_US-hfc_male-medium` as default. Completed.
-8. Install and audibly verify the default male profile on Raspberry Pi.
-9. Run a real single-turn voice loop.
-10. Only later add wake-word/background listening.
+8. Install and audibly verify the default male profile on Raspberry Pi. Completed.
+9. Controlled owner-triggered single-turn voice pipeline. Completed.
+10. Run and validate the complete command on Raspberry Pi hardware.
+11. Measure stage timing and tune RMS thresholds from real results.
+12. Only later consider wake-word/background listening.
 
 What Must Not Be Started Yet
 
-- No real voice/audio implementation beyond the safe VoiceService placeholder, microphone adapter abstraction, Linux ALSA one-shot microphone adapter, speech-to-text adapter abstraction, offline Whisper adapter, Raspberry Pi whisper.cpp setup/verification scripts, hardened manual speech-input diagnostics, ALSA monitoring helper, text-to-speech adapter abstraction, offline Piper TTS adapter, explicit Linux ALSA speaker playback adapter, VoiceCommandRouter, VoicePipeline, ModuleLifecycleManager, null input/output components, and one-shot VoiceLoop text bridge.
+- No real voice/audio implementation beyond the explicit adapters, setup/verifier scripts, simulated VoicePipeline, and controlled owner-triggered SingleTurnVoicePipeline already documented.
 - No GPT or LLM integration.
 - No embeddings.
 - No notification scheduling or delivery.
 - No calendar integration.
-- No Raspberry Pi deployment automation beyond manual Whisper runtime setup.
+- No Raspberry Pi deployment automation beyond existing owner-run Whisper/Piper setup and verification scripts.
 - No Vosk, wake word, daemon/service installation, internet access, conversation loop, background listening, automatic microphone activation, GPT, or cloud TTS fallback.
 - No new skills before the roadmap and architecture decision is approved.
 - No AI parser or regex-only parser rewrite.
