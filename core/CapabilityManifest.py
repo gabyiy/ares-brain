@@ -17,6 +17,8 @@ from core.Contracts import (
     CONTRACT_MICROPHONE_CAPTURE_RESULT,
     CONTRACT_SPEECH_TO_TEXT_REQUEST,
     CONTRACT_SPEECH_TO_TEXT_RESULT,
+    CONTRACT_TEXT_TO_SPEECH_REQUEST,
+    CONTRACT_TEXT_TO_SPEECH_RESULT,
     CONTRACT_VERSION_V1,
     CONTRACT_VOICE_COMMAND_REQUEST,
     CONTRACT_VOICE_COMMAND_RESULT,
@@ -27,6 +29,7 @@ from core.Contracts import (
     is_valid_contract_version,
 )
 from core.ResourceBudget import ResourceDeclaration
+from core.ResourceBudget import CPU_WEIGHT_NORMAL, CPU_WEIGHT_TINY, STARTUP_COST_LIGHT
 
 
 MANIFEST_VERSION_V1 = "v1"
@@ -959,7 +962,7 @@ def build_voice_city_manifest(capabilities: Optional[List[str]] = None) -> Capab
                 "voice.output",
                 "voice.command_route",
             ],
-            optional_capabilities=["voice.session"],
+            optional_capabilities=["voice.session", "voice.speak", "voice.playback"],
         ),
         lifecycle_support=[
             LIFECYCLE_OPERATION_START,
@@ -1082,6 +1085,109 @@ def default_voice_related_manifests() -> List[CapabilityManifest]:
             permissions=[],
             lifecycle_support=[],
             metadata={"source": "voice_city", "mock": True},
+        ),
+        CapabilityManifest(
+            module_name="mock_text_to_speech_adapter",
+            module_type=MODULE_TYPE_ADAPTER,
+            module_version=CONTRACT_VERSION_V1,
+            manifest_version=MANIFEST_VERSION_V1,
+            description="Mock text-to-speech adapter for simulated Voice City output.",
+            provider="ares",
+            enabled_by_default=True,
+            capabilities=["voice.speak"],
+            consumed_contracts={CONTRACT_TEXT_TO_SPEECH_REQUEST: [CONTRACT_VERSION_V1]},
+            produced_contracts={CONTRACT_TEXT_TO_SPEECH_RESULT: [CONTRACT_VERSION_V1]},
+            platform=PlatformCompatibility(
+                hardware_requirements={"speaker_required": False}
+            ),
+            permissions=[],
+            lifecycle_support=[
+                LIFECYCLE_OPERATION_START,
+                LIFECYCLE_OPERATION_HEALTH_CHECK,
+                LIFECYCLE_OPERATION_EXECUTE,
+                LIFECYCLE_OPERATION_STOP,
+            ],
+            resources=ResourceDeclaration(
+                estimated_ram_mb=1,
+                estimated_cpu_weight=CPU_WEIGHT_TINY,
+                maximum_concurrent_tasks=1,
+            ),
+            metadata={"source": "voice_city", "mock": True},
+        ),
+        CapabilityManifest(
+            module_name="linux_piper_text_to_speech_adapter",
+            module_type=MODULE_TYPE_ADAPTER,
+            module_version=CONTRACT_VERSION_V1,
+            manifest_version=MANIFEST_VERSION_V1,
+            description="Offline Piper text-to-speech adapter for Raspberry Pi/Linux WAV generation.",
+            provider="ares",
+            enabled_by_default=False,
+            capabilities=["voice.speak"],
+            consumed_contracts={CONTRACT_TEXT_TO_SPEECH_REQUEST: [CONTRACT_VERSION_V1]},
+            produced_contracts={CONTRACT_TEXT_TO_SPEECH_RESULT: [CONTRACT_VERSION_V1]},
+            platform=PlatformCompatibility(
+                supported_operating_systems=["linux"],
+                hardware_requirements={"speaker_required": False}
+            ),
+            permissions=[
+                PERMISSION_FILESYSTEM_READ,
+                PERMISSION_FILESYSTEM_WRITE,
+                PERMISSION_PROCESS_LAUNCH,
+            ],
+            lifecycle_support=[
+                LIFECYCLE_OPERATION_START,
+                LIFECYCLE_OPERATION_HEALTH_CHECK,
+                LIFECYCLE_OPERATION_EXECUTE,
+                LIFECYCLE_OPERATION_STOP,
+            ],
+            resources=ResourceDeclaration(
+                estimated_ram_mb=96,
+                estimated_cpu_weight=CPU_WEIGHT_NORMAL,
+                startup_cost=STARTUP_COST_LIGHT,
+                heavy_module=True,
+                maximum_concurrent_tasks=1,
+                inactivity_timeout_seconds=60,
+            ),
+            metadata={
+                "source": "voice_city",
+                "offline": True,
+                "engine": "piper",
+                "recommended_voice": "en_US-amy-low",
+                "default_enabled": False,
+            },
+        ),
+        CapabilityManifest(
+            module_name="linux_alsa_speaker_adapter",
+            module_type=MODULE_TYPE_ADAPTER,
+            module_version=CONTRACT_VERSION_V1,
+            manifest_version=MANIFEST_VERSION_V1,
+            description="Linux ALSA aplay speaker adapter for Raspberry Pi explicit playback.",
+            provider="ares",
+            enabled_by_default=False,
+            capabilities=["voice.playback"],
+            consumed_contracts={CONTRACT_TEXT_TO_SPEECH_RESULT: [CONTRACT_VERSION_V1]},
+            produced_contracts={CONTRACT_EVENT_PUBLICATION_ENVELOPE: [CONTRACT_VERSION_V1]},
+            platform=PlatformCompatibility(
+                supported_operating_systems=["linux"],
+                hardware_requirements={"speaker_required": True}
+            ),
+            permissions=[PERMISSION_SPEAKER_WRITE, PERMISSION_PROCESS_LAUNCH],
+            lifecycle_support=[
+                LIFECYCLE_OPERATION_START,
+                LIFECYCLE_OPERATION_HEALTH_CHECK,
+                LIFECYCLE_OPERATION_STOP,
+            ],
+            resources=ResourceDeclaration(
+                estimated_ram_mb=1,
+                estimated_cpu_weight=CPU_WEIGHT_TINY,
+                maximum_concurrent_tasks=1,
+            ),
+            metadata={
+                "source": "voice_city",
+                "hardware_specific": "linux_alsa",
+                "uses_aplay": True,
+                "default_enabled": False,
+            },
         ),
         CapabilityManifest(
             module_name="voice_command_router",

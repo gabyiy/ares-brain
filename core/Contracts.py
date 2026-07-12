@@ -14,6 +14,8 @@ CONTRACT_MICROPHONE_CAPTURE_REQUEST = "microphone.capture.request"
 CONTRACT_MICROPHONE_CAPTURE_RESULT = "microphone.capture.result"
 CONTRACT_SPEECH_TO_TEXT_REQUEST = "speech_to_text.transcribe.request"
 CONTRACT_SPEECH_TO_TEXT_RESULT = "speech_to_text.transcribe.result"
+CONTRACT_TEXT_TO_SPEECH_REQUEST = "text_to_speech.synthesize.request"
+CONTRACT_TEXT_TO_SPEECH_RESULT = "text_to_speech.synthesize.result"
 CONTRACT_VOICE_COMMAND_REQUEST = "voice.command.request"
 CONTRACT_VOICE_COMMAND_RESULT = "voice.command.result"
 CONTRACT_CORE_EXECUTION_REQUEST = "core.execution.request"
@@ -341,6 +343,34 @@ class SpeechToTextResultV1(VersionedContract):
 
 
 @dataclass(frozen=True)
+class TextToSpeechRequestV1(VersionedContract):
+    contract_name: str = CONTRACT_TEXT_TO_SPEECH_REQUEST
+    text: str = ""
+    language: str = "en_US"
+    voice_id: str = ""
+    speaking_rate: float = 1.0
+    output_wav_path: str = ""
+    timeout_seconds: Optional[float] = None
+    playback_enabled: bool = False
+
+
+@dataclass(frozen=True)
+class TextToSpeechResultV1(VersionedContract):
+    contract_name: str = CONTRACT_TEXT_TO_SPEECH_RESULT
+    success: bool = False
+    status: str = ""
+    normalized_text: str = ""
+    engine: str = ""
+    voice_id: str = ""
+    generated_audio_path: str = ""
+    duration_seconds: float = 0.0
+    processing_time_seconds: float = 0.0
+    playback_status: str = ""
+    error_message: str = ""
+    data: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class VoiceCommandRequestV1(VersionedContract):
     contract_name: str = CONTRACT_VOICE_COMMAND_REQUEST
     text: str = ""
@@ -442,6 +472,14 @@ def build_default_contract_registry() -> ContractRegistry:
     registry.register(
         CONTRACT_SPEECH_TO_TEXT_RESULT,
         consumers=["VoicePipeline", "SpeechToTextAdapter", "VoiceCommandRouter"],
+    )
+    registry.register(
+        CONTRACT_TEXT_TO_SPEECH_REQUEST,
+        consumers=["TextToSpeechAdapter", "VoiceOutputAdapter"],
+    )
+    registry.register(
+        CONTRACT_TEXT_TO_SPEECH_RESULT,
+        consumers=["TextToSpeechAdapter", "VoiceOutputAdapter"],
     )
     registry.register(
         CONTRACT_VOICE_COMMAND_REQUEST,

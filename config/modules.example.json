@@ -6,6 +6,9 @@
     "mock_speech_to_text_adapter": true,
     "linux_whisper_speech_to_text_adapter": false,
     "mock_voice_output_adapter": true,
+    "mock_text_to_speech_adapter": true,
+    "linux_piper_text_to_speech_adapter": false,
+    "linux_alsa_speaker_adapter": false,
     "voice_command_router": true,
     "voice_session_skill": true
   },
@@ -13,6 +16,8 @@
     "voice.capture": "mock_microphone_adapter",
     "voice.transcribe": "mock_speech_to_text_adapter",
     "voice.output": "mock_voice_output_adapter",
+    "voice.speak": "mock_text_to_speech_adapter",
+    "voice.playback": "linux_alsa_speaker_adapter",
     "voice.command_route": "voice_command_router",
     "voice.session": "voice_session_skill"
   },
