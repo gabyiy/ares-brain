@@ -221,12 +221,15 @@ Current placeholder implementations:
 - `TranscriptionResult` stores transcription text, status, error details, and bounded confidence values.
 - `MockSpeechToTextAdapter` converts `AudioChunk` objects into deterministic test transcriptions, including empty-audio, low-confidence, no-transcription, and failure results without a real speech engine.
 - `LinuxWhisperSpeechToTextAdapter` is the first real offline STT provider. It stays behind the `SpeechToTextAdapter` boundary, accepts WAV files from `LinuxAlsaMicrophoneAdapter` or `AudioChunk` input, runs a local Whisper/whisper.cpp executable with `shell=False`, requires a local model file, and returns structured transcription text, timing, language metadata, and safe failure statuses.
+- `TextToSpeechAdapter` is the speech-output engine boundary. `LinuxPiperTextToSpeechAdapter` is the first real offline TTS provider. It stays behind the TTS adapter boundary, accepts versioned TTS requests, runs a local Piper executable with `shell=False`, requires a local ONNX voice model and JSON config, writes a WAV file, and returns structured generation/playback status.
+- `SpeakerOutputAdapter` is the playback-device boundary. `LinuxAlsaSpeakerAdapter` owns explicit `aplay` WAV playback, validates WAV output, supports optional ALSA device selection, and never enables microphone monitoring or automatic playback.
 - `NullVoiceInput` is backed by a safe placeholder input adapter and does not access a microphone or run STT.
 - `NullVoiceOutput` is backed by a safe placeholder output adapter and does not access speakers or run TTS.
 - `MockVoiceInputAdapter` provides deterministic local/test text capture without microphone access and accepts injected microphone and speech-to-text adapters for future provider wiring.
 - `MockVoiceOutputAdapter` records deterministic local/test speech output without speaker access.
 - `PlaceholderVoiceService` and `NullVoiceInput` accept an injected `MicrophoneAdapter` so Voice City can swap microphone implementations later without changing Brain, CoreService, skills, or current text loops.
 - `PlaceholderVoiceService` and `NullVoiceInput` accept an injected `SpeechToTextAdapter` so Voice City can swap transcription implementations later without changing Brain, CoreService, skills, or current text loops.
+- Voice City can swap future TTS and speaker implementations without changing Brain, CoreService, skills, or current text loops.
 
 Current voice loop foundation:
 
@@ -263,7 +266,7 @@ Current voice loop foundation:
 - The loop does not own routing, planning, or skill execution logic.
 - The loop does not start background listening, wake word detection, microphone access, speaker access, GPT, or internet access.
 
-VoiceService remains the boundary. The current real-audio/STT surface is limited to explicit Linux ALSA one-shot capture through `LinuxAlsaMicrophoneAdapter` and explicit offline Whisper transcription through `LinuxWhisperSpeechToTextAdapter`; both are disabled by default, replaceable, and not wired as autonomous runtime paths. Real Vosk, Piper, speaker/TTS, wake word, background listener, GPT, internet, and conversation-loop integrations come later.
+VoiceService remains the boundary. The current real-audio surface is limited to explicit Linux ALSA one-shot capture through `LinuxAlsaMicrophoneAdapter`, explicit offline Whisper transcription through `LinuxWhisperSpeechToTextAdapter`, explicit offline Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, and explicit ALSA playback through `LinuxAlsaSpeakerAdapter`; all real providers are disabled by default, replaceable, and not wired as autonomous runtime paths. Real Vosk, wake word, background listener, GPT, internet, and conversation-loop integrations come later.
 
 # Linux ALSA Microphone Adapter
 
@@ -449,7 +452,63 @@ Design boundary:
 - speaker output remains behind Voice City output contracts and explicit owner-run manual tools
 - the Brain and CoreService do not call ALSA, `amixer`, `aplay`, or `whisper-cli` directly
 
-Current pytest collection after this checkpoint: 693 tests.
+# Offline Piper Text-To-Speech Adapter
+
+`core.LinuxPiperTextToSpeechAdapter` is hardware/runtime-specific code for Linux/Raspberry Pi and must not be imported by the Brain. It implements the replaceable `TextToSpeechAdapter` boundary and consumes `TextToSpeechRequestV1`.
+
+Adapter responsibilities:
+
+- verify that a local Piper executable is installed
+- verify the selected ONNX voice model exists
+- verify the voice configuration JSON exists
+- validate text length and voice selection
+- generate a WAV file from explicit text using `shell=False`
+- return structured `TextToSpeechResultV1` data with normalized text, engine, voice, generated WAV path, duration, processing time, playback status, and safe errors
+- preserve text output fallback if generation or playback fails
+- never download models or call cloud services at runtime
+
+`core.LinuxAlsaSpeakerAdapter` is the playback-device boundary. It validates generated WAV files and plays them with `aplay` only when requested by an explicit TTS request or owner-run script. It never enables microphone monitoring, never plays during capture, and never runs shell commands.
+
+Manual Raspberry Pi setup:
+
+```bash
+sudo apt update
+sudo apt install -y curl tar alsa-utils
+python scripts/install_piper_raspberry_pi.py
+```
+
+Default local paths:
+
+- Piper runtime: `external/piper/`
+- Voice model: `models/piper/en_US-amy-low.onnx`
+- Voice config: `models/piper/en_US-amy-low.onnx.json`
+- Generated samples: `data/manual_tts_samples/`
+
+Manual verification without playback:
+
+```bash
+python scripts/manual_verify_linux_tts.py \
+  --text "Hello Gabriel. Ares voice output is working." \
+  --piper-command external/piper/piper/piper \
+  --model models/piper/en_US-amy-low.onnx \
+  --config models/piper/en_US-amy-low.onnx.json
+```
+
+Manual verification with explicit USB speaker playback:
+
+```bash
+python scripts/manual_verify_linux_tts.py \
+  --text "Hello Gabriel. Ares voice output is working." \
+  --piper-command external/piper/piper/piper \
+  --model models/piper/en_US-amy-low.onnx \
+  --config models/piper/en_US-amy-low.onnx.json \
+  --playback \
+  --device plughw:CARD=Device,DEV=0
+```
+
+This checkpoint does not add GPT, wake-word detection, background listening, automatic microphone activation, memory writes based on voice, a conversation loop, cloud fallback, or robot movement.
+
+Current pytest collection after this checkpoint: 723 tests.
 
 # Architecture Hardening Checkpoint
 
@@ -546,14 +605,13 @@ Safety regression guarantees:
 
 # Next Project Block
 
-After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice checkpoints are the Linux ALSA microphone adapter, offline Whisper STT adapter, Raspberry Pi whisper.cpp runtime preparation scripts, speech-input verification hardening, and reliable English-only Whisper verification defaults. The next planned sequence is:
+After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. The current completed voice checkpoints are the Linux ALSA microphone adapter, offline Whisper STT adapter, Raspberry Pi whisper.cpp runtime preparation scripts, speech-input verification hardening, reliable English-only Whisper verification defaults, offline Piper TTS adapter, and explicit ALSA speaker playback adapter. The next planned sequence is:
 
-1. run the hardened speech-input verification on the Raspberry Pi
-2. implement a real TTS adapter
-3. run a real single-turn voice loop
-4. only later add wake-word/background listening
+1. run the manual Raspberry Pi TTS verification with playback
+2. run a real single-turn voice loop
+3. only later add wake-word/background listening
 
-This is a future implementation block. The current runtime still has no Vosk, Piper, TTS, wake word, GPT, internet access, background listener, daemon, scheduler, autonomous loop, conversation loop, or real audio output.
+This is a future implementation block. The current runtime still has no Vosk, wake word, GPT, internet access, background listener, daemon, scheduler, autonomous loop, conversation loop, automatic microphone activation, or cloud TTS fallback.
 
 # Measured Resource Budgets
 
@@ -1015,7 +1073,7 @@ Current boundary:
 
 ## Voice City
 
-Voice City has started with a safe service skeleton, a one-shot text loop, adapter contracts, a VoiceCommandRouter, and a simulated end-to-end VoicePipeline. The current placeholder service exposes status and capability discovery. Mock/null adapters remain the default automated path, while explicit disabled-by-default Linux adapters now cover one-shot ALSA microphone capture and offline Whisper WAV transcription for Raspberry Pi verification. Future Voice City work will own real text-to-speech, wake word detection, continuous voice session state, and alternate speech engines such as Vosk or Piper. The Brain should receive structured user text and return structured responses; it should not contain microphone, speaker, speech-engine, or audio driver code.
+Voice City has started with a safe service skeleton, a one-shot text loop, adapter contracts, a VoiceCommandRouter, and a simulated end-to-end VoicePipeline. The current placeholder service exposes status and capability discovery. Mock/null adapters remain the default automated path, while explicit disabled-by-default Linux adapters now cover one-shot ALSA microphone capture, offline Whisper WAV transcription, offline Piper WAV generation, and explicit ALSA speaker playback for Raspberry Pi verification. Future Voice City work will own wake word detection, continuous voice session state, and alternate speech engines such as Vosk. The Brain should receive structured user text and return structured responses; it should not contain microphone, speaker, speech-engine, or audio driver code.
 
 ## Vision City
 

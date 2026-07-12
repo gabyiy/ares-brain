@@ -1,16 +1,16 @@
 ARES Session Handoff
 
-Last Updated: 2026-07-11
+Last Updated: 2026-07-12
 
 Current Version
 
-ARES v1.75 - Reliable Offline Speech Recognition
+ARES v1.76 - Modular Offline Text-To-Speech Output
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus the first real Phase 3 microphone, offline STT adapter, Raspberry Pi Whisper runtime preparation, speech-input hardening, and reliable English-only Whisper verification checkpoints.
+ARES is at the completed Architecture Hardening foundation plus the first real Phase 3 microphone, offline STT adapter, Raspberry Pi Whisper runtime preparation, speech-input hardening, reliable English-only Whisper verification, and modular offline TTS output checkpoints.
 
 Confirmed Phase 3 foundation:
 
@@ -42,11 +42,15 @@ Confirmed Phase 3 foundation:
 - Raspberry Pi whisper.cpp runtime setup and verification scripts
 - Hardened speech-input verification and ALSA monitoring helper
 - Reliable English-mode Whisper verification defaults for `ggml-tiny.en.bin`
+- Text-to-speech adapter abstraction
+- Linux Piper offline TTS adapter for explicit Raspberry Pi WAV generation
+- Linux ALSA speaker adapter for explicit USB speaker playback
+- Raspberry Pi Piper setup and manual TTS verification scripts
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 693 tests.
+Current pytest collection: 723 tests.
 
-The only real audio/STT additions are explicit one-shot Linux ALSA microphone capture through `LinuxAlsaMicrophoneAdapter`, explicit offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, owner-run whisper.cpp setup/runtime verification scripts, hardened WAV diagnostics, reliable `--language en` verification defaults for the recommended English-only model, and an owner-run ALSA monitoring helper. Speaker output for ARES responses, wake word detection, real TTS, Vosk, Piper, background listening, notifications, GPT, internet runtime access, conversation loops, and real device/event automation remain disabled until explicitly approved.
+The only real audio additions are explicit one-shot Linux ALSA microphone capture through `LinuxAlsaMicrophoneAdapter`, explicit offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, explicit offline Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run whisper.cpp and Piper setup/runtime verification scripts, hardened WAV diagnostics, reliable `--language en` verification defaults for the recommended English-only model, and an owner-run ALSA monitoring helper. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, conversation loops, memory writes based on voice, automatic microphone activation, and real device/event automation remain disabled until explicitly approved.
 
 `skills.VoiceSessionSkill` now starts a bounded mock voice session from text commands: "start voice session", "start mock voice", and "run voice test". It uses only `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop`, returns a transcript summary, and is wired through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path.
 
@@ -225,6 +229,61 @@ Equivalent ALSA commands:
 amixer -c 1 sset Mic 0% mute
 amixer -c 1 sset Capture 80% cap
 amixer -c 1 sset Speaker 70% unmute
+```
+
+Text-to-speech adapter abstraction and offline Piper output have been added.
+
+TTS behavior:
+
+- New module: `core.TextToSpeech`.
+- New contracts: `TextToSpeechRequestV1` and `TextToSpeechResultV1`.
+- New interface: `core.TextToSpeechAdapter`.
+- New safe test adapter: `core.MockTextToSpeechAdapter`.
+- New Linux runtime adapter: `core.LinuxPiperTextToSpeechAdapter`.
+- New speaker boundary: `core.SpeakerOutputAdapter`.
+- New Linux speaker adapter: `core.LinuxAlsaSpeakerAdapter`.
+- `LinuxPiperTextToSpeechAdapter` generates WAV files from explicit text through a local Piper executable with `shell=False`.
+- `LinuxAlsaSpeakerAdapter` plays WAV files through `aplay` only when playback is explicitly requested.
+- Playback is disabled by default and no microphone monitoring is enabled.
+- `linux_piper_text_to_speech_adapter` and `linux_alsa_speaker_adapter` are disabled by default in module config and have capability manifests/resource metadata.
+- Tests mock subprocess and filesystem behavior and do not require Raspberry Pi hardware, Piper, a real model, or a speaker.
+- No GPT, wake word, background listener, automatic microphone activation, memory writes based on voice, cloud fallback, autonomous loop, or conversation loop was added.
+
+Recommended Raspberry Pi Piper setup:
+
+```bash
+sudo apt update
+sudo apt install -y curl tar alsa-utils
+python scripts/install_piper_raspberry_pi.py
+```
+
+Default local paths:
+
+- Piper runtime: `external/piper/`
+- Voice model: `models/piper/en_US-amy-low.onnx`
+- Voice config: `models/piper/en_US-amy-low.onnx.json`
+- Generated samples: `data/manual_tts_samples/`
+
+Manual TTS verification without playback:
+
+```bash
+python scripts/manual_verify_linux_tts.py \
+  --text "Hello Gabriel. Ares voice output is working." \
+  --piper-command external/piper/piper/piper \
+  --model models/piper/en_US-amy-low.onnx \
+  --config models/piper/en_US-amy-low.onnx.json
+```
+
+Manual TTS verification with explicit USB speaker playback:
+
+```bash
+python scripts/manual_verify_linux_tts.py \
+  --text "Hello Gabriel. Ares voice output is working." \
+  --piper-command external/piper/piper/piper \
+  --model models/piper/en_US-amy-low.onnx \
+  --config models/piper/en_US-amy-low.onnx.json \
+  --playback \
+  --device plughw:CARD=Device,DEV=0
 ```
 
 Speech-to-text adapter abstraction exists.
@@ -1802,18 +1861,17 @@ Text REPL
 
 Immediate Next Milestone
 
-Phase 3 real voice integration can continue next by running the hardened speech-input verification on the Raspberry Pi, then adding a real TTS adapter. Do not add additional real audio hardware behavior without explicit approval.
+Phase 3 real voice integration can continue next by running the manual Raspberry Pi TTS verification with playback, then wiring the first real single-turn voice loop. Do not add additional real audio hardware behavior without explicit approval.
 
 Next technical choices:
 
-- Run hardened speech-input verification with `scripts/manual_verify_linux_whisper_stt.py`.
-- Disable microphone monitoring with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device still loops mic playback to speaker.
-- Implement a real TTS adapter.
+- Run manual TTS verification with `scripts/manual_verify_linux_tts.py --playback`.
+- Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
 - Run a real single-turn voice loop.
 - Only later add wake-word/background listening.
 - Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
 - Keep voice, GPT, embeddings, external weather/stocks/calendar APIs, real scheduling, notifications, and Raspberry Pi deployment out of scope until explicitly approved.
-- Keep additional real microphone behavior, alternate STT engines, Vosk, Piper, wake word, internet-backed adapters, notifications, and automatic PC actions out of scope until each real-audio step is explicitly approved.
+- Keep additional real microphone behavior, alternate STT engines, Vosk, wake word, internet-backed adapters, notifications, and automatic PC actions out of scope until each real-audio step is explicitly approved.
 - Connect selected daily reflection scripts and future providers to MemoryStore v1 only after the memory contract is documented.
 
 ---
@@ -1821,24 +1879,23 @@ Next technical choices:
 Future Roadmap
 
 1. Phase 3 Real Voice Integration
-2. Run hardened speech-input verification on the Raspberry Pi
-3. Implement a real TTS adapter
-4. Run a real single-turn voice loop
-5. Only later add wake-word/background listening
-6. GPT fallback integration
-7. Raspberry Pi deployment
-8. Robot body / sensors
-9. Vision
-10. Robotics
-11. Jetson Orin migration
-12. Autonomous ARES
+2. Run manual TTS verification on the Raspberry Pi
+3. Run a real single-turn voice loop
+4. Only later add wake-word/background listening
+5. GPT fallback integration
+6. Raspberry Pi deployment
+7. Robot body / sensors
+8. Vision
+9. Robotics
+10. Jetson Orin migration
+11. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 693 tests.
+- Current pytest collection: 723 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
