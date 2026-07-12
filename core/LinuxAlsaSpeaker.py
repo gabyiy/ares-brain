@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from core.LinuxAlsaMicrophone import SafeProcessResult, SafeSubprocessRunner
 from core.LinuxWhisperSpeechToText import analyze_wav_audio
@@ -11,6 +12,9 @@ from core.LinuxWhisperSpeechToText import analyze_wav_audio
 
 ALSA_SPEAKER_STATUS_APLAY_MISSING = "aplay_missing"
 ALSA_SPEAKER_STATUS_INVALID_DEVICE = "invalid_device"
+ALSA_SPEAKER_STATUS_DEVICE_LIST_TIMEOUT = "playback_device_list_timeout"
+ALSA_SPEAKER_STATUS_DEVICE_LIST_FAILED = "playback_device_list_failed"
+ALSA_SPEAKER_STATUS_NO_PLAYBACK_DEVICE = "no_playback_device"
 ALSA_SPEAKER_STATUS_INVALID_WAV = "invalid_wav"
 ALSA_SPEAKER_STATUS_PLAYBACK_TIMEOUT = "playback_timeout"
 ALSA_SPEAKER_STATUS_PLAYBACK_FAILED = "playback_failed"
@@ -129,6 +133,33 @@ class LinuxAlsaSpeakerAdapter(SpeakerOutputAdapter):
                 "invalid_playback_device",
                 device=self.device,
             )
+        device_data: Dict[str, Any] = {
+            "device_available": None,
+            "devices": [],
+        }
+        if self.device:
+            listed = self._list_playback_devices(aplay_path)
+            if not listed.success:
+                return listed
+            devices = listed.data.get("devices", [])
+            if not _speaker_device_available(self.device, devices):
+                return self._failure(
+                    ALSA_SPEAKER_STATUS_INVALID_DEVICE,
+                    "Selected ALSA playback device is not available.",
+                    "alsa_playback_device_not_found",
+                    device=self.device,
+                    data={
+                        "selected_device": self.device,
+                        "available_devices": _available_device_names(devices),
+                        "devices": devices,
+                        "process": listed.data.get("process", {}),
+                    },
+                )
+            device_data = {
+                "device_available": True,
+                "devices": devices,
+                "process": listed.data.get("process", {}),
+            }
         return self._success(
             "healthy",
             "Linux ALSA speaker health check passed.",
@@ -136,6 +167,7 @@ class LinuxAlsaSpeakerAdapter(SpeakerOutputAdapter):
                 "aplay_available": True,
                 "aplay_path": aplay_path,
                 "selected_device": self.device or "",
+                **device_data,
             },
         )
 
@@ -248,11 +280,57 @@ class LinuxAlsaSpeakerAdapter(SpeakerOutputAdapter):
             return str(found)
         path = Path(self.aplay_command).expanduser()
         try:
-            if path.exists() and path.is_file() and path.stat().st_size > 0:
+            executable = os.access(path, os.R_OK)
+            if os.name == "posix":
+                executable = executable and os.access(path, os.X_OK)
+            if (
+                path.exists()
+                and path.is_file()
+                and path.stat().st_size > 0
+                and executable
+            ):
                 return str(path)
         except OSError:
             return ""
         return ""
+
+    def _list_playback_devices(self, aplay_path: str) -> SpeakerPlaybackResult:
+        result = self.runner.run(
+            [aplay_path, "-l"],
+            timeout_seconds=min(self.timeout_seconds, 10.0),
+        )
+        process = _safe_process_data(result)
+        if result.timed_out:
+            return self._failure(
+                ALSA_SPEAKER_STATUS_DEVICE_LIST_TIMEOUT,
+                "Timed out while listing ALSA playback devices.",
+                "aplay_device_list_timeout",
+                device=self.device or "",
+                data={"process": process},
+            )
+        if result.returncode != 0:
+            return self._failure(
+                ALSA_SPEAKER_STATUS_DEVICE_LIST_FAILED,
+                "aplay failed while listing playback devices.",
+                f"aplay_exit_{result.returncode}",
+                device=self.device or "",
+                data={"process": process},
+            )
+        devices = parse_aplay_playback_devices(result.stdout)
+        if not devices:
+            return self._failure(
+                ALSA_SPEAKER_STATUS_NO_PLAYBACK_DEVICE,
+                "aplay is available, but no ALSA playback devices were found.",
+                "no_playback_device",
+                device=self.device or "",
+                data={"devices": [], "process": process},
+            )
+        return self._success(
+            "devices",
+            f"Detected {len(devices)} ALSA playback device(s).",
+            device=self.device or "",
+            data={"devices": devices, "process": process},
+        )
 
     def _success(
         self,
@@ -315,6 +393,62 @@ def _safe_alsa_device(device: str) -> bool:
     return bool(device) and bool(re.match(r"^[A-Za-z0-9_.,:=+-]+$", device))
 
 
+def parse_aplay_playback_devices(output: str) -> List[Dict[str, Any]]:
+    devices: List[Dict[str, Any]] = []
+    pattern = re.compile(
+        r"^card\s+(?P<card_index>\d+):\s*"
+        r"(?P<card_id>[^\[]+)\[(?P<card_name>[^\]]+)\],\s*"
+        r"device\s+(?P<device_index>\d+):\s*"
+        r"(?P<device_id>[^\[]+)\[(?P<device_name>[^\]]+)\]"
+    )
+    for raw_line in str(output or "").splitlines():
+        line = raw_line.strip()
+        match = pattern.match(line)
+        if not match:
+            continue
+        card_index = int(match.group("card_index"))
+        device_index = int(match.group("device_index"))
+        card_id = match.group("card_id").strip()
+        aliases = [
+            f"hw:{card_index},{device_index}",
+            f"plughw:{card_index},{device_index}",
+            f"hw:CARD={card_id},DEV={device_index}",
+            f"plughw:CARD={card_id},DEV={device_index}",
+        ]
+        devices.append(
+            {
+                "card_index": card_index,
+                "card_id": card_id,
+                "card_name": match.group("card_name").strip(),
+                "device_index": device_index,
+                "device_id": match.group("device_id").strip(),
+                "device_name": match.group("device_name").strip(),
+                "alsa_devices": aliases,
+                "raw_line": line,
+            }
+        )
+    return devices
+
+
+def _speaker_device_available(device: str, devices: List[Dict[str, Any]]) -> bool:
+    selected = str(device or "").strip().lower()
+    return any(
+        selected == str(alias).lower()
+        for item in devices
+        for alias in item.get("alsa_devices", [])
+    )
+
+
+def _available_device_names(devices: List[Dict[str, Any]]) -> List[str]:
+    return sorted(
+        {
+            str(alias)
+            for item in devices
+            for alias in item.get("alsa_devices", [])
+        }
+    )
+
+
 def _positive_timeout(value: float) -> float:
     parsed = float(value)
     if parsed <= 0 or parsed > 900:
@@ -327,6 +461,8 @@ def _safe_process_data(result: SafeProcessResult) -> Dict[str, Any]:
         "args": list(result.args),
         "command": " ".join(str(arg) for arg in result.args),
         "returncode": result.returncode,
+        "stdout": str(result.stdout or ""),
+        "stderr": str(result.stderr or ""),
         "stdout_preview": str(result.stdout or "")[:4000],
         "stderr_preview": str(result.stderr or "")[:4000],
         "timed_out": result.timed_out,

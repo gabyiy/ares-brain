@@ -1,3 +1,4 @@
+from pathlib import Path
 import wave
 
 from core import (
@@ -270,6 +271,17 @@ def test_linux_piper_missing_model_config_fails_safely(tmp_path):
     assert result.status == PIPER_STATUS_CONFIG_MISSING
 
 
+def test_linux_piper_health_rejects_invalid_output_directory(tmp_path):
+    adapter = create_adapter(tmp_path)
+    adapter.output_dir.write_text("not a directory", encoding="utf-8")
+
+    result = adapter.health_check()
+
+    assert result.success is False
+    assert result.status == "tts_output_unwritable"
+    assert result.error_message.startswith("output_unwritable:")
+
+
 def test_linux_piper_rejects_invalid_voice(tmp_path):
     adapter = create_adapter(tmp_path)
 
@@ -302,6 +314,19 @@ def test_linux_piper_nonzero_process_is_structured(tmp_path):
     assert result.status == PIPER_STATUS_FAILED
     assert result.error_message == "piper_exit_2"
     assert result.data["process"]["stderr_preview"] == "bad model"
+    assert result.data["process"]["stderr"] == "bad model"
+
+
+def test_linux_piper_invalid_output_directory_fails_safely(tmp_path):
+    adapter = create_adapter(tmp_path)
+    blocked_parent = tmp_path / "blocked"
+    blocked_parent.write_text("not a directory", encoding="utf-8")
+
+    result = adapter.synthesize(request(output_path=blocked_parent / "speech.wav"))
+
+    assert result.success is False
+    assert result.status == "tts_output_unwritable"
+    assert result.error_message.startswith("output_unwritable:")
 
 
 def test_linux_piper_missing_output_file_is_rejected(tmp_path):
@@ -352,6 +377,7 @@ def test_linux_piper_speaker_failure_preserves_wav_and_text_fallback(tmp_path):
     assert result.success is False
     assert result.status == PIPER_STATUS_PLAYBACK_FAILED
     assert result.generated_audio_path
+    assert Path(result.generated_audio_path).exists()
     assert result.data["text_output_fallback"] == "Hello Gabriel"
     assert result.data["playback"]["status"] == ALSA_SPEAKER_STATUS_PLAYBACK_FAILED
 
@@ -411,11 +437,23 @@ def test_linux_piper_resource_budget_limits_one_heavy_voice_model():
 
 
 def test_core_service_does_not_import_tts_or_alsa_implementations():
-    from pathlib import Path
-
     source = Path("core/CoreService.py").read_text(encoding="utf-8")
 
     assert "LinuxPiperTextToSpeechAdapter" not in source
     assert "LinuxAlsaSpeakerAdapter" not in source
     assert "piper" not in source.lower()
     assert "aplay" not in source.lower()
+
+
+def test_brain_routing_layers_do_not_import_piper_or_aplay():
+    for path in (
+        Path("core/intent_router.py"),
+        Path("core/Planner.py"),
+        Path("core/ExecutionPipeline.py"),
+        Path("interfaces/text_repl.py"),
+    ):
+        source = path.read_text(encoding="utf-8").lower()
+        assert "linuxpipertexttospeechadapter" not in source
+        assert "linuxalsaspeakeradapter" not in source
+        assert "subprocess" not in source
+        assert "aplay" not in source

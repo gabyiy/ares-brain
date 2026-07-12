@@ -9,14 +9,30 @@ from core import (
     ALSA_SPEAKER_STATUS_PLAYED,
     LinuxAlsaSpeakerAdapter,
     SafeProcessResult,
+    parse_aplay_playback_devices,
 )
 
 
+APLAY_DEVICE_LIST = """\
+**** List of PLAYBACK Hardware Devices ****
+card 2: Device [USB Audio Device], device 0: USB Audio [USB Audio]
+  Subdevices: 1/1
+"""
+
+
 class FakeSpeakerRunner:
-    def __init__(self, available=True, returncode=0, timed_out=False, stderr=""):
+    def __init__(
+        self,
+        available=True,
+        returncode=0,
+        timed_out=False,
+        stdout="",
+        stderr="",
+    ):
         self.available = available
         self.returncode = returncode
         self.timed_out = timed_out
+        self.stdout = stdout
         self.stderr = stderr
         self.calls = []
 
@@ -29,6 +45,7 @@ class FakeSpeakerRunner:
         return SafeProcessResult(
             args=safe_args,
             returncode=-1 if self.timed_out else self.returncode,
+            stdout=self.stdout,
             stderr=self.stderr,
             timed_out=self.timed_out,
             error_message="process_timeout" if self.timed_out else "",
@@ -51,6 +68,51 @@ def test_linux_alsa_speaker_health_check_requires_aplay():
     assert result.success is False
     assert result.status == ALSA_SPEAKER_STATUS_APLAY_MISSING
     assert result.metadata["audio_hardware_accessed"] is False
+
+
+def test_linux_alsa_speaker_health_check_accepts_available_selected_device():
+    runner = FakeSpeakerRunner(stdout=APLAY_DEVICE_LIST)
+    adapter = LinuxAlsaSpeakerAdapter(
+        device="plughw:CARD=Device,DEV=0",
+        runner=runner,
+    )
+
+    result = adapter.health_check()
+
+    assert result.success is True
+    assert result.status == "healthy"
+    assert result.data["device_available"] is True
+    assert result.data["selected_device"] == "plughw:CARD=Device,DEV=0"
+    assert result.data["process"]["args"] == ["/usr/bin/aplay", "-l"]
+    assert result.metadata["audio_hardware_accessed"] is False
+
+
+def test_linux_alsa_speaker_health_check_rejects_unavailable_selected_device():
+    runner = FakeSpeakerRunner(stdout=APLAY_DEVICE_LIST)
+    adapter = LinuxAlsaSpeakerAdapter(
+        device="plughw:CARD=Missing,DEV=0",
+        runner=runner,
+    )
+
+    result = adapter.health_check()
+
+    assert result.success is False
+    assert result.status == ALSA_SPEAKER_STATUS_INVALID_DEVICE
+    assert result.error_message == "alsa_playback_device_not_found"
+    assert "plughw:CARD=Device,DEV=0" in result.data["available_devices"]
+    assert result.metadata["audio_hardware_accessed"] is False
+
+
+def test_parse_aplay_playback_devices_returns_numeric_and_card_aliases():
+    devices = parse_aplay_playback_devices(APLAY_DEVICE_LIST)
+
+    assert devices[0]["card_id"] == "Device"
+    assert devices[0]["alsa_devices"] == [
+        "hw:2,0",
+        "plughw:2,0",
+        "hw:CARD=Device,DEV=0",
+        "plughw:CARD=Device,DEV=0",
+    ]
 
 
 def test_linux_alsa_speaker_plays_valid_wav_with_argument_list(tmp_path):
@@ -128,3 +190,4 @@ def test_linux_alsa_speaker_reports_nonzero_exit(tmp_path):
     assert result.success is False
     assert result.status == ALSA_SPEAKER_STATUS_PLAYBACK_FAILED
     assert result.data["process"]["stderr_preview"] == "device busy"
+    assert result.data["process"]["stderr"] == "device busy"

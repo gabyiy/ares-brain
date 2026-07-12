@@ -190,10 +190,20 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
         binary = self._find_piper_binary()
         if not binary:
             return self._failure(PIPER_STATUS_EXECUTABLE_MISSING, "piper_executable_missing")
-        if not self.model_path.exists():
-            return self._failure(PIPER_STATUS_MODEL_MISSING, "piper_model_missing")
-        if not self.model_config_path.exists():
-            return self._failure(PIPER_STATUS_CONFIG_MISSING, "piper_model_config_missing")
+        model = _validate_required_file(self.model_path, "piper_model")
+        if not model["success"]:
+            return self._failure(
+                PIPER_STATUS_MODEL_MISSING,
+                str(model["error_message"]),
+                data={"model_path": str(self.model_path)},
+            )
+        config = _validate_required_file(self.model_config_path, "piper_model_config")
+        if not config["success"]:
+            return self._failure(
+                PIPER_STATUS_CONFIG_MISSING,
+                str(config["error_message"]),
+                data={"model_config_path": str(self.model_config_path)},
+            )
         writable = _ensure_writable_dir(self.output_dir)
         if not writable["success"]:
             return self._failure(
@@ -302,7 +312,16 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
             )
 
         output_path = self._output_path(request.output_wav_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output = _prepare_output_path(output_path)
+        if not output["success"]:
+            return self._failure(
+                PIPER_STATUS_OUTPUT_UNWRITABLE,
+                str(output["error_message"]),
+                normalized_text=normalized,
+                request=request,
+                generated_audio_path=str(output_path),
+                data={"output_path": str(output_path)},
+            )
         command = self._piper_command(output_path, request.speaking_rate)
         result = self.runner.run(
             command,
@@ -390,7 +409,15 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
             return str(found)
         path = Path(self.piper_command).expanduser()
         try:
-            if path.exists() and path.is_file() and path.stat().st_size > 0:
+            executable = os.access(path, os.R_OK)
+            if os.name == "posix":
+                executable = executable and os.access(path, os.X_OK)
+            if (
+                path.exists()
+                and path.is_file()
+                and path.stat().st_size > 0
+                and executable
+            ):
                 return str(path)
         except OSError:
             return ""
@@ -532,6 +559,37 @@ def _ensure_writable_dir(path: Path) -> Dict[str, Any]:
     return {"success": True}
 
 
+def _validate_required_file(path: Path, label: str) -> Dict[str, Any]:
+    try:
+        if not path.exists() or not path.is_file():
+            return {"success": False, "error_message": f"{label}_missing"}
+        if path.stat().st_size <= 0:
+            return {"success": False, "error_message": f"{label}_empty"}
+        if not os.access(path, os.R_OK):
+            return {"success": False, "error_message": f"{label}_unreadable"}
+    except OSError as error:
+        return {
+            "success": False,
+            "error_message": f"{label}_unreadable:{error.__class__.__name__}",
+        }
+    return {"success": True}
+
+
+def _prepare_output_path(path: Path) -> Dict[str, Any]:
+    try:
+        if path.exists() and path.is_dir():
+            return {"success": False, "error_message": "output_path_is_directory"}
+    except OSError as error:
+        return {
+            "success": False,
+            "error_message": f"output_path_unreadable:{error.__class__.__name__}",
+        }
+    writable = _ensure_writable_dir(path.parent)
+    if not writable["success"]:
+        return writable
+    return {"success": True}
+
+
 def _validate_generated_wav(path: Path) -> Dict[str, Any]:
     try:
         if not path.exists() or not path.is_file():
@@ -577,6 +635,8 @@ def _safe_process_data(result: SafeTextProcessResult) -> Dict[str, Any]:
         "args": list(result.args),
         "command": " ".join(str(arg) for arg in result.args),
         "returncode": result.returncode,
+        "stdout": str(result.stdout or ""),
+        "stderr": str(result.stderr or ""),
         "stdout_preview": str(result.stdout or "")[:4000],
         "stderr_preview": str(result.stderr or "")[:4000],
         "timed_out": result.timed_out,
