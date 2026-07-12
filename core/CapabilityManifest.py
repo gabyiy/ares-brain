@@ -1152,7 +1152,7 @@ def default_voice_related_manifests() -> List[CapabilityManifest]:
                 "source": "voice_city",
                 "offline": True,
                 "engine": "piper",
-                "recommended_voice": "en_US-amy-low",
+                "voice_profile_config": "config/voice_profiles.json",
                 "default_enabled": False,
             },
         ),

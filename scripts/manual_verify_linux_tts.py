@@ -12,16 +12,16 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from core import (  # noqa: E402
     ALSA_SPEAKER_STATUS_PLAYED,
-    DEFAULT_PIPER_LANGUAGE,
-    DEFAULT_PIPER_MODEL_CONFIG_PATH,
-    DEFAULT_PIPER_MODEL_PATH,
     DEFAULT_PIPER_OUTPUT_DIR,
     DEFAULT_PIPER_TIMEOUT_SECONDS,
-    DEFAULT_PIPER_VOICE_ID,
+    DEFAULT_VOICE_PROFILE_CONFIG_PATH,
     LinuxAlsaSpeakerAdapter,
     LinuxPiperTextToSpeechAdapter,
     TextToSpeechRequestV1,
+    VoiceProfileError,
+    VoiceProfileRegistry,
     analyze_wav_audio,
+    load_voice_profile_registry,
 )
 
 
@@ -36,24 +36,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate a Piper WAV sample and optionally play it through ALSA."
     )
-    parser.add_argument("--text", required=True, help="Text to synthesize.")
+    parser.add_argument("--text", default="", help="Text to synthesize.")
     parser.add_argument(
         "--piper-command",
         default="",
         help="Path to piper executable. Defaults to external/piper if present, else piper on PATH.",
     )
     parser.add_argument(
-        "--model",
-        default=str(REPO_ROOT / DEFAULT_PIPER_MODEL_PATH),
-        help="Path to Piper ONNX voice model.",
+        "--voice-profile",
+        default="",
+        help="Voice profile identifier. Defaults to the configured ARES voice.",
     )
     parser.add_argument(
-        "--config",
-        default=str(REPO_ROOT / DEFAULT_PIPER_MODEL_CONFIG_PATH),
-        help="Path to Piper voice configuration JSON.",
+        "--voice-profiles-config",
+        default=str(REPO_ROOT / DEFAULT_VOICE_PROFILE_CONFIG_PATH),
+        help="Validated local voice profile configuration.",
     )
-    parser.add_argument("--voice-id", default=DEFAULT_PIPER_VOICE_ID)
-    parser.add_argument("--language", default=DEFAULT_PIPER_LANGUAGE)
+    parser.add_argument(
+        "--list-voices",
+        action="store_true",
+        help="List configured voice profiles without synthesis or playback.",
+    )
     parser.add_argument("--rate", type=float, default=1.0, help="Speaking rate.")
     parser.add_argument(
         "--output",
@@ -90,15 +93,37 @@ def run_manual_verification(
 ) -> int:
     args = build_parser().parse_args(list(argv or []))
     output_func(WARNING)
+    try:
+        registry = load_voice_profile_registry(
+            args.voice_profiles_config,
+            project_root=REPO_ROOT,
+        )
+    except VoiceProfileError as error:
+        output_func(f"FAIL: Voice profile config is invalid: {error.code}: {error.message}")
+        return 2
+    if args.list_voices:
+        _print_voice_profiles(registry, output_func)
+        return 0
+    if not str(args.text or "").strip():
+        output_func("FAIL: --text is required unless --list-voices is used.")
+        return 2
+    try:
+        selected_profile = registry.resolve(args.voice_profile)
+    except VoiceProfileError as error:
+        output_func(f"FAIL: Voice profile selection failed: {error.code}: {error.message}")
+        return 2
     if not args.playback:
         output_func("Playback is disabled. Add --playback to speak through the speaker.")
 
     piper_command = _default_piper_command(args.piper_command)
-    model_path = _resolved_path(args.model)
-    config_path = _resolved_path(args.config)
+    model_path = registry.model_path(selected_profile)
+    config_path = registry.config_path(selected_profile)
     output_path = _resolve_output_path(args.output)
     speaker_device = str(args.device or "").strip()
     output_func(f"piper_binary: {piper_command}")
+    output_func(f"requested_voice_profile: {args.voice_profile or '(configured default)'}")
+    output_func(f"resolved_voice_profile: {selected_profile.profile_id}")
+    output_func(f"voice_display_name: {selected_profile.display_name}")
     output_func(f"model_path: {model_path}")
     output_func(f"config_path: {config_path}")
     output_func(f"output_wav_path: {output_path}")
@@ -111,15 +136,13 @@ def run_manual_verification(
     )
     adapter = LinuxPiperTextToSpeechAdapter(
         piper_command=piper_command,
-        model_path=model_path,
-        model_config_path=config_path,
-        voice_id=str(args.voice_id),
-        language=str(args.language),
+        voice_registry=registry,
+        project_root=REPO_ROOT,
         output_dir=output_path.parent,
         timeout_seconds=float(args.timeout),
         speaker_adapter=speaker,
     )
-    health_result = adapter.health_check()
+    health_result = adapter.health_check(str(args.voice_profile or ""))
     health = health_result.to_dict()
     _print_health_diagnostics(health, output_func)
     if not _is_healthy_tts_result(health):
@@ -131,8 +154,8 @@ def run_manual_verification(
 
     request = TextToSpeechRequestV1(
         text=str(args.text),
-        language=str(args.language),
-        voice_id=str(args.voice_id),
+        language=selected_profile.locale,
+        voice_profile_id=str(args.voice_profile or ""),
         speaking_rate=float(args.rate),
         output_wav_path=str(output_path),
         timeout_seconds=float(args.timeout),
@@ -142,7 +165,13 @@ def run_manual_verification(
     output_func(f"status: {result.status}")
     output_func(f"success: {result.success}")
     output_func(f"engine: {result.engine}")
-    output_func(f"voice: {result.voice_id}")
+    output_func(f"requested_voice_profile: {result.requested_voice_profile or '(configured default)'}")
+    output_func(f"resolved_voice_profile: {result.resolved_voice_profile}")
+    output_func(f"voice_display_name: {result.voice_display_name}")
+    output_func(f"voice_language: {result.language}")
+    output_func(f"voice_locale: {result.locale}")
+    output_func(f"voice_gender: {result.gender}")
+    output_func(f"voice_quality: {result.quality}")
     output_func(f"playback_status: {result.playback_status}")
     output_func(f"processing_time_seconds: {result.processing_time_seconds}")
     if result.error_message:
@@ -202,6 +231,30 @@ def _resolve_output_path(explicit: str) -> Path:
         return _resolved_path(str(explicit).strip())
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
     return (REPO_ROOT / DEFAULT_PIPER_OUTPUT_DIR / f"ares_tts_{timestamp}.wav").resolve()
+
+
+def _print_voice_profiles(
+    registry: VoiceProfileRegistry,
+    output_func: Callable[[str], None],
+) -> None:
+    output_func("Configured Piper voice profiles:")
+    for profile in registry.list_profiles():
+        metadata = registry.profile_metadata(profile)
+        output_func(
+            " | ".join(
+                (
+                    f"profile_id={profile.profile_id}",
+                    f"display_name={profile.display_name}",
+                    f"language={profile.locale}",
+                    f"gender={profile.gender}",
+                    f"quality={profile.quality}",
+                    f"installed={metadata['installed']}",
+                    f"default={profile.is_default}",
+                    f"enabled={profile.enabled}",
+                    f"model_path={metadata['resolved_model_path']}",
+                )
+            )
+        )
 
 
 def _is_healthy_tts_result(health: Dict[str, Any]) -> bool:

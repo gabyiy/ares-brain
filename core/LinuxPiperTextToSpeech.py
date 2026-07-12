@@ -17,13 +17,16 @@ from core.LinuxAlsaSpeaker import (
 )
 from core.LinuxWhisperSpeechToText import analyze_wav_audio
 from core.TextToSpeech import TextToSpeechAdapter
+from core.VoiceProfiles import (
+    DEFAULT_VOICE_PROFILE_CONFIG_PATH,
+    VoiceProfile,
+    VoiceProfileError,
+    VoiceProfileRegistry,
+    load_voice_profile_registry,
+)
 
 
 DEFAULT_PIPER_COMMAND = "piper"
-DEFAULT_PIPER_VOICE_ID = "en_US-amy-low"
-DEFAULT_PIPER_LANGUAGE = "en_US"
-DEFAULT_PIPER_MODEL_PATH = "models/piper/en_US-amy-low.onnx"
-DEFAULT_PIPER_MODEL_CONFIG_PATH = "models/piper/en_US-amy-low.onnx.json"
 DEFAULT_PIPER_OUTPUT_DIR = "data/manual_tts_samples"
 DEFAULT_PIPER_TIMEOUT_SECONDS = 120.0
 MAX_TTS_TEXT_CHARS = 500
@@ -33,6 +36,7 @@ PIPER_STATUS_MODEL_MISSING = "piper_model_missing"
 PIPER_STATUS_CONFIG_MISSING = "piper_model_config_missing"
 PIPER_STATUS_OUTPUT_UNWRITABLE = "tts_output_unwritable"
 PIPER_STATUS_INVALID_VOICE = "invalid_voice"
+PIPER_STATUS_PROFILE_CONFIG_INVALID = "voice_profile_config_invalid"
 PIPER_STATUS_EMPTY_TEXT = "empty_text"
 PIPER_STATUS_TEXT_TOO_LONG = "text_too_long"
 PIPER_STATUS_TIMEOUT = "tts_timeout"
@@ -129,10 +133,10 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
     def __init__(
         self,
         piper_command: str = DEFAULT_PIPER_COMMAND,
-        model_path: str | Path = DEFAULT_PIPER_MODEL_PATH,
-        model_config_path: str | Path = DEFAULT_PIPER_MODEL_CONFIG_PATH,
-        voice_id: str = DEFAULT_PIPER_VOICE_ID,
-        language: str = DEFAULT_PIPER_LANGUAGE,
+        voice_registry: Optional[VoiceProfileRegistry] = None,
+        voice_profiles_config_path: str | Path = DEFAULT_VOICE_PROFILE_CONFIG_PATH,
+        project_root: str | Path | None = None,
+        allow_external_voice_paths: bool = False,
         output_dir: str | Path = DEFAULT_PIPER_OUTPUT_DIR,
         timeout_seconds: float = DEFAULT_PIPER_TIMEOUT_SECONDS,
         max_text_chars: int = MAX_TTS_TEXT_CHARS,
@@ -146,18 +150,21 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
             or os.environ.get("ARES_PIPER_COMMAND")
             or DEFAULT_PIPER_COMMAND
         ).strip()
-        self.model_path = Path(
-            model_path
-            or os.environ.get("ARES_PIPER_MODEL_PATH")
-            or DEFAULT_PIPER_MODEL_PATH
-        ).expanduser()
-        self.model_config_path = Path(
-            model_config_path
-            or os.environ.get("ARES_PIPER_MODEL_CONFIG_PATH")
-            or DEFAULT_PIPER_MODEL_CONFIG_PATH
-        ).expanduser()
-        self.voice_id = str(voice_id or DEFAULT_PIPER_VOICE_ID).strip()
-        self.language = str(language or DEFAULT_PIPER_LANGUAGE).strip()
+        self.project_root = Path(
+            project_root or Path(__file__).resolve().parent.parent
+        ).expanduser().resolve()
+        self.voice_profiles_config_path = Path(voice_profiles_config_path).expanduser()
+        self.voice_registry = voice_registry
+        self.voice_registry_error: Optional[VoiceProfileError] = None
+        if self.voice_registry is None:
+            try:
+                self.voice_registry = load_voice_profile_registry(
+                    self.voice_profiles_config_path,
+                    project_root=self.project_root,
+                    allow_external_paths=allow_external_voice_paths,
+                )
+            except VoiceProfileError as error:
+                self.voice_registry_error = error
         self.output_dir = Path(output_dir or DEFAULT_PIPER_OUTPUT_DIR).expanduser()
         self.timeout_seconds = _positive_timeout(timeout_seconds)
         self.max_text_chars = _bounded_text_limit(max_text_chars)
@@ -186,29 +193,55 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
         self.started = False
         return self._result(True, "stopped", "Linux Piper TTS adapter stopped.")
 
-    def health_check(self) -> TextToSpeechResultV1:
+    def health_check(self, voice_profile_id: str = "") -> TextToSpeechResultV1:
+        try:
+            profile = self._resolve_profile(voice_profile_id)
+        except VoiceProfileError as error:
+            return self._failure(
+                PIPER_STATUS_PROFILE_CONFIG_INVALID
+                if error.code not in {"unknown_profile", "profile_disabled"}
+                else PIPER_STATUS_INVALID_VOICE,
+                error.code,
+                requested_voice_profile=str(voice_profile_id or ""),
+                data={"voice_profile_error": error.message},
+            )
+        return self._health_check_profile(profile, str(voice_profile_id or ""))
+
+    def _health_check_profile(
+        self,
+        profile: VoiceProfile,
+        requested_voice_profile: str,
+    ) -> TextToSpeechResultV1:
         binary = self._find_piper_binary()
         if not binary:
-            return self._failure(PIPER_STATUS_EXECUTABLE_MISSING, "piper_executable_missing")
-        model = _validate_required_file(self.model_path, "piper_model")
-        if not model["success"]:
             return self._failure(
-                PIPER_STATUS_MODEL_MISSING,
-                str(model["error_message"]),
-                data={"model_path": str(self.model_path)},
+                PIPER_STATUS_EXECUTABLE_MISSING,
+                "piper_executable_missing",
+                profile=profile,
+                requested_voice_profile=requested_voice_profile,
             )
-        config = _validate_required_file(self.model_config_path, "piper_model_config")
-        if not config["success"]:
+        assert self.voice_registry is not None
+        profile_health = self.voice_registry.validate_installed(profile)
+        if not profile_health.success:
+            status = (
+                PIPER_STATUS_MODEL_MISSING
+                if profile_health.status.startswith("model_")
+                else PIPER_STATUS_CONFIG_MISSING
+            )
             return self._failure(
-                PIPER_STATUS_CONFIG_MISSING,
-                str(config["error_message"]),
-                data={"model_config_path": str(self.model_config_path)},
+                status,
+                profile_health.status,
+                profile=profile,
+                requested_voice_profile=requested_voice_profile,
+                data={"voice_profile_health": profile_health.to_dict()},
             )
         writable = _ensure_writable_dir(self.output_dir)
         if not writable["success"]:
             return self._failure(
                 PIPER_STATUS_OUTPUT_UNWRITABLE,
                 str(writable["error_message"]),
+                profile=profile,
+                requested_voice_profile=requested_voice_profile,
                 data={"output_dir": str(self.output_dir)},
             )
         speaker = self.speaker_adapter.health_check()
@@ -216,22 +249,30 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
             return self._failure(
                 "speaker_unavailable",
                 speaker.error_message or speaker.status,
+                profile=profile,
+                requested_voice_profile=requested_voice_profile,
                 data={"speaker": speaker.to_dict()},
             )
+        model_path = self.voice_registry.model_path(profile)
+        config_path = self.voice_registry.config_path(profile)
         return self._result(
             True,
             "healthy",
             "Linux Piper TTS health check passed.",
+            profile=profile,
+            requested_voice_profile=requested_voice_profile,
             data={
                 "piper_binary_path": binary,
-                "model_path": str(self.model_path),
-                "model_config_path": str(self.model_config_path),
+                "model_path": str(model_path),
+                "model_config_path": str(config_path),
                 "output_dir": str(self.output_dir),
+                "voice_profile_health": profile_health.to_dict(),
                 "speaker": speaker.to_dict(),
             },
         )
 
     def get_status(self) -> TextToSpeechResultV1:
+        profiles = self._profile_listing()
         return self._result(
             True,
             "started" if self.started else "stopped",
@@ -239,10 +280,7 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
             data={
                 "started": self.started,
                 "piper_available": bool(self._find_piper_binary()),
-                "model_available": self.model_path.exists(),
-                "model_config_available": self.model_config_path.exists(),
-                "voice_id": self.voice_id,
-                "language": self.language,
+                "voice_profiles": profiles,
                 "output_dir": str(self.output_dir),
                 "synthesis_count": self.synthesis_count,
                 "speaker": self.speaker_adapter.get_status().to_dict(),
@@ -257,8 +295,7 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
             data={
                 "supported_modes": ["offline_piper_wav_generation"],
                 "engine": "piper",
-                "voice_id": self.voice_id,
-                "language": self.language,
+                "voice_profiles": self._profile_listing(),
                 "max_text_chars": self.max_text_chars,
                 "playback_default": "disabled",
                 "speaker_adapter": type(self.speaker_adapter).__name__,
@@ -292,22 +329,27 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
                 request=request,
                 data={"max_text_chars": self.max_text_chars, "actual_chars": len(normalized)},
             )
-        requested_voice = str(request.voice_id or self.voice_id).strip()
-        if requested_voice != self.voice_id:
+        requested_voice = str(request.voice_profile_id or request.voice_id or "").strip()
+        try:
+            profile = self._resolve_profile(requested_voice)
+        except VoiceProfileError as error:
             return self._failure(
                 PIPER_STATUS_INVALID_VOICE,
-                "invalid_voice",
+                error.code,
                 normalized_text=normalized,
                 request=request,
-                data={"requested_voice": requested_voice, "available_voice": self.voice_id},
+                requested_voice_profile=requested_voice,
+                data={"voice_profile_error": error.message},
             )
-        health = self.health_check()
+        health = self._health_check_profile(profile, requested_voice)
         if not health.success:
             return self._failure(
                 health.status,
                 health.error_message or health.status,
                 normalized_text=normalized,
                 request=request,
+                profile=profile,
+                requested_voice_profile=requested_voice,
                 data={"health": health.to_dict()},
             )
 
@@ -319,10 +361,12 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
                 str(output["error_message"]),
                 normalized_text=normalized,
                 request=request,
+                profile=profile,
+                requested_voice_profile=requested_voice,
                 generated_audio_path=str(output_path),
                 data={"output_path": str(output_path)},
             )
-        command = self._piper_command(output_path, request.speaking_rate)
+        command = self._piper_command(profile, output_path, request.speaking_rate)
         result = self.runner.run(
             command,
             timeout_seconds=_positive_timeout(request.timeout_seconds or self.timeout_seconds),
@@ -336,6 +380,8 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
                 "piper_timeout",
                 normalized_text=normalized,
                 request=request,
+                profile=profile,
+                requested_voice_profile=requested_voice,
                 processing_time_seconds=processing_time,
                 generated_audio_path=str(output_path),
                 data={"process": _safe_process_data(result)},
@@ -346,6 +392,8 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
                 f"piper_exit_{result.returncode}",
                 normalized_text=normalized,
                 request=request,
+                profile=profile,
+                requested_voice_profile=requested_voice,
                 processing_time_seconds=processing_time,
                 generated_audio_path=str(output_path),
                 data={"process": _safe_process_data(result)},
@@ -358,6 +406,8 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
                 str(wav["error_message"]),
                 normalized_text=normalized,
                 request=request,
+                profile=profile,
+                requested_voice_profile=requested_voice,
                 processing_time_seconds=processing_time,
                 generated_audio_path=str(output_path),
                 data={"process": _safe_process_data(result), "wav": wav},
@@ -381,19 +431,21 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
                 status = PIPER_STATUS_PLAYBACK_FAILED
                 error_message = playback.error_message or playback.status
 
+        profile_fields = self._profile_contract_fields(profile, requested_voice)
         return TextToSpeechResultV1(
             success=success,
             status=status,
             normalized_text=normalized,
             engine="piper",
-            voice_id=self.voice_id,
+            voice_id=profile.profile_id,
+            **profile_fields,
             generated_audio_path=str(output_path),
             duration_seconds=float(wav.get("duration_seconds", 0.0)),
             processing_time_seconds=processing_time,
             playback_status=playback_status,
             error_message=error_message,
             data={
-                **self._base_data(),
+                **self._base_data(profile),
                 "request": request.to_dict(),
                 "process": _safe_process_data(result),
                 "wav": wav,
@@ -423,13 +475,19 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
             return ""
         return ""
 
-    def _piper_command(self, output_path: Path, speaking_rate: float) -> list[str]:
+    def _piper_command(
+        self,
+        profile: VoiceProfile,
+        output_path: Path,
+        speaking_rate: float,
+    ) -> list[str]:
+        assert self.voice_registry is not None
         command = [
             self._find_piper_binary(),
             "--model",
-            str(self.model_path),
+            str(self.voice_registry.model_path(profile)),
             "--config",
-            str(self.model_config_path),
+            str(self.voice_registry.config_path(profile)),
             "--output_file",
             str(output_path),
         ]
@@ -449,16 +507,20 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
         success: bool,
         status: str,
         message: str,
+        profile: Optional[VoiceProfile] = None,
+        requested_voice_profile: str = "",
         data: Optional[Dict[str, Any]] = None,
     ) -> TextToSpeechResultV1:
+        profile_fields = self._profile_contract_fields(profile, requested_voice_profile)
         return TextToSpeechResultV1(
             success=success,
             status=status,
             engine="piper",
-            voice_id=self.voice_id,
+            voice_id=profile.profile_id if profile else "",
+            **profile_fields,
             playback_status="disabled",
             error_message="" if success else status,
-            data={**self._base_data(), "message": message, **dict(data or {})},
+            data={**self._base_data(profile), "message": message, **dict(data or {})},
             metadata=self._metadata(),
         )
 
@@ -470,20 +532,24 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
         request: Optional[TextToSpeechRequestV1] = None,
         processing_time_seconds: float = 0.0,
         generated_audio_path: str = "",
+        profile: Optional[VoiceProfile] = None,
+        requested_voice_profile: str = "",
         data: Optional[Dict[str, Any]] = None,
     ) -> TextToSpeechResultV1:
+        profile_fields = self._profile_contract_fields(profile, requested_voice_profile)
         return TextToSpeechResultV1(
             success=False,
             status=status,
             normalized_text=normalized_text,
             engine="piper",
-            voice_id=self.voice_id,
+            voice_id=profile.profile_id if profile else "",
+            **profile_fields,
             generated_audio_path=generated_audio_path,
             processing_time_seconds=processing_time_seconds,
             playback_status="not_attempted",
             error_message=error_message,
             data={
-                **self._base_data(),
+                **self._base_data(profile),
                 "request": request.to_dict() if request else None,
                 "text_output_fallback": normalized_text,
                 **dict(data or {}),
@@ -491,18 +557,55 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
             metadata=self._metadata(),
         )
 
-    def _base_data(self) -> Dict[str, Any]:
-        return {
+    def _base_data(self, profile: Optional[VoiceProfile] = None) -> Dict[str, Any]:
+        payload = {
             "source": self.source,
             "tts": "offline_piper",
             "speech_engine": "piper",
             "speech_engine_access": "offline_local_process",
-            "model_path": str(self.model_path),
-            "model_config_path": str(self.model_config_path),
-            "language": self.language,
+            "voice_profiles_config": str(self.voice_profiles_config_path),
             "internet": "disabled",
             "wake_word": "disabled",
             "background_listening": "disabled",
+        }
+        if profile and self.voice_registry:
+            payload["voice_profile"] = self.voice_registry.profile_metadata(profile)
+        return payload
+
+    def _resolve_profile(self, requested_voice_profile: str = "") -> VoiceProfile:
+        if self.voice_registry_error is not None:
+            raise self.voice_registry_error
+        if self.voice_registry is None:
+            raise VoiceProfileError("registry_unavailable", "Voice profile registry is unavailable")
+        return self.voice_registry.resolve(requested_voice_profile)
+
+    def _profile_listing(self) -> list[Dict[str, Any]]:
+        if self.voice_registry_error is not None:
+            return [{"status": self.voice_registry_error.code, "error": self.voice_registry_error.message}]
+        if self.voice_registry is None:
+            return []
+        return [
+            self.voice_registry.profile_metadata(profile)
+            for profile in self.voice_registry.list_profiles()
+        ]
+
+    def _profile_contract_fields(
+        self,
+        profile: Optional[VoiceProfile],
+        requested_voice_profile: str,
+    ) -> Dict[str, Any]:
+        if profile is None or self.voice_registry is None:
+            return {"requested_voice_profile": str(requested_voice_profile or "")}
+        return {
+            "requested_voice_profile": str(requested_voice_profile or ""),
+            "resolved_voice_profile": profile.profile_id,
+            "voice_display_name": profile.display_name,
+            "language": profile.language,
+            "locale": profile.locale,
+            "gender": profile.gender,
+            "quality": profile.quality,
+            "model_path": str(self.voice_registry.model_path(profile)),
+            "config_path": str(self.voice_registry.config_path(profile)),
         }
 
     def _metadata(self) -> Dict[str, Any]:
@@ -555,22 +658,6 @@ def _ensure_writable_dir(path: Path) -> Dict[str, Any]:
         return {
             "success": False,
             "error_message": f"output_unwritable:{error.__class__.__name__}",
-        }
-    return {"success": True}
-
-
-def _validate_required_file(path: Path, label: str) -> Dict[str, Any]:
-    try:
-        if not path.exists() or not path.is_file():
-            return {"success": False, "error_message": f"{label}_missing"}
-        if path.stat().st_size <= 0:
-            return {"success": False, "error_message": f"{label}_empty"}
-        if not os.access(path, os.R_OK):
-            return {"success": False, "error_message": f"{label}_unreadable"}
-    except OSError as error:
-        return {
-            "success": False,
-            "error_message": f"{label}_unreadable:{error.__class__.__name__}",
         }
     return {"success": True}
 

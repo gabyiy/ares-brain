@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 import sys
 from typing import Any, Callable, Dict, Optional, Sequence
@@ -10,7 +11,17 @@ from typing import Any, Callable, Dict, Optional, Sequence
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from core import SafeProcessResult, SafeSubprocessRunner  # noqa: E402
+from core import (  # noqa: E402
+    DEFAULT_VOICE_PROFILE_CONFIG_PATH,
+    SafeProcessResult,
+    SafeSubprocessRunner,
+    VoiceProfile,
+    VoiceProfileError,
+    VoiceProfileRegistry,
+    load_voice_profile_registry,
+    validate_voice_config_file,
+    validate_voice_model_file,
+)
 
 
 DEFAULT_PIPER_RELEASE_URL = (
@@ -18,17 +29,6 @@ DEFAULT_PIPER_RELEASE_URL = (
     "piper_linux_aarch64.tar.gz"
 )
 DEFAULT_PIPER_DIR = REPO_ROOT / "external" / "piper"
-DEFAULT_VOICE_ID = "en_US-amy-low"
-DEFAULT_VOICE_MODEL_URL = (
-    "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/low/"
-    "en_US-amy-low.onnx"
-)
-DEFAULT_VOICE_CONFIG_URL = (
-    "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/low/"
-    "en_US-amy-low.onnx.json"
-)
-DEFAULT_VOICE_MODEL_PATH = REPO_ROOT / "models" / "piper" / "en_US-amy-low.onnx"
-DEFAULT_VOICE_CONFIG_PATH = REPO_ROOT / "models" / "piper" / "en_US-amy-low.onnx.json"
 DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 1800.0
 
 WARNING = (
@@ -76,29 +76,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Piper Linux ARM64 release archive URL.",
     )
     parser.add_argument(
-        "--voice-id",
-        default=DEFAULT_VOICE_ID,
-        help="Voice identifier used for diagnostics.",
+        "--voice",
+        default="",
+        help="Voice profile identifier. Defaults to the configured ARES voice.",
     )
     parser.add_argument(
-        "--voice-model-url",
-        default=DEFAULT_VOICE_MODEL_URL,
-        help="Piper ONNX voice model URL.",
-    )
-    parser.add_argument(
-        "--voice-config-url",
-        default=DEFAULT_VOICE_CONFIG_URL,
-        help="Piper voice configuration JSON URL.",
-    )
-    parser.add_argument(
-        "--voice-model-output",
-        default=str(DEFAULT_VOICE_MODEL_PATH),
-        help="ARES-local path for the downloaded ONNX voice model.",
-    )
-    parser.add_argument(
-        "--voice-config-output",
-        default=str(DEFAULT_VOICE_CONFIG_PATH),
-        help="ARES-local path for the downloaded voice configuration JSON.",
+        "--voice-profiles-config",
+        default=str(REPO_ROOT / DEFAULT_VOICE_PROFILE_CONFIG_PATH),
+        help="Validated local voice profile configuration.",
     )
     parser.add_argument(
         "--download-timeout",
@@ -118,11 +103,8 @@ def run_installation(
     result = install_piper(
         piper_dir=Path(args.piper_dir).expanduser(),
         piper_release_url=str(args.piper_release_url),
-        voice_id=str(args.voice_id),
-        voice_model_url=str(args.voice_model_url),
-        voice_config_url=str(args.voice_config_url),
-        voice_model_output_path=Path(args.voice_model_output).expanduser(),
-        voice_config_output_path=Path(args.voice_config_output).expanduser(),
+        voice_profile_id=str(args.voice),
+        voice_profiles_config_path=Path(args.voice_profiles_config).expanduser(),
         download_timeout_seconds=args.download_timeout,
         output_func=output_func,
         runner=runner,
@@ -140,25 +122,40 @@ def run_installation(
 def install_piper(
     piper_dir: Path = DEFAULT_PIPER_DIR,
     piper_release_url: str = DEFAULT_PIPER_RELEASE_URL,
-    voice_id: str = DEFAULT_VOICE_ID,
-    voice_model_url: str = DEFAULT_VOICE_MODEL_URL,
-    voice_config_url: str = DEFAULT_VOICE_CONFIG_URL,
-    voice_model_output_path: Path = DEFAULT_VOICE_MODEL_PATH,
-    voice_config_output_path: Path = DEFAULT_VOICE_CONFIG_PATH,
+    voice_profile_id: str = "",
+    voice_profiles_config_path: Path = REPO_ROOT / DEFAULT_VOICE_PROFILE_CONFIG_PATH,
+    voice_registry: Optional[VoiceProfileRegistry] = None,
+    project_root: Path = REPO_ROOT,
     download_timeout_seconds: float = DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
     output_func: Callable[[str], None] = print,
     runner: Optional[SafeSubprocessRunner] = None,
 ) -> PiperInstallResult:
     runner = runner or SafeSubprocessRunner()
     piper_dir = piper_dir.expanduser()
-    voice_model_output_path = voice_model_output_path.expanduser()
-    voice_config_output_path = voice_config_output_path.expanduser()
+    project_root = Path(project_root).expanduser().resolve()
     timeout_seconds = _positive_timeout(download_timeout_seconds, "download_timeout_seconds")
-    voice_id = str(voice_id or DEFAULT_VOICE_ID).strip()
-    if not voice_id:
-        return _failure("invalid_voice_id", "Voice id cannot be empty.")
+    try:
+        registry = voice_registry or load_voice_profile_registry(
+            voice_profiles_config_path,
+            project_root=project_root,
+        )
+        profile = registry.resolve(voice_profile_id)
+    except VoiceProfileError as error:
+        return _failure(
+            "invalid_voice_profile",
+            f"Voice profile could not be selected: {error.message}",
+            data={"voice_profile_error": error.code},
+        )
+    if not profile.source_model_url or not profile.source_config_url:
+        return _failure(
+            "voice_profile_missing_sources",
+            f"Voice profile has no install sources: {profile.profile_id}",
+        )
+    voice_model_output_path = registry.model_path(profile)
+    voice_config_output_path = registry.config_path(profile)
 
     output_func(WARNING)
+    output_func(f"Selected voice profile: {profile.profile_id} ({profile.display_name})")
     dependency = _check_install_dependencies(runner)
     if not dependency.success:
         return dependency
@@ -173,24 +170,26 @@ def install_piper(
     if not runtime.success:
         return runtime
 
-    model = _download_file_if_missing(
-        url=str(voice_model_url),
+    model = _ensure_profile_component(
+        profile=profile,
+        component="model",
+        url=profile.source_model_url,
         output_path=voice_model_output_path,
         timeout_seconds=timeout_seconds,
         runner=runner,
         output_func=output_func,
-        status_prefix="voice_model",
     )
     if not model.success:
         return model
 
-    config = _download_file_if_missing(
-        url=str(voice_config_url),
+    config = _ensure_profile_component(
+        profile=profile,
+        component="config",
+        url=profile.source_config_url,
         output_path=voice_config_output_path,
         timeout_seconds=timeout_seconds,
         runner=runner,
         output_func=output_func,
-        status_prefix="voice_config",
     )
     if not config.success:
         return config
@@ -202,33 +201,29 @@ def install_piper(
             "Piper runtime setup finished but piper executable was not found.",
             data={"piper_dir": str(piper_dir)},
         )
-    if not _file_exists_nonempty(voice_model_output_path):
+    profile_health = registry.validate_installed(profile, verify_checksums=True)
+    if not profile_health.success:
         return _failure(
-            "voice_model_missing_after_download",
-            "Voice model download finished but the model was not found.",
-            executable_path=str(executable_path),
-            model_path=str(voice_model_output_path),
-        )
-    if not _file_exists_nonempty(voice_config_output_path):
-        return _failure(
-            "voice_config_missing_after_download",
-            "Voice config download finished but the config was not found.",
+            "voice_profile_verification_failed",
+            f"Voice profile verification failed: {profile_health.status}",
             executable_path=str(executable_path),
             model_path=str(voice_model_output_path),
             config_path=str(voice_config_output_path),
+            data={"voice_profile_health": profile_health.to_dict()},
         )
 
     return PiperInstallResult(
         success=True,
         status="installed",
-        message="Piper runtime and offline voice model are available.",
+        message="Piper runtime and selected offline voice profile are available.",
         executable_path=str(executable_path),
         model_path=str(voice_model_output_path),
         config_path=str(voice_config_output_path),
         data={
             "piper_dir": str(piper_dir),
-            "voice_id": voice_id,
+            "voice_profile": registry.profile_metadata(profile),
             "piper_release_url": str(piper_release_url),
+            "voice_profile_health": profile_health.to_dict(),
         },
     )
 
@@ -317,15 +312,21 @@ def _ensure_piper_runtime(
     )
 
 
-def _download_file_if_missing(
+def _ensure_profile_component(
+    profile: VoiceProfile,
+    component: str,
     url: str,
     output_path: Path,
     timeout_seconds: float,
     runner: SafeSubprocessRunner,
     output_func: Callable[[str], None],
-    status_prefix: str,
 ) -> PiperInstallResult:
-    if _file_exists_nonempty(output_path):
+    status_prefix = f"voice_{component}"
+    validator = (
+        validate_voice_model_file if component == "model" else validate_voice_config_file
+    )
+    existing = validator(output_path, profile, True)
+    if existing.success:
         output_func(f"Using existing {status_prefix.replace('_', ' ')}: {output_path}")
         return PiperInstallResult(
             success=True,
@@ -335,29 +336,52 @@ def _download_file_if_missing(
             config_path=str(output_path) if status_prefix == "voice_config" else "",
         )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        return _failure(
+            f"{status_prefix}_output_failed",
+            f"Could not prepare {status_prefix.replace('_', ' ')} output: {error.__class__.__name__}",
+        )
+    temp_path = _download_temp_path(output_path)
     output_func(f"Downloading {status_prefix.replace('_', ' ')} into {output_path}...")
     result = runner.run(
-        ["curl", "-L", "--fail", "-o", str(output_path), str(url)],
+        ["curl", "-L", "--fail", "-o", str(temp_path), str(url)],
         timeout_seconds=timeout_seconds,
     )
     if result.timed_out:
+        _remove_incomplete(temp_path)
         return _failure(
             f"{status_prefix}_download_timeout",
             f"Timed out downloading {status_prefix.replace('_', ' ')}.",
             result,
         )
     if result.returncode != 0:
+        _remove_incomplete(temp_path)
         return _failure(
             f"{status_prefix}_download_failed",
             f"{status_prefix.replace('_', ' ').title()} download failed.",
             result,
         )
-    if not _file_exists_nonempty(output_path):
+    downloaded = validator(temp_path, profile, True)
+    if not downloaded.success:
+        _remove_incomplete(temp_path)
         return _failure(
-            f"{status_prefix}_missing_after_download",
-            f"{status_prefix.replace('_', ' ').title()} was not found after download.",
-            data={"output_path": str(output_path), "process": _safe_process_data(result)},
+            f"{status_prefix}_invalid_after_download",
+            f"{status_prefix.replace('_', ' ').title()} failed validation after download.",
+            data={
+                "output_path": str(output_path),
+                "validation": downloaded.to_dict(),
+                "process": _safe_process_data(result),
+            },
+        )
+    try:
+        os.replace(temp_path, output_path)
+    except OSError as error:
+        _remove_incomplete(temp_path)
+        return _failure(
+            f"{status_prefix}_replace_failed",
+            f"Could not install {status_prefix.replace('_', ' ')}: {error.__class__.__name__}",
         )
     return PiperInstallResult(
         success=True,
@@ -367,6 +391,20 @@ def _download_file_if_missing(
         config_path=str(output_path) if status_prefix == "voice_config" else "",
         data={"process": _safe_process_data(result)},
     )
+
+
+def _download_temp_path(output_path: Path) -> Path:
+    suffixes = "".join(output_path.suffixes)
+    base_name = output_path.name[: -len(suffixes)] if suffixes else output_path.name
+    return output_path.with_name(f".{base_name}.download{suffixes}")
+
+
+def _remove_incomplete(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        return
 
 
 def _find_piper_executable(piper_dir: Path) -> Optional[Path]:

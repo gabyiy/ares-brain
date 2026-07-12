@@ -18,6 +18,7 @@ from core import (
     PIPER_STATUS_OUTPUT_EMPTY,
     PIPER_STATUS_OUTPUT_MISSING,
     PIPER_STATUS_PLAYBACK_FAILED,
+    PIPER_STATUS_PROFILE_CONFIG_INVALID,
     PIPER_STATUS_SYNTHESIZED,
     PIPER_STATUS_TEXT_TOO_LONG,
     PIPER_STATUS_TIMEOUT,
@@ -28,6 +29,8 @@ from core import (
     SafeTextProcessResult,
     SpeakerPlaybackResult,
     TextToSpeechRequestV1,
+    VoiceProfile,
+    VoiceProfileRegistry,
     build_service_manifest,
     default_voice_related_manifests,
 )
@@ -149,12 +152,74 @@ def create_adapter(
     clock_values=None,
     max_text_chars=500,
 ):
-    model_path = tmp_path / "en_US-amy-low.onnx"
-    config_path = tmp_path / "en_US-amy-low.onnx.json"
+    model_dir = tmp_path / "models" / "piper"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_path = model_dir / "en_US-hfc_male-medium.onnx"
+    config_path = model_dir / "en_US-hfc_male-medium.onnx.json"
     if model:
         model_path.write_bytes(b"fake model")
     if config:
-        config_path.write_text('{"audio": {"sample_rate": 16000}}', encoding="utf-8")
+        config_path.write_text(
+            '{"audio": {"sample_rate": 22050}, "language": {"code": "en_US"}}',
+            encoding="utf-8",
+        )
+    amy_model = model_dir / "en_US-amy-low.onnx"
+    amy_config = model_dir / "en_US-amy-low.onnx.json"
+    amy_model.write_bytes(b"fake amy model")
+    amy_config.write_text(
+        '{"audio": {"sample_rate": 16000}, "language": {"code": "en_US"}}',
+        encoding="utf-8",
+    )
+    registry = VoiceProfileRegistry(
+        [
+            VoiceProfile(
+                profile_id="en_US-hfc_male-medium",
+                display_name="ARES Male English",
+                engine="piper",
+                language="en",
+                locale="en_US",
+                gender="male",
+                quality="medium",
+                model_path="models/piper/en_US-hfc_male-medium.onnx",
+                config_path="models/piper/en_US-hfc_male-medium.onnx.json",
+                expected_sample_rate_hz=22050,
+                enabled=True,
+                is_default=True,
+                minimum_model_size_bytes=1,
+            ),
+            VoiceProfile(
+                profile_id="en_US-amy-low",
+                display_name="Amy English",
+                engine="piper",
+                language="en",
+                locale="en_US",
+                gender="female",
+                quality="low",
+                model_path="models/piper/en_US-amy-low.onnx",
+                config_path="models/piper/en_US-amy-low.onnx.json",
+                expected_sample_rate_hz=16000,
+                enabled=True,
+                is_default=False,
+                minimum_model_size_bytes=1,
+            ),
+            VoiceProfile(
+                profile_id="disabled-voice",
+                display_name="Disabled Voice",
+                engine="piper",
+                language="en",
+                locale="en_US",
+                gender="unknown",
+                quality="low",
+                model_path="models/piper/disabled.onnx",
+                config_path="models/piper/disabled.onnx.json",
+                expected_sample_rate_hz=16000,
+                enabled=False,
+                is_default=False,
+                minimum_model_size_bytes=1,
+            ),
+        ],
+        project_root=tmp_path,
+    )
     values = list(clock_values or [1.0, 1.25])
 
     def clock():
@@ -162,8 +227,8 @@ def create_adapter(
 
     return LinuxPiperTextToSpeechAdapter(
         piper_command="piper",
-        model_path=model_path,
-        model_config_path=config_path,
+        voice_registry=registry,
+        project_root=tmp_path,
         output_dir=tmp_path / "tts",
         runner=runner or FakeTextRunner(),
         speaker_adapter=speaker or FakeSpeakerAdapter(),
@@ -172,10 +237,10 @@ def create_adapter(
     )
 
 
-def request(text="Hello Gabriel", playback=False, output_path=None, voice_id="en_US-amy-low"):
+def request(text="Hello Gabriel", playback=False, output_path=None, voice_profile=""):
     return TextToSpeechRequestV1(
         text=text,
-        voice_id=voice_id,
+        voice_profile_id=voice_profile,
         output_wav_path=str(output_path) if output_path else None,
         playback_enabled=playback,
         timeout_seconds=12,
@@ -189,6 +254,8 @@ def test_linux_piper_health_check_passes_with_runtime_model_config_and_speaker(t
 
     assert result.success is True
     assert result.status == "healthy"
+    assert result.resolved_voice_profile == "en_US-hfc_male-medium"
+    assert result.gender == "male"
     assert result.data["piper_binary_path"] == "/usr/local/bin/piper"
     assert result.data["speaker"]["success"] is True
 
@@ -204,6 +271,15 @@ def test_linux_piper_generates_valid_text_without_playback_by_default(tmp_path):
     assert result.success is True
     assert result.status == PIPER_STATUS_SYNTHESIZED
     assert result.normalized_text == "Hello Gabriel"
+    assert result.requested_voice_profile == ""
+    assert result.resolved_voice_profile == "en_US-hfc_male-medium"
+    assert result.voice_display_name == "ARES Male English"
+    assert result.language == "en"
+    assert result.locale == "en_US"
+    assert result.gender == "male"
+    assert result.quality == "medium"
+    assert result.model_path.endswith("en_US-hfc_male-medium.onnx")
+    assert result.config_path.endswith("en_US-hfc_male-medium.onnx.json")
     assert result.generated_audio_path == str(output_path)
     assert result.duration_seconds > 0
     assert result.processing_time_seconds == 0.4
@@ -214,9 +290,9 @@ def test_linux_piper_generates_valid_text_without_playback_by_default(tmp_path):
     assert runner.calls[0]["args"] == [
         "/usr/local/bin/piper",
         "--model",
-        str(tmp_path / "en_US-amy-low.onnx"),
+        str(tmp_path / "models" / "piper" / "en_US-hfc_male-medium.onnx"),
         "--config",
-        str(tmp_path / "en_US-amy-low.onnx.json"),
+        str(tmp_path / "models" / "piper" / "en_US-hfc_male-medium.onnx.json"),
         "--output_file",
         str(output_path),
     ]
@@ -282,14 +358,75 @@ def test_linux_piper_health_rejects_invalid_output_directory(tmp_path):
     assert result.error_message.startswith("output_unwritable:")
 
 
-def test_linux_piper_rejects_invalid_voice(tmp_path):
+def test_linux_piper_rejects_invalid_voice_profile(tmp_path):
     adapter = create_adapter(tmp_path)
 
-    result = adapter.synthesize(request(voice_id="other-voice"))
+    result = adapter.synthesize(request(voice_profile="other-voice"))
 
     assert result.success is False
     assert result.status == PIPER_STATUS_INVALID_VOICE
-    assert result.data["requested_voice"] == "other-voice"
+    assert result.requested_voice_profile == "other-voice"
+    assert result.error_message == "unknown_profile"
+
+
+def test_linux_piper_selects_optional_amy_profile(tmp_path):
+    output_path = tmp_path / "amy.wav"
+    runner = FakeTextRunner()
+    adapter = create_adapter(tmp_path, runner=runner)
+
+    result = adapter.synthesize(
+        request(output_path=output_path, voice_profile="en_US-amy-low")
+    )
+
+    assert result.success is True
+    assert result.requested_voice_profile == "en_US-amy-low"
+    assert result.resolved_voice_profile == "en_US-amy-low"
+    assert result.voice_display_name == "Amy English"
+    assert result.gender == "female"
+    assert result.quality == "low"
+    assert runner.calls[0]["args"][2].endswith("en_US-amy-low.onnx")
+
+
+def test_linux_piper_selects_explicit_default_male_profile(tmp_path):
+    adapter = create_adapter(tmp_path)
+
+    result = adapter.synthesize(
+        request(voice_profile="en_US-hfc_male-medium")
+    )
+
+    assert result.success is True
+    assert result.requested_voice_profile == "en_US-hfc_male-medium"
+    assert result.resolved_voice_profile == "en_US-hfc_male-medium"
+    assert result.gender == "male"
+
+
+def test_linux_piper_rejects_disabled_voice_profile(tmp_path):
+    adapter = create_adapter(tmp_path)
+
+    result = adapter.synthesize(request(voice_profile="disabled-voice"))
+
+    assert result.success is False
+    assert result.status == PIPER_STATUS_INVALID_VOICE
+    assert result.error_message == "profile_disabled"
+
+
+def test_linux_piper_reports_malformed_profile_config_safely(tmp_path):
+    config = tmp_path / "voices.json"
+    config.write_text("{not json", encoding="utf-8")
+    adapter = LinuxPiperTextToSpeechAdapter(
+        piper_command="piper",
+        voice_profiles_config_path=config,
+        project_root=tmp_path,
+        output_dir=tmp_path / "tts",
+        runner=FakeTextRunner(),
+        speaker_adapter=FakeSpeakerAdapter(),
+    )
+
+    result = adapter.health_check()
+
+    assert result.success is False
+    assert result.status == PIPER_STATUS_PROFILE_CONFIG_INVALID
+    assert result.error_message == "malformed_config"
 
 
 def test_linux_piper_timeout_is_structured(tmp_path):
@@ -407,6 +544,7 @@ def test_linux_piper_capability_manifest_declares_tts_and_speaker_adapters():
     assert piper.produced_contracts[CONTRACT_TEXT_TO_SPEECH_RESULT] == ["v1"]
     assert piper.consumed_contracts[CONTRACT_TEXT_TO_SPEECH_REQUEST] == ["v1"]
     assert piper.resources.heavy_module is True
+    assert piper.metadata["voice_profile_config"] == "config/voice_profiles.json"
     assert "voice.playback" in speaker.capabilities
     assert speaker.resources.heavy_module is False
 
@@ -443,6 +581,8 @@ def test_core_service_does_not_import_tts_or_alsa_implementations():
     assert "LinuxAlsaSpeakerAdapter" not in source
     assert "piper" not in source.lower()
     assert "aplay" not in source.lower()
+    assert "VoiceProfile" not in source
+    assert "models/piper" not in source
 
 
 def test_brain_routing_layers_do_not_import_piper_or_aplay():
@@ -457,3 +597,5 @@ def test_brain_routing_layers_do_not_import_piper_or_aplay():
         assert "linuxalsaspeakeradapter" not in source
         assert "subprocess" not in source
         assert "aplay" not in source
+        assert "voiceprofileregistry" not in source
+        assert "models/piper" not in source

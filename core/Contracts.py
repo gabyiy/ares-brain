@@ -348,6 +348,7 @@ class TextToSpeechRequestV1(VersionedContract):
     text: str = ""
     language: str = "en_US"
     voice_id: str = ""
+    voice_profile_id: str = ""
     speaking_rate: float = 1.0
     output_wav_path: str = ""
     timeout_seconds: Optional[float] = None
@@ -362,6 +363,15 @@ class TextToSpeechResultV1(VersionedContract):
     normalized_text: str = ""
     engine: str = ""
     voice_id: str = ""
+    requested_voice_profile: str = ""
+    resolved_voice_profile: str = ""
+    voice_display_name: str = ""
+    language: str = ""
+    locale: str = ""
+    gender: str = ""
+    quality: str = ""
+    model_path: str = ""
+    config_path: str = ""
     generated_audio_path: str = ""
     duration_seconds: float = 0.0
     processing_time_seconds: float = 0.0

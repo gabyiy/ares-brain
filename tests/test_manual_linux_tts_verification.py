@@ -36,7 +36,13 @@ def _healthy_result() -> TextToSpeechResultV1:
         success=True,
         status="healthy",
         engine="piper",
-        voice_id="en_US-amy-low",
+        voice_id="en_US-hfc_male-medium",
+        resolved_voice_profile="en_US-hfc_male-medium",
+        voice_display_name="ARES Male English (HFC)",
+        language="en",
+        locale="en_US",
+        gender="male",
+        quality="medium",
         data={
             "piper_binary_path": "/opt/ares/piper",
             "speaker": speaker.to_dict(),
@@ -116,7 +122,14 @@ def _successful_synthesis(request, wav_mode="valid", playback_success=True):
         status=status,
         normalized_text=request.text,
         engine="piper",
-        voice_id=request.voice_id,
+        voice_id="en_US-hfc_male-medium",
+        requested_voice_profile=request.voice_profile_id,
+        resolved_voice_profile="en_US-hfc_male-medium",
+        voice_display_name="ARES Male English (HFC)",
+        language="en",
+        locale="en_US",
+        gender="male",
+        quality="medium",
         generated_audio_path=str(output_path),
         duration_seconds=0.1,
         processing_time_seconds=0.25,
@@ -157,7 +170,7 @@ def _patch_runtime(monkeypatch, health, synthesize):
         def __init__(self, **kwargs):
             state["adapter_kwargs"] = kwargs
 
-        def health_check(self):
+        def health_check(self, voice_profile_id=""):
             return health
 
         def synthesize(self, request):
@@ -175,10 +188,6 @@ def _base_args(tmp_path, playback=False):
         "Hello Gabriel",
         "--piper-command",
         "/opt/ares/piper",
-        "--model",
-        str(tmp_path / "voice.onnx"),
-        "--config",
-        str(tmp_path / "voice.onnx.json"),
         "--output",
         str(tmp_path / "speech.wav"),
         "--device",
@@ -235,6 +244,41 @@ def test_manual_tts_succeeds_with_explicit_playback(tmp_path, monkeypatch):
     assert state["requests"][0].playback_enabled is True
     assert any(message.startswith("aplay_command: /usr/bin/aplay -D") for message in messages)
     assert "playback_status: played" in messages
+
+
+def test_manual_tts_passes_explicit_voice_profile_to_request(tmp_path, monkeypatch):
+    state = _patch_runtime(
+        monkeypatch,
+        _healthy_result(),
+        lambda request: _successful_synthesis(request),
+    )
+    args = _base_args(tmp_path) + ["--voice-profile", "en_US-amy-low"]
+
+    exit_code = manual_tts.run_manual_verification(args, output_func=lambda _: None)
+
+    assert exit_code == 0
+    assert state["requests"][0].voice_profile_id == "en_US-amy-low"
+
+
+def test_manual_tts_lists_voice_profiles_without_starting_adapters(monkeypatch):
+    class ForbiddenAdapter:
+        def __init__(self, **kwargs):
+            raise AssertionError("Voice adapters must not start while listing profiles")
+
+    monkeypatch.setattr(manual_tts, "LinuxAlsaSpeakerAdapter", ForbiddenAdapter)
+    monkeypatch.setattr(manual_tts, "LinuxPiperTextToSpeechAdapter", ForbiddenAdapter)
+    messages = []
+
+    exit_code = manual_tts.run_manual_verification(
+        ["--list-voices"],
+        output_func=messages.append,
+    )
+
+    assert exit_code == 0
+    assert any("profile_id=en_US-hfc_male-medium" in item for item in messages)
+    assert any("profile_id=en_US-amy-low" in item for item in messages)
+    assert any("gender=male" in item for item in messages)
+    assert any("default=True" in item for item in messages)
 
 
 @pytest.mark.parametrize(

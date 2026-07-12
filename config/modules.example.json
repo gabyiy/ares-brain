@@ -1,4 +1,5 @@
 {
+  "voice_profiles_config": "config/voice_profiles.json",
   "enabled_modules": {
     "voice": true,
     "mock_microphone_adapter": true,

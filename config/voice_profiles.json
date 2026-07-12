@@ -1,0 +1,52 @@
+{
+  "schema_name": "ares.piper_voice_profiles",
+  "schema_version": 1,
+  "profiles": [
+    {
+      "profile_id": "en_US-hfc_male-medium",
+      "display_name": "ARES Male English (HFC)",
+      "engine": "piper",
+      "language": "en",
+      "locale": "en_US",
+      "gender": "male",
+      "quality": "medium",
+      "model_path": "models/piper/en_US-hfc_male-medium.onnx",
+      "config_path": "models/piper/en_US-hfc_male-medium.onnx.json",
+      "expected_sample_rate_hz": 22050,
+      "enabled": true,
+      "default": true,
+      "description": "Default offline ARES assistant voice: official Piper HFC male U.S. English medium profile.",
+      "source_model_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/hfc_male/medium/en_US-hfc_male-medium.onnx",
+      "source_config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/hfc_male/medium/en_US-hfc_male-medium.onnx.json",
+      "source_metadata_url": "https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/hfc_male/medium/MODEL_CARD",
+      "expected_model_size_bytes": 63201294,
+      "expected_config_size_bytes": 5033,
+      "model_md5": "cd2fda1933f0653d3ddc85e5f30ebdd2",
+      "config_md5": "9b4849dbc1e72f35de7391528dea60d9",
+      "minimum_model_size_bytes": 1000000
+    },
+    {
+      "profile_id": "en_US-amy-low",
+      "display_name": "Amy English (Low)",
+      "engine": "piper",
+      "language": "en",
+      "locale": "en_US",
+      "gender": "female",
+      "quality": "low",
+      "model_path": "models/piper/en_US-amy-low.onnx",
+      "config_path": "models/piper/en_US-amy-low.onnx.json",
+      "expected_sample_rate_hz": 16000,
+      "enabled": true,
+      "default": false,
+      "description": "Previously verified Amy voice retained as an optional local profile.",
+      "source_model_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/low/en_US-amy-low.onnx",
+      "source_config_url": "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/low/en_US-amy-low.onnx.json",
+      "source_metadata_url": "https://huggingface.co/rhasspy/piper-voices/blob/main/en/en_US/amy/low/MODEL_CARD",
+      "expected_model_size_bytes": null,
+      "expected_config_size_bytes": null,
+      "model_md5": "",
+      "config_md5": "",
+      "minimum_model_size_bytes": 1000000
+    }
+  ]
+}

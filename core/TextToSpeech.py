@@ -17,6 +17,7 @@ class TextToSpeechSynthesisOptions:
     text: str
     language: str = "en_US"
     voice_id: str = ""
+    voice_profile_id: str = ""
     speaking_rate: float = 1.0
     output_wav_path: str = ""
     timeout_seconds: float | None = None
@@ -28,6 +29,7 @@ class TextToSpeechSynthesisOptions:
             text=self.text,
             language=self.language,
             voice_id=self.voice_id,
+            voice_profile_id=self.voice_profile_id,
             speaking_rate=self.speaking_rate,
             output_wav_path=self.output_wav_path,
             timeout_seconds=self.timeout_seconds,
