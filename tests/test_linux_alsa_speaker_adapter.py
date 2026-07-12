@@ -136,6 +136,24 @@ def test_linux_alsa_speaker_plays_valid_wav_with_argument_list(tmp_path):
         str(wav_path),
     ]
     assert runner.calls[0]["timeout_seconds"] == 7
+    assert adapter.playing is False
+
+
+def test_linux_alsa_speaker_rejects_health_and_playback_while_already_playing(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+    runner = FakeSpeakerRunner()
+    adapter = LinuxAlsaSpeakerAdapter(runner=runner)
+    adapter.playing = True
+
+    health = adapter.health_check()
+    playback = adapter.play_wav(wav_path)
+
+    assert health.success is False
+    assert health.error_message == "speaker_playback_already_active"
+    assert playback.success is False
+    assert playback.error_message == "speaker_playback_already_active"
+    assert runner.calls == []
 
 
 def test_linux_alsa_speaker_rejects_shell_like_device(tmp_path):

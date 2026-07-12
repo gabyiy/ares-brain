@@ -10,6 +10,7 @@
     "mock_text_to_speech_adapter": true,
     "linux_piper_text_to_speech_adapter": false,
     "linux_alsa_speaker_adapter": false,
+    "single_turn_voice_pipeline": true,
     "voice_command_router": true,
     "voice_session_skill": true
   },
@@ -19,6 +20,7 @@
     "voice.output": "mock_voice_output_adapter",
     "voice.speak": "mock_text_to_speech_adapter",
     "voice.playback": "linux_alsa_speaker_adapter",
+    "voice.single_turn": "single_turn_voice_pipeline",
     "voice.command_route": "voice_command_router",
     "voice.session": "voice_session_skill"
   },

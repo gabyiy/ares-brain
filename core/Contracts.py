@@ -24,6 +24,8 @@ CONTRACT_LIFECYCLE_EXECUTION_REQUEST = "lifecycle.execution.request"
 CONTRACT_LIFECYCLE_EXECUTION_RESULT = "lifecycle.execution.result"
 CONTRACT_VOICE_PIPELINE_REQUEST = "voice.pipeline.request"
 CONTRACT_VOICE_PIPELINE_RESULT = "voice.pipeline.result"
+CONTRACT_SINGLE_TURN_VOICE_REQUEST = "voice.single_turn.request"
+CONTRACT_SINGLE_TURN_VOICE_RESULT = "voice.single_turn.result"
 CONTRACT_EVENT_PUBLICATION_ENVELOPE = "event.publication.envelope"
 
 CONTRACT_REQUIRED_FIELDS = (
@@ -456,6 +458,61 @@ class VoicePipelineResultV1(VersionedContract):
 
 
 @dataclass(frozen=True)
+class SingleTurnVoiceRequestV1(VersionedContract):
+    contract_name: str = CONTRACT_SINGLE_TURN_VOICE_REQUEST
+    microphone_device: str = "hw:2,0"
+    recording_duration_seconds: int = 5
+    recording_output_path: str = "data/manual_voice_samples/single_turn_input.wav"
+    language: str = "en"
+    whisper_executable_path: str = "external/whisper.cpp/build/bin/whisper-cli"
+    whisper_model_profile: str = "models/whisper/ggml-tiny.en.bin"
+    minimum_rms: float = 0.0
+    tts_voice_profile: str = ""
+    speaker_device: str = "plughw:CARD=Device,DEV=0"
+    playback_enabled: bool = False
+    timeout_seconds: float = 300.0
+    recording_timeout_seconds: Optional[float] = None
+    transcription_timeout_seconds: Optional[float] = None
+    brain_timeout_seconds: Optional[float] = None
+    synthesis_timeout_seconds: Optional[float] = None
+    playback_timeout_seconds: Optional[float] = None
+    cleanup_policy: str = "delete_on_success"
+    text_input: str = ""
+
+
+@dataclass(frozen=True)
+class SingleTurnVoiceResultV1(VersionedContract):
+    contract_name: str = CONTRACT_SINGLE_TURN_VOICE_RESULT
+    success: bool = False
+    status: str = ""
+    microphone_health_status: str = "not_checked"
+    recording_status: str = "not_started"
+    recorded_wav_path: str = ""
+    recording_duration_seconds: float = 0.0
+    peak_amplitude: int = 0
+    rms_amplitude: float = 0.0
+    transcription_status: str = "not_started"
+    recognized_text: str = ""
+    transcription_processing_time_seconds: float = 0.0
+    brain_execution_status: str = "not_started"
+    detected_intent: str = ""
+    routed_skill: str = ""
+    brain_text_response: str = ""
+    brain_fallback_used: bool = False
+    tts_status: str = "not_started"
+    resolved_voice_profile: str = ""
+    generated_speech_wav_path: str = ""
+    tts_processing_time_seconds: float = 0.0
+    playback_status: str = "not_requested"
+    total_processing_time_seconds: float = 0.0
+    error_stage: str = ""
+    error_reason: str = ""
+    simulated_input: bool = False
+    data: Dict[str, Any] = field(default_factory=dict)
+    events: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class EventPublicationEnvelopeV1(VersionedContract):
     contract_name: str = CONTRACT_EVENT_PUBLICATION_ENVELOPE
     source: str = ""
@@ -522,6 +579,14 @@ def build_default_contract_registry() -> ContractRegistry:
     registry.register(
         CONTRACT_VOICE_PIPELINE_RESULT,
         consumers=["VoicePipeline"],
+    )
+    registry.register(
+        CONTRACT_SINGLE_TURN_VOICE_REQUEST,
+        consumers=["SingleTurnVoicePipeline"],
+    )
+    registry.register(
+        CONTRACT_SINGLE_TURN_VOICE_RESULT,
+        consumers=["SingleTurnVoicePipeline", "CoreService"],
     )
     registry.register(
         CONTRACT_EVENT_PUBLICATION_ENVELOPE,

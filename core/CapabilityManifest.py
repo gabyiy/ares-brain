@@ -17,6 +17,8 @@ from core.Contracts import (
     CONTRACT_MICROPHONE_CAPTURE_RESULT,
     CONTRACT_SPEECH_TO_TEXT_REQUEST,
     CONTRACT_SPEECH_TO_TEXT_RESULT,
+    CONTRACT_SINGLE_TURN_VOICE_REQUEST,
+    CONTRACT_SINGLE_TURN_VOICE_RESULT,
     CONTRACT_TEXT_TO_SPEECH_REQUEST,
     CONTRACT_TEXT_TO_SPEECH_RESULT,
     CONTRACT_VERSION_V1,
@@ -974,8 +976,75 @@ def build_voice_city_manifest(capabilities: Optional[List[str]] = None) -> Capab
     )
 
 
+def build_single_turn_voice_pipeline_manifest() -> CapabilityManifest:
+    return CapabilityManifest(
+        module_name="single_turn_voice_pipeline",
+        module_type=MODULE_TYPE_SERVICE,
+        module_version=CONTRACT_VERSION_V1,
+        manifest_version=MANIFEST_VERSION_V1,
+        description="Owner-triggered bounded microphone-to-Brain-to-speaker voice turn.",
+        provider="ares",
+        enabled_by_default=True,
+        capabilities=["voice.single_turn"],
+        consumed_contracts={
+            CONTRACT_SINGLE_TURN_VOICE_REQUEST: [CONTRACT_VERSION_V1],
+            CONTRACT_MICROPHONE_CAPTURE_RESULT: [CONTRACT_VERSION_V1],
+            CONTRACT_SPEECH_TO_TEXT_RESULT: [CONTRACT_VERSION_V1],
+            CONTRACT_VOICE_COMMAND_RESULT: [CONTRACT_VERSION_V1],
+            CONTRACT_TEXT_TO_SPEECH_RESULT: [CONTRACT_VERSION_V1],
+        },
+        produced_contracts={
+            CONTRACT_SINGLE_TURN_VOICE_RESULT: [CONTRACT_VERSION_V1],
+            CONTRACT_EVENT_PUBLICATION_ENVELOPE: [CONTRACT_VERSION_V1],
+        },
+        dependencies=ManifestDependencies(
+            required_capabilities=[
+                "voice.capture",
+                "voice.transcribe",
+                "voice.command_route",
+                "voice.speak",
+                "voice.playback",
+            ],
+        ),
+        platform=PlatformCompatibility(
+            hardware_requirements={
+                "microphone_required": False,
+                "speaker_required": False,
+            }
+        ),
+        permissions=[
+            PERMISSION_MICROPHONE_READ,
+            PERMISSION_SPEAKER_WRITE,
+            PERMISSION_FILESYSTEM_READ,
+            PERMISSION_FILESYSTEM_WRITE,
+            PERMISSION_PROCESS_LAUNCH,
+        ],
+        lifecycle_support=[
+            LIFECYCLE_OPERATION_START,
+            LIFECYCLE_OPERATION_HEALTH_CHECK,
+            LIFECYCLE_OPERATION_EXECUTE,
+            LIFECYCLE_OPERATION_STOP,
+        ],
+        resources=ResourceDeclaration(
+            estimated_ram_mb=160,
+            estimated_cpu_weight=CPU_WEIGHT_NORMAL,
+            startup_cost=STARTUP_COST_LIGHT,
+            heavy_module=True,
+            maximum_concurrent_tasks=1,
+            inactivity_timeout_seconds=0,
+        ),
+        metadata={
+            "source": "voice_city",
+            "owner_triggered_only": True,
+            "background_listening": False,
+            "speech_process_concurrency": 1,
+        },
+    )
+
+
 def default_voice_related_manifests() -> List[CapabilityManifest]:
     return [
+        build_single_turn_voice_pipeline_manifest(),
         CapabilityManifest(
             module_name="mock_microphone_adapter",
             module_type=MODULE_TYPE_ADAPTER,

@@ -97,6 +97,7 @@ class LinuxAlsaSpeakerAdapter(SpeakerOutputAdapter):
         self.runner = runner or SafeSubprocessRunner()
         self.source = source
         self.started = False
+        self.playing = False
         self.play_count = 0
         self.audio_hardware_accessed = False
 
@@ -113,12 +114,20 @@ class LinuxAlsaSpeakerAdapter(SpeakerOutputAdapter):
 
     def stop(self) -> SpeakerPlaybackResult:
         self.started = False
+        self.playing = False
         return self._success(
             "stopped",
             "Linux ALSA speaker adapter stopped. No playback process is running.",
         )
 
     def health_check(self) -> SpeakerPlaybackResult:
+        if self.playing:
+            return self._failure(
+                ALSA_SPEAKER_STATUS_PLAYBACK_FAILED,
+                "Linux ALSA speaker already has an active playback operation.",
+                "speaker_playback_already_active",
+                device=self.device or "",
+            )
         aplay_path = self._find_aplay()
         if not aplay_path:
             return self._failure(
@@ -179,6 +188,7 @@ class LinuxAlsaSpeakerAdapter(SpeakerOutputAdapter):
             data={
                 "source": self.source,
                 "started": self.started,
+                "playing": self.playing,
                 "aplay_available": bool(aplay_path),
                 "aplay_path": aplay_path or "",
                 "selected_device": self.device or "",
@@ -227,6 +237,14 @@ class LinuxAlsaSpeakerAdapter(SpeakerOutputAdapter):
                 wav_path=str(path),
                 device=selected_device,
             )
+        if self.playing:
+            return self._failure(
+                ALSA_SPEAKER_STATUS_PLAYBACK_FAILED,
+                "A WAV playback operation is already active.",
+                "speaker_playback_already_active",
+                wav_path=str(path),
+                device=selected_device or "",
+            )
 
         wav = analyze_wav_audio(path)
         if not wav.get("success") or int(wav.get("byte_count", 0)) <= 0:
@@ -243,7 +261,14 @@ class LinuxAlsaSpeakerAdapter(SpeakerOutputAdapter):
         if selected_device:
             command.extend(["-D", selected_device])
         command.append(str(path))
-        result = self.runner.run(command, timeout_seconds=_positive_timeout(timeout_seconds or self.timeout_seconds))
+        self.playing = True
+        try:
+            result = self.runner.run(
+                command,
+                timeout_seconds=_positive_timeout(timeout_seconds or self.timeout_seconds),
+            )
+        finally:
+            self.playing = False
         self.audio_hardware_accessed = True
         if result.timed_out:
             return self._failure(
