@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from core.Contracts import (
     CONTRACT_SINGLE_TURN_VOICE_REQUEST,
@@ -27,6 +27,18 @@ PIPELINE_CLEANUP_POLICIES = {
 
 class VoiceStageConflict(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class SingleTurnPreBrainDecision:
+    handled: bool = False
+    status: str = "not_handled"
+    response_text: str = ""
+    continue_to_output: bool = False
+    data: Dict[str, Any] = field(default_factory=dict)
+
+
+PreBrainHook = Callable[[str], Optional[SingleTurnPreBrainDecision]]
 
 
 @dataclass

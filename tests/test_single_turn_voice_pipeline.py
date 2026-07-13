@@ -25,6 +25,7 @@ from core import (
     HealthPolicyConfig,
     ResourceManager,
     SingleTurnVoicePipeline,
+    SingleTurnPreBrainDecision,
     SingleTurnVoiceRequestV1,
     SpeakerPlaybackResult,
     TextToSpeechResultV1,
@@ -828,3 +829,67 @@ def test_integration_recognized_text_uses_real_skill_manager_then_tts_and_speake
     assert tts.requests[0].text == "Result: 120"
     assert speaker.play_count == 1
     assert core_service.resource_manager.current_usage()["active_task_count"] == 0
+
+
+def test_pre_brain_hook_can_intercept_stop_phrase_before_handler(tmp_path):
+    pipeline, order, _, stt, tts, speaker, handled, _ = _pipeline(tmp_path)
+    stt.text = "goodbye Ares"
+
+    result = pipeline.run_once(
+        _request(tmp_path),
+        pre_brain_hook=lambda text: SingleTurnPreBrainDecision(
+            handled=True,
+            status="owner_stop_phrase",
+            data={"matched_stop_phrase": "goodbye Ares"},
+        ),
+    )
+
+    assert result.success is True
+    assert result.status == "owner_stop_phrase"
+    assert result.recognized_text == "goodbye Ares"
+    assert result.brain_execution_status == "owner_stop_phrase"
+    assert handled == []
+    assert tts.requests == []
+    assert speaker.play_count == 0
+    assert "piper.synthesize" not in order
+
+
+def test_local_output_uses_pipeline_tts_and_speaker_without_brain(tmp_path):
+    pipeline, order, _, _, tts, speaker, handled, _ = _pipeline(tmp_path)
+
+    result = pipeline.run_local_output(
+        _request(tmp_path, playback_enabled=True),
+        "Goodbye Gabriel.",
+    )
+
+    assert result.success is True
+    assert result.status == "completed_local_output"
+    assert result.brain_execution_status == "local_output"
+    assert result.brain_text_response == "Goodbye Gabriel."
+    assert handled == []
+    assert tts.requests[0].text == "Goodbye Gabriel."
+    assert speaker.play_count == 1
+    assert order.index("piper.synthesize") < order.index("speaker.play")
+
+
+def test_stage_observer_can_be_added_and_removed_without_replacing_primary_callback(tmp_path):
+    primary = []
+    observed = []
+    pipeline, _, _, _, _, _, _, _ = _pipeline(tmp_path)
+    pipeline.stage_callback = lambda index, total, label, status: primary.append(index)
+    unsubscribe = pipeline.add_stage_observer(
+        lambda index, total, label, status: observed.append(index)
+    )
+
+    first = pipeline.run_once(
+        _request(tmp_path, text_input="calculate 2 + 2", playback_enabled=False)
+    )
+    unsubscribe()
+    second = pipeline.run_once(
+        _request(tmp_path, text_input="calculate 3 + 3", playback_enabled=False)
+    )
+
+    assert first.success is True
+    assert second.success is True
+    assert observed
+    assert len(primary) > len(observed)

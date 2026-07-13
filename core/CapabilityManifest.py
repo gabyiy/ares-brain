@@ -15,6 +15,8 @@ from core.Contracts import (
     CONTRACT_LIFECYCLE_EXECUTION_RESULT,
     CONTRACT_MICROPHONE_CAPTURE_REQUEST,
     CONTRACT_MICROPHONE_CAPTURE_RESULT,
+    CONTRACT_MULTI_TURN_VOICE_SESSION_REQUEST,
+    CONTRACT_MULTI_TURN_VOICE_SESSION_RESULT,
     CONTRACT_SPEECH_TO_TEXT_REQUEST,
     CONTRACT_SPEECH_TO_TEXT_RESULT,
     CONTRACT_SINGLE_TURN_VOICE_REQUEST,
@@ -1042,9 +1044,54 @@ def build_single_turn_voice_pipeline_manifest() -> CapabilityManifest:
     )
 
 
+def build_multi_turn_voice_session_manifest() -> CapabilityManifest:
+    return CapabilityManifest(
+        module_name="multi_turn_voice_session",
+        module_type=MODULE_TYPE_SERVICE,
+        module_version=CONTRACT_VERSION_V1,
+        manifest_version=MANIFEST_VERSION_V1,
+        description="Owner-triggered bounded conversation orchestrator over single-turn voice.",
+        provider="ares",
+        enabled_by_default=True,
+        capabilities=["voice.conversation_session"],
+        consumed_contracts={
+            CONTRACT_MULTI_TURN_VOICE_SESSION_REQUEST: [CONTRACT_VERSION_V1],
+            CONTRACT_SINGLE_TURN_VOICE_RESULT: [CONTRACT_VERSION_V1],
+        },
+        produced_contracts={
+            CONTRACT_MULTI_TURN_VOICE_SESSION_RESULT: [CONTRACT_VERSION_V1],
+            CONTRACT_EVENT_PUBLICATION_ENVELOPE: [CONTRACT_VERSION_V1],
+        },
+        dependencies=ManifestDependencies(required_capabilities=["voice.single_turn"]),
+        permissions=[],
+        lifecycle_support=[
+            LIFECYCLE_OPERATION_START,
+            LIFECYCLE_OPERATION_HEALTH_CHECK,
+            LIFECYCLE_OPERATION_EXECUTE,
+            LIFECYCLE_OPERATION_STOP,
+        ],
+        resources=ResourceDeclaration(
+            estimated_ram_mb=8,
+            estimated_cpu_weight=CPU_WEIGHT_TINY,
+            startup_cost=STARTUP_COST_LIGHT,
+            heavy_module=False,
+            maximum_concurrent_tasks=1,
+            inactivity_timeout_seconds=0,
+        ),
+        metadata={
+            "source": "voice_city",
+            "owner_triggered_only": True,
+            "bounded": True,
+            "background_listening": False,
+            "reuses_single_turn_pipeline": True,
+        },
+    )
+
+
 def default_voice_related_manifests() -> List[CapabilityManifest]:
     return [
         build_single_turn_voice_pipeline_manifest(),
+        build_multi_turn_voice_session_manifest(),
         CapabilityManifest(
             module_name="mock_microphone_adapter",
             module_type=MODULE_TYPE_ADAPTER,

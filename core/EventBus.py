@@ -110,12 +110,18 @@ class EventBus:
         type: str,
         payload: Optional[Dict[str, Any]] = None,
         priority: str = PRIORITY_NORMAL,
+        correlation_id: str = "",
+        session_id: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Event:
         event = Event(
             source=source,
             type=type,
             priority=priority,
             payload=payload or {},
+            correlation_id=correlation_id,
+            session_id=session_id,
+            metadata=metadata or {},
         )
 
         with self._lock:

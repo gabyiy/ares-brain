@@ -9,6 +9,8 @@ from core.Health import RETRY_SAFE
 from core.Microphone import AudioChunk, MicrophoneResult
 from core.ResourceBudget import CancellationToken
 from core.SingleTurnVoiceSupport import (
+    PreBrainHook,
+    SingleTurnPreBrainDecision,
     SingleTurnRunState,
     VoiceStageConflict,
     brain_timeout_routing,
@@ -29,6 +31,7 @@ class SingleTurnVoiceStageMixin:
         request: SingleTurnVoiceRequestV1,
         state: SingleTurnRunState,
         cancellation_token: Optional[CancellationToken],
+        pre_brain_hook: Optional[PreBrainHook] = None,
     ) -> SingleTurnVoiceResultV1:
         cancelled = self._cancelled(state, cancellation_token, "before_recording")
         if cancelled:
@@ -62,7 +65,26 @@ class SingleTurnVoiceStageMixin:
         cancelled = self._cancelled(state, cancellation_token, "before_brain")
         if cancelled:
             return cancelled
-        self._brain_stage(request, state, transcription)
+        decision = self._apply_pre_brain_hook(state, pre_brain_hook)
+        if isinstance(decision, SingleTurnVoiceResultV1):
+            return decision
+        if decision is None or not decision.handled:
+            self._brain_stage(request, state, transcription)
+        elif not decision.continue_to_output:
+            result = self._result(
+                state,
+                success=True,
+                status=decision.status or "intercepted_before_brain",
+            )
+            self._emit(
+                state,
+                self.EVENT_SINGLE_TURN_COMPLETED,
+                "pipeline",
+                result.status,
+                True,
+                {"pre_brain_intercepted": True},
+            )
+            return replace(result, events=[dict(event) for event in state.events])
 
         cancelled = self._cancelled(state, cancellation_token, "before_synthesis")
         if cancelled:
@@ -98,7 +120,10 @@ class SingleTurnVoiceStageMixin:
                 {"playback_enabled": False},
             )
 
-        status = "completed_with_brain_fallback" if state.brain_fallback_used else "completed"
+        if decision is not None and decision.handled:
+            status = "completed_local_output"
+        else:
+            status = "completed_with_brain_fallback" if state.brain_fallback_used else "completed"
         result = self._result(state, success=not state.brain_fallback_used, status=status)
         self._emit(
             state,
@@ -109,6 +134,61 @@ class SingleTurnVoiceStageMixin:
             {"brain_fallback_used": state.brain_fallback_used},
         )
         return replace(result, events=[dict(event) for event in state.events])
+
+    def _apply_pre_brain_hook(
+        self,
+        state: SingleTurnRunState,
+        pre_brain_hook: Optional[PreBrainHook],
+    ) -> Optional[SingleTurnPreBrainDecision | SingleTurnVoiceResultV1]:
+        if pre_brain_hook is None:
+            return None
+        try:
+            decision = pre_brain_hook(state.recognized_text)
+        except Exception as error:
+            return self._failure(
+                state,
+                "pre_brain_hook",
+                safe_exception(error),
+                "pre_brain_hook_failed",
+            )
+        if decision is None:
+            return None
+        if not isinstance(decision, SingleTurnPreBrainDecision):
+            return self._failure(
+                state,
+                "pre_brain_hook",
+                "invalid_pre_brain_decision",
+                "pre_brain_hook_failed",
+            )
+        if not decision.handled:
+            return decision
+        if decision.continue_to_output and not decision.response_text.strip():
+            return self._failure(
+                state,
+                "pre_brain_hook",
+                "local_output_text_required",
+                "pre_brain_hook_failed",
+            )
+        state.brain_execution_status = decision.status or "intercepted_before_brain"
+        state.brain_text_response = decision.response_text.strip()
+        state.data["pre_brain_decision"] = {
+            "handled": True,
+            "status": state.brain_execution_status,
+            "continue_to_output": decision.continue_to_output,
+            "data": dict(decision.data or {}),
+        }
+        self._emit(
+            state,
+            self.EVENT_BRAIN_EXECUTION_COMPLETED,
+            "brain_execution",
+            state.brain_execution_status,
+            True,
+            {
+                "bypassed": True,
+                "response_length": len(state.brain_text_response),
+            },
+        )
+        return decision
 
     def _simulated_transcription(
         self,

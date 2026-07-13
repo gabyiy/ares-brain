@@ -23,6 +23,8 @@ from core.ResourceBudget import CancellationToken, ResourceManager
 from core.SingleTurnVoiceStages import SingleTurnVoiceStageMixin
 from core.SingleTurnVoiceSupport import (
     PIPELINE_CLEANUP_KEEP,
+    PreBrainHook,
+    SingleTurnPreBrainDecision,
     SingleTurnRunState,
     VoiceStageCoordinator,
     contract_failure_result,
@@ -129,6 +131,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         self.fallback_policy = fallback_policy
         self.speech_to_text_candidates = list(speech_to_text_candidates or [])
         self.stage_callback = stage_callback
+        self._stage_observers: List[StageCallback] = []
         self.clock = clock
         self.coordinator = VoiceStageCoordinator()
         self._active_request: Optional[SingleTurnVoiceRequestV1] = None
@@ -183,10 +186,11 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         self,
         request: SingleTurnVoiceRequestV1,
         cancellation_token: Optional[CancellationToken] = None,
+        pre_brain_hook: Optional[PreBrainHook] = None,
     ) -> SingleTurnVoiceResultV1:
         state = SingleTurnRunState(request=request, started_at=self.clock())
         self._emit(state, EVENT_SINGLE_TURN_STARTED, "pipeline", "started", True)
-        return self._execute_ready(request, state, cancellation_token)
+        return self._execute_ready(request, state, cancellation_token, pre_brain_hook)
 
     def stop(self, request: Optional[SingleTurnVoiceRequestV1] = None) -> LifecycleResult:
         if request is not None:
@@ -212,6 +216,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         self,
         request: SingleTurnVoiceRequestV1 | Dict[str, Any],
         cancellation_token: Optional[CancellationToken] = None,
+        pre_brain_hook: Optional[PreBrainHook] = None,
     ) -> SingleTurnVoiceResultV1:
         try:
             normalized = validated_single_turn_request(request)
@@ -247,7 +252,12 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
                     )
                 else:
                     self._stage(1, "Checking components", "passed")
-                    result = self._execute_ready(normalized, state, cancellation_token)
+                    result = self._execute_ready(
+                        normalized,
+                        state,
+                        cancellation_token,
+                        pre_brain_hook,
+                    )
         except KeyboardInterrupt:
             if cancellation_token is not None and cancellation_token.supports_cancellation:
                 cancellation_token.cancel("keyboard_interrupt")
@@ -274,6 +284,58 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
             },
         )
 
+    def run_local_output(
+        self,
+        request: SingleTurnVoiceRequestV1,
+        text: str,
+        cancellation_token: Optional[CancellationToken] = None,
+    ) -> SingleTurnVoiceResultV1:
+        clean_text = str(text or "").strip()
+        if not clean_text:
+            return contract_failure_result(request, "local_output_text_required")
+        local_request = replace(
+            request,
+            text_input=clean_text,
+            playback_enabled=True,
+            metadata={
+                **dict(request.metadata or {}),
+                "local_output": True,
+            },
+        )
+        return self.run_once(
+            local_request,
+            cancellation_token=cancellation_token,
+            pre_brain_hook=lambda _: SingleTurnPreBrainDecision(
+                handled=True,
+                status="local_output",
+                response_text=clean_text,
+                continue_to_output=True,
+                data={"source": "configured_local_phrase"},
+            ),
+        )
+
+    def add_stage_observer(self, observer: StageCallback) -> Callable[[], None]:
+        if not callable(observer):
+            raise TypeError("stage observer must be callable")
+        self._stage_observers.append(observer)
+
+        def unsubscribe() -> None:
+            if observer in self._stage_observers:
+                self._stage_observers.remove(observer)
+
+        return unsubscribe
+
+    def coordination_status(self) -> Dict[str, Any]:
+        status = self.coordinator.to_dict()
+        status["speaker_playing"] = bool(getattr(self.speaker_adapter, "playing", False))
+        status["idle"] = not (
+            status["capture_active"]
+            or status["playback_active"]
+            or status["heavy_stage"]
+            or status["speaker_playing"]
+        )
+        return status
+
     def lifecycle_status(self) -> Dict[str, Any]:
         return self.lifecycle_manager.status(SINGLE_TURN_MODULE_NAME).to_dict()
 
@@ -282,6 +344,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         request: SingleTurnVoiceRequestV1,
         state: SingleTurnRunState,
         cancellation_token: Optional[CancellationToken],
+        pre_brain_hook: Optional[PreBrainHook] = None,
     ) -> SingleTurnVoiceResultV1:
         if self.lifecycle_manager.status(SINGLE_TURN_MODULE_NAME).state != LIFECYCLE_READY:
             return self._failure(state, "lifecycle", "module_not_ready", "not_ready")
@@ -311,7 +374,12 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
 
         def execute_stages(_: Any) -> SingleTurnVoiceResultV1:
             try:
-                return self._run_stages(request, state, cancellation_token)
+                return self._run_stages(
+                    request,
+                    state,
+                    cancellation_token,
+                    pre_brain_hook,
+                )
             except KeyboardInterrupt:
                 if cancellation_token is not None and cancellation_token.supports_cancellation:
                     cancellation_token.cancel("keyboard_interrupt")
@@ -623,6 +691,8 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
                 type=event_type,
                 payload=payload,
                 priority=PRIORITY_NORMAL,
+                correlation_id=state.request.correlation_id,
+                session_id=state.request.session_id,
             )
             if self.event_bus is not None
             else Event(source="voice", type=event_type, payload=payload)
@@ -662,6 +732,8 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
     def _stage(self, index: int, label: str, status: str) -> None:
         if self.stage_callback is not None:
             self.stage_callback(index, 6, label, status)
+        for observer in list(self._stage_observers):
+            observer(index, 6, label, status)
 
     def _safe_adapter_call(self, adapter: Any, method_name: str) -> Any:
         method = getattr(adapter, method_name, None)

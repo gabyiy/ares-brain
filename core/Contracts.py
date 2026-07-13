@@ -26,6 +26,8 @@ CONTRACT_VOICE_PIPELINE_REQUEST = "voice.pipeline.request"
 CONTRACT_VOICE_PIPELINE_RESULT = "voice.pipeline.result"
 CONTRACT_SINGLE_TURN_VOICE_REQUEST = "voice.single_turn.request"
 CONTRACT_SINGLE_TURN_VOICE_RESULT = "voice.single_turn.result"
+CONTRACT_MULTI_TURN_VOICE_SESSION_REQUEST = "voice.conversation_session.request"
+CONTRACT_MULTI_TURN_VOICE_SESSION_RESULT = "voice.conversation_session.result"
 CONTRACT_EVENT_PUBLICATION_ENVELOPE = "event.publication.envelope"
 
 CONTRACT_REQUIRED_FIELDS = (
@@ -513,6 +515,68 @@ class SingleTurnVoiceResultV1(VersionedContract):
 
 
 @dataclass(frozen=True)
+class MultiTurnVoiceSessionRequestV1(VersionedContract):
+    contract_name: str = CONTRACT_MULTI_TURN_VOICE_SESSION_REQUEST
+    microphone_device: str = "hw:2,0"
+    speaker_device: str = "plughw:CARD=Device,DEV=0"
+    recording_duration_seconds: int = 5
+    recording_output_directory: str = "data/manual_voice_samples"
+    language: str = "en"
+    whisper_executable_path: str = "external/whisper.cpp/build/bin/whisper-cli"
+    whisper_model_profile: str = "models/whisper/ggml-tiny.en.bin"
+    minimum_rms: float = 0.0
+    tts_voice_profile: str = ""
+    playback_enabled: bool = False
+    maximum_turns: int = 5
+    maximum_session_duration_seconds: float = 180.0
+    maximum_consecutive_failures: int = 3
+    inter_turn_delay_seconds: float = 0.75
+    silence_retry_enabled: bool = True
+    blank_transcription_retry_enabled: bool = True
+    stop_phrases: List[str] = field(default_factory=list)
+    confirmation_stop_phrases: List[str] = field(default_factory=list)
+    greeting_enabled: bool = True
+    greeting_text: str = "Hello Gabriel. I am listening."
+    closing_phrase_enabled: bool = True
+    closing_phrase_text: str = "Goodbye Gabriel."
+    cleanup_policy: str = "delete_on_success"
+    per_turn_timeout_seconds: float = 300.0
+    total_session_timeout_seconds: float = 180.0
+    verbose_diagnostics: bool = False
+    simulated_text_turns: List[str] = field(default_factory=list)
+    interactive_text: bool = False
+
+
+@dataclass(frozen=True)
+class MultiTurnVoiceSessionResultV1(VersionedContract):
+    contract_name: str = CONTRACT_MULTI_TURN_VOICE_SESSION_RESULT
+    success: bool = False
+    status: str = ""
+    started_at: str = ""
+    completed_at: str = ""
+    total_duration_seconds: float = 0.0
+    attempted_turns: int = 0
+    successful_turns: int = 0
+    failed_turns: int = 0
+    silent_turns: int = 0
+    blank_transcription_turns: int = 0
+    stop_reason: str = ""
+    recognized_stop_phrase: str = ""
+    maximum_turns_reached: bool = False
+    maximum_duration_reached: bool = False
+    cancelled: bool = False
+    fallback_responses_used: bool = False
+    resource_cleanup_status: str = "not_started"
+    final_state: str = "created"
+    turn_summaries: List[Dict[str, Any]] = field(default_factory=list)
+    state_history: List[Dict[str, Any]] = field(default_factory=list)
+    error_stage: str = ""
+    error_reason: str = ""
+    data: Dict[str, Any] = field(default_factory=dict)
+    events: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class EventPublicationEnvelopeV1(VersionedContract):
     contract_name: str = CONTRACT_EVENT_PUBLICATION_ENVELOPE
     source: str = ""
@@ -587,6 +651,14 @@ def build_default_contract_registry() -> ContractRegistry:
     registry.register(
         CONTRACT_SINGLE_TURN_VOICE_RESULT,
         consumers=["SingleTurnVoicePipeline", "CoreService"],
+    )
+    registry.register(
+        CONTRACT_MULTI_TURN_VOICE_SESSION_REQUEST,
+        consumers=["MultiTurnVoiceSession"],
+    )
+    registry.register(
+        CONTRACT_MULTI_TURN_VOICE_SESSION_RESULT,
+        consumers=["MultiTurnVoiceSession", "CoreService"],
     )
     registry.register(
         CONTRACT_EVENT_PUBLICATION_ENVELOPE,
