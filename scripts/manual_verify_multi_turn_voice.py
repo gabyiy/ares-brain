@@ -157,6 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_REQUIRED_SILENCE_FRAMES,
     )
     parser.add_argument("--frame-debug", action="store_true")
+    parser.add_argument("--diagnostic-audio", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--text-turn", action="append", default=[])
     parser.add_argument("--interactive-text", action="store_true")
@@ -193,6 +194,7 @@ def request_from_args(args: argparse.Namespace) -> MultiTurnVoiceSessionRequestV
         pre_roll_seconds=args.pre_roll_seconds,
         frame_duration_ms=args.frame_ms,
         frame_debug_enabled=bool(args.frame_debug),
+        diagnostic_audio=bool(args.diagnostic_audio),
         tts_voice_profile=args.voice_profile,
         playback_enabled=bool(args.playback),
         maximum_turns=args.max_turns,
@@ -204,7 +206,9 @@ def request_from_args(args: argparse.Namespace) -> MultiTurnVoiceSessionRequestV
         greeting_text=args.greeting,
         closing_phrase_enabled=not args.no_closing_phrase,
         closing_phrase_text=args.closing_phrase,
-        cleanup_policy="keep" if args.keep_audio else "delete_on_success",
+        cleanup_policy=(
+            "keep" if args.keep_audio or args.diagnostic_audio else "delete_on_success"
+        ),
         per_turn_timeout_seconds=args.timeout,
         total_session_timeout_seconds=args.max_session_seconds,
         verbose_diagnostics=bool(args.verbose),
@@ -310,6 +314,23 @@ def _progress_printer(output_func: Callable[[str], None]) -> Callable[[str, dict
                     f"thresholds={float(payload.get('speech_start_rms', 0.0)):.1f}/"
                     f"{float(payload.get('speech_continue_rms', 0.0)):.1f}/"
                     f"{float(payload.get('silence_rms', 0.0)):.1f}"
+                )
+            if payload.get("resolved_capture_device"):
+                output_func(
+                    "Audio format: "
+                    f"requested_device={payload.get('requested_device') or '(default)'}, "
+                    f"resolved_device={payload.get('resolved_capture_device')}, "
+                    f"actual_rate={payload.get('actual_sample_rate_hz')} Hz, "
+                    f"normalized_rate={payload.get('normalized_sample_rate_hz')} Hz"
+                )
+                if payload.get("raw_wav_path"):
+                    output_func(f"Raw diagnostic WAV: {payload['raw_wav_path']}")
+                output_func(
+                    f"Normalized WAV: {payload.get('normalized_wav_path') or '(none)'}"
+                )
+                output_func(
+                    "Final Whisper input: "
+                    f"{payload.get('final_whisper_input_path') or '(none)'}"
                 )
         elif event_type == "stop_phrase_detected":
             output_func(f"Stop phrase detected: {payload['matched_stop_phrase']}")

@@ -455,7 +455,14 @@ def test_raspberry_pi_integration_records_wav_then_transcribes_with_mocks(tmp_pa
     assert wav_path.exists()
     assert transcription.success is True
     assert transcription.text == "raspberry pi test"
-    assert any(call["args"][-1] == str(wav_path) for call in alsa_runner.calls)
+    capture_targets = [
+        call["args"][-1]
+        for call in alsa_runner.calls
+        if call["args"][-1] != "-l"
+    ]
+    assert len(capture_targets) == 1
+    assert ".raw." in capture_targets[0]
+    assert record.data["final_whisper_input_path"] == str(wav_path)
     assert whisper_runner.calls[0]["args"][whisper_runner.calls[0]["args"].index("-f") + 1] == str(wav_path)
 
 

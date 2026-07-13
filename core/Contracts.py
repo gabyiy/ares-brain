@@ -337,7 +337,7 @@ class MicrophoneCaptureResultV1(VersionedContract):
 class VoiceActivityCaptureRequestV1(VersionedContract):
     contract_name: str = CONTRACT_VOICE_ACTIVITY_CAPTURE_REQUEST
     output_wav_path: str = "data/manual_voice_samples/voice_activity_input.wav"
-    microphone_device: str = "hw:2,0"
+    microphone_device: str = "plughw:2,0"
     sample_rate_hz: int = 16000
     channels: int = 1
     sample_width_bytes: int = 2
@@ -391,6 +391,20 @@ class VoiceActivityCaptureResultV1(VersionedContract):
     speech_frame_count: int = 0
     trailing_silence_frame_count: int = 0
     selected_device: str = ""
+    requested_device: str = ""
+    resolved_capture_device: str = ""
+    requested_sample_rate_hz: int = 16000
+    actual_sample_rate_hz: int = 0
+    actual_channels: int = 0
+    actual_sample_width_bytes: int = 0
+    normalized_sample_rate_hz: int = 16000
+    normalized_channels: int = 1
+    normalized_sample_width_bytes: int = 2
+    raw_wav_path: str = ""
+    normalized_wav_path: str = ""
+    raw_duration_seconds: float = 0.0
+    normalized_duration_seconds: float = 0.0
+    final_whisper_input_path: str = ""
     stop_reason: str = ""
     calibration_enabled: bool = False
     calibration_duration_seconds: float = 0.0
@@ -560,12 +574,12 @@ class VoicePipelineResultV1(VersionedContract):
 @dataclass(frozen=True)
 class SingleTurnVoiceRequestV1(VersionedContract):
     contract_name: str = CONTRACT_SINGLE_TURN_VOICE_REQUEST
-    microphone_device: str = "hw:2,0"
+    microphone_device: str = "plughw:2,0"
     recording_duration_seconds: int = 5
     recording_output_path: str = "data/manual_voice_samples/single_turn_input.wav"
     language: str = "en"
     whisper_executable_path: str = "external/whisper.cpp/build/bin/whisper-cli"
-    whisper_model_profile: str = "models/whisper/ggml-tiny.en.bin"
+    whisper_model_profile: str = "models/whisper/ggml-base.en.bin"
     minimum_rms: float = 0.0
     capture_mode: str = "fixed_duration"
     calibration_enabled: bool = True
@@ -588,6 +602,7 @@ class SingleTurnVoiceRequestV1(VersionedContract):
     minimum_silence_rms: float = 80.0
     maximum_silence_rms: float = 600.0
     frame_debug_enabled: bool = False
+    diagnostic_audio: bool = False
     tts_voice_profile: str = ""
     speaker_device: str = "plughw:CARD=Device,DEV=0"
     playback_enabled: bool = False
@@ -647,13 +662,13 @@ class SingleTurnVoiceResultV1(VersionedContract):
 @dataclass(frozen=True)
 class MultiTurnVoiceSessionRequestV1(VersionedContract):
     contract_name: str = CONTRACT_MULTI_TURN_VOICE_SESSION_REQUEST
-    microphone_device: str = "hw:2,0"
+    microphone_device: str = "plughw:2,0"
     speaker_device: str = "plughw:CARD=Device,DEV=0"
     recording_duration_seconds: int = 5
     recording_output_directory: str = "data/manual_voice_samples"
     language: str = "en"
     whisper_executable_path: str = "external/whisper.cpp/build/bin/whisper-cli"
-    whisper_model_profile: str = "models/whisper/ggml-tiny.en.bin"
+    whisper_model_profile: str = "models/whisper/ggml-base.en.bin"
     minimum_rms: float = 0.0
     capture_mode: str = "fixed_duration"
     calibration_enabled: bool = True
@@ -676,6 +691,7 @@ class MultiTurnVoiceSessionRequestV1(VersionedContract):
     minimum_silence_rms: float = 80.0
     maximum_silence_rms: float = 600.0
     frame_debug_enabled: bool = False
+    diagnostic_audio: bool = False
     tts_voice_profile: str = ""
     playback_enabled: bool = False
     maximum_turns: int = 5

@@ -29,9 +29,9 @@ from skills import SkillManager, create_builtin_skill_manager  # noqa: E402
 from skills.base import SkillResponse  # noqa: E402
 
 
-DEFAULT_MICROPHONE_DEVICE = "hw:2,0"
+DEFAULT_MICROPHONE_DEVICE = "plughw:2,0"
 DEFAULT_SPEAKER_DEVICE = "plughw:CARD=Device,DEV=0"
-DEFAULT_WHISPER_MODEL = "models/whisper/ggml-tiny.en.bin"
+DEFAULT_WHISPER_MODEL = "models/whisper/ggml-base.en.bin"
 DEFAULT_WHISPER_COMMAND = "external/whisper.cpp/build/bin/whisper-cli"
 DEFAULT_RECORDING_OUTPUT = "data/manual_voice_samples/single_turn_input.wav"
 DEFAULT_RECORD_SECONDS = 5
@@ -132,6 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_REQUIRED_SILENCE_FRAMES,
     )
     parser.add_argument("--frame-debug", action="store_true")
+    parser.add_argument("--diagnostic-audio", action="store_true")
     parser.add_argument("--diagnostic-routing", action="store_true")
     parser.add_argument("--playback", action="store_true")
     parser.add_argument("--keep-audio", action="store_true")
@@ -359,6 +360,7 @@ def request_from_args(args: argparse.Namespace) -> SingleTurnVoiceRequestV1:
         pre_roll_seconds=args.pre_roll_seconds,
         frame_duration_ms=args.frame_ms,
         frame_debug_enabled=bool(args.frame_debug),
+        diagnostic_audio=bool(args.diagnostic_audio),
         tts_voice_profile=args.voice_profile,
         speaker_device=args.speaker_device,
         playback_enabled=bool(args.playback),
@@ -368,7 +370,9 @@ def request_from_args(args: argparse.Namespace) -> SingleTurnVoiceRequestV1:
         brain_timeout_seconds=min(timeout, 30.0),
         synthesis_timeout_seconds=timeout,
         playback_timeout_seconds=timeout,
-        cleanup_policy="keep" if args.keep_audio else "delete_on_success",
+        cleanup_policy=(
+            "keep" if args.keep_audio or args.diagnostic_audio else "delete_on_success"
+        ),
         text_input=args.text_input,
         metadata={
             "source": "manual_verify_single_turn_voice",
@@ -418,6 +422,7 @@ def run_manual_verification(
         result,
         output_func,
         frame_debug=bool(args.frame_debug or args.verbose),
+        diagnostic_audio=bool(args.diagnostic_audio),
     )
     if result.error_reason:
         output_func(f"Failure stage: {result.error_stage}")
@@ -509,9 +514,38 @@ def _print_capture_diagnostics(
     result: Any,
     output_func: Callable[[str], None],
     frame_debug: bool = False,
+    diagnostic_audio: bool = False,
 ) -> None:
     recording = dict(result.data.get("recording") or {})
-    if not recording or recording.get("metadata", {}).get("source") != "rms_voice_activity_capture":
+    if not recording:
+        return
+    data = dict(recording.get("data") or {})
+
+    def value(name: str, default: Any = "") -> Any:
+        direct = recording.get(name)
+        return direct if direct not in (None, "") else data.get(name, default)
+
+    output_func(f"Requested microphone device: {value('requested_device', '(default)')}")
+    output_func(f"Resolved capture device: {value('resolved_capture_device', '(default)')}")
+    output_func(f"Requested sample rate: {value('requested_sample_rate_hz', 16000)} Hz")
+    output_func(f"Actual captured sample rate: {value('actual_sample_rate_hz', 0)} Hz")
+    output_func(f"Actual captured channels: {value('actual_channels', 0)}")
+    output_func(f"Actual captured sample width: {value('actual_sample_width_bytes', 0)} bytes")
+    output_func(f"Normalized sample rate: {value('normalized_sample_rate_hz', 0)} Hz")
+    output_func(f"Normalized channels: {value('normalized_channels', 0)}")
+    output_func(
+        f"Normalized sample width: {value('normalized_sample_width_bytes', 0)} bytes"
+    )
+    output_func(f"Raw WAV path: {value('raw_wav_path', '(not retained)') or '(not retained)'}")
+    output_func(f"Normalized WAV path: {value('normalized_wav_path', result.recorded_wav_path)}")
+    output_func(f"Raw duration: {float(value('raw_duration_seconds', 0.0)):.3f}s")
+    output_func(
+        f"Normalized duration: {float(value('normalized_duration_seconds', 0.0)):.3f}s"
+    )
+    output_func(
+        f"Final Whisper input path: {value('final_whisper_input_path', result.recorded_wav_path)}"
+    )
+    if recording.get("metadata", {}).get("source") != "rms_voice_activity_capture":
         return
     output_func(f"Capture stop reason: {recording.get('stop_reason') or recording.get('status')}")
     output_func(f"Ambient RMS: {float(recording.get('ambient_rms', 0.0)):.3f}")
@@ -524,14 +558,13 @@ def _print_capture_diagnostics(
     )
     output_func(f"Speech RMS: {float(recording.get('speech_rms', 0.0)):.3f}")
     output_func(f"Peak amplitude: {int(recording.get('peak_amplitude', 0))}")
-    data = dict(recording.get("data") or {})
     output_func(
         "Selected thresholds: "
         f"start={data.get('speech_start_rms')}, "
         f"continue={data.get('speech_continue_rms')}, "
         f"silence={data.get('silence_rms')}"
     )
-    if frame_debug and data.get("transitions"):
+    if (frame_debug or diagnostic_audio) and data.get("transitions"):
         output_func("Capture transitions:")
         for transition in data["transitions"]:
             output_func(

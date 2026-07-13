@@ -38,10 +38,11 @@ def test_manual_script_import_is_safe_and_defaults_are_hardware_specific_only_as
     args = parser.parse_args([])
 
     assert callable(manual.run_manual_verification)
-    assert args.microphone_device == "hw:2,0"
+    assert args.microphone_device == "plughw:2,0"
     assert args.speaker_device == "plughw:CARD=Device,DEV=0"
-    assert args.whisper_model == "models/whisper/ggml-tiny.en.bin"
+    assert args.whisper_model == "models/whisper/ggml-base.en.bin"
     assert args.playback is False
+    assert args.diagnostic_audio is False
     assert args.diagnostic_routing is False
 
 
@@ -117,6 +118,51 @@ def test_diagnostic_routing_flag_prints_bounded_structured_report():
     assert "Rejection reason: (none)" in outputs
 
 
+def test_diagnostic_audio_prints_requested_actual_and_normalized_formats():
+    outputs = []
+    result = SingleTurnVoiceResultV1(
+        success=True,
+        status="completed",
+        recorded_wav_path="normalized.wav",
+        data={
+            "recording": {
+                "success": True,
+                "status": "recorded",
+                "data": {
+                    "requested_device": "hw:2,0",
+                    "resolved_capture_device": "plughw:2,0",
+                    "requested_sample_rate_hz": 16000,
+                    "actual_sample_rate_hz": 44100,
+                    "actual_channels": 1,
+                    "actual_sample_width_bytes": 2,
+                    "normalized_sample_rate_hz": 16000,
+                    "normalized_channels": 1,
+                    "normalized_sample_width_bytes": 2,
+                    "raw_wav_path": "raw.wav",
+                    "normalized_wav_path": "normalized.wav",
+                    "raw_duration_seconds": 1.0,
+                    "normalized_duration_seconds": 1.0,
+                    "final_whisper_input_path": "normalized.wav",
+                },
+            }
+        },
+    )
+
+    code = manual.run_manual_verification(
+        ["--text-input", "status", "--diagnostic-audio"],
+        output_func=outputs.append,
+        pipeline=StubPipeline(result),
+    )
+
+    assert code == 0
+    assert "Requested microphone device: hw:2,0" in outputs
+    assert "Resolved capture device: plughw:2,0" in outputs
+    assert "Actual captured sample rate: 44100 Hz" in outputs
+    assert "Normalized sample rate: 16000 Hz" in outputs
+    assert "Raw WAV path: raw.wav" in outputs
+    assert "Final Whisper input path: normalized.wav" in outputs
+
+
 def test_manual_real_arguments_are_forwarded_to_versioned_request():
     pipeline = StubPipeline(_success_result())
 
@@ -170,6 +216,7 @@ def test_manual_auto_stop_arguments_are_forwarded_without_changing_intent_safety
             "--required-continue-frames", "3",
             "--required-silence-frames", "6",
             "--frame-debug",
+            "--diagnostic-audio",
         ],
         output_func=lambda text: None,
         pipeline=pipeline,
@@ -178,6 +225,8 @@ def test_manual_auto_stop_arguments_are_forwarded_without_changing_intent_safety
     request = pipeline.requests[0]
     assert exit_code == 0
     assert request.capture_mode == "auto_stop"
+    assert request.diagnostic_audio is True
+    assert request.cleanup_policy == "keep"
     assert request.calibration_enabled is True
     assert request.calibration_duration_seconds == 0.6
     assert request.speech_start_rms == 220

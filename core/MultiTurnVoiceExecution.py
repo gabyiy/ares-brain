@@ -216,6 +216,7 @@ class MultiTurnVoiceExecutionMixin:
             summary = self._turn_summary(turn_number, turn_result)
             summaries.append(summary)
             recording = dict(turn_result.data.get("recording") or {})
+            recording_data = dict(recording.get("data") or {})
             self._notify(
                 "turn_result",
                 {
@@ -241,6 +242,24 @@ class MultiTurnVoiceExecutionMixin:
                         recording.get("derived_speech_continue_rms", 0.0)
                     ),
                     "silence_rms": float(recording.get("derived_silence_rms", 0.0)),
+                    "requested_device": recording.get("requested_device")
+                    or recording_data.get("requested_device", ""),
+                    "resolved_capture_device": recording.get("resolved_capture_device")
+                    or recording_data.get("resolved_capture_device", ""),
+                    "actual_sample_rate_hz": recording.get("actual_sample_rate_hz")
+                    or recording_data.get("actual_sample_rate_hz", 0),
+                    "normalized_sample_rate_hz": recording.get(
+                        "normalized_sample_rate_hz"
+                    )
+                    or recording_data.get("normalized_sample_rate_hz", 0),
+                    "raw_wav_path": recording.get("raw_wav_path")
+                    or recording_data.get("raw_wav_path", ""),
+                    "normalized_wav_path": recording.get("normalized_wav_path")
+                    or recording_data.get("normalized_wav_path", ""),
+                    "final_whisper_input_path": recording.get(
+                        "final_whisper_input_path"
+                    )
+                    or recording_data.get("final_whisper_input_path", ""),
                 },
             )
 
@@ -497,6 +516,7 @@ class MultiTurnVoiceExecutionMixin:
             minimum_silence_rms=request.minimum_silence_rms,
             maximum_silence_rms=request.maximum_silence_rms,
             frame_debug_enabled=request.frame_debug_enabled,
+            diagnostic_audio=request.diagnostic_audio,
             tts_voice_profile=request.tts_voice_profile,
             speaker_device=request.speaker_device,
             playback_enabled=request.playback_enabled,

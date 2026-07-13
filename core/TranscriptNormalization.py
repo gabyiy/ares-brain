@@ -86,6 +86,7 @@ _CALCULATOR_WRAPPER_RULES = (
     _CalculatorWrapperRule("could you calculate"),
     _CalculatorWrapperRule("would you calculate"),
     _CalculatorWrapperRule("can you calculate"),
+    _CalculatorWrapperRule("i want you to calculate"),
     _CalculatorWrapperRule("i'll calculate"),
     _CalculatorWrapperRule("i will calculate"),
     _CalculatorWrapperRule("please calculate"),

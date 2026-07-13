@@ -74,6 +74,7 @@ def test_whisper_style_calculator_variants_are_bounded_and_deterministic(
         "calculate two plus two",
         "please calculate 2 plus 2",
         "can you calculate 2 plus 2",
+        "I want you to calculate two plus two",
         "could you calculate two plus two",
         "would you calculate 2 plus 2",
         "what is 2 plus 2",

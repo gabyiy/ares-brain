@@ -120,6 +120,7 @@ def test_manual_vad_forwards_adaptive_calibration_configuration(tmp_path):
             "--required-continue-frames", "4",
             "--required-silence-frames", "7",
             "--frame-debug",
+            "--diagnostic-audio",
         ],
         output_func=lambda _: None,
         adapter=adapter,
@@ -134,6 +135,7 @@ def test_manual_vad_forwards_adaptive_calibration_configuration(tmp_path):
     assert kwargs["required_continue_frames"] == 4
     assert kwargs["required_silence_frames"] == 7
     assert kwargs["frame_debug_enabled"] is True
+    assert kwargs["diagnostic_audio"] is True
 
 
 def test_manual_vad_optional_transcription_and_brain_route_use_normalized_text(tmp_path):

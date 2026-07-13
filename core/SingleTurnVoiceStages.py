@@ -27,7 +27,7 @@ from core.SingleTurnVoiceSupport import (
     speech_output_path,
 )
 from core.SpeechToText import TranscriptionResult
-from core.WavAudio import analyze_wav_audio, read_audio_chunk_wav, write_audio_chunk_wav
+from core.WavAudio import read_audio_chunk_wav, validate_canonical_wav, write_audio_chunk_wav
 from core.VoiceActivityDetection import (
     CAPTURE_MODE_AUTO_STOP,
     VAD_STATUS_CANCELLED,
@@ -444,6 +444,7 @@ class SingleTurnVoiceStageMixin:
                     minimum_silence_rms=request.minimum_silence_rms,
                     maximum_silence_rms=request.maximum_silence_rms,
                     frame_debug_enabled=request.frame_debug_enabled,
+                    diagnostic_audio=request.diagnostic_audio,
                     frame_read_timeout_seconds=min(
                         1.0,
                         request.recording_timeout_seconds or 1.0,
@@ -460,6 +461,7 @@ class SingleTurnVoiceStageMixin:
                     timeout_seconds=request.recording_timeout_seconds
                     or request.recording_duration_seconds + 5,
                     overwrite=True,
+                    diagnostic_audio=request.diagnostic_audio,
                 )
             else:
                 capture = self.microphone_adapter.read_chunk(
@@ -531,7 +533,7 @@ class SingleTurnVoiceStageMixin:
                 {},
                 empty_audio_chunk(),
             )
-        wav = analyze_wav_audio(output_path)
+        wav = validate_canonical_wav(output_path)
         if not wav.get("success"):
             state.recording_status = "invalid_recording"
             return (
@@ -548,12 +550,19 @@ class SingleTurnVoiceStageMixin:
         state.recording_duration_seconds = float(wav.get("duration_seconds", 0.0))
         state.peak_amplitude = int(wav.get("peak_amplitude", 0))
         state.rms_amplitude = float(wav.get("rms_amplitude", 0.0))
-        chunk = getattr(capture, "chunk", None) or read_audio_chunk_wav(
+        chunk = read_audio_chunk_wav(
             output_path,
             "single_turn_voice_pipeline",
         )
-        if dict(chunk.metadata or {}).get("wav_path") != str(output_path):
-            chunk = replace(chunk, metadata={**dict(chunk.metadata), "wav_path": str(output_path)})
+        chunk = replace(
+            chunk,
+            metadata={
+                **dict(chunk.metadata),
+                "wav_path": str(output_path),
+                "canonical_audio": True,
+                "final_whisper_input_path": str(output_path),
+            },
+        )
         self._emit(
             state,
             self.EVENT_RECORDING_COMPLETED,

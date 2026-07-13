@@ -118,6 +118,20 @@ class FakeMicrophone:
         )
 
 
+class NonCanonicalMicrophone(FakeMicrophone):
+    def record_wav(self, output_path, **kwargs):
+        self.order.append("microphone.record")
+        self.record_count += 1
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(path), "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(44100)
+            wav_file.writeframes(int(1800).to_bytes(2, "little", signed=True) * 4410)
+        return MicrophoneResult(True, "recorded", data={"wav_path": str(path)})
+
+
 class FakeVadMicrophone(FakeMicrophone):
     def __init__(self, order, vad_status=VAD_STATUS_COMPLETED_AFTER_SILENCE, **kwargs):
         super().__init__(order, **kwargs)
@@ -386,6 +400,49 @@ def test_complete_pipeline_runs_in_strict_order_and_returns_structured_result(tm
     assert speaker.playing is False
     assert pipeline.resource_manager.current_usage()["active_task_count"] == 0
     assert "single_turn_voice_pipeline" not in pipeline.resource_manager.current_usage()["reservation_names"]
+
+
+def test_pipeline_rejects_noncanonical_microphone_wav_before_whisper(tmp_path):
+    order = []
+    microphone = NonCanonicalMicrophone(order)
+    stt = FakeSpeechToText(order)
+    pipeline, _, _, _, _, _, _, _ = _pipeline(
+        tmp_path,
+        microphone=microphone,
+        stt=stt,
+    )
+
+    result = pipeline.run_once(_request(tmp_path))
+
+    assert result.success is False
+    assert result.status == "invalid_recording"
+    assert result.error_reason == "audio_format_not_canonical"
+    assert stt.calls == 0
+
+
+def test_whisper_receives_finalized_canonical_wav_path(tmp_path):
+    order = []
+    microphone = FakeMicrophone(order)
+
+    def assert_finalized():
+        wav_path = tmp_path / "input.wav"
+        with wave.open(str(wav_path), "rb") as wav_file:
+            assert wav_file.getframerate() == 16000
+            assert wav_file.getnchannels() == 1
+            assert wav_file.getsampwidth() == 2
+            assert wav_file.getnframes() > 0
+
+    stt = FakeSpeechToText(order, on_call=assert_finalized)
+    pipeline, _, _, _, _, _, _, _ = _pipeline(
+        tmp_path,
+        microphone=microphone,
+        stt=stt,
+    )
+
+    result = pipeline.run_once(_request(tmp_path))
+
+    assert result.success is True
+    assert stt.calls == 1
 
 
 def test_speaker_never_runs_during_recording_and_heavy_stages_do_not_overlap(tmp_path):

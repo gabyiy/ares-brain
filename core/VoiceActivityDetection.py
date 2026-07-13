@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections import deque
 import math
+import os
 from pathlib import Path
+import tempfile
 import time
 from typing import Any, Callable, Deque, Dict, Optional, Protocol, Tuple
 import wave
@@ -13,7 +15,7 @@ from core.Contracts import (
     VoiceActivityCaptureResultV1,
     validate_contract,
 )
-from core.WavAudio import analyze_pcm_audio, analyze_wav_audio
+from core.WavAudio import analyze_pcm_audio, analyze_wav_audio, pcm_frame_sample_count
 from core.VoiceActivityCalibration import (
     AmbientStatistics,
     VoiceActivityThresholds,
@@ -129,7 +131,10 @@ class RmsVoiceActivityCapture:
         started_at: float,
     ) -> VoiceActivityCaptureResultV1:
         frame_seconds = request.frame_duration_ms / 1000.0
-        samples_per_frame = request.sample_rate_hz * request.frame_duration_ms // 1000
+        samples_per_frame = pcm_frame_sample_count(
+            request.sample_rate_hz,
+            request.frame_duration_ms,
+        )
         frame_bytes = samples_per_frame * request.channels * request.sample_width_bytes
         wait_frames = max(1, math.ceil(request.speech_wait_timeout_seconds / frame_seconds))
         maximum_frames = max(1, math.ceil(request.maximum_utterance_seconds / frame_seconds))
@@ -699,7 +704,13 @@ def validate_voice_activity_request(
 def _write_pcm_wav_atomic(request: VoiceActivityCaptureRequestV1, pcm: bytes) -> Path:
     output = Path(request.output_wav_path).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(f".{output.name}.tmp")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.",
+        suffix=".tmp",
+        dir=str(output.parent),
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
     try:
         with wave.open(str(temporary), "wb") as wav_file:
             wav_file.setnchannels(request.channels)
@@ -709,7 +720,7 @@ def _write_pcm_wav_atomic(request: VoiceActivityCaptureRequestV1, pcm: bytes) ->
         validation = analyze_wav_audio(temporary)
         if not validation.get("success"):
             raise ValueError(str(validation.get("error_message") or "invalid_temporary_wav"))
-        temporary.replace(output)
+        os.replace(temporary, output)
     except Exception:
         try:
             temporary.unlink(missing_ok=True)

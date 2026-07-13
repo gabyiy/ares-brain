@@ -81,10 +81,72 @@ def test_linux_alsa_auto_stop_streams_raw_pcm_with_argument_list(tmp_path):
     command = stream_runner.calls[0]
     assert command == [
         "/usr/bin/arecord", "-q", "-f", "S16_LE", "-c", "1",
-        "-r", "16000", "-t", "raw", "-D", "hw:2,0", "-",
+        "-r", "16000", "-t", "raw", "-D", "plughw:2,0", "-",
     ]
+    assert result.requested_device == "hw:2,0"
+    assert result.resolved_capture_device == "plughw:2,0"
+    assert result.final_whisper_input_path == str(tmp_path / "vad.wav")
     assert result.data["process"]["shell"] is False
     assert result.metadata["subprocess_shell"] is False
+
+
+def test_linux_alsa_auto_stop_diagnostics_keep_distinct_raw_and_trimmed_wavs(tmp_path):
+    source = FrameSource([frame(400), frame(450), *([frame(20)] * 5)])
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(source),
+    )
+    assert adapter.start().success is True
+
+    result = adapter.record_until_silence(
+        tmp_path / "vad.wav",
+        calibration_enabled=False,
+        required_speech_frames=2,
+        silence_seconds=0.1,
+        speech_wait_timeout_seconds=0.1,
+        maximum_utterance_seconds=0.2,
+        pre_roll_seconds=0.0,
+        diagnostic_audio=True,
+    )
+
+    assert result.success is True
+    assert result.raw_wav_path
+    assert result.raw_wav_path != result.normalized_wav_path
+    assert result.normalized_wav_path == str(tmp_path / "vad.wav")
+    assert result.final_whisper_input_path == result.normalized_wav_path
+    assert result.actual_sample_rate_hz == 16000
+    assert result.normalized_sample_rate_hz == 16000
+
+
+def test_auto_stop_stream_requests_canonical_format_even_if_adapter_defaults_differ(tmp_path):
+    source = FrameSource([frame(400), frame(450), *([frame(20)] * 5)])
+    stream_runner = StreamRunner(source)
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        sample_rate_hz=44100,
+        channels=2,
+        runner=DeviceRunner(),
+        stream_runner=stream_runner,
+    )
+    assert adapter.start().success is True
+
+    result = adapter.record_until_silence(
+        tmp_path / "canonical.wav",
+        calibration_enabled=False,
+        required_speech_frames=2,
+        silence_seconds=0.1,
+        speech_wait_timeout_seconds=0.1,
+        maximum_utterance_seconds=0.2,
+        pre_roll_seconds=0.0,
+    )
+
+    command = stream_runner.calls[0]
+    assert result.success is True
+    assert command[command.index("-r") + 1] == "16000"
+    assert command[command.index("-c") + 1] == "1"
+    assert command[command.index("-f") + 1] == "S16_LE"
+    assert result.requested_sample_rate_hz == 16000
 
 
 def test_linux_alsa_auto_stop_no_speech_returns_structured_failure(tmp_path):

@@ -1,3 +1,4 @@
+from pathlib import Path
 import wave
 
 from core import (
@@ -11,6 +12,7 @@ from core import (
     LinuxAlsaMicrophoneAdapter,
     SafeProcessResult,
     parse_arecord_capture_devices,
+    resolve_alsa_capture_device,
 )
 from scripts import manual_verify_linux_alsa_microphone as manual_alsa
 
@@ -81,6 +83,14 @@ def write_valid_wav(path, frames=b"\x00\x01" * 160):
         wav_file.writeframes(frames)
 
 
+def write_44100_wav(path):
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(44100)
+        wav_file.writeframes(b"\x10\x20" * 4410)
+
+
 def write_empty_file(path):
     with open(path, "wb") as handle:
         handle.write(b"")
@@ -113,6 +123,13 @@ def test_parse_arecord_capture_devices_returns_structured_devices():
     ]
 
 
+def test_capture_device_resolution_only_converts_raw_numeric_hardware_ids():
+    assert resolve_alsa_capture_device("hw:2,0", require_conversion=True) == "plughw:2,0"
+    assert resolve_alsa_capture_device("plughw:2,0", require_conversion=True) == "plughw:2,0"
+    assert resolve_alsa_capture_device("default", require_conversion=True) == "default"
+    assert resolve_alsa_capture_device("hw:2,0", require_conversion=False) == "hw:2,0"
+
+
 def test_linux_alsa_missing_arecord_fails_safely():
     adapter = LinuxAlsaMicrophoneAdapter(runner=FakeArecordRunner(available=False))
 
@@ -143,6 +160,15 @@ def test_linux_alsa_invalid_selected_device_fails_health_check():
     assert result.status == ALSA_STATUS_INVALID_DEVICE
     assert result.error_message == "alsa_device_not_found"
     assert result.data["selected_device"] == "hw:9,9"
+
+
+def test_linux_alsa_plughw_device_maps_to_listed_hardware_for_health_check():
+    adapter = LinuxAlsaMicrophoneAdapter(device="plughw:2,0", runner=FakeArecordRunner())
+
+    result = adapter.health_check()
+
+    assert result.success is True
+    assert result.data["selected_device"] == "plughw:2,0"
 
 
 def test_linux_alsa_record_wav_success_uses_argument_list_and_validates_output(tmp_path):
@@ -181,6 +207,34 @@ def test_linux_alsa_read_chunk_records_after_start(tmp_path):
     assert adapter.read_count == 1
 
 
+def test_linux_alsa_uses_actual_44100_header_and_outputs_canonical_wav(tmp_path):
+    runner = FakeArecordRunner(writer=write_44100_wav)
+    output = tmp_path / "normalized.wav"
+    adapter = LinuxAlsaMicrophoneAdapter(device="hw:2,0", runner=runner)
+
+    result = adapter.record_wav(
+        output,
+        seconds=1,
+        diagnostic_audio=True,
+    )
+
+    assert result.success is True
+    assert result.data["requested_sample_rate_hz"] == 16000
+    assert result.data["actual_sample_rate_hz"] == 44100
+    assert result.data["normalized_sample_rate_hz"] == 16000
+    assert result.chunk.sample_rate_hz == 16000
+    assert result.data["normalization"]["data"]["byte_reinterpretation"] is False
+    assert result.data["raw_wav_path"] != result.data["normalized_wav_path"]
+    assert result.data["final_whisper_input_path"] == str(output)
+    assert Path(result.data["raw_wav_path"]).exists()
+    record_args = runner.calls[-1]["args"]
+    assert record_args[record_args.index("-r") + 1] == "16000"
+    with wave.open(str(output), "rb") as wav_file:
+        assert wav_file.getframerate() == 16000
+        assert wav_file.getnchannels() == 1
+        assert wav_file.getsampwidth() == 2
+
+
 def test_linux_alsa_read_chunk_requires_start():
     adapter = LinuxAlsaMicrophoneAdapter(runner=FakeArecordRunner())
 
@@ -189,6 +243,14 @@ def test_linux_alsa_read_chunk_requires_start():
     assert result.success is False
     assert result.status == "not_started"
     assert result.error_message == "microphone_not_started"
+
+
+def test_microphone_adapter_never_enables_monitoring_or_speaker_playback():
+    source = Path("core/LinuxAlsaMicrophone.py").read_text(encoding="utf-8").lower()
+
+    assert "aplay" not in source
+    assert "amixer" not in source
+    assert "mic playback" not in source
 
 
 def test_linux_alsa_recording_timeout_fails_safely(tmp_path):
@@ -307,4 +369,7 @@ def test_manual_linux_alsa_script_records_only_with_explicit_flag(tmp_path):
     assert exit_code == 0
     assert output_path.exists()
     assert any("Recording explicitly requested" in line for line in outputs)
-    assert any(call["args"][-1] == str(output_path) for call in runner.calls)
+    record_targets = [call["args"][-1] for call in runner.calls if call["args"][-1] != "-l"]
+    assert len(record_targets) == 1
+    assert ".raw." in record_targets[0]
+    assert Path(record_targets[0]).exists() is False

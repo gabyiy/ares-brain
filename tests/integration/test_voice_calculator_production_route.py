@@ -106,6 +106,7 @@ def _production_pipeline(tmp_path, transcript):
         ("calculate two plus two", "Result: 4"),
         ("please calculate 2 plus 2", "Result: 4"),
         ("can you calculate 2 plus 2", "Result: 4"),
+        ("I want you to calculate two plus two", "Result: 4"),
         ("could you calculate two plus two", "Result: 4"),
         ("would you calculate 2 plus 2", "Result: 4"),
         ("What is 2 plus 2?", "Result: 4"),
@@ -143,7 +144,11 @@ def test_production_brain_handler_routes_whisper_calculator_variants(
 
 @pytest.mark.parametrize(
     "transcript",
-    ["I'll calculate 2 plus 2.", "What is two plus two?"],
+    [
+        "I'll calculate 2 plus 2.",
+        "What is two plus two?",
+        "I want you to calculate two plus two",
+    ],
 )
 def test_full_production_factory_routes_natural_language_to_real_calculator(
     tmp_path,

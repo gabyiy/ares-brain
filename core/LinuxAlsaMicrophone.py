@@ -18,6 +18,16 @@ from core.VoiceActivityDetection import (
     VAD_STATUS_DEVICE_ERROR,
     validate_voice_activity_request,
 )
+from core.WavAudio import (
+    CANONICAL_CHANNELS,
+    CANONICAL_SAMPLE_RATE_HZ,
+    CANONICAL_SAMPLE_WIDTH_BYTES,
+    analyze_wav_audio,
+    normalize_wav_audio,
+    read_audio_chunk_wav,
+    validate_canonical_wav,
+    write_audio_chunk_wav,
+)
 
 
 DEFAULT_ALSA_SAMPLE_RATE_HZ = 16000
@@ -171,6 +181,28 @@ class SafePcmStreamRunner:
 
     def start(self, args: Sequence[str]) -> SubprocessPcmFrameSource:
         return SubprocessPcmFrameSource(args)
+
+
+class DiagnosticPcmFrameSource:
+    """Bounded tee used only when owner-requested audio diagnostics are enabled."""
+
+    def __init__(self, source: Any, maximum_bytes: int):
+        self.source = source
+        self.maximum_bytes = max(1, int(maximum_bytes))
+        self.captured = bytearray()
+
+    def read_frame(self, frame_bytes: int, timeout_seconds: float) -> bytes:
+        frame = self.source.read_frame(frame_bytes, timeout_seconds)
+        if len(self.captured) + len(frame) > self.maximum_bytes:
+            raise RuntimeError("diagnostic_pcm_buffer_limit_exceeded")
+        self.captured.extend(frame)
+        return frame
+
+    def close(self) -> None:
+        self.source.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.source, name)
 
 
 class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
@@ -340,12 +372,17 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             return devices
         if self.device and _device_looks_like_hw(self.device):
             available = {device["alsa_device"] for device in devices.data.get("devices", [])}
-            if self.device not in available:
+            hardware_device = _hardware_device_id(self.device)
+            if hardware_device not in available:
                 return self._failure(
                     status=ALSA_STATUS_INVALID_DEVICE,
                     text=f"Selected ALSA capture device is not listed: {self.device}",
                     error_message="alsa_device_not_found",
-                    data={"selected_device": self.device, "available_devices": sorted(available)},
+                    data={
+                        "selected_device": self.device,
+                        "hardware_device": hardware_device,
+                        "available_devices": sorted(available),
+                    },
                 )
         vad_health = self.voice_activity_capture.health_check()
         if not vad_health.success:
@@ -415,7 +452,10 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         timeout_seconds: Optional[float] = None,
         overwrite: bool = False,
         temporary_output: bool = False,
+        diagnostic_audio: bool = False,
     ) -> MicrophoneResult:
+        """Record a WAV, then atomically normalize its actual format to canonical PCM."""
+
         self.record_count += 1
         arecord_path = self._find_arecord()
         if not arecord_path:
@@ -426,7 +466,13 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             )
 
         try:
-            selected_device = _normalize_optional_device(device) if device is not None else self.device
+            requested_device = (
+                _normalize_optional_device(device) if device is not None else self.device
+            )
+            resolved_device = resolve_alsa_capture_device(
+                requested_device,
+                require_conversion=False,
+            )
             duration = _bounded_record_seconds(seconds or self.record_seconds)
             timeout = _bounded_timeout(
                 timeout_seconds
@@ -436,6 +482,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             wav_path = Path(output_path).expanduser()
             _validate_output_path(wav_path, overwrite=overwrite)
             wav_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_wav_path = _unique_raw_wav_path(wav_path)
         except ValueError as error:
             return self._failure(
                 status=ALSA_STATUS_INVALID_DEVICE if "device" in str(error) else "invalid_request",
@@ -451,19 +498,30 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
 
         command = self._record_command(
             arecord_path=arecord_path,
-            wav_path=wav_path,
+            wav_path=raw_wav_path,
             seconds=duration,
-            device=selected_device,
+            device=resolved_device,
         )
         result = self.runner.run(command, timeout_seconds=timeout)
         self.audio_hardware_accessed = True
 
+        base_capture_data = {
+            "process": _safe_process_data(result),
+            "requested_device": requested_device or "",
+            "resolved_capture_device": resolved_device or "",
+            "requested_sample_rate_hz": self.sample_rate_hz,
+            "raw_wav_path": str(raw_wav_path) if diagnostic_audio else "",
+            "normalized_wav_path": str(wav_path),
+            "diagnostic_audio": bool(diagnostic_audio),
+        }
+
         if result.timed_out:
+            _discard_unrequested_raw(raw_wav_path, diagnostic_audio)
             return self._failure(
                 status=ALSA_STATUS_RECORDING_TIMEOUT,
                 text=f"arecord timed out after {timeout} seconds.",
                 error_message="arecord_recording_timeout",
-                data={"process": _safe_process_data(result), "wav_path": str(wav_path)},
+                data=base_capture_data,
             )
         if result.returncode != 0:
             status = (
@@ -471,47 +529,108 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 if _stderr_indicates_invalid_device(result.stderr)
                 else ALSA_STATUS_RECORDING_FAILED
             )
+            _discard_unrequested_raw(raw_wav_path, diagnostic_audio)
             return self._failure(
                 status=status,
                 text="arecord failed while recording microphone audio.",
                 error_message=f"arecord_exit_{result.returncode}",
-                data={"process": _safe_process_data(result), "wav_path": str(wav_path)},
+                data=base_capture_data,
             )
 
-        validation = _validate_wav_file(wav_path)
-        if not validation["success"]:
+        raw_validation = _validate_wav_file(raw_wav_path)
+        if not raw_validation["success"]:
+            _discard_unrequested_raw(raw_wav_path, diagnostic_audio)
             return self._failure(
-                status=str(validation["status"]),
-                text=str(validation["text"]),
-                error_message=str(validation["error_message"]),
+                status=str(raw_validation["status"]),
+                text=str(raw_validation["text"]),
+                error_message=str(raw_validation["error_message"]),
                 data={
-                    "process": _safe_process_data(result),
-                    "wav_path": str(wav_path),
-                    "validation": validation,
+                    **base_capture_data,
+                    "raw_validation": raw_validation,
                 },
             )
 
-        chunk = _read_wav_audio_chunk(
+        normalization = normalize_wav_audio(raw_wav_path, wav_path, overwrite=True)
+        if not normalization.success:
+            _discard_unrequested_raw(raw_wav_path, diagnostic_audio)
+            return self._failure(
+                status=ALSA_STATUS_INVALID_WAV,
+                text="Recorded ALSA audio could not be normalized safely.",
+                error_message=normalization.error_message or normalization.status,
+                data={
+                    **base_capture_data,
+                    "raw_validation": raw_validation,
+                    "normalization": normalization.to_dict(),
+                },
+            )
+
+        normalized_validation = validate_canonical_wav(wav_path)
+        if not normalized_validation.get("success"):
+            _discard_unrequested_raw(raw_wav_path, diagnostic_audio)
+            return self._failure(
+                status=ALSA_STATUS_INVALID_WAV,
+                text="Normalized ALSA output did not satisfy the canonical PCM contract.",
+                error_message=str(
+                    normalized_validation.get("error_message") or "canonical_validation_failed"
+                ),
+                data={
+                    **base_capture_data,
+                    "raw_validation": raw_validation,
+                    "normalization": normalization.to_dict(),
+                    "normalized_validation": normalized_validation,
+                },
+            )
+
+        chunk = read_audio_chunk_wav(
             wav_path,
             source=self.source,
+        )
+        chunk = replace(
+            chunk,
             metadata={
+                **dict(chunk.metadata),
                 "wav_path": str(wav_path),
                 "temporary_output": temporary_output,
-                "selected_device": selected_device or "",
+                "requested_device": requested_device or "",
+                "resolved_capture_device": resolved_device or "",
                 "arecord_command": " ".join(command[:1]),
+                "canonical_audio": True,
             },
         )
+        raw_path_for_result = str(raw_wav_path) if diagnostic_audio else ""
+        _discard_unrequested_raw(raw_wav_path, diagnostic_audio)
         return self._success(
             status="recorded",
             text=f"Recorded {duration} second(s) of Linux ALSA microphone audio.",
             chunk=chunk,
             data={
+                **base_capture_data,
                 "wav_path": str(wav_path),
+                "final_whisper_input_path": str(wav_path),
                 "temporary_output": temporary_output,
                 "duration_seconds": duration,
-                "selected_device": selected_device or "",
-                "process": _safe_process_data(result),
-                "wav": validation,
+                "selected_device": requested_device or "",
+                "requested_device": requested_device or "",
+                "resolved_capture_device": resolved_device or "",
+                "actual_sample_rate_hz": int(raw_validation.get("sample_rate_hz", 0)),
+                "actual_channels": int(raw_validation.get("channels", 0)),
+                "actual_sample_width_bytes": int(
+                    raw_validation.get("sample_width_bytes", 0)
+                ),
+                "normalized_sample_rate_hz": CANONICAL_SAMPLE_RATE_HZ,
+                "normalized_channels": CANONICAL_CHANNELS,
+                "normalized_sample_width_bytes": CANONICAL_SAMPLE_WIDTH_BYTES,
+                "raw_wav_path": raw_path_for_result,
+                "normalized_wav_path": str(wav_path),
+                "raw_duration_seconds": float(
+                    raw_validation.get("duration_seconds", 0.0)
+                ),
+                "normalized_duration_seconds": float(
+                    normalized_validation.get("duration_seconds", 0.0)
+                ),
+                "raw_wav": raw_validation,
+                "wav": normalized_validation,
+                "normalization": normalization.to_dict(),
                 "chunk": chunk.to_dict(),
             },
         )
@@ -541,6 +660,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         minimum_silence_rms: float = 80.0,
         maximum_silence_rms: float = 600.0,
         frame_debug_enabled: bool = False,
+        diagnostic_audio: bool = False,
         cancel_requested: Optional[CancelCheck | Any] = None,
         correlation_id: str = "",
         session_id: str = "",
@@ -549,10 +669,15 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
 
         self.record_count += 1
         started_at = time.monotonic()
-        selected_device = self.device
+        requested_device = self.device
+        resolved_device = self.device
         try:
-            selected_device = (
+            requested_device = (
                 _normalize_optional_device(device) if device is not None else self.device
+            )
+            resolved_device = resolve_alsa_capture_device(
+                requested_device,
+                require_conversion=True,
             )
             if not self.started:
                 raise RuntimeError("microphone_not_started")
@@ -563,10 +688,10 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 raise FileNotFoundError("arecord_missing")
             request = VoiceActivityCaptureRequestV1(
                 output_wav_path=str(Path(output_path).expanduser()),
-                microphone_device=selected_device or "",
-                sample_rate_hz=self.sample_rate_hz,
-                channels=self.channels,
-                sample_width_bytes=2,
+                microphone_device=resolved_device or "",
+                sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
+                channels=CANONICAL_CHANNELS,
+                sample_width_bytes=CANONICAL_SAMPLE_WIDTH_BYTES,
                 frame_duration_ms=frame_duration_ms,
                 calibration_enabled=calibration_enabled,
                 calibration_duration_seconds=calibration_duration_seconds,
@@ -595,14 +720,34 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     "source": self.source,
                     "hardware_specific": "linux_alsa",
                     "background_listening": False,
+                    "requested_device": requested_device or "",
+                    "resolved_capture_device": resolved_device or "",
                 },
             )
             validate_voice_activity_request(request)
             command = self._stream_command(
                 arecord_path=arecord_path,
-                device=selected_device,
+                device=resolved_device,
             )
-            stream = self.stream_runner.start(command)
+            source = self.stream_runner.start(command)
+            if diagnostic_audio:
+                maximum_seconds = (
+                    (calibration_duration_seconds if calibration_enabled else 0.0)
+                    + speech_wait_timeout_seconds
+                    + maximum_utterance_seconds
+                    + 2.0
+                )
+                stream = DiagnosticPcmFrameSource(
+                    source,
+                    maximum_bytes=int(
+                        maximum_seconds
+                        * CANONICAL_SAMPLE_RATE_HZ
+                        * CANONICAL_CHANNELS
+                        * CANONICAL_SAMPLE_WIDTH_BYTES
+                    ),
+                )
+            else:
+                stream = source
             self._active_stream = stream
             self.audio_hardware_accessed = True
             result = self.voice_activity_capture.execute(
@@ -612,10 +757,85 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             )
             stream.close()
             self._active_stream = None
+            raw_wav_path = ""
+            raw_wav: Dict[str, Any] = {}
+            if diagnostic_audio and isinstance(stream, DiagnosticPcmFrameSource):
+                diagnostic_path = _unique_raw_wav_path(Path(output_path).expanduser())
+                if stream.captured:
+                    write_audio_chunk_wav(
+                        AudioChunk(
+                            data=bytes(stream.captured),
+                            sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
+                            channels=CANONICAL_CHANNELS,
+                            sample_width_bytes=CANONICAL_SAMPLE_WIDTH_BYTES,
+                            source=self.source,
+                            metadata={
+                                "diagnostic_only": True,
+                                "requested_device": requested_device or "",
+                                "resolved_capture_device": resolved_device or "",
+                            },
+                        ),
+                        diagnostic_path,
+                    )
+                    raw_wav_path = str(diagnostic_path)
+                    raw_wav = analyze_wav_audio(diagnostic_path)
+
+            normalized_wav = (
+                validate_canonical_wav(result.wav_path)
+                if result.wav_path
+                else {"success": False, "error_message": "normalized_wav_missing"}
+            )
+            if result.success and not normalized_wav.get("success"):
+                result = replace(
+                    result,
+                    success=False,
+                    status=VAD_STATUS_DEVICE_ERROR,
+                    stop_reason=VAD_STATUS_DEVICE_ERROR,
+                    error_message=str(
+                        normalized_wav.get("error_message")
+                        or "canonical_audio_validation_failed"
+                    ),
+                )
             return replace(
                 result,
+                requested_device=requested_device or "",
+                resolved_capture_device=resolved_device or "",
+                requested_sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
+                actual_sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
+                actual_channels=CANONICAL_CHANNELS,
+                actual_sample_width_bytes=CANONICAL_SAMPLE_WIDTH_BYTES,
+                normalized_sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
+                normalized_channels=CANONICAL_CHANNELS,
+                normalized_sample_width_bytes=CANONICAL_SAMPLE_WIDTH_BYTES,
+                raw_wav_path=raw_wav_path,
+                normalized_wav_path=result.wav_path,
+                raw_duration_seconds=float(raw_wav.get("duration_seconds", 0.0)),
+                normalized_duration_seconds=float(
+                    normalized_wav.get("duration_seconds", 0.0)
+                ),
+                final_whisper_input_path=result.wav_path,
                 data={
                     **dict(result.data),
+                    "requested_device": requested_device or "",
+                    "resolved_capture_device": resolved_device or "",
+                    "requested_sample_rate_hz": CANONICAL_SAMPLE_RATE_HZ,
+                    "actual_sample_rate_hz": CANONICAL_SAMPLE_RATE_HZ,
+                    "actual_channels": CANONICAL_CHANNELS,
+                    "actual_sample_width_bytes": CANONICAL_SAMPLE_WIDTH_BYTES,
+                    "normalized_sample_rate_hz": CANONICAL_SAMPLE_RATE_HZ,
+                    "normalized_channels": CANONICAL_CHANNELS,
+                    "normalized_sample_width_bytes": CANONICAL_SAMPLE_WIDTH_BYTES,
+                    "raw_wav_path": raw_wav_path,
+                    "normalized_wav_path": result.wav_path,
+                    "raw_duration_seconds": float(raw_wav.get("duration_seconds", 0.0)),
+                    "normalized_duration_seconds": float(
+                        normalized_wav.get("duration_seconds", 0.0)
+                    ),
+                    "raw_wav": raw_wav,
+                    "wav": normalized_wav,
+                    "final_whisper_input_path": result.wav_path,
+                    "canonical_audio_boundary": "alsa_plug_then_validated_pcm_v1",
+                    "byte_reinterpretation": False,
                     "process": {
                         "args": command,
                         "shell": False,
@@ -627,13 +847,22 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     **dict(result.metadata),
                     "subprocess_shell": False,
                     "speech_engine_accessed": False,
+                    "requested_device": requested_device or "",
+                    "resolved_capture_device": resolved_device or "",
+                    "diagnostic_audio": bool(diagnostic_audio),
                 },
             )
         except (FileNotFoundError, OSError, RuntimeError, ValueError) as error:
             return VoiceActivityCaptureResultV1(
                 success=False,
                 status=VAD_STATUS_DEVICE_ERROR,
-                selected_device=selected_device or "",
+                selected_device=resolved_device or "",
+                requested_device=requested_device or "",
+                resolved_capture_device=resolved_device or "",
+                requested_sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
+                normalized_sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
+                normalized_channels=CANONICAL_CHANNELS,
+                normalized_sample_width_bytes=CANONICAL_SAMPLE_WIDTH_BYTES,
                 stop_reason=VAD_STATUS_DEVICE_ERROR,
                 processing_time_seconds=round(time.monotonic() - started_at, 6),
                 error_message=str(error)[:200],
@@ -644,6 +873,8 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     "source": self.source,
                     "subprocess_shell": False,
                     "raw_audio_persisted_in_metadata": False,
+                    "requested_device": requested_device or "",
+                    "resolved_capture_device": resolved_device or "",
                 },
             )
         finally:
@@ -694,11 +925,11 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             arecord_path,
             "-q",
             "-f",
-            self.sample_format,
+            DEFAULT_ALSA_SAMPLE_FORMAT,
             "-c",
-            str(self.channels),
+            str(CANONICAL_CHANNELS),
             "-r",
-            str(self.sample_rate_hz),
+            str(CANONICAL_SAMPLE_RATE_HZ),
             "-t",
             "raw",
         ]
@@ -847,6 +1078,47 @@ def _device_looks_like_hw(device: str) -> bool:
     return bool(re.fullmatch(r"(?:plug)?hw:\d+,\d+", str(device or "")))
 
 
+def resolve_alsa_capture_device(
+    device: Optional[str],
+    require_conversion: bool,
+) -> Optional[str]:
+    """Resolve only raw numeric hardware IDs when conversion is mandatory."""
+
+    clean = _normalize_optional_device(device)
+    if clean is None:
+        return None
+    if require_conversion and re.fullmatch(r"hw:\d+,\d+", clean):
+        return f"plug{clean}"
+    return clean
+
+
+def _hardware_device_id(device: str) -> str:
+    clean = str(device or "")
+    if clean.startswith("plughw:"):
+        return clean[len("plug") :]
+    return clean
+
+
+def _unique_raw_wav_path(output: Path) -> Path:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    directory = Path(tempfile.mkdtemp(
+        prefix=f".{output.stem}.raw.",
+        dir=str(output.parent),
+    ))
+    return directory / f"{output.stem}.wav"
+
+
+def _discard_unrequested_raw(path: Path, diagnostic_audio: bool) -> None:
+    if diagnostic_audio:
+        return
+    try:
+        path.unlink(missing_ok=True)
+        if path.parent.name.startswith(f".{path.stem}.raw."):
+            path.parent.rmdir()
+    except OSError:
+        pass
+
+
 def _validate_output_path(path: Path, overwrite: bool) -> None:
     if not path.name:
         raise ValueError("output_path must include a WAV filename")
@@ -896,19 +1168,6 @@ def _validate_wav_file(path: Path) -> Dict[str, Any]:
         "sample_width_bytes": sample_width,
         "duration_seconds": duration,
     }
-
-
-def _read_wav_audio_chunk(path: Path, source: str, metadata: Dict[str, Any]) -> AudioChunk:
-    with wave.open(str(path), "rb") as wav_file:
-        frames = wav_file.readframes(wav_file.getnframes())
-        return AudioChunk(
-            data=frames,
-            sample_rate_hz=wav_file.getframerate(),
-            channels=wav_file.getnchannels(),
-            sample_width_bytes=wav_file.getsampwidth(),
-            source=source,
-            metadata={**dict(metadata), "encoding": "pcm_from_wav"},
-        )
 
 
 def _stderr_indicates_invalid_device(stderr: str) -> bool:

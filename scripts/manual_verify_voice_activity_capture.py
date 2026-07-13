@@ -107,6 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_REQUIRED_SILENCE_FRAMES,
     )
     parser.add_argument("--frame-debug", action="store_true")
+    parser.add_argument("--diagnostic-audio", action="store_true")
     parser.add_argument("--transcribe", action="store_true")
     parser.add_argument("--route", action="store_true")
     parser.add_argument("--language", default="en")
@@ -158,6 +159,7 @@ def run_manual_verification(
             pre_roll_seconds=args.pre_roll_seconds,
             frame_duration_ms=args.frame_ms,
             frame_debug_enabled=bool(args.frame_debug),
+            diagnostic_audio=bool(args.diagnostic_audio),
         )
     except KeyboardInterrupt:
         active_adapter.cancel_current()
@@ -169,6 +171,22 @@ def run_manual_verification(
     process = dict(result.data.get("process") or {})
     output_func(f"arecord command: {_format_command(process.get('args') or [])}")
     output_func(f"Capture status: {result.status}")
+    output_func(f"Requested microphone device: {result.requested_device or args.microphone_device}")
+    output_func(f"Resolved capture device: {result.resolved_capture_device or result.selected_device}")
+    output_func(f"Requested sample rate: {result.requested_sample_rate_hz} Hz")
+    output_func(f"Actual captured sample rate: {result.actual_sample_rate_hz} Hz")
+    output_func(f"Actual captured channels: {result.actual_channels}")
+    output_func(f"Actual captured sample width: {result.actual_sample_width_bytes} bytes")
+    output_func(f"Normalized sample rate: {result.normalized_sample_rate_hz} Hz")
+    output_func(f"Normalized channels: {result.normalized_channels}")
+    output_func(f"Normalized sample width: {result.normalized_sample_width_bytes} bytes")
+    output_func(f"Raw WAV path: {result.raw_wav_path or '(not retained)'}")
+    output_func(f"Normalized WAV path: {result.normalized_wav_path or result.wav_path}")
+    output_func(f"Raw duration: {result.raw_duration_seconds:.3f}s")
+    output_func(f"Normalized duration: {result.normalized_duration_seconds:.3f}s")
+    output_func(
+        f"Final Whisper input path: {result.final_whisper_input_path or result.wav_path}"
+    )
     output_func(f"Stop reason: {result.stop_reason}")
     output_func(f"Calibration enabled: {result.calibration_enabled}")
     output_func(f"Calibration duration: {result.calibration_duration_seconds:.3f}s")

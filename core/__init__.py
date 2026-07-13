@@ -275,6 +275,16 @@ from core.LinuxAlsaMicrophone import (
     SafeSubprocessRunner,
     SubprocessPcmFrameSource,
     parse_arecord_capture_devices,
+    resolve_alsa_capture_device,
+)
+from core.WavAudio import (
+    CANONICAL_CHANNELS,
+    CANONICAL_SAMPLE_RATE_HZ,
+    CANONICAL_SAMPLE_WIDTH_BYTES,
+    WavNormalizationResult,
+    normalize_wav_audio,
+    pcm_frame_sample_count,
+    validate_canonical_wav,
 )
 from core.VoiceActivityDetection import (
     CAPTURE_MODE_AUTO_STOP,
@@ -759,6 +769,14 @@ __all__ = [
     "TranscriptNormalizationResultV1",
     "MicrophoneResult",
     "LinuxAlsaMicrophoneAdapter",
+    "resolve_alsa_capture_device",
+    "WavNormalizationResult",
+    "normalize_wav_audio",
+    "validate_canonical_wav",
+    "pcm_frame_sample_count",
+    "CANONICAL_SAMPLE_RATE_HZ",
+    "CANONICAL_CHANNELS",
+    "CANONICAL_SAMPLE_WIDTH_BYTES",
     "SafePcmStreamRunner",
     "SubprocessPcmFrameSource",
     "RmsVoiceActivityCapture",
