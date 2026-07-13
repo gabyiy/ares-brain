@@ -1,16 +1,16 @@
 ARES Session Handoff
 
-Last Updated: 2026-07-12
+Last Updated: 2026-07-13
 
 Current Version
 
-ARES v1.79 - Controlled Single-Turn Voice Pipeline
+ARES v1.80 - Controlled Multi-Turn Voice Sessions
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, and a controlled owner-triggered single-turn voice pipeline.
+ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, a controlled owner-triggered single-turn voice pipeline, and a bounded owner-triggered multi-turn conversation session.
 
 Confirmed Phase 3 foundation:
 
@@ -57,11 +57,14 @@ Confirmed Phase 3 foundation:
 - Versioned controlled single-turn voice request/result contracts
 - Lifecycle/resource-gated microphone -> Whisper -> Brain -> Piper -> speaker orchestration
 - Owner-run `scripts/manual_verify_single_turn_voice.py` with real and simulated-text modes
+- Versioned bounded multi-turn session request/result contracts
+- `MultiTurnVoiceSession` orchestration that reuses `SingleTurnVoicePipeline`
+- Owner-run `scripts/manual_verify_multi_turn_voice.py` with real, fixed text-turn, and bounded interactive-text modes
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 812 tests.
+Current pytest collection: 872 tests.
 
-The only real audio additions are explicit one-shot Linux ALSA microphone capture through `LinuxAlsaMicrophoneAdapter`, explicit offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, explicit offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, and an owner-run ALSA monitoring helper. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know Piper model paths. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, conversation loops, memory writes based on voice, automatic microphone activation, and real device/event automation remain disabled until explicitly approved.
+The only real audio additions are explicit Linux ALSA microphone capture through `LinuxAlsaMicrophoneAdapter`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, and the bounded multi-turn session. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know Piper model paths. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
 
 `skills.VoiceSessionSkill` now starts a bounded mock voice session from text commands: "start voice session", "start mock voice", and "run voice test". It uses only `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop`, returns a transcript summary, and is wired through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path.
 
@@ -335,7 +338,7 @@ Single-turn behavior:
 - Silence and corrupt WAVs stop before Whisper; blank transcription stops before Brain; Brain failure uses a local response; TTS/playback failure preserves useful diagnostics.
 - Operational events are bounded and exclude raw audio/transcript text.
 - Text simulation uses the real SkillManager path while skipping microphone and Whisper; without `--playback` it also skips TTS/speaker.
-- Current pytest collection: 812 tests.
+- Single-turn checkpoint pytest collection: 812 tests.
 
 Exact commands:
 
@@ -355,7 +358,61 @@ python scripts/manual_verify_single_turn_voice.py \
   --playback
 ```
 
-The automated Windows text simulation produced `Result: 4` through the live SkillManager path. Real Raspberry Pi end-to-end execution of this new combined command remains the next owner-run hardware verification.
+The automated Windows text simulation produced `Result: 4` through the live SkillManager path. Real Raspberry Pi end-to-end execution of this combined single-turn command remains owner-run hardware verification.
+
+Controlled bounded multi-turn voice session has been added.
+
+Session behavior:
+
+- New contracts: `MultiTurnVoiceSessionRequestV1` and `MultiTurnVoiceSessionResultV1`.
+- New orchestration modules: `core.MultiTurnVoiceSession`, `core.MultiTurnVoiceExecution`, `core.MultiTurnVoiceRuntime`, and `core.MultiTurnVoiceSupport`.
+- Every normal turn invokes `SingleTurnVoicePipeline.run_once()`; greeting/closing output invokes its local-output path.
+- Real route: ALSA microphone -> Whisper -> stop-phrase gate -> VoiceCommandRouter -> CoreService -> SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill -> Piper -> ALSA speaker.
+- States: `created`, `starting`, `greeting`, `listening`, `transcribing`, `checking_stop_phrase`, `processing`, `synthesizing`, `speaking`, `waiting_between_turns`, `stopping`, `completed`, `failed`, and `cancelled`.
+- Defaults: five turns, 180 seconds, three consecutive failures, five-second captures, 0.75-second inter-turn delay, retry for silence/blank transcription, and playback disabled.
+- Exact normalized stop phrases: `stop listening`, `stop conversation`, `end conversation`, `goodbye Ares`, `goodbye`, `that is all`, and `exit conversation`.
+- Stop phrases bypass Brain routing. Unsupported Brain requests remain recoverable and may continue.
+- Each turn gets a child correlation ID linked to the parent session ID.
+- `VoiceStageCoordinator` continues to prevent microphone/speaker and Whisper/Piper overlap.
+- Ctrl+C, timeouts, limits, and fatal failures enter structured lifecycle/resource cleanup.
+- Standard events contain bounded status, timing, turn, intent, and failure metadata; they omit raw speech and audio.
+- Successful audio is deleted by default; `--keep-audio` retains it, while failure diagnostics may be preserved.
+- Current pytest collection: 872 tests.
+
+Exact bounded-session commands:
+
+```bash
+git pull origin main
+python scripts/manual_verify_multi_turn_voice.py \
+  --text-turn "calculate 2 + 2" \
+  --text-turn "goodbye Ares" \
+  --no-greeting \
+  --no-closing-phrase
+
+python scripts/manual_verify_multi_turn_voice.py \
+  --interactive-text \
+  --max-turns 5 \
+  --max-session-seconds 180 \
+  --no-greeting \
+  --no-closing-phrase
+
+python scripts/manual_verify_multi_turn_voice.py \
+  --microphone-device hw:2,0 \
+  --speaker-device plughw:CARD=Device,DEV=0 \
+  --record-seconds 5 \
+  --language en \
+  --whisper-command external/whisper.cpp/build/bin/whisper-cli \
+  --whisper-model models/whisper/ggml-tiny.en.bin \
+  --voice-profile en_US-hfc_male-medium \
+  --playback \
+  --max-turns 5 \
+  --max-session-seconds 180 \
+  --max-consecutive-failures 3 \
+  --inter-turn-delay 0.75 \
+  --timeout 300
+```
+
+The fixed two-turn simulation was executed on Windows and returned calculator `Result: 4`; `goodbye Ares` was detected before Brain routing. Real Raspberry Pi multi-turn execution remains the next owner-run hardware verification.
 
 Speech-to-text adapter abstraction exists.
 
@@ -1932,13 +1989,13 @@ Text REPL
 
 Immediate Next Milestone
 
-Run the controlled single-turn command once on the verified Raspberry Pi devices, record measured stage timing/RMS results, and fix only real integration defects found by that explicit test. Do not add wake words, background listening, or continuous conversation without separate approval.
+Run the bounded multi-turn command on the verified Raspberry Pi devices, record per-turn timing/RMS/stop-recognition/cleanup results, and fix only real integration defects found by that explicit test. Do not add wake words, background listening, or an unbounded conversation service without separate approval.
 
 Next technical choices:
 
-- Pull latest `main` and run `scripts/manual_verify_single_turn_voice.py` with `hw:2,0`, `plughw:CARD=Device,DEV=0`, tiny English Whisper, the configured male profile, and explicit playback.
+- Pull latest `main` and run `scripts/manual_verify_multi_turn_voice.py` with `hw:2,0`, `plughw:CARD=Device,DEV=0`, tiny English Whisper, the configured male profile, explicit playback, and the documented limits.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
-- Measure the controlled turn on real hardware and tune thresholds only from observed results.
+- Measure bounded turns on real hardware and tune thresholds only from observed results.
 - Only later add wake-word/background listening.
 - Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
 - Keep voice, GPT, embeddings, external weather/stocks/calendar APIs, real scheduling, notifications, and Raspberry Pi deployment out of scope until explicitly approved.
@@ -1951,22 +2008,23 @@ Future Roadmap
 
 1. Phase 3 Real Voice Integration
 2. Controlled single-turn voice pipeline completed
-3. Run the complete controlled command on Raspberry Pi hardware
-4. Only later add wake-word/background listening
-5. GPT fallback integration
-6. Raspberry Pi deployment
-7. Robot body / sensors
-8. Vision
-9. Robotics
-10. Jetson Orin migration
-11. Autonomous ARES
+3. Controlled bounded multi-turn voice session completed
+4. Run the bounded session on Raspberry Pi hardware
+5. Only later add wake-word/background listening
+6. GPT fallback integration
+7. Raspberry Pi deployment
+8. Robot body / sensors
+9. Vision
+10. Robotics
+11. Jetson Orin migration
+12. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 812 tests.
+- Current pytest collection: 872 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2029,6 +2087,8 @@ Verification Notes
 
 Latest Commits
 
+- `bbd0380` Add controlled multi-turn voice sessions
+- `6cdfc51` Document controlled single-turn voice checkpoint
 - `305117a` Add controlled single-turn voice pipeline
 - `3ea316e` Add configurable Piper voice profiles
 - `58915cb` Document reliable Raspberry Pi TTS verification
@@ -2131,8 +2191,9 @@ Latest Commits
 Next Planned Step
 
 - Architecture hardening before real hardware/adapters is complete: lifecycle, contracts, manifests, migrations, health/fallback, and measured resource budgets are implemented.
-- Plan Phase 3 real voice integration only after explicit approval, beginning with real USB microphone detection and one real microphone adapter.
+- Phase 3 now includes verified owner-run ALSA, Whisper, Piper, speaker, voice-profile, single-turn, and bounded multi-turn foundations.
+- Run the bounded multi-turn owner command on Raspberry Pi and record only observed timing, RMS, stop-recognition, and cleanup behavior.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
-- Do not enable default real weather/market API behavior, Google Calendar integration, GPT, embeddings, real voice/audio hardware, vision, scheduling, notifications, or background automation yet.
-- Do not start microphone access, speaker output, wake word detection, real STT, real TTS, or background listening yet.
+- Do not enable default real weather/market API behavior, Google Calendar integration, GPT, embeddings, vision, scheduling, notifications, or background automation yet.
+- Do not add wake word detection, boot startup, background listening, cloud speech, an unbounded loop, or automatic transcript memory writes yet.

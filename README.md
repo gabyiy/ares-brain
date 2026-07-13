@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.79 - Controlled Single-Turn Voice Pipeline
+ARES v1.80 - Controlled Multi-Turn Voice Sessions
 
 ---
 
@@ -52,6 +52,8 @@ Raspberry Pi speech-input verification is now hardened for real recordings. The 
 
 `core.SingleTurnVoicePipeline` now performs one bounded owner-triggered voice turn and exits. It composes the existing microphone, STT, VoiceCommandRouter/CoreService, SkillManager text path, TTS, and speaker boundaries; lifecycle and resource managers gate execution, `VoiceStageCoordinator` prevents capture/playback and Whisper/Piper overlap, and versioned V1 contracts report every stage. The recognized text reaches the same `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path used by existing local text execution. No wake word, continuous loop, background service, GPT, cloud call, or automatic transcript memory write was added.
 
+`core.MultiTurnVoiceSession` now provides an explicitly owner-started, bounded conversation session by repeatedly invoking `SingleTurnVoicePipeline`. `MultiTurnVoiceSessionRequestV1` and `MultiTurnVoiceSessionResultV1` define limits, stop phrases, per-turn correlation IDs, summaries, cleanup state, and structured failure data. An exact normalized stop-phrase gate runs after transcription and before Brain routing. Local greeting and closing phrases use the existing TTS/speaker path without asking the Brain to generate them. The session defaults to five turns, 180 seconds, three consecutive failures, five-second captures, a 0.75-second inter-turn delay, and playback disabled. It remains a foreground owner-run process with no wake word, background listener, boot service, GPT, cloud dependency, or automatic transcript persistence.
+
 `core.VoiceCommandRouter` now routes `TranscriptionResult` objects into Voice City without any speech engine dependency. It validates a configurable confidence threshold, ignores empty transcriptions safely, propagates transcription failures, routes valid text through CoreService's `voice.text_loop` capability, handles unknown commands with structured safe results, and records local routed/rejected metrics plus `voice_command.routed` and `voice_command.rejected` events.
 
 `core.VoicePipeline` now provides the simulated end-to-end Voice City command pipeline. It accepts audio through an injected `MicrophoneAdapter`, transcribes through an injected `SpeechToTextAdapter`, passes `TranscriptionResult` through `VoiceCommandRouter`, routes valid commands through CoreService, activates only the required city, sends final text through an injected `VoiceOutputAdapter`, preserves session and correlation ids through every stage, and records structured local events for audio capture, transcription accepted/rejected, command routed/rejected, city activation, execution completion/failure, and output production. The pipeline is mock/local only and does not import concrete adapters into the Brain or CoreService.
@@ -62,7 +64,7 @@ Raspberry Pi speech-input verification is now hardened for real recordings. The 
 
 The final integration, recovery, and safety regression checkpoint is now complete. Focused integration tests prove the simulated voice/text path reaches IntentParser, Planner, ExecutionPipeline, the selected skill/service, and mock output while only activating the required City; PC status requests route through CoreService and PCService as read-only structured data; and confirmation-gated device actions do not execute before explicit confirmation. `core.ExecutionGuard` protects confirmed destructive actions with bounded idempotency tokens so retries, duplicate confirmations, output failures, or response-generation failures cannot execute the same confirmed action twice.
 
-Real Vosk, wake word, background listener, GPT conversation, and internet integrations come later. The current real audio surface is limited to explicit Linux ALSA one-shot capture, explicit offline Whisper transcription, explicit offline Piper WAV generation, explicit ALSA speaker playback, hardened manual verification, and manual ALSA monitoring control; none of these are the default autonomous runtime path, and no wake word, background listening, GPT, or conversation loop was added.
+Real Vosk, wake word, background listeners, GPT conversation, and internet integrations come later. The current real audio surface is limited to explicit Linux ALSA capture, offline Whisper transcription, offline Piper WAV generation, explicit ALSA playback, hardened manual verification, manual ALSA monitoring control, one controlled single turn, and one bounded owner-triggered multi-turn session. None of these are an autonomous runtime path; no wake word, background listening, GPT, cloud service, or unbounded conversation loop was added.
 
 Architecture Hardening Checkpoint
 
@@ -528,7 +530,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 812 tests across current core modules
+- Pytest automated coverage for 872 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -547,7 +549,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `812 tests`.
+Current pytest collection: `872 tests`.
 
 Manual Calculator Launch Verification
 
@@ -801,6 +803,70 @@ python scripts/manual_verify_single_turn_voice.py \
 
 Use `--keep-audio` to retain successful input/response WAVs and `--verbose` for the full structured V1 result. Failures preserve useful diagnostic audio automatically. Operational events store stage/status metadata, not transcript or audio contents.
 
+Controlled Multi-Turn Voice Session
+
+`MultiTurnVoiceSession` orchestrates repeated calls to `SingleTurnVoicePipeline`; it does not duplicate ALSA, Whisper, Brain routing, Piper, or playback code. Every normal turn follows:
+
+```text
+ALSA microphone
+  -> Whisper
+  -> exact stop-phrase gate
+  -> VoiceCommandRouter
+  -> CoreService
+  -> SkillManager
+  -> IntentParser
+  -> Planner
+  -> ExecutionPipeline
+  -> Skill
+  -> Piper
+  -> ALSA speaker
+```
+
+Session states are `created`, `starting`, `greeting`, `listening`, `transcribing`, `checking_stop_phrase`, `processing`, `synthesizing`, `speaking`, `waiting_between_turns`, `stopping`, `completed`, `failed`, and `cancelled`. Invalid transitions fail closed. The default exact stop phrases are `stop listening`, `stop conversation`, `end conversation`, `goodbye Ares`, `goodbye`, `that is all`, and `exit conversation`; matching is case-insensitive and normalizes punctuation and whitespace without substring matching.
+
+Pull and run a bounded two-turn simulation through the real Brain path:
+
+```bash
+git pull origin main
+python scripts/manual_verify_multi_turn_voice.py \
+  --text-turn "calculate 2 + 2" \
+  --text-turn "goodbye Ares" \
+  --no-greeting \
+  --no-closing-phrase
+```
+
+Run the bounded interactive text simulation:
+
+```bash
+python scripts/manual_verify_multi_turn_voice.py \
+  --interactive-text \
+  --max-turns 5 \
+  --max-session-seconds 180 \
+  --no-greeting \
+  --no-closing-phrase
+```
+
+Run the real owner-triggered Raspberry Pi session with explicit playback:
+
+```bash
+python scripts/manual_verify_multi_turn_voice.py \
+  --microphone-device hw:2,0 \
+  --speaker-device plughw:CARD=Device,DEV=0 \
+  --record-seconds 5 \
+  --language en \
+  --whisper-command external/whisper.cpp/build/bin/whisper-cli \
+  --whisper-model models/whisper/ggml-tiny.en.bin \
+  --voice-profile en_US-hfc_male-medium \
+  --playback \
+  --max-turns 5 \
+  --max-session-seconds 180 \
+  --max-consecutive-failures 3 \
+  --inter-turn-delay 0.75 \
+  --timeout 300
+```
+
+Stop phrases bypass normal Brain routing. Ctrl+C, fatal health/resource failures, time limits, turn limits, and consecutive-failure limits all enter bounded cleanup. Microphone/speaker and Whisper/Piper mutual exclusion remains enforced by the reused single-turn stage coordinator. Standard operational events contain turn number, status, duration, intent, and failure category, but no raw transcript or audio. Audio is deleted after successful turns unless `--keep-audio` is supplied; useful failure diagnostics may be preserved.
+
 Continuous Integration
 
 - GitHub Actions runs on every push and pull request to `main`.
@@ -900,7 +966,7 @@ Latest Architecture Status
 - Supported due phrases include `today`, `tomorrow`, `next week`, `in 10 minutes`, `in 2 hours`, and `at 18:00`.
 - ConversationContextManager keeps only the last 20 skill turns in RAM and does not write to disk.
 - GitHub Actions CI now enforces the local verification suite on `main`.
-- Voice City has explicit manual Linux ALSA microphone capture and offline Whisper STT adapters, both disabled by default. Speaker/TTS, wake word, GPT, internet, conversation loops, and background listening have not started.
+- Voice City has explicit owner-run Linux ALSA capture/playback, offline Whisper STT, offline Piper TTS, a controlled single-turn pipeline, and a bounded multi-turn session. Wake word, GPT, internet, unbounded/background conversation, and boot-time listening have not started.
 
 Engineering Rules
 
@@ -979,14 +1045,15 @@ Completed:
 - Hardened real Raspberry Pi TTS verification and selected-device health validation
 - Validated Piper voice-profile registry with `en_US-hfc_male-medium` as the configured default and Amy retained as optional
 - Controlled owner-triggered single-turn microphone -> Whisper -> Brain -> Piper -> ALSA pipeline
+- Controlled owner-triggered bounded multi-turn voice session reusing the single-turn pipeline
 - Voice City foundation
 - Voice City input/output contracts
 - Voice City text loop foundation
 
 Next:
 
-1. Run and validate the controlled single-turn command on Raspberry Pi hardware
-2. Harden real-device timing and audio thresholds from measured results
+1. Run and validate the bounded multi-turn command on Raspberry Pi hardware
+2. Measure per-turn timing, audio thresholds, stop recognition, and cleanup from real results
 3. Only later consider wake-word/background listening
 4. GPT fallback integration
 5. Raspberry Pi deployment
@@ -1810,19 +1877,28 @@ Phase 75
 - Versioned request/result contracts cover capture, transcription, Brain execution, synthesis, playback, timing, profile resolution, and structured errors
 - The owner-run script composes existing adapters and routes recognized text through SkillManager, IntentParser, Planner, ExecutionPipeline, and the selected local skill
 - Lifecycle/resource gates allow one heavy speech turn, while stage coordination prevents simultaneous capture/playback and Whisper/Piper execution
-- Current pytest collection is 812 tests
+- Phase pytest collection at this point was 812 tests
 - No GPT, cloud calls, wake word, background listener, automatic transcript memory writes, autonomous loop, or continuous conversation was added
 
 Phase 76
 
-- Explicit Raspberry Pi hardware validation of the controlled single-turn command
-- Measure real stage timing and tune RMS threshold only from observed hardware results
+- Controlled bounded multi-turn voice conversation session
+- `MultiTurnVoiceSession` repeatedly reuses `SingleTurnVoicePipeline`; it does not duplicate microphone, Whisper, Brain, Piper, or speaker implementations
+- V1 request/result contracts enforce turn, duration, failure, stop-phrase, timeout, cleanup, and event limits
+- Stop phrases are handled before Brain routing, while greeting and closing phrases remain local configuration
+- Current pytest collection is 872 tests
+- No wake word, background listening, boot service, GPT, cloud service, unbounded loop, or automatic transcript persistence was added
 
 Phase 77
 
-- Future voice expansion
+- Explicit Raspberry Pi hardware validation of the controlled multi-turn command
+- Measure per-turn timing, stop recognition, RMS behavior, and cleanup only from observed hardware results
+
+Phase 78
+
+- Future voice expansion only after separate approval
 - Wake word
-- Continuous conversation
+- Bounded background-listening design
 
 Phase 78
 

@@ -266,7 +266,7 @@ Current voice loop foundation:
 - The loop does not own routing, planning, or skill execution logic.
 - The loop does not start background listening, wake word detection, microphone access, speaker access, GPT, or internet access.
 
-VoiceService remains the boundary. The current real-audio surface is limited to explicit Linux ALSA one-shot capture through `LinuxAlsaMicrophoneAdapter`, explicit offline Whisper transcription through `LinuxWhisperSpeechToTextAdapter`, explicit offline Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, and explicit ALSA playback through `LinuxAlsaSpeakerAdapter`; all real providers are disabled by default, replaceable, and not wired as autonomous runtime paths. Real Vosk, wake word, background listener, GPT, internet, and conversation-loop integrations come later.
+VoiceService remains the boundary. The current real-audio surface is limited to explicit Linux ALSA capture through `LinuxAlsaMicrophoneAdapter`, offline Whisper transcription through `LinuxWhisperSpeechToTextAdapter`, offline Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA playback through `LinuxAlsaSpeakerAdapter`, the controlled single-turn pipeline, and a bounded owner-triggered multi-turn session. All real providers remain replaceable and outside autonomous startup paths. Real Vosk, wake word, background listeners, GPT, internet, and unbounded conversation integrations come later.
 
 # Linux ALSA Microphone Adapter
 
@@ -578,7 +578,40 @@ Execution order is enforced:
 
 Silence and blank transcription stop before Brain/TTS. Brain failures produce the local fallback `I could not process that request.` without cloud services. TTS failures preserve and print the Brain response. Playback failures preserve the generated WAV. Cancellation and adapter timeouts release task slots and invoke adapter cleanup hooks. Operational events contain stage/status/timing metadata, not raw audio or transcript contents.
 
-The current collection after this checkpoint is 812 tests.
+The single-turn checkpoint collection was 812 tests.
+
+# Controlled Multi-Turn Voice Session
+
+`core.MultiTurnVoiceSession` is a foreground, owner-triggered orchestrator that repeatedly invokes the existing `SingleTurnVoicePipeline`. It does not implement microphone capture, Whisper parsing, Brain routing, Piper synthesis, or ALSA playback. Those responsibilities remain in their existing adapters and single-turn boundaries.
+
+```text
+MultiTurnVoiceSessionRequestV1
+  -> MultiTurnVoiceSession
+  -> SingleTurnVoicePipeline.run_once()
+  -> LinuxAlsaMicrophoneAdapter
+  -> LinuxWhisperSpeechToTextAdapter
+  -> exact normalized stop-phrase gate
+  -> VoiceCommandRouter
+  -> CoreService voice.text_loop
+  -> SkillManager
+  -> IntentParser
+  -> Planner / ExecutionPipeline
+  -> selected local Skill
+  -> LinuxPiperTextToSpeechAdapter
+  -> LinuxAlsaSpeakerAdapter
+  -> per-turn summary
+  -> MultiTurnVoiceSessionResultV1
+```
+
+The stop-phrase hook is injected into the single-turn stage boundary after usable transcription and before command routing. A matched exact normalized phrase bypasses Brain execution and unrelated tools. Greeting and closing phrases are local configured output and use `SingleTurnVoicePipeline.run_local_output()` so the session manager never calls Piper or ALSA directly.
+
+The explicit session states are `created`, `starting`, `greeting`, `listening`, `transcribing`, `checking_stop_phrase`, `processing`, `synthesizing`, `speaking`, `waiting_between_turns`, `stopping`, `completed`, `failed`, and `cancelled`. State transitions are validated and timestamped. Each turn has a correlation ID derived from the parent session ID.
+
+Safe defaults are five turns, 180 seconds total, three consecutive failures, five seconds of capture per turn, a 0.75-second inter-turn delay, retry enabled for silence and blank transcription, and playback disabled. Exact default stop phrases are `stop listening`, `stop conversation`, `end conversation`, `goodbye Ares`, `goodbye`, `that is all`, and `exit conversation`. Case, punctuation, and repeated whitespace are normalized; substring matching is not used.
+
+The session acquires its own light lifecycle/resource reservation, while each turn uses the existing heavy single-turn reservation and task slot. The reused `VoiceStageCoordinator` enforces microphone/speaker and Whisper/Piper mutual exclusion. Ctrl+C, total timeout, turn timeout, fatal component failure, turn limit, duration limit, and consecutive-failure limit all enter structured cleanup. Standard events omit raw transcripts and audio. Successful audio follows the configured cleanup policy; useful failure diagnostics may be retained.
+
+Current collection after the bounded multi-turn checkpoint: 872 tests.
 
 # Architecture Hardening Checkpoint
 
@@ -675,13 +708,13 @@ Safety regression guarantees:
 
 # Next Project Block
 
-After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. Completed checkpoints now include ALSA capture/playback, offline Whisper, offline Piper, validated voice profiles, and the controlled single-turn pipeline. The next planned sequence is:
+After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. Completed checkpoints now include ALSA capture/playback, offline Whisper, offline Piper, validated voice profiles, the controlled single-turn pipeline, and the bounded owner-triggered multi-turn session. The next planned sequence is:
 
-1. run and validate the controlled single-turn command on Raspberry Pi hardware
-2. measure real stage timing and tune RMS thresholds from observed results
+1. run and validate the bounded multi-turn command on Raspberry Pi hardware
+2. measure per-turn timing, stop recognition, RMS thresholds, and cleanup from observed results
 3. only later consider wake-word/background listening
 
-This is a future implementation block. The current runtime still has no Vosk, wake word, GPT, internet access, background listener, daemon, scheduler, autonomous loop, conversation loop, automatic microphone activation, or cloud TTS fallback.
+This is a future implementation block. The current runtime still has no Vosk, wake word, GPT, internet access, background listener, daemon, scheduler, autonomous loop, unbounded conversation loop, boot-time microphone activation, or cloud TTS fallback.
 
 # Measured Resource Budgets
 
@@ -1143,7 +1176,7 @@ Current boundary:
 
 ## Voice City
 
-Voice City includes a safe service skeleton, mock session loops, adapter contracts, VoiceCommandRouter, the simulated VoicePipeline, and an explicit controlled `SingleTurnVoicePipeline`. Mock/null adapters remain the default automated path; owner-run Linux adapters cover one-shot ALSA capture, offline Whisper transcription, offline Piper synthesis, and explicit ALSA playback. Future Voice City work may own wake-word and continuous-session behavior only after separate approval. The Brain receives structured text and responses; it contains no microphone, speaker, speech-engine, model-path, or audio-driver code.
+Voice City includes a safe service skeleton, mock session loops, adapter contracts, VoiceCommandRouter, the simulated VoicePipeline, an explicit controlled `SingleTurnVoicePipeline`, and a bounded owner-triggered `MultiTurnVoiceSession`. Mock/null adapters remain the default automated path; owner-run Linux adapters cover ALSA capture, offline Whisper transcription, offline Piper synthesis, and explicit ALSA playback. Future Voice City work may own wake-word or background-session behavior only after separate approval. The Brain receives structured text and responses; it contains no microphone, speaker, speech-engine, model-path, audio-driver, or session-hardware control code.
 
 ## Vision City
 
