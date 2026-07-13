@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from core import (
+    CAPTURE_MODE_AUTO_STOP,
     DEFAULT_CONVERSATION_STOP_PHRASES,
     EVENT_CLEANUP_COMPLETED,
     EVENT_SESSION_COMPLETED,
@@ -392,6 +393,34 @@ def test_silence_retries_then_stops_at_failure_threshold(tmp_path):
     assert result.success is False
     assert result.silent_turns == 2
     assert result.stop_reason == "maximum_consecutive_failures"
+
+
+def test_auto_stop_no_speech_turn_is_recoverable_and_next_turn_continues(tmp_path):
+    pipeline = FakeSingleTurnPipeline(
+        results=[
+            _failure("silent_audio", "recording_validation", "no_speech_timeout"),
+            SingleTurnVoiceResultV1(
+                success=True,
+                status="completed",
+                recognized_text="calculate 2 + 2",
+                brain_text_response="Result: 4",
+            ),
+        ]
+    )
+
+    result, _, pipeline, _ = _run(
+        tmp_path,
+        pipeline=pipeline,
+        maximum_turns=2,
+        capture_mode=CAPTURE_MODE_AUTO_STOP,
+        simulated_text_turns=["first request", "second request"],
+    )
+
+    assert result.silent_turns == 1
+    assert result.successful_turns == 1
+    assert result.maximum_turns_reached is True
+    assert len(pipeline.requests) == 2
+    assert all(request.capture_mode == CAPTURE_MODE_AUTO_STOP for request in pipeline.requests)
 
 
 def test_silence_retry_can_be_disabled(tmp_path):

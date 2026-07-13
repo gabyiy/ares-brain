@@ -23,6 +23,13 @@ from core.SingleTurnVoiceSupport import (
 )
 from core.SpeechToText import TranscriptionResult
 from core.WavAudio import analyze_wav_audio, read_audio_chunk_wav, write_audio_chunk_wav
+from core.VoiceActivityDetection import (
+    CAPTURE_MODE_AUTO_STOP,
+    VAD_STATUS_CANCELLED,
+    VAD_STATUS_INVALID_AUDIO,
+    VAD_STATUS_NO_SPEECH_TIMEOUT,
+    VAD_STATUS_TIMEOUT,
+)
 
 
 class SingleTurnVoiceStageMixin:
@@ -41,7 +48,11 @@ class SingleTurnVoiceStageMixin:
             transcription = self._simulated_transcription(request, state)
         else:
             self._stage(2, "Recording", "running")
-            recording, wav, audio_chunk = self._record_audio(request, state)
+            recording, wav, audio_chunk = self._record_audio(
+                request,
+                state,
+                cancellation_token,
+            )
             if recording is not None:
                 return recording
             self._stage(2, "Recording", "completed")
@@ -252,7 +263,8 @@ class SingleTurnVoiceStageMixin:
                 "transcription_timeout",
             )
         state.transcription_status = transcription.status
-        state.recognized_text = transcription.text.strip()
+        state.recognized_text = " ".join(transcription.text.split())
+        transcription = replace(transcription, text=state.recognized_text)
         state.transcription_processing_time_seconds = float(
             transcription.data.get("processing_time_seconds", 0.0)
         )
@@ -320,6 +332,7 @@ class SingleTurnVoiceStageMixin:
         self,
         request: SingleTurnVoiceRequestV1,
         state: SingleTurnRunState,
+        cancellation_token: Optional[CancellationToken],
     ) -> tuple[Optional[SingleTurnVoiceResultV1], Dict[str, Any], AudioChunk]:
         output_path = Path(request.recording_output_path).expanduser()
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -340,8 +353,35 @@ class SingleTurnVoiceStageMixin:
         self._emit(state, self.EVENT_RECORDING_STARTED, "recording", "recording", True)
         started = self.clock()
         try:
+            record_until_silence = getattr(
+                self.microphone_adapter,
+                "record_until_silence",
+                None,
+            )
             record_wav = getattr(self.microphone_adapter, "record_wav", None)
-            if callable(record_wav):
+            if request.capture_mode == CAPTURE_MODE_AUTO_STOP:
+                if not callable(record_until_silence):
+                    raise RuntimeError("automatic_end_of_speech_capture_unsupported")
+                capture = record_until_silence(
+                    output_path,
+                    device=request.microphone_device or None,
+                    speech_start_rms=request.speech_start_rms,
+                    silence_rms=request.silence_rms,
+                    required_speech_frames=request.required_speech_frames,
+                    silence_seconds=request.silence_duration_seconds,
+                    speech_wait_timeout_seconds=request.speech_wait_timeout_seconds,
+                    maximum_utterance_seconds=request.maximum_utterance_seconds,
+                    pre_roll_seconds=request.pre_roll_seconds,
+                    frame_duration_ms=request.frame_duration_ms,
+                    frame_read_timeout_seconds=min(
+                        1.0,
+                        request.recording_timeout_seconds or 1.0,
+                    ),
+                    cancel_requested=cancellation_token,
+                    correlation_id=request.correlation_id,
+                    session_id=request.session_id,
+                )
+            elif callable(record_wav):
                 capture = record_wav(
                     output_path,
                     seconds=request.recording_duration_seconds,
@@ -377,12 +417,45 @@ class SingleTurnVoiceStageMixin:
         state.data["recording"] = capture.to_dict()
         state.recording_status = capture.status
         if not capture.success:
+            if capture.status == VAD_STATUS_NO_SPEECH_TIMEOUT:
+                state.recording_status = "silent_audio"
+                return (
+                    self._failure(
+                        state,
+                        "recording_validation",
+                        VAD_STATUS_NO_SPEECH_TIMEOUT,
+                        "silent_audio",
+                        data={"capture": capture.to_dict()},
+                    ),
+                    {},
+                    empty_audio_chunk(),
+                )
+            if capture.status == VAD_STATUS_CANCELLED:
+                return (
+                    self._failure(
+                        state,
+                        "cancellation",
+                        capture.error_message or VAD_STATUS_CANCELLED,
+                        "cancelled",
+                        data={"capture": capture.to_dict()},
+                    ),
+                    {},
+                    empty_audio_chunk(),
+                )
+            failure_status = (
+                "recording_timeout"
+                if capture.status == VAD_STATUS_TIMEOUT
+                else "invalid_recording"
+                if capture.status == VAD_STATUS_INVALID_AUDIO
+                else "recording_failed"
+            )
             return (
                 self._failure(
                     state,
                     "recording",
                     capture.error_message or capture.status,
-                    "recording_failed",
+                    failure_status,
+                    data={"capture": capture.to_dict()},
                 ),
                 {},
                 empty_audio_chunk(),
@@ -404,7 +477,10 @@ class SingleTurnVoiceStageMixin:
         state.recording_duration_seconds = float(wav.get("duration_seconds", 0.0))
         state.peak_amplitude = int(wav.get("peak_amplitude", 0))
         state.rms_amplitude = float(wav.get("rms_amplitude", 0.0))
-        chunk = capture.chunk or read_audio_chunk_wav(output_path, "single_turn_voice_pipeline")
+        chunk = getattr(capture, "chunk", None) or read_audio_chunk_wav(
+            output_path,
+            "single_turn_voice_pipeline",
+        )
         if dict(chunk.metadata or {}).get("wav_path") != str(output_path):
             chunk = replace(chunk, metadata={**dict(chunk.metadata), "wav_path": str(output_path)})
         self._emit(
@@ -418,6 +494,10 @@ class SingleTurnVoiceStageMixin:
                 "peak_amplitude": state.peak_amplitude,
                 "rms_amplitude": state.rms_amplitude,
                 "byte_count": int(wav.get("byte_count", 0)),
+                "capture_mode": request.capture_mode,
+                "stop_reason": str(getattr(capture, "stop_reason", capture.status)),
+                "ambient_rms": float(getattr(capture, "ambient_rms", 0.0)),
+                "speech_rms": float(getattr(capture, "speech_rms", 0.0)),
             },
         )
         return None, wav, chunk

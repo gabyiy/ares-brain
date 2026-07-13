@@ -215,6 +215,7 @@ class MultiTurnVoiceExecutionMixin:
 
             summary = self._turn_summary(turn_number, turn_result)
             summaries.append(summary)
+            recording = dict(turn_result.data.get("recording") or {})
             self._notify(
                 "turn_result",
                 {
@@ -223,6 +224,11 @@ class MultiTurnVoiceExecutionMixin:
                     "response_text": turn_result.brain_text_response,
                     "status": turn_result.status,
                     "detected_intent": turn_result.detected_intent,
+                    "capture_mode": request.capture_mode,
+                    "capture_stop_reason": recording.get("stop_reason") or recording.get("status", ""),
+                    "ambient_rms": float(recording.get("ambient_rms", 0.0)),
+                    "speech_rms": float(recording.get("speech_rms", 0.0)),
+                    "peak_amplitude": int(recording.get("peak_amplitude", 0)),
                 },
             )
 
@@ -458,13 +464,28 @@ class MultiTurnVoiceExecutionMixin:
             whisper_executable_path=request.whisper_executable_path,
             whisper_model_profile=request.whisper_model_profile,
             minimum_rms=request.minimum_rms,
+            capture_mode=request.capture_mode,
+            speech_start_rms=request.speech_start_rms,
+            silence_rms=request.silence_rms,
+            required_speech_frames=request.required_speech_frames,
+            silence_duration_seconds=request.silence_duration_seconds,
+            speech_wait_timeout_seconds=request.speech_wait_timeout_seconds,
+            maximum_utterance_seconds=request.maximum_utterance_seconds,
+            pre_roll_seconds=request.pre_roll_seconds,
+            frame_duration_ms=request.frame_duration_ms,
             tts_voice_profile=request.tts_voice_profile,
             speaker_device=request.speaker_device,
             playback_enabled=request.playback_enabled,
             timeout_seconds=timeout,
             recording_timeout_seconds=min(
                 timeout,
-                float(request.recording_duration_seconds) + 5.0,
+                (
+                    request.speech_wait_timeout_seconds
+                    + request.maximum_utterance_seconds
+                    + 5.0
+                    if request.capture_mode == "auto_stop"
+                    else float(request.recording_duration_seconds) + 5.0
+                ),
             ),
             transcription_timeout_seconds=timeout,
             brain_timeout_seconds=min(timeout, 30.0),
@@ -568,6 +589,7 @@ class MultiTurnVoiceExecutionMixin:
         turn_number: int,
         result: SingleTurnVoiceResultV1,
     ) -> Dict[str, Any]:
+        recording = dict(result.data.get("recording") or {})
         return {
             "turn_number": turn_number,
             "correlation_id": result.correlation_id,
@@ -588,6 +610,10 @@ class MultiTurnVoiceExecutionMixin:
             "simulated_input": result.simulated_input,
             "recorded_wav_path": result.recorded_wav_path,
             "generated_speech_wav_path": result.generated_speech_wav_path,
+            "capture_stop_reason": recording.get("stop_reason") or recording.get("status", ""),
+            "ambient_rms": float(recording.get("ambient_rms", 0.0)),
+            "speech_rms": float(recording.get("speech_rms", 0.0)),
+            "peak_amplitude": int(recording.get("peak_amplitude", 0)),
         }
 
     def _turn_event_metadata(

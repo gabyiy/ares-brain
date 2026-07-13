@@ -356,6 +356,15 @@ def test_default_voice_related_manifests_cover_voice_modules():
     assert any("voice.capture" in manifest.capabilities for manifest in manifests)
     assert any(manifest.module_type == MODULE_TYPE_ADAPTER for manifest in manifests)
     assert any(manifest.module_type == MODULE_TYPE_CITY for manifest in [build_service_manifest("city", module_type=MODULE_TYPE_CITY)])
+    alsa = next(
+        manifest for manifest in manifests
+        if manifest.module_name == "linux_alsa_microphone_adapter"
+    )
+    assert "voice.capture.activity" in alsa.capabilities
+    assert "voice.activity_capture.request" in alsa.consumed_contracts
+    assert "voice.activity_capture.result" in alsa.produced_contracts
+    assert alsa.resources.estimated_ram_mb == 2
+    assert alsa.resources.maximum_concurrent_tasks == 1
 
 
 def test_manifest_policy_loads_from_local_json(tmp_path):

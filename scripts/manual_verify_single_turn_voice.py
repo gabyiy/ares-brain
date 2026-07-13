@@ -11,6 +11,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from core import (  # noqa: E402
+    CAPTURE_MODE_AUTO_STOP,
+    CAPTURE_MODE_FIXED_DURATION,
     CoreService,
     EventBus,
     LinuxAlsaMicrophoneAdapter,
@@ -35,6 +37,14 @@ DEFAULT_WHISPER_COMMAND = "external/whisper.cpp/build/bin/whisper-cli"
 DEFAULT_RECORDING_OUTPUT = "data/manual_voice_samples/single_turn_input.wav"
 DEFAULT_RECORD_SECONDS = 5
 DEFAULT_PIPELINE_TIMEOUT = 300.0
+DEFAULT_SPEECH_START_RMS = 200.0
+DEFAULT_SILENCE_RMS = 120.0
+DEFAULT_SILENCE_SECONDS = 0.9
+DEFAULT_SPEECH_WAIT_TIMEOUT = 10.0
+DEFAULT_MAX_UTTERANCE_SECONDS = 15.0
+DEFAULT_PRE_ROLL_SECONDS = 0.25
+DEFAULT_FRAME_MS = 20
+DEFAULT_REQUIRED_SPEECH_FRAMES = 3
 
 WARNING = (
     "WARNING: This runs exactly one owner-triggered local ARES voice turn and exits. "
@@ -45,6 +55,20 @@ WARNING = (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run one controlled local ARES voice interaction.")
     parser.add_argument("--record-seconds", type=int, default=DEFAULT_RECORD_SECONDS)
+    capture_mode = parser.add_mutually_exclusive_group()
+    capture_mode.add_argument(
+        "--auto-stop",
+        dest="capture_mode",
+        action="store_const",
+        const=CAPTURE_MODE_AUTO_STOP,
+    )
+    capture_mode.add_argument(
+        "--fixed-duration",
+        dest="capture_mode",
+        action="store_const",
+        const=CAPTURE_MODE_FIXED_DURATION,
+    )
+    parser.set_defaults(capture_mode=CAPTURE_MODE_FIXED_DURATION)
     parser.add_argument("--microphone-device", default=DEFAULT_MICROPHONE_DEVICE)
     parser.add_argument("--speaker-device", default=DEFAULT_SPEAKER_DEVICE)
     parser.add_argument("--language", default="en")
@@ -52,6 +76,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--whisper-command", default=DEFAULT_WHISPER_COMMAND)
     parser.add_argument("--voice-profile", default="")
     parser.add_argument("--min-rms", type=float, default=0.0)
+    parser.add_argument("--speech-start-rms", type=float, default=DEFAULT_SPEECH_START_RMS)
+    parser.add_argument("--silence-rms", type=float, default=DEFAULT_SILENCE_RMS)
+    parser.add_argument("--silence-seconds", type=float, default=DEFAULT_SILENCE_SECONDS)
+    parser.add_argument(
+        "--speech-wait-timeout",
+        type=float,
+        default=DEFAULT_SPEECH_WAIT_TIMEOUT,
+    )
+    parser.add_argument(
+        "--max-utterance-seconds",
+        type=float,
+        default=DEFAULT_MAX_UTTERANCE_SECONDS,
+    )
+    parser.add_argument("--pre-roll-seconds", type=float, default=DEFAULT_PRE_ROLL_SECONDS)
+    parser.add_argument("--frame-ms", type=int, default=DEFAULT_FRAME_MS)
+    parser.add_argument(
+        "--required-speech-frames",
+        type=int,
+        default=DEFAULT_REQUIRED_SPEECH_FRAMES,
+    )
     parser.add_argument("--playback", action="store_true")
     parser.add_argument("--keep-audio", action="store_true")
     parser.add_argument("--timeout", type=float, default=DEFAULT_PIPELINE_TIMEOUT)
@@ -119,7 +163,7 @@ def create_pipeline(
     microphone = LinuxAlsaMicrophoneAdapter(
         device=args.microphone_device,
         record_seconds=args.record_seconds,
-        timeout_seconds=min(args.timeout, args.record_seconds + 5),
+        timeout_seconds=min(args.timeout, _recording_timeout(args)),
     )
     speech_to_text = LinuxWhisperSpeechToTextAdapter(
         model_path=_repo_path(args.whisper_model),
@@ -156,11 +200,20 @@ def request_from_args(args: argparse.Namespace) -> SingleTurnVoiceRequestV1:
         whisper_executable_path=str(_repo_path_or_command(args.whisper_command)),
         whisper_model_profile=str(_repo_path(args.whisper_model)),
         minimum_rms=args.min_rms,
+        capture_mode=args.capture_mode,
+        speech_start_rms=args.speech_start_rms,
+        silence_rms=args.silence_rms,
+        required_speech_frames=args.required_speech_frames,
+        silence_duration_seconds=args.silence_seconds,
+        speech_wait_timeout_seconds=args.speech_wait_timeout,
+        maximum_utterance_seconds=args.max_utterance_seconds,
+        pre_roll_seconds=args.pre_roll_seconds,
+        frame_duration_ms=args.frame_ms,
         tts_voice_profile=args.voice_profile,
         speaker_device=args.speaker_device,
         playback_enabled=bool(args.playback),
         timeout_seconds=timeout,
-        recording_timeout_seconds=min(timeout, args.record_seconds + 5),
+        recording_timeout_seconds=min(timeout, _recording_timeout(args)),
         transcription_timeout_seconds=timeout,
         brain_timeout_seconds=min(timeout, 30.0),
         synthesis_timeout_seconds=timeout,
@@ -200,6 +253,7 @@ def run_manual_verification(
     output_func(f"ARES response: {result.brain_text_response or '(none)'}")
     output_func(f"Total processing time: {result.total_processing_time_seconds:.3f}s")
     output_func(f"Final status: {result.status}")
+    _print_capture_diagnostics(result, output_func)
     if result.error_reason:
         output_func(f"Failure stage: {result.error_stage}")
         output_func(f"Failure reason: {result.error_reason}")
@@ -242,6 +296,27 @@ def _default_piper_command() -> str:
     if direct.exists():
         return str(direct)
     return "piper"
+
+
+def _recording_timeout(args: argparse.Namespace) -> float:
+    if args.capture_mode == CAPTURE_MODE_AUTO_STOP:
+        return float(args.speech_wait_timeout + args.max_utterance_seconds + 5.0)
+    return float(args.record_seconds + 5)
+
+
+def _print_capture_diagnostics(result: Any, output_func: Callable[[str], None]) -> None:
+    recording = dict(result.data.get("recording") or {})
+    if not recording or recording.get("metadata", {}).get("source") != "rms_voice_activity_capture":
+        return
+    output_func(f"Capture stop reason: {recording.get('stop_reason') or recording.get('status')}")
+    output_func(f"Ambient RMS: {float(recording.get('ambient_rms', 0.0)):.3f}")
+    output_func(f"Speech RMS: {float(recording.get('speech_rms', 0.0)):.3f}")
+    output_func(f"Peak amplitude: {int(recording.get('peak_amplitude', 0))}")
+    data = dict(recording.get("data") or {})
+    output_func(
+        "Selected thresholds: "
+        f"start={data.get('speech_start_rms')}, silence={data.get('silence_rms')}"
+    )
 
 
 def main() -> None:

@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 import re
 from typing import Any, Callable, Dict, List, Optional
 
 from core.Contracts import (
     CONTRACT_MULTI_TURN_VOICE_SESSION_REQUEST,
     MultiTurnVoiceSessionRequestV1,
+    VoiceActivityCaptureRequestV1,
     MultiTurnVoiceSessionResultV1,
     new_correlation_id,
     utc_contract_timestamp,
     validate_contract,
+)
+from core.VoiceActivityDetection import (
+    CAPTURE_MODE_AUTO_STOP,
+    CAPTURE_MODES,
+    validate_voice_activity_request,
 )
 from core.SingleTurnVoiceSupport import PIPELINE_CLEANUP_POLICIES
 
@@ -232,6 +239,25 @@ def validated_multi_turn_request(
         raise ValueError("inter_turn_delay_seconds_out_of_range")
     if float(request.minimum_rms) < 0:
         raise ValueError("minimum_rms_must_be_non_negative")
+    if request.capture_mode not in CAPTURE_MODES:
+        raise ValueError("invalid_capture_mode")
+    if request.capture_mode == CAPTURE_MODE_AUTO_STOP:
+        validate_voice_activity_request(
+            VoiceActivityCaptureRequestV1(
+                output_wav_path=str(Path(request.recording_output_directory) / "validation.wav"),
+                microphone_device=request.microphone_device,
+                frame_duration_ms=request.frame_duration_ms,
+                speech_start_rms=request.speech_start_rms,
+                silence_rms=request.silence_rms,
+                required_speech_frames=request.required_speech_frames,
+                silence_duration_seconds=request.silence_duration_seconds,
+                speech_wait_timeout_seconds=request.speech_wait_timeout_seconds,
+                maximum_utterance_seconds=request.maximum_utterance_seconds,
+                pre_roll_seconds=request.pre_roll_seconds,
+                correlation_id=request.correlation_id,
+                session_id=request.session_id,
+            )
+        )
     if request.cleanup_policy not in PIPELINE_CLEANUP_POLICIES:
         raise ValueError("invalid_cleanup_policy")
     if request.interactive_text and request.simulated_text_turns:

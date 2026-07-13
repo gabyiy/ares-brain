@@ -1,5 +1,19 @@
 {
   "voice_profiles_config": "config/voice_profiles.json",
+  "voice_activity_capture": {
+    "mode": "fixed_duration",
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "frame_duration_ms": 20,
+    "speech_start_rms": 200,
+    "silence_rms": 120,
+    "required_speech_frames": 3,
+    "silence_duration_seconds": 0.9,
+    "speech_wait_timeout_seconds": 10,
+    "maximum_utterance_seconds": 15,
+    "pre_roll_seconds": 0.25
+  },
   "enabled_modules": {
     "voice": true,
     "mock_microphone_adapter": true,
@@ -17,6 +31,7 @@
   },
   "preferred_providers": {
     "voice.capture": "mock_microphone_adapter",
+    "voice.capture.activity": "linux_alsa_microphone_adapter",
     "voice.transcribe": "mock_speech_to_text_adapter",
     "voice.output": "mock_voice_output_adapter",
     "voice.speak": "mock_text_to_speech_adapter",

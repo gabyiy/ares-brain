@@ -380,6 +380,8 @@ def _is_cancelled(cancel_requested: Optional[CancelCheck | Any]) -> bool:
     is_set = getattr(cancel_requested, "is_set", None)
     if callable(is_set):
         return bool(is_set())
+    if hasattr(cancel_requested, "requested"):
+        return bool(getattr(cancel_requested, "requested"))
     if callable(cancel_requested):
         return bool(cancel_requested())
     return bool(cancel_requested)

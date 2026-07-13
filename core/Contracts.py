@@ -12,6 +12,8 @@ CONTRACT_VERSION_PATTERN = re.compile(r"^v[1-9][0-9]*$")
 
 CONTRACT_MICROPHONE_CAPTURE_REQUEST = "microphone.capture.request"
 CONTRACT_MICROPHONE_CAPTURE_RESULT = "microphone.capture.result"
+CONTRACT_VOICE_ACTIVITY_CAPTURE_REQUEST = "voice.activity_capture.request"
+CONTRACT_VOICE_ACTIVITY_CAPTURE_RESULT = "voice.activity_capture.result"
 CONTRACT_SPEECH_TO_TEXT_REQUEST = "speech_to_text.transcribe.request"
 CONTRACT_SPEECH_TO_TEXT_RESULT = "speech_to_text.transcribe.result"
 CONTRACT_TEXT_TO_SPEECH_REQUEST = "text_to_speech.synthesize.request"
@@ -330,6 +332,51 @@ class MicrophoneCaptureResultV1(VersionedContract):
 
 
 @dataclass(frozen=True)
+class VoiceActivityCaptureRequestV1(VersionedContract):
+    contract_name: str = CONTRACT_VOICE_ACTIVITY_CAPTURE_REQUEST
+    output_wav_path: str = "data/manual_voice_samples/voice_activity_input.wav"
+    microphone_device: str = "hw:2,0"
+    sample_rate_hz: int = 16000
+    channels: int = 1
+    sample_width_bytes: int = 2
+    frame_duration_ms: int = 20
+    speech_start_rms: float = 200.0
+    silence_rms: float = 120.0
+    required_speech_frames: int = 3
+    silence_duration_seconds: float = 0.9
+    speech_wait_timeout_seconds: float = 10.0
+    maximum_utterance_seconds: float = 15.0
+    pre_roll_seconds: float = 0.25
+    frame_read_timeout_seconds: float = 1.0
+
+
+@dataclass(frozen=True)
+class VoiceActivityCaptureResultV1(VersionedContract):
+    contract_name: str = CONTRACT_VOICE_ACTIVITY_CAPTURE_RESULT
+    success: bool = False
+    status: str = ""
+    wav_path: str = ""
+    speech_detected: bool = False
+    duration_seconds: float = 0.0
+    speech_duration_seconds: float = 0.0
+    silence_duration_at_stop_seconds: float = 0.0
+    peak_amplitude: int = 0
+    rms_amplitude: float = 0.0
+    ambient_rms: float = 0.0
+    speech_rms: float = 0.0
+    maximum_frame_rms: float = 0.0
+    sample_rate_hz: int = 16000
+    channels: int = 1
+    sample_width_bytes: int = 2
+    frame_count: int = 0
+    selected_device: str = ""
+    stop_reason: str = ""
+    processing_time_seconds: float = 0.0
+    error_message: str = ""
+    data: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class SpeechToTextRequestV1(VersionedContract):
     contract_name: str = CONTRACT_SPEECH_TO_TEXT_REQUEST
     audio_chunk: Optional[Dict[str, Any]] = None
@@ -469,6 +516,15 @@ class SingleTurnVoiceRequestV1(VersionedContract):
     whisper_executable_path: str = "external/whisper.cpp/build/bin/whisper-cli"
     whisper_model_profile: str = "models/whisper/ggml-tiny.en.bin"
     minimum_rms: float = 0.0
+    capture_mode: str = "fixed_duration"
+    speech_start_rms: float = 200.0
+    silence_rms: float = 120.0
+    required_speech_frames: int = 3
+    silence_duration_seconds: float = 0.9
+    speech_wait_timeout_seconds: float = 10.0
+    maximum_utterance_seconds: float = 15.0
+    pre_roll_seconds: float = 0.25
+    frame_duration_ms: int = 20
     tts_voice_profile: str = ""
     speaker_device: str = "plughw:CARD=Device,DEV=0"
     playback_enabled: bool = False
@@ -525,6 +581,15 @@ class MultiTurnVoiceSessionRequestV1(VersionedContract):
     whisper_executable_path: str = "external/whisper.cpp/build/bin/whisper-cli"
     whisper_model_profile: str = "models/whisper/ggml-tiny.en.bin"
     minimum_rms: float = 0.0
+    capture_mode: str = "fixed_duration"
+    speech_start_rms: float = 200.0
+    silence_rms: float = 120.0
+    required_speech_frames: int = 3
+    silence_duration_seconds: float = 0.9
+    speech_wait_timeout_seconds: float = 10.0
+    maximum_utterance_seconds: float = 15.0
+    pre_roll_seconds: float = 0.25
+    frame_duration_ms: int = 20
     tts_voice_profile: str = ""
     playback_enabled: bool = False
     maximum_turns: int = 5
@@ -595,6 +660,14 @@ def build_default_contract_registry() -> ContractRegistry:
     registry.register(
         CONTRACT_MICROPHONE_CAPTURE_RESULT,
         consumers=["VoicePipeline", "MicrophoneAdapter"],
+    )
+    registry.register(
+        CONTRACT_VOICE_ACTIVITY_CAPTURE_REQUEST,
+        consumers=["RmsVoiceActivityCapture", "LinuxAlsaMicrophoneAdapter"],
+    )
+    registry.register(
+        CONTRACT_VOICE_ACTIVITY_CAPTURE_RESULT,
+        consumers=["RmsVoiceActivityCapture", "LinuxAlsaMicrophoneAdapter", "SingleTurnVoicePipeline"],
     )
     registry.register(
         CONTRACT_SPEECH_TO_TEXT_REQUEST,

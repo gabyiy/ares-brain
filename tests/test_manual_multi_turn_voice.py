@@ -201,3 +201,29 @@ def test_request_preserves_explicit_devices_voice_and_limits():
     assert request.maximum_session_duration_seconds == 90
     assert request.maximum_consecutive_failures == 2
     assert request.stop_phrases == ["finish now"]
+
+
+def test_request_preserves_auto_stop_capture_configuration():
+    args = manual.build_parser().parse_args(
+        [
+            "--auto-stop",
+            "--speech-start-rms", "210",
+            "--silence-rms", "105",
+            "--silence-seconds", "0.85",
+            "--speech-wait-timeout", "8",
+            "--max-utterance-seconds", "12",
+            "--pre-roll-seconds", "0.2",
+            "--frame-ms", "20",
+        ]
+    )
+
+    request = manual.request_from_args(args)
+
+    assert request.capture_mode == "auto_stop"
+    assert request.speech_start_rms == 210
+    assert request.silence_rms == 105
+    assert request.silence_duration_seconds == 0.85
+    assert request.speech_wait_timeout_seconds == 8
+    assert request.maximum_utterance_seconds == 12
+    assert request.pre_roll_seconds == 0.2
+    assert request.frame_duration_ms == 20

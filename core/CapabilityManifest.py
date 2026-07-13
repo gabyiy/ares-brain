@@ -15,6 +15,8 @@ from core.Contracts import (
     CONTRACT_LIFECYCLE_EXECUTION_RESULT,
     CONTRACT_MICROPHONE_CAPTURE_REQUEST,
     CONTRACT_MICROPHONE_CAPTURE_RESULT,
+    CONTRACT_VOICE_ACTIVITY_CAPTURE_REQUEST,
+    CONTRACT_VOICE_ACTIVITY_CAPTURE_RESULT,
     CONTRACT_MULTI_TURN_VOICE_SESSION_REQUEST,
     CONTRACT_MULTI_TURN_VOICE_SESSION_RESULT,
     CONTRACT_SPEECH_TO_TEXT_REQUEST,
@@ -991,6 +993,7 @@ def build_single_turn_voice_pipeline_manifest() -> CapabilityManifest:
         consumed_contracts={
             CONTRACT_SINGLE_TURN_VOICE_REQUEST: [CONTRACT_VERSION_V1],
             CONTRACT_MICROPHONE_CAPTURE_RESULT: [CONTRACT_VERSION_V1],
+            CONTRACT_VOICE_ACTIVITY_CAPTURE_RESULT: [CONTRACT_VERSION_V1],
             CONTRACT_SPEECH_TO_TEXT_RESULT: [CONTRACT_VERSION_V1],
             CONTRACT_VOICE_COMMAND_RESULT: [CONTRACT_VERSION_V1],
             CONTRACT_TEXT_TO_SPEECH_RESULT: [CONTRACT_VERSION_V1],
@@ -1121,9 +1124,15 @@ def default_voice_related_manifests() -> List[CapabilityManifest]:
             description="Linux ALSA arecord microphone adapter for Raspberry Pi manual capture.",
             provider="ares",
             enabled_by_default=False,
-            capabilities=["voice.capture"],
-            consumed_contracts={CONTRACT_MICROPHONE_CAPTURE_REQUEST: [CONTRACT_VERSION_V1]},
-            produced_contracts={CONTRACT_MICROPHONE_CAPTURE_RESULT: [CONTRACT_VERSION_V1]},
+            capabilities=["voice.capture", "voice.capture.activity"],
+            consumed_contracts={
+                CONTRACT_MICROPHONE_CAPTURE_REQUEST: [CONTRACT_VERSION_V1],
+                CONTRACT_VOICE_ACTIVITY_CAPTURE_REQUEST: [CONTRACT_VERSION_V1],
+            },
+            produced_contracts={
+                CONTRACT_MICROPHONE_CAPTURE_RESULT: [CONTRACT_VERSION_V1],
+                CONTRACT_VOICE_ACTIVITY_CAPTURE_RESULT: [CONTRACT_VERSION_V1],
+            },
             platform=PlatformCompatibility(
                 supported_operating_systems=["linux"],
                 hardware_requirements={"microphone_required": True}
@@ -1134,10 +1143,17 @@ def default_voice_related_manifests() -> List[CapabilityManifest]:
                 LIFECYCLE_OPERATION_HEALTH_CHECK,
                 LIFECYCLE_OPERATION_STOP,
             ],
+            resources=ResourceDeclaration(
+                estimated_ram_mb=2,
+                estimated_cpu_weight=CPU_WEIGHT_TINY,
+                maximum_concurrent_tasks=1,
+            ),
             metadata={
                 "source": "voice_city",
                 "hardware_specific": "linux_alsa",
                 "uses_arecord": True,
+                "voice_activity_detection": "pcm_frame_rms_hysteresis",
+                "automatic_end_of_speech": True,
                 "default_enabled": False,
             },
         ),

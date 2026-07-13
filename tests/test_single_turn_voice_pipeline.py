@@ -7,6 +7,7 @@ import wave
 import pytest
 
 from core import (
+    CAPTURE_MODE_AUTO_STOP,
     EVENT_BRAIN_EXECUTION_COMPLETED,
     EVENT_PLAYBACK_COMPLETED,
     EVENT_RECORDING_COMPLETED,
@@ -30,6 +31,10 @@ from core import (
     SpeakerPlaybackResult,
     TextToSpeechResultV1,
     TranscriptionResult,
+    VAD_STATUS_COMPLETED_AFTER_SILENCE,
+    VAD_STATUS_INVALID_AUDIO,
+    VAD_STATUS_NO_SPEECH_TIMEOUT,
+    VoiceActivityCaptureResultV1,
     build_single_turn_voice_pipeline_manifest,
 )
 from skills.base import SkillResponse
@@ -110,6 +115,55 @@ class FakeMicrophone:
             "recorded",
             chunk=chunk,
             data={"wav_path": str(path)},
+        )
+
+
+class FakeVadMicrophone(FakeMicrophone):
+    def __init__(self, order, vad_status=VAD_STATUS_COMPLETED_AFTER_SILENCE, **kwargs):
+        super().__init__(order, **kwargs)
+        self.vad_status = vad_status
+        self.vad_calls = []
+
+    def record_until_silence(self, output_path, **kwargs):
+        self.order.append("microphone.vad_record")
+        self.vad_calls.append(dict(kwargs))
+        if self.vad_status == VAD_STATUS_NO_SPEECH_TIMEOUT:
+            return VoiceActivityCaptureResultV1(
+                success=False,
+                status=self.vad_status,
+                stop_reason=self.vad_status,
+                ambient_rms=42.0,
+                error_message="speech_not_detected_before_timeout",
+            )
+        if self.vad_status == VAD_STATUS_INVALID_AUDIO:
+            return VoiceActivityCaptureResultV1(
+                success=False,
+                status=self.vad_status,
+                stop_reason=self.vad_status,
+                error_message="invalid_pcm_frame_size",
+            )
+        path = Path(output_path)
+        if self.corrupt:
+            path.write_bytes(b"not-a-wav")
+        else:
+            _write_wav(path, sample=self.sample)
+        return VoiceActivityCaptureResultV1(
+            success=True,
+            status=self.vad_status,
+            wav_path=str(path),
+            speech_detected=True,
+            duration_seconds=0.1,
+            speech_duration_seconds=0.08,
+            peak_amplitude=self.sample,
+            rms_amplitude=float(self.sample),
+            ambient_rms=40.0,
+            speech_rms=float(self.sample),
+            stop_reason=self.vad_status,
+            data={
+                "speech_start_rms": kwargs["speech_start_rms"],
+                "silence_rms": kwargs["silence_rms"],
+                "terminal_silence_trimmed": True,
+            },
         )
 
 
@@ -893,3 +947,137 @@ def test_stage_observer_can_be_added_and_removed_without_replacing_primary_callb
     assert second.success is True
     assert observed
     assert len(primary) > len(observed)
+
+
+def test_auto_stop_capture_calls_whisper_once_with_final_trimmed_wav(tmp_path):
+    order = []
+    microphone = FakeVadMicrophone(order)
+    stt = FakeSpeechToText(order)
+    pipeline, _, _, _, _, _, handled, _ = _pipeline(
+        tmp_path,
+        microphone=microphone,
+        stt=stt,
+    )
+
+    result = pipeline.run_once(
+        _request(
+            tmp_path,
+            capture_mode=CAPTURE_MODE_AUTO_STOP,
+            playback_enabled=False,
+        )
+    )
+
+    assert result.success is True
+    assert stt.calls == 1
+    assert handled == ["calculate 2 + 2"]
+    assert microphone.vad_calls[0]["speech_start_rms"] == 200.0
+    assert result.data["recording"]["data"]["terminal_silence_trimmed"] is True
+    assert order.index("microphone.vad_record") < order.index("whisper.transcribe")
+
+
+def test_auto_stop_capture_and_speaker_playback_remain_mutually_exclusive(tmp_path):
+    order = []
+    microphone = FakeVadMicrophone(order)
+    stt = FakeSpeechToText(order)
+    tts = FakeTextToSpeech(order)
+    speaker = FakeSpeaker(order, microphone)
+    pipeline, _, _, _, _, _, _, _ = _pipeline(
+        tmp_path,
+        microphone=microphone,
+        stt=stt,
+        tts=tts,
+        speaker=speaker,
+    )
+
+    result = pipeline.run_once(
+        _request(tmp_path, capture_mode=CAPTURE_MODE_AUTO_STOP, playback_enabled=True)
+    )
+
+    assert result.success is True
+    assert microphone.active is False
+    assert speaker.play_count == 1
+    trace = result.data["coordinator"]["trace"]
+    assert trace.index({"action": "end", "stage": "microphone_capture"}) < trace.index(
+        {"action": "begin", "stage": "speaker_playback"}
+    )
+
+
+def test_auto_stop_no_speech_skips_whisper_brain_tts_and_speaker(tmp_path):
+    order = []
+    microphone = FakeVadMicrophone(order, vad_status=VAD_STATUS_NO_SPEECH_TIMEOUT)
+    pipeline, _, _, stt, tts, speaker, handled, _ = _pipeline(
+        tmp_path,
+        microphone=microphone,
+    )
+
+    result = pipeline.run_once(
+        _request(tmp_path, capture_mode=CAPTURE_MODE_AUTO_STOP)
+    )
+
+    assert result.status == "silent_audio"
+    assert stt.calls == 0
+    assert handled == []
+    assert tts.requests == []
+    assert speaker.play_count == 0
+
+
+def test_auto_stop_invalid_pcm_skips_all_downstream_execution(tmp_path):
+    order = []
+    microphone = FakeVadMicrophone(order, vad_status=VAD_STATUS_INVALID_AUDIO)
+    pipeline, _, _, stt, tts, speaker, handled, _ = _pipeline(
+        tmp_path,
+        microphone=microphone,
+    )
+
+    result = pipeline.run_once(
+        _request(tmp_path, capture_mode=CAPTURE_MODE_AUTO_STOP)
+    )
+
+    assert result.status == "invalid_recording"
+    assert stt.calls == 0
+    assert handled == []
+    assert tts.requests == []
+    assert speaker.play_count == 0
+
+
+def test_auto_stop_corrupt_wav_is_rejected_before_whisper(tmp_path):
+    order = []
+    microphone = FakeVadMicrophone(order, corrupt=True)
+    pipeline, _, _, stt, tts, speaker, handled, _ = _pipeline(
+        tmp_path,
+        microphone=microphone,
+    )
+
+    result = pipeline.run_once(
+        _request(tmp_path, capture_mode=CAPTURE_MODE_AUTO_STOP)
+    )
+
+    assert result.status == "invalid_recording"
+    assert stt.calls == 0
+    assert handled == []
+    assert tts.requests == []
+    assert speaker.play_count == 0
+
+
+def test_fixed_duration_remains_the_default_fallback(tmp_path):
+    pipeline, order, _, stt, _, _, _, _ = _pipeline(tmp_path)
+
+    result = pipeline.run_once(_request(tmp_path, playback_enabled=False))
+
+    assert result.success is True
+    assert "microphone.record" in order
+    assert "microphone.vad_record" not in order
+    assert stt.calls == 1
+
+
+def test_transcript_cleanup_collapses_whitespace_only(tmp_path):
+    order = []
+    pipeline, _, _, _, _, _, handled, _ = _pipeline(
+        tmp_path,
+        stt=FakeSpeechToText(order, text="  calculate\n  2   +  2  "),
+    )
+
+    result = pipeline.run_once(_request(tmp_path, playback_enabled=False))
+
+    assert result.recognized_text == "calculate 2 + 2"
+    assert handled == ["calculate 2 + 2"]

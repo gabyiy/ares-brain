@@ -8,7 +8,13 @@ from core.Contracts import (
     CONTRACT_SINGLE_TURN_VOICE_REQUEST,
     SingleTurnVoiceRequestV1,
     SingleTurnVoiceResultV1,
+    VoiceActivityCaptureRequestV1,
     validate_contract,
+)
+from core.VoiceActivityDetection import (
+    CAPTURE_MODE_AUTO_STOP,
+    CAPTURE_MODES,
+    validate_voice_activity_request,
 )
 from core.Microphone import AudioChunk
 from core.ModuleLifecycle import LifecycleRequest, LifecycleResult
@@ -148,6 +154,25 @@ def validated_single_turn_request(
         raise ValueError("recording_duration_seconds_out_of_range")
     if float(request.minimum_rms) < 0:
         raise ValueError("minimum_rms_must_be_non_negative")
+    if request.capture_mode not in CAPTURE_MODES:
+        raise ValueError("invalid_capture_mode")
+    if request.capture_mode == CAPTURE_MODE_AUTO_STOP:
+        validate_voice_activity_request(
+            VoiceActivityCaptureRequestV1(
+                output_wav_path=request.recording_output_path,
+                microphone_device=request.microphone_device,
+                frame_duration_ms=request.frame_duration_ms,
+                speech_start_rms=request.speech_start_rms,
+                silence_rms=request.silence_rms,
+                required_speech_frames=request.required_speech_frames,
+                silence_duration_seconds=request.silence_duration_seconds,
+                speech_wait_timeout_seconds=request.speech_wait_timeout_seconds,
+                maximum_utterance_seconds=request.maximum_utterance_seconds,
+                pre_roll_seconds=request.pre_roll_seconds,
+                correlation_id=request.correlation_id,
+                session_id=request.session_id,
+            )
+        )
     if not 0.1 <= float(request.timeout_seconds) <= 1800:
         raise ValueError("timeout_seconds_out_of_range")
     for name in (

@@ -7,6 +7,8 @@ from core import (
     CONTRACT_SPEECH_TO_TEXT_RESULT,
     CONTRACT_VERSION_V1,
     CONTRACT_VOICE_COMMAND_REQUEST,
+    CONTRACT_VOICE_ACTIVITY_CAPTURE_REQUEST,
+    CONTRACT_VOICE_ACTIVITY_CAPTURE_RESULT,
     CONTRACT_VOICE_PIPELINE_REQUEST,
     DEFAULT_CONTRACT_REGISTRY,
     ContractRegistry,
@@ -15,6 +17,8 @@ from core import (
     MicrophoneCaptureResultV1,
     SpeechToTextResultV1,
     VoicePipelineRequestV1,
+    VoiceActivityCaptureRequestV1,
+    VoiceActivityCaptureResultV1,
 )
 
 
@@ -173,3 +177,26 @@ def test_duplicate_incompatible_registration_is_rejected():
             supported_versions=["v2"],
             consumers=["VoicePipeline"],
         )
+
+
+def test_voice_activity_capture_contracts_are_versioned_and_registered():
+    request = VoiceActivityCaptureRequestV1(correlation_id="vad-correlation")
+    result = VoiceActivityCaptureResultV1(
+        success=True,
+        status="completed_after_silence",
+        correlation_id="vad-correlation",
+    )
+
+    request_check = DEFAULT_CONTRACT_REGISTRY.validate(
+        request,
+        expected_contract_name=CONTRACT_VOICE_ACTIVITY_CAPTURE_REQUEST,
+    )
+    result_check = DEFAULT_CONTRACT_REGISTRY.validate(
+        result,
+        expected_contract_name=CONTRACT_VOICE_ACTIVITY_CAPTURE_RESULT,
+    )
+
+    assert request_check.success is True
+    assert result_check.success is True
+    assert result.to_dict()["correlation_id"] == "vad-correlation"
+    assert VoiceActivityCaptureRequestV1.from_dict(request.to_dict()) == request

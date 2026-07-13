@@ -1,15 +1,23 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 import re
+import select
 import shutil
 import subprocess
 import tempfile
+import time
 import wave
 from typing import Any, Dict, List, Optional, Sequence
 
+from core.Contracts import VoiceActivityCaptureRequestV1, VoiceActivityCaptureResultV1
 from core.Microphone import AudioChunk, CancelCheck, MicrophoneAdapter, MicrophoneResult
+from core.VoiceActivityDetection import (
+    RmsVoiceActivityCapture,
+    VAD_STATUS_DEVICE_ERROR,
+    validate_voice_activity_request,
+)
 
 
 DEFAULT_ALSA_SAMPLE_RATE_HZ = 16000
@@ -100,6 +108,71 @@ class SafeSubprocessRunner:
         )
 
 
+class SubprocessPcmFrameSource:
+    """Bounded raw-PCM reader for one foreground arecord process."""
+
+    def __init__(self, args: Sequence[str]):
+        self.args = [str(arg) for arg in args]
+        self.process = subprocess.Popen(
+            self.args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            bufsize=0,
+        )
+        self.closed = False
+        self.stderr = ""
+
+    def read_frame(self, frame_bytes: int, timeout_seconds: float) -> bytes:
+        if self.closed or self.process.stdout is None:
+            raise RuntimeError("pcm_stream_closed")
+        deadline = time.monotonic() + max(0.01, float(timeout_seconds))
+        frame = bytearray()
+        while len(frame) < frame_bytes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("pcm_frame_read_timeout")
+            readable, _, _ = select.select([self.process.stdout], [], [], remaining)
+            if not readable:
+                raise TimeoutError("pcm_frame_read_timeout")
+            chunk = self.process.stdout.read(frame_bytes - len(frame))
+            if not chunk:
+                raise EOFError("arecord_pcm_stream_ended")
+            frame.extend(chunk)
+        return bytes(frame)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=2.0)
+        if self.process.stderr is not None:
+            try:
+                self.stderr = self.process.stderr.read(1000).decode("utf-8", errors="replace")
+            except (AttributeError, OSError):
+                self.stderr = ""
+        for stream in (self.process.stdout, self.process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+
+class SafePcmStreamRunner:
+    """Starts allowlisted arecord argument lists; never invokes a shell."""
+
+    def start(self, args: Sequence[str]) -> SubprocessPcmFrameSource:
+        return SubprocessPcmFrameSource(args)
+
+
 class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
     """Linux ALSA microphone adapter backed by arecord.
 
@@ -118,6 +191,8 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         timeout_seconds: Optional[float] = None,
         arecord_command: str = "arecord",
         runner: Optional[SafeSubprocessRunner] = None,
+        stream_runner: Optional[SafePcmStreamRunner] = None,
+        voice_activity_capture: Optional[RmsVoiceActivityCapture] = None,
         source: str = "linux_alsa_microphone_adapter",
     ):
         self.device = _normalize_optional_device(device)
@@ -132,6 +207,8 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         )
         self.arecord_command = str(arecord_command or "arecord").strip()
         self.runner = runner or SafeSubprocessRunner()
+        self.stream_runner = stream_runner or SafePcmStreamRunner()
+        self.voice_activity_capture = voice_activity_capture or RmsVoiceActivityCapture()
         self.source = source
         self.started = False
         self.start_count = 0
@@ -139,12 +216,21 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         self.read_count = 0
         self.record_count = 0
         self.audio_hardware_accessed = False
+        self._active_stream: Optional[Any] = None
 
     def start(self) -> MicrophoneResult:
         self.start_count += 1
         health = self.health_check()
         if not health.success:
             return health
+        vad_start = self.voice_activity_capture.start()
+        if not vad_start.success:
+            return self._failure(
+                status=VAD_STATUS_DEVICE_ERROR,
+                text="Linux ALSA microphone VAD component failed to start.",
+                error_message=vad_start.error_message or vad_start.status,
+                data={"voice_activity_capture": vad_start.to_dict()},
+            )
         self.started = True
         return self._success(
             status="started",
@@ -154,11 +240,23 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
 
     def stop(self) -> MicrophoneResult:
         self.stop_count += 1
+        self.cancel_current()
+        vad_stop = self.voice_activity_capture.stop()
         self.started = False
         return self._success(
             status="stopped",
             text="Linux ALSA microphone adapter stopped. No background capture is running.",
+            data={"voice_activity_capture": vad_stop.to_dict()},
         )
+
+    def cancel_current(self) -> None:
+        stream = self._active_stream
+        self._active_stream = None
+        if stream is not None:
+            try:
+                stream.close()
+            except (OSError, RuntimeError):
+                pass
 
     def read_chunk(
         self,
@@ -203,6 +301,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 "arecord_path": arecord_path or "",
                 "selected_device": self.device or "",
                 "record_seconds": self.record_seconds,
+                "voice_activity_capture_state": self.voice_activity_capture.state,
                 "sample_rate_hz": self.sample_rate_hz,
                 "channels": self.channels,
                 "sample_format": self.sample_format,
@@ -218,7 +317,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             text="Linux ALSA microphone adapter capabilities discovered.",
             data={
                 "source": self.source,
-                "supported_modes": ["arecord_wav_capture"],
+                "supported_modes": ["arecord_wav_capture", "arecord_pcm_rms_auto_stop"],
                 "supports_device_selection": True,
                 "supports_capture_device_listing": True,
                 "writes_wav_file": True,
@@ -226,6 +325,8 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 "channels": self.channels,
                 "sample_format": self.sample_format,
                 "timeout_handling": "safe_timeout_result",
+                "voice_activity_detection": "pcm_frame_rms_hysteresis",
+                "automatic_end_of_speech": True,
                 "background_listening": "disabled",
                 "stt": "not_configured",
                 "wake_word": "disabled",
@@ -246,6 +347,14 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     error_message="alsa_device_not_found",
                     data={"selected_device": self.device, "available_devices": sorted(available)},
                 )
+        vad_health = self.voice_activity_capture.health_check()
+        if not vad_health.success:
+            return self._failure(
+                status=VAD_STATUS_DEVICE_ERROR,
+                text="Linux ALSA microphone VAD health check failed.",
+                error_message=vad_health.error_message or vad_health.status,
+                data={"voice_activity_capture": vad_health.to_dict()},
+            )
         return self._success(
             status="healthy",
             text="Linux ALSA microphone health check passed.",
@@ -254,6 +363,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 "device_count": len(devices.data.get("devices", [])),
                 "selected_device": self.device or "",
                 "devices": devices.data.get("devices", []),
+                "voice_activity_capture": vad_health.to_dict(),
             },
         )
 
@@ -406,6 +516,121 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             },
         )
 
+    def record_until_silence(
+        self,
+        output_path: str | Path,
+        device: Optional[str] = None,
+        speech_start_rms: float = 200.0,
+        silence_rms: float = 120.0,
+        required_speech_frames: int = 3,
+        silence_seconds: float = 0.9,
+        speech_wait_timeout_seconds: float = 10.0,
+        maximum_utterance_seconds: float = 15.0,
+        pre_roll_seconds: float = 0.25,
+        frame_duration_ms: int = 20,
+        frame_read_timeout_seconds: float = 1.0,
+        cancel_requested: Optional[CancelCheck | Any] = None,
+        correlation_id: str = "",
+        session_id: str = "",
+    ) -> VoiceActivityCaptureResultV1:
+        """Capture one foreground utterance and trim terminal silence."""
+
+        self.record_count += 1
+        started_at = time.monotonic()
+        selected_device = self.device
+        try:
+            selected_device = (
+                _normalize_optional_device(device) if device is not None else self.device
+            )
+            if not self.started:
+                raise RuntimeError("microphone_not_started")
+            if self.sample_format.upper() != DEFAULT_ALSA_SAMPLE_FORMAT:
+                raise ValueError("voice_activity_capture_requires_s16_le")
+            arecord_path = self._find_arecord()
+            if not arecord_path:
+                raise FileNotFoundError("arecord_missing")
+            request = VoiceActivityCaptureRequestV1(
+                output_wav_path=str(Path(output_path).expanduser()),
+                microphone_device=selected_device or "",
+                sample_rate_hz=self.sample_rate_hz,
+                channels=self.channels,
+                sample_width_bytes=2,
+                frame_duration_ms=frame_duration_ms,
+                speech_start_rms=speech_start_rms,
+                silence_rms=silence_rms,
+                required_speech_frames=required_speech_frames,
+                silence_duration_seconds=silence_seconds,
+                speech_wait_timeout_seconds=speech_wait_timeout_seconds,
+                maximum_utterance_seconds=maximum_utterance_seconds,
+                pre_roll_seconds=pre_roll_seconds,
+                frame_read_timeout_seconds=frame_read_timeout_seconds,
+                correlation_id=correlation_id,
+                session_id=session_id,
+                metadata={
+                    "safe": True,
+                    "source": self.source,
+                    "hardware_specific": "linux_alsa",
+                    "background_listening": False,
+                },
+            )
+            validate_voice_activity_request(request)
+            command = self._stream_command(
+                arecord_path=arecord_path,
+                device=selected_device,
+            )
+            stream = self.stream_runner.start(command)
+            self._active_stream = stream
+            self.audio_hardware_accessed = True
+            result = self.voice_activity_capture.execute(
+                request,
+                stream,
+                cancel_requested=cancel_requested,
+            )
+            stream.close()
+            self._active_stream = None
+            return replace(
+                result,
+                data={
+                    **dict(result.data),
+                    "process": {
+                        "args": command,
+                        "shell": False,
+                        "stderr": _bounded_text(getattr(stream, "stderr", "")),
+                        "returncode": getattr(getattr(stream, "process", None), "returncode", None),
+                    },
+                },
+                metadata={
+                    **dict(result.metadata),
+                    "subprocess_shell": False,
+                    "speech_engine_accessed": False,
+                },
+            )
+        except (FileNotFoundError, OSError, RuntimeError, ValueError) as error:
+            return VoiceActivityCaptureResultV1(
+                success=False,
+                status=VAD_STATUS_DEVICE_ERROR,
+                selected_device=selected_device or "",
+                stop_reason=VAD_STATUS_DEVICE_ERROR,
+                processing_time_seconds=round(time.monotonic() - started_at, 6),
+                error_message=str(error)[:200],
+                correlation_id=correlation_id,
+                session_id=session_id,
+                metadata={
+                    "safe": True,
+                    "source": self.source,
+                    "subprocess_shell": False,
+                    "raw_audio_persisted_in_metadata": False,
+                },
+            )
+        finally:
+            stream = self._active_stream
+            self._active_stream = None
+            if stream is not None:
+                try:
+                    stream.close()
+                except (OSError, RuntimeError):
+                    pass
+
     def _find_arecord(self) -> str:
         found = self.runner.which(self.arecord_command)
         return str(found or "")
@@ -434,6 +659,28 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         if device:
             command.extend(["-D", device])
         command.append(str(wav_path))
+        return command
+
+    def _stream_command(
+        self,
+        arecord_path: str,
+        device: Optional[str],
+    ) -> List[str]:
+        command = [
+            arecord_path,
+            "-q",
+            "-f",
+            self.sample_format,
+            "-c",
+            str(self.channels),
+            "-r",
+            str(self.sample_rate_hz),
+            "-t",
+            "raw",
+        ]
+        if device:
+            command.extend(["-D", device])
+        command.append("-")
         return command
 
     def _success(

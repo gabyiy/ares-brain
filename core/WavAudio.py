@@ -9,6 +9,12 @@ import wave
 from core.Microphone import AudioChunk
 
 
+def analyze_pcm_audio(frame_data: bytes, sample_width_bytes: int = 2) -> Dict[str, Any]:
+    """Return bounded signal statistics for raw PCM without retaining samples."""
+
+    return _pcm_signal_stats(bytes(frame_data or b""), sample_width_bytes)
+
+
 def analyze_wav_audio(path: str | Path) -> Dict[str, Any]:
     wav_path = Path(path).expanduser()
     if not wav_path.exists():

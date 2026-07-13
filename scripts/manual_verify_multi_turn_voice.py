@@ -11,6 +11,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from core import (  # noqa: E402
+    CAPTURE_MODE_AUTO_STOP,
+    CAPTURE_MODE_FIXED_DURATION,
     DEFAULT_CONVERSATION_STOP_PHRASES,
     MultiTurnVoiceSession,
     MultiTurnVoiceSessionRequestV1,
@@ -18,7 +20,15 @@ from core import (  # noqa: E402
 from scripts.manual_verify_single_turn_voice import (  # noqa: E402
     DEFAULT_MICROPHONE_DEVICE,
     DEFAULT_PIPELINE_TIMEOUT,
+    DEFAULT_FRAME_MS,
+    DEFAULT_MAX_UTTERANCE_SECONDS,
+    DEFAULT_PRE_ROLL_SECONDS,
     DEFAULT_RECORD_SECONDS,
+    DEFAULT_REQUIRED_SPEECH_FRAMES,
+    DEFAULT_SILENCE_RMS,
+    DEFAULT_SILENCE_SECONDS,
+    DEFAULT_SPEECH_START_RMS,
+    DEFAULT_SPEECH_WAIT_TIMEOUT,
     DEFAULT_SPEAKER_DEVICE,
     DEFAULT_WHISPER_COMMAND,
     DEFAULT_WHISPER_MODEL,
@@ -47,6 +57,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--microphone-device", default=DEFAULT_MICROPHONE_DEVICE)
     parser.add_argument("--speaker-device", default=DEFAULT_SPEAKER_DEVICE)
     parser.add_argument("--record-seconds", type=int, default=DEFAULT_RECORD_SECONDS)
+    capture_mode = parser.add_mutually_exclusive_group()
+    capture_mode.add_argument(
+        "--auto-stop",
+        dest="capture_mode",
+        action="store_const",
+        const=CAPTURE_MODE_AUTO_STOP,
+    )
+    capture_mode.add_argument(
+        "--fixed-duration",
+        dest="capture_mode",
+        action="store_const",
+        const=CAPTURE_MODE_FIXED_DURATION,
+    )
+    parser.set_defaults(capture_mode=CAPTURE_MODE_FIXED_DURATION)
     parser.add_argument("--language", default="en")
     parser.add_argument("--whisper-command", default=DEFAULT_WHISPER_COMMAND)
     parser.add_argument("--whisper-model", default=DEFAULT_WHISPER_MODEL)
@@ -76,6 +100,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keep-audio", action="store_true")
     parser.add_argument("--timeout", type=float, default=DEFAULT_PIPELINE_TIMEOUT)
     parser.add_argument("--min-rms", type=float, default=0.0)
+    parser.add_argument("--speech-start-rms", type=float, default=DEFAULT_SPEECH_START_RMS)
+    parser.add_argument("--silence-rms", type=float, default=DEFAULT_SILENCE_RMS)
+    parser.add_argument("--silence-seconds", type=float, default=DEFAULT_SILENCE_SECONDS)
+    parser.add_argument(
+        "--speech-wait-timeout",
+        type=float,
+        default=DEFAULT_SPEECH_WAIT_TIMEOUT,
+    )
+    parser.add_argument(
+        "--max-utterance-seconds",
+        type=float,
+        default=DEFAULT_MAX_UTTERANCE_SECONDS,
+    )
+    parser.add_argument("--pre-roll-seconds", type=float, default=DEFAULT_PRE_ROLL_SECONDS)
+    parser.add_argument("--frame-ms", type=int, default=DEFAULT_FRAME_MS)
+    parser.add_argument(
+        "--required-speech-frames",
+        type=int,
+        default=DEFAULT_REQUIRED_SPEECH_FRAMES,
+    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--text-turn", action="append", default=[])
     parser.add_argument("--interactive-text", action="store_true")
@@ -97,6 +141,15 @@ def request_from_args(args: argparse.Namespace) -> MultiTurnVoiceSessionRequestV
         whisper_executable_path=str(_repo_path_or_command(args.whisper_command)),
         whisper_model_profile=str(_repo_path(args.whisper_model)),
         minimum_rms=args.min_rms,
+        capture_mode=args.capture_mode,
+        speech_start_rms=args.speech_start_rms,
+        silence_rms=args.silence_rms,
+        required_speech_frames=args.required_speech_frames,
+        silence_duration_seconds=args.silence_seconds,
+        speech_wait_timeout_seconds=args.speech_wait_timeout,
+        maximum_utterance_seconds=args.max_utterance_seconds,
+        pre_roll_seconds=args.pre_roll_seconds,
+        frame_duration_ms=args.frame_ms,
         tts_voice_profile=args.voice_profile,
         playback_enabled=bool(args.playback),
         maximum_turns=args.max_turns,
@@ -137,6 +190,12 @@ def run_manual_verification(
 
     output_func("Starting ARES conversation session")
     output_func(f"Maximum turns: {args.max_turns}")
+    if args.capture_mode == CAPTURE_MODE_AUTO_STOP:
+        output_func(
+            "Automatic end-of-speech capture: "
+            f"start_rms={args.speech_start_rms}, silence_rms={args.silence_rms}, "
+            f"silence_seconds={args.silence_seconds}, frame_ms={args.frame_ms}"
+        )
     request = request_from_args(args)
     output_func(f"Session ID: {request.session_id or '(assigned at start)'}")
 
@@ -185,6 +244,14 @@ def _progress_printer(output_func: Callable[[str], None]) -> Callable[[str, dict
             output_func(f"Recognized: {payload.get('recognized_text') or '(none)'}")
             if payload.get("response_text"):
                 output_func(f"ARES: {payload['response_text']}")
+            if payload.get("capture_mode") == CAPTURE_MODE_AUTO_STOP:
+                output_func(
+                    "Capture: "
+                    f"stop={payload.get('capture_stop_reason') or '(none)'}, "
+                    f"ambient_rms={float(payload.get('ambient_rms', 0.0)):.3f}, "
+                    f"speech_rms={float(payload.get('speech_rms', 0.0)):.3f}, "
+                    f"peak={int(payload.get('peak_amplitude', 0))}"
+                )
         elif event_type == "stop_phrase_detected":
             output_func(f"Stop phrase detected: {payload['matched_stop_phrase']}")
 

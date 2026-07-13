@@ -100,6 +100,38 @@ def test_manual_real_arguments_are_forwarded_to_versioned_request():
     assert request.timeout_seconds == 180
 
 
+def test_manual_auto_stop_arguments_are_forwarded_without_changing_intent_safety():
+    pipeline = StubPipeline(_success_result())
+
+    exit_code = manual.run_manual_verification(
+        [
+            "--auto-stop",
+            "--speech-start-rms", "220",
+            "--silence-rms", "110",
+            "--silence-seconds", "0.8",
+            "--speech-wait-timeout", "9",
+            "--max-utterance-seconds", "14",
+            "--pre-roll-seconds", "0.3",
+            "--frame-ms", "30",
+            "--required-speech-frames", "4",
+        ],
+        output_func=lambda text: None,
+        pipeline=pipeline,
+    )
+
+    request = pipeline.requests[0]
+    assert exit_code == 0
+    assert request.capture_mode == "auto_stop"
+    assert request.speech_start_rms == 220
+    assert request.silence_rms == 110
+    assert request.silence_duration_seconds == 0.8
+    assert request.speech_wait_timeout_seconds == 9
+    assert request.maximum_utterance_seconds == 14
+    assert request.pre_roll_seconds == 0.3
+    assert request.frame_duration_ms == 30
+    assert request.required_speech_frames == 4
+
+
 def test_manual_failure_returns_nonzero_and_prints_stage_reason():
     outputs = []
     pipeline = StubPipeline(
