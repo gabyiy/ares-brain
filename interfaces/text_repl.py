@@ -9,8 +9,7 @@ from core import get_global_conversation_context
 from core.intent_router import IntentRouter
 from events import EventHistoryStore, get_global_bus
 from memory import GoalsStore, MemoryStore, NotesStore, TasksStore, UserProfileStore
-from skills import SkillManager
-from skills.builtin import create_builtin_plugin
+from skills import create_builtin_skill_manager
 
 
 def record_conversation_turn(memory_store, user_message: str, response: str):
@@ -48,7 +47,7 @@ def main():
     tasks_store = TasksStore(event_bus=event_bus)
     event_history_store = EventHistoryStore()
     conversation_context = get_global_conversation_context()
-    skill_manager = SkillManager(
+    skill_manager = create_builtin_skill_manager(
         event_bus=event_bus,
         memory_store=memory_store,
         profile_store=profile_store,
@@ -58,7 +57,6 @@ def main():
         event_history_store=event_history_store,
         conversation_context=conversation_context,
     )
-    skill_manager.register_plugin(create_builtin_plugin())
     router = IntentRouter(event_bus=event_bus, skill_manager=skill_manager)
     awake = False
 

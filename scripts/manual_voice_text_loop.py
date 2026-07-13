@@ -16,8 +16,7 @@ from core import (  # noqa: E402
 )
 from events import get_global_bus  # noqa: E402
 from memory import GoalsStore, MemoryStore, NotesStore, TasksStore, UserProfileStore  # noqa: E402
-from skills import SkillManager  # noqa: E402
-from skills.builtin import create_builtin_plugin  # noqa: E402
+from skills import SkillManager, create_builtin_skill_manager  # noqa: E402
 
 
 WARNING = "WARNING: Voice City text simulation is text-only. No microphone or speaker will be used."
@@ -38,7 +37,7 @@ class TypedTextVoiceInput(NullVoiceInput):
 
 def create_skill_manager(event_bus=None) -> SkillManager:
     bus = event_bus or get_global_bus()
-    manager = SkillManager(
+    return create_builtin_skill_manager(
         event_bus=bus,
         memory_store=MemoryStore(event_bus=bus),
         profile_store=UserProfileStore(event_bus=bus),
@@ -47,8 +46,6 @@ def create_skill_manager(event_bus=None) -> SkillManager:
         tasks_store=TasksStore(event_bus=bus),
         conversation_context=get_global_conversation_context(),
     )
-    manager.register_plugin(create_builtin_plugin())
-    return manager
 
 
 def build_existing_text_handler(skill_manager: Optional[SkillManager] = None):

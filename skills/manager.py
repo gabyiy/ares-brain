@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from core.Confirmation import ConfirmationManager
 from core.ConversationContext import ConversationContextManager
@@ -102,6 +102,50 @@ class SkillManager:
         if isinstance(text, Intent):
             return text
         return self.intent_parser.parse(str(text or ""))
+
+    def candidate_diagnostics(
+        self,
+        text,
+        run_before_intents: Optional[bool] = None,
+    ) -> List[Dict[str, Any]]:
+        """Describe registered selection candidates without executing a skill."""
+
+        intent = self.parse_intent(text)
+        selector = self.registry.selector
+        diagnostics: List[Dict[str, Any]] = []
+        for skill in self.registry.all():
+            phase_matches = run_before_intents is None or (
+                bool(getattr(skill, "run_before_intents", False))
+                == run_before_intents
+            )
+            manifest = self.registry.manifest_registry.get_manifest(skill.name)
+            manifest_enabled = bool(manifest and manifest.enabled_by_default)
+            if phase_matches:
+                confidence, reason = selector.score(intent, skill)
+            else:
+                confidence, reason = 0.0, "selection_phase_mismatch"
+            eligible = bool(
+                phase_matches
+                and manifest_enabled
+                and confidence >= selector.min_confidence
+            )
+            if phase_matches and not manifest_enabled:
+                reason = "skill_manifest_disabled_or_missing"
+            diagnostics.append(
+                {
+                    "skill": skill.name,
+                    "considered": phase_matches,
+                    "eligible": eligible,
+                    "selected": False,
+                    "confidence": round(float(confidence), 6),
+                    "minimum_confidence": float(selector.min_confidence),
+                    "reason": reason,
+                    "manifest_registered": manifest is not None,
+                    "manifest_enabled": manifest_enabled,
+                    "capabilities": list(manifest.capabilities) if manifest else [],
+                }
+            )
+        return diagnostics
 
     def handle(
         self,

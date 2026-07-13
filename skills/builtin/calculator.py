@@ -39,6 +39,8 @@ class CalculatorSkill(Skill):
 
     _MAX_ABS_VALUE = 1_000_000_000_000
     _MAX_POWER_EXPONENT = 10
+    _MAX_INPUT_LENGTH = 512
+    _MAX_EXPRESSION_LENGTH = 256
     _BINARY_OPERATORS = {
         ast.Add: operator.add,
         ast.Sub: operator.sub,
@@ -97,6 +99,8 @@ class CalculatorSkill(Skill):
         raw = (text or "").strip().lower()
         if not raw:
             return None
+        if len(raw) > self._MAX_INPUT_LENGTH:
+            raise CalculatorError("the expression is too long")
 
         normalized = raw.strip(" ?!.")
         for pattern in self._LEADING_PHRASES:
@@ -110,6 +114,8 @@ class CalculatorSkill(Skill):
 
         if not normalized:
             return None
+        if len(normalized) > self._MAX_EXPRESSION_LENGTH:
+            raise CalculatorError("the expression is too long")
 
         if not self._has_allowed_characters(normalized):
             if self._has_calculator_intent(text):

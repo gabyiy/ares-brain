@@ -42,6 +42,7 @@ def test_manual_script_import_is_safe_and_defaults_are_hardware_specific_only_as
     assert args.speaker_device == "plughw:CARD=Device,DEV=0"
     assert args.whisper_model == "models/whisper/ggml-tiny.en.bin"
     assert args.playback is False
+    assert args.diagnostic_routing is False
 
 
 def test_manual_text_simulation_builds_request_and_prints_concise_summary():
@@ -64,6 +65,52 @@ def test_manual_text_simulation_builds_request_and_prints_concise_summary():
     assert "ARES response: The local time is 10:00." in outputs
     assert "Final status: completed" in outputs
     assert not any("{'" in line for line in outputs)
+
+
+def test_diagnostic_routing_flag_prints_bounded_structured_report():
+    outputs = []
+    pipeline = StubPipeline(
+        SingleTurnVoiceResultV1(
+            success=True,
+            status="completed",
+            raw_transcript="Calculate 2 plus 2.",
+            cleaned_transcript="Calculate 2 plus 2",
+            normalized_command="calculate 2 + 2",
+            detected_intent="calculate",
+            candidate_skills=[
+                {
+                    "skill": "calculator",
+                    "considered": True,
+                    "eligible": True,
+                    "selected": True,
+                    "confidence": 1.0,
+                    "reason": "structured intent match: calculate",
+                }
+            ],
+            routed_skill="calculator",
+            planner_decision="1 step(s): calculator",
+            execution_result="success",
+            brain_text_response="Result: 4",
+        )
+    )
+
+    exit_code = manual.run_manual_verification(
+        ["--text-input", "Calculate 2 plus 2.", "--diagnostic-routing"],
+        output_func=outputs.append,
+        pipeline=pipeline,
+    )
+
+    assert exit_code == 0
+    assert "Routing diagnostics" in outputs
+    assert "Raw transcript: Calculate 2 plus 2." in outputs
+    assert "Cleaned transcript: Calculate 2 plus 2" in outputs
+    assert "Normalized command: calculate 2 + 2" in outputs
+    assert "Parsed intent: calculate" in outputs
+    assert "Candidate skills: calculator (confidence=1.000, selected)" in outputs
+    assert "Selected skill: calculator" in outputs
+    assert "Planner decision: 1 step(s): calculator" in outputs
+    assert "Execution result: success" in outputs
+    assert "Rejection reason: (none)" in outputs
 
 
 def test_manual_real_arguments_are_forwarded_to_versioned_request():
@@ -191,8 +238,13 @@ def test_manual_script_has_no_subprocess_or_hardware_command_execution_logic():
 
 def test_existing_brain_handler_returns_safe_local_unknown_response():
     class UnknownManager:
+        last_plan = None
+
         def parse_intent(self, text):
             return Intent("unknown", 0.0, {}, text)
+
+        def candidate_diagnostics(self, text, run_before_intents=True):
+            return []
 
         def handle(self, text, run_before_intents=True):
             return None

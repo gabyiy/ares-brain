@@ -51,14 +51,26 @@ _NUMBER_WORDS = frozenset((*_UNITS, *_TEENS, *_TENS, "hundred", "thousand", "and
 _OPERATORS = {"plus": "+", "add": "+", "minus": "-", "subtract": "-", "times": "*"}
 _SYMBOLS = frozenset({"+", "-", "*", "/", "(", ")"})
 _WRAPPERS = (
+    "could you please calculate",
+    "can you please calculate",
+    "could you calculate",
     "can you calculate",
     "please calculate",
+    "could you work out",
+    "can you work out",
+    "please work out",
     "tell me what is",
     "tell me what",
     "how much is",
+    "what's",
     "what is",
+    "work out",
     "calculate",
     "compute",
+    "could you",
+    "can you",
+    "tell me",
+    "please",
 )
 _MULTIWORD_REPLACEMENTS = (
     (r"\bmultiplied\s+by\b", " * "),
@@ -69,6 +81,8 @@ _MULTIWORD_REPLACEMENTS = (
 )
 _TOKEN_PATTERN = re.compile(r"\d+(?:\.\d+)?|[a-z]+|[()+*/-]")
 _SAFE_ARITHMETIC_SOURCE = re.compile(r"^[a-z0-9\s()+*/.\-]+$")
+MAX_TRANSCRIPT_LENGTH = 1024
+MAX_ARITHMETIC_SOURCE_LENGTH = 256
 
 
 class TranscriptNormalizer:
@@ -91,6 +105,18 @@ class TranscriptNormalizer:
 
         raw = str(request.raw_transcript or "")
         cleaned_base = _clean_text(raw)
+        if len(cleaned_base) > MAX_TRANSCRIPT_LENGTH:
+            return self._failure(request, "transcript_too_long")
+        if (
+            _is_arithmetic_candidate(cleaned_base)
+            and len(cleaned_base) > MAX_ARITHMETIC_SOURCE_LENGTH
+        ):
+            return self._failure(
+                request,
+                "arithmetic_expression_too_long",
+                cleaned_transcript=cleaned_base,
+                arithmetic_candidate=True,
+            )
         cleaned, detected, removed, cleanup_rule = _collapse_repetition_loops(
             cleaned_base,
             int(request.repetition_limit),
@@ -234,7 +260,14 @@ def _collapse_repetition_loops(text: str, repetition_limit: int) -> Tuple[str, b
 
 def _is_arithmetic_candidate(text: str) -> bool:
     lowered = text.lower()
-    explicit_wrappers = ("calculate", "compute", "please calculate", "can you calculate")
+    explicit_wrappers = (
+        "calculate",
+        "compute",
+        "work out",
+        "please calculate",
+        "can you calculate",
+        "could you calculate",
+    )
     if any(
         lowered == wrapper or lowered.startswith(f"{wrapper} ")
         for wrapper in explicit_wrappers
@@ -252,13 +285,11 @@ def _is_arithmetic_candidate(text: str) -> bool:
 
 def _spoken_arithmetic_expression(text: str) -> Tuple[str, str]:
     source = text.casefold()
-    for wrapper in _WRAPPERS:
-        if source == wrapper:
-            source = ""
+    for _ in range(2):
+        stripped = _strip_wrapper(source)
+        if stripped == source:
             break
-        if source.startswith(f"{wrapper} "):
-            source = source[len(wrapper) :].strip()
-            break
+        source = stripped
     source = re.sub(r"^is\s+", "", source)
     for pattern, replacement in _MULTIWORD_REPLACEMENTS:
         source = re.sub(pattern, replacement, source)
@@ -268,9 +299,13 @@ def _spoken_arithmetic_expression(text: str) -> Tuple[str, str]:
     source = re.sub(r"\bover\b", " / ", source)
     source = " ".join(source.split())
 
+    if len(source) > MAX_ARITHMETIC_SOURCE_LENGTH:
+        return "", "arithmetic_expression_too_long"
     if not source or not _SAFE_ARITHMETIC_SOURCE.fullmatch(source):
         return "", "unsupported_arithmetic_text"
     tokens = _TOKEN_PATTERN.findall(source)
+    if _TOKEN_PATTERN.sub(" ", source).strip():
+        return "", "unsupported_arithmetic_text"
     if "".join(tokens).replace(".", "") == "":
         return "", "arithmetic_expression_required"
 
@@ -316,6 +351,18 @@ def _spoken_arithmetic_expression(text: str) -> Tuple[str, str]:
         return "", "incomplete_arithmetic_expression"
     expression = " ".join(output)
     return expression, ""
+
+
+def _strip_wrapper(source: str) -> str:
+    for wrapper in _WRAPPERS:
+        if source == wrapper:
+            return ""
+        if not source.startswith(wrapper):
+            continue
+        remainder = source[len(wrapper) :]
+        if remainder and (remainder[0].isspace() or remainder[0] in ",:;-"):
+            return remainder.lstrip(" ,:;-")
+    return source
 
 
 def _parse_number(tokens: List[str], start: int) -> Tuple[str, int, str]:

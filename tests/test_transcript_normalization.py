@@ -42,6 +42,31 @@ def test_spoken_arithmetic_is_normalized_strictly(spoken, normalized):
     assert result.arithmetic_candidate is True
 
 
+@pytest.mark.parametrize(
+    ("spoken", "normalized"),
+    [
+        ("Calculate 2 plus 2.", "calculate 2 + 2"),
+        ("What is 2 plus 2?", "calculate 2 + 2"),
+        ("Two plus two", "calculate 2 + 2"),
+        ("Please calculate 2 + 2", "calculate 2 + 2"),
+        ("Please, calculate two plus two!", "calculate 2 + 2"),
+        ("Could you calculate three times four?", "calculate 3 * 4"),
+        ("Can you work out ten divided by two?", "calculate 10 / 2"),
+        ("Tell me two over two.", "calculate 2 / 2"),
+        ("  CALCULATE   TWO   PLUS   TWO.  ", "calculate 2 + 2"),
+    ],
+)
+def test_whisper_style_calculator_variants_are_bounded_and_deterministic(
+    spoken,
+    normalized,
+):
+    result = normalize_transcript(spoken)
+
+    assert result.success is True
+    assert result.normalized_command == normalized
+    assert result.arithmetic_candidate is True
+
+
 def test_raw_cleaned_and_normalized_transcripts_are_preserved():
     result = normalize_transcript("  What is two plus two?!  ", correlation_id="corr-1")
 
@@ -75,6 +100,45 @@ def test_unsupported_or_unsafe_arithmetic_is_rejected(spoken):
     assert result.success is False
     assert result.normalized_command == ""
     assert result.rejection_reason
+
+
+@pytest.mark.parametrize(
+    "spoken",
+    [
+        "Tell me about two plus two in philosophy",
+        "calculate import os",
+        "calculate __import__('os')",
+        "calculate 2 plus",
+        "calculate hello plus two",
+        "calculate 2 *** 3",
+        "calculate 2 ^ 3",
+        "calculate result = 2 + 2",
+        "calculate C:/private/file + 2",
+        "calculate 2 + 2; shutdown now",
+        "calculate 2... + 2",
+    ],
+)
+def test_unsafe_or_ambiguous_voice_arithmetic_fails_closed(spoken):
+    result = normalize_transcript(spoken)
+
+    assert result.success is False
+    assert result.normalized_command == ""
+    assert result.rejection_reason
+
+
+def test_excessively_long_arithmetic_is_rejected_before_intent_routing():
+    result = normalize_transcript("calculate " + " + ".join(["1"] * 200))
+
+    assert result.success is False
+    assert result.rejection_reason == "arithmetic_expression_too_long"
+
+
+def test_repeated_non_arithmetic_whisper_nonsense_remains_unknown_text():
+    result = normalize_transcript("to... to... to...")
+
+    assert result.success is True
+    assert result.arithmetic_candidate is False
+    assert result.normalized_command == "to... to... to"
 
 
 def test_repeated_whisper_phrase_loop_is_collapsed_conservatively():

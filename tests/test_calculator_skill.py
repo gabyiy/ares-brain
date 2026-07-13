@@ -38,6 +38,12 @@ def test_calculator_rejects_unsafe_input():
     assert _calculate("2 ** 100") == "I cannot calculate that safely: power is too large."
 
 
+def test_calculator_rejects_excessively_long_direct_expression():
+    response = _calculate("calculate " + " + ".join(["1"] * 200))
+
+    assert response == "I cannot calculate that safely: the expression is too long."
+
+
 def test_tool_selector_selects_calculator_for_math_without_special_router_case():
     selection = ToolSelector().select(
         "what is 2 + 2",

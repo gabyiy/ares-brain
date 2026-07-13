@@ -328,6 +328,24 @@ class SingleTurnVoiceStageMixin:
         state.repetitions_removed = normalization.repetitions_removed
         state.transcript_cleanup_rule = normalization.cleanup_rule
         state.data["transcript_normalization"] = normalization.to_dict()
+        normalization_reason = normalization.rejection_reason if not normalization.success else ""
+        state.routing_diagnostics = {
+            "normalization": {
+                "success": normalization.success,
+                "arithmetic_candidate": normalization.arithmetic_candidate,
+                "repetition_detected": normalization.repetition_detected,
+                "repetitions_removed": normalization.repetitions_removed,
+                "cleanup_rule": normalization.cleanup_rule,
+                "reason": normalization_reason,
+            },
+            "stages": [
+                {
+                    "stage": "transcript_normalization",
+                    "success": normalization.success,
+                    "reason": normalization_reason,
+                }
+            ],
+        }
         if not normalization.success:
             state.rejection_reason = normalization.rejection_reason
             return self._failure(
@@ -589,7 +607,13 @@ class SingleTurnVoiceStageMixin:
         command_result = dict(routing.data.get("command_result") or {})
         handler_response = dict(command_result.get("handler_response") or {})
         handler_metadata = dict(handler_response.get("metadata") or {})
+        handler_diagnostics = dict(handler_metadata.get("routing_diagnostics") or {})
         state.detected_intent = str(handler_metadata.get("detected_intent") or "")
+        state.candidate_skills = [
+            dict(candidate)
+            for candidate in list(handler_metadata.get("candidate_skills") or [])
+            if isinstance(candidate, dict)
+        ]
         state.routed_skill = str(handler_response.get("skill") or "")
         plan = handler_metadata.get("plan")
         execution = handler_metadata.get("execution")
@@ -602,13 +626,54 @@ class SingleTurnVoiceStageMixin:
                 else str(plan.get("status") or "no executable steps")
             )
         if isinstance(execution, dict):
-            state.execution_result = str(execution.get("status") or "completed")
+            state.execution_result = "success" if execution.get("success") else str(
+                execution.get("error_message") or "failed"
+            )
+        if handler_diagnostics:
+            state.planner_decision = str(
+                handler_diagnostics.get("planner_decision") or state.planner_decision
+            )
+            state.execution_result = str(
+                handler_diagnostics.get("execution_result") or state.execution_result
+            )
+            state.rejection_reason = str(
+                handler_diagnostics.get("rejection_reason") or state.rejection_reason
+            )
+            normalization_stages = list(state.routing_diagnostics.get("stages") or [])
+            handler_stages = [
+                dict(stage)
+                for stage in list(handler_diagnostics.get("stages") or [])
+                if isinstance(stage, dict)
+            ]
+            state.routing_diagnostics = {
+                **dict(state.routing_diagnostics),
+                **handler_diagnostics,
+                "stages": normalization_stages + handler_stages,
+            }
         if state.detected_intent == "unknown" or state.routed_skill == "unknown":
             state.rejection_reason = str(
                 handler_metadata.get("rejection_reason")
+                or state.rejection_reason
                 or "no registered skill matched normalized command"
             )
+        if not routing.success:
+            routing_reason = str(routing.error_message or routing.status or "voice_route_failed")
+            state.rejection_reason = state.rejection_reason or routing_reason
+            stages = list(state.routing_diagnostics.get("stages") or [])
+            stages.append(
+                {
+                    "stage": "voice_command_router",
+                    "success": False,
+                    "reason": routing_reason,
+                }
+            )
+            state.routing_diagnostics = {
+                **dict(state.routing_diagnostics),
+                "rejection_reason": state.rejection_reason,
+                "stages": stages,
+            }
         state.data["brain_routing"] = routing.to_dict()
+        state.data["routing_diagnostics"] = dict(state.routing_diagnostics)
         if routing.success and routing.response_text.strip():
             state.brain_text_response = routing.response_text.strip()
             return

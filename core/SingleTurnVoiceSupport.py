@@ -132,10 +132,12 @@ class SingleTurnRunState:
     transcription_processing_time_seconds: float = 0.0
     brain_execution_status: str = "not_started"
     detected_intent: str = ""
+    candidate_skills: List[Dict[str, Any]] = field(default_factory=list)
     routed_skill: str = ""
     planner_decision: str = ""
     execution_result: str = ""
     rejection_reason: str = ""
+    routing_diagnostics: Dict[str, Any] = field(default_factory=dict)
     brain_text_response: str = ""
     brain_fallback_used: bool = False
     tts_status: str = "not_started"
