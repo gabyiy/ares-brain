@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.84 - Safe Natural-Language Calculator Extraction
+ARES v1.85 - Format-Safe Raspberry Pi Voice Capture
 
 ---
 
@@ -539,7 +539,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 1058 tests across current core modules
+- Pytest automated coverage for 1079 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -558,7 +558,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1058 tests`.
+Current pytest collection: `1079 tests`.
 
 Manual Calculator Launch Verification
 
@@ -786,12 +786,16 @@ Voice Activity Detection Calibration
 
 Automatic end-of-speech capture uses 16 kHz mono 16-bit PCM in 20 ms frames. Adaptive calibration defaults to `0.75` seconds. Quiet-room lower bounds are start RMS `200`, continue RMS `140`, and silence RMS `80`; configured upper bounds are `1200`, `900`, and `600`. Three consecutive start frames and three consecutive continue frames suppress isolated noise, five low frames confirm silence, the hangover is `0.9` seconds, the speech wait is `10` seconds, maximum utterance is `15` seconds, and pre-roll is `0.25` seconds. These are bounded starting values, not Raspberry Pi hardware measurements.
 
+The Raspberry Pi USB microphone exposed a format mismatch that the old raw-stream path could not detect: `hw:2,0` accepted a requested 16 kHz rate but reported and produced 44.1 kHz PCM. The old auto-stop path framed those headerless bytes as if they were 16 kHz, so VAD timing and WAV metadata were wrong before Whisper. The production default is now `plughw:2,0`; numeric raw `hw:C,D` identifiers are resolved to `plughw:C,D` only when streaming VAD requires ALSA conversion. Fixed-duration capture may retain an explicitly requested raw device, but it reads the actual WAV header and normalizes that WAV before downstream use.
+
+`core.WavAudio` is the canonical audio boundary. It validates uncompressed RIFF/WAV input, rejects missing, empty, malformed, truncated, or unsupported audio, downmixes supported PCM to mono, resamples supported rates to 16 kHz, converts to signed 16-bit little-endian PCM, writes atomically, and validates the final header. VAD accepts only canonical PCM, and `SingleTurnVoicePipeline` reopens the finalized canonical WAV rather than trusting requested settings or an adapter's stale chunk metadata. Whisper receives only `final_whisper_input_path`.
+
 Pull the checkpoint and run one owner-triggered calibration capture:
 
 ```bash
-git pull origin main
+git pull --ff-only origin main
 python scripts/manual_verify_voice_activity_capture.py \
-  --microphone-device hw:2,0 \
+  --microphone-device plughw:2,0 \
   --auto-calibration \
   --calibration-seconds 0.75 \
   --speech-start-rms 200 \
@@ -805,11 +809,12 @@ python scripts/manual_verify_voice_activity_capture.py \
   --max-utterance-seconds 15 \
   --pre-roll-seconds 0.25 \
   --frame-ms 20 \
+  --diagnostic-audio \
   --frame-debug \
   --verbose
 ```
 
-The calibration script prints the exact argument-list `arecord` command, ambient mean/median/p90/peak/noise-floor RMS, speech RMS, peak amplitude, derived thresholds, bounded state transitions, captured duration, and final stop reason. By default it runs no Whisper, Brain, TTS, or speaker playback. Add `--transcribe` to run the local Whisper adapter or `--transcribe --route` to route normalized text through the existing Brain path. Auto-stop sends only the validated trimmed WAV to Whisper; no-speech and invalid-audio outcomes stop before downstream execution.
+The calibration script prints the requested and resolved devices, requested and actual capture format, canonical format, distinct raw/normalized paths, both durations, final Whisper input, exact argument-list `arecord` command, ambient mean/median/p90/peak/noise-floor RMS, speech RMS, peak amplitude, derived thresholds, bounded state transitions, and final stop reason. `--diagnostic-audio` retains the pre-VAD capture and trimmed canonical WAV; without it, raw diagnostic audio is not retained. By default the script runs no Whisper, Brain, TTS, or speaker playback. Add `--transcribe` for local Whisper or `--transcribe --route` for the existing Brain path. No-speech and invalid-audio outcomes stop before downstream execution.
 
 Routing examples after deterministic normalization:
 
@@ -827,7 +832,7 @@ The owner-run single-turn command records once, stops capture, validates the WAV
 Pull and run a hardware-free text simulation through the real Brain path:
 
 ```bash
-git pull origin main
+git pull --ff-only origin main
 python scripts/manual_verify_single_turn_voice.py \
   --text-input "calculate 2 + 2"
 ```
@@ -836,7 +841,7 @@ Run one real Raspberry Pi turn with automatic end-of-speech capture, the stronge
 
 ```bash
 python scripts/manual_verify_single_turn_voice.py \
-  --microphone-device hw:2,0 \
+  --microphone-device plughw:2,0 \
   --speaker-device plughw:CARD=Device,DEV=0 \
   --auto-stop \
   --auto-calibration \
@@ -853,6 +858,7 @@ python scripts/manual_verify_single_turn_voice.py \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --whisper-model models/whisper/ggml-base.en.bin \
   --voice-profile en_US-hfc_male-medium \
+  --diagnostic-audio \
   --diagnostic-routing \
   --timeout 300 \
   --playback
@@ -907,7 +913,7 @@ Run the real owner-triggered Raspberry Pi session with explicit playback:
 
 ```bash
 python scripts/manual_verify_multi_turn_voice.py \
-  --microphone-device hw:2,0 \
+  --microphone-device plughw:2,0 \
   --speaker-device plughw:CARD=Device,DEV=0 \
   --auto-stop \
   --auto-calibration \
@@ -924,6 +930,7 @@ python scripts/manual_verify_multi_turn_voice.py \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --whisper-model models/whisper/ggml-base.en.bin \
   --voice-profile en_US-hfc_male-medium \
+  --diagnostic-audio \
   --playback \
   --max-turns 5 \
   --max-session-seconds 180 \
@@ -1996,22 +2003,31 @@ Phase 80
 - Added the `calculator_natural_language_wrapper` diagnostic rule and exposed it in `--diagnostic-routing`
 - Preserved one-expression-only parsing and unchanged CalculatorSkill AST validation
 - Added production-factory acceptance and rejection coverage for polite forms, contractions, vocatives, ambiguity, multiple expressions, and injection-like text
-- Current pytest collection is 1058 tests
+- Historical checkpoint collection was 1058 tests
 
-Phase 80
+Phase 81
+
+- Format-safe Raspberry Pi microphone capture
+- Production auto-stop resolves numeric raw ALSA devices through `plughw` conversion before VAD
+- Fixed-duration capture reads the actual WAV header and normalizes supported PCM rates/channels/widths
+- VAD and Whisper consume only validated 16 kHz mono signed 16-bit PCM
+- `--diagnostic-audio` retains distinct pre-VAD/raw and final normalized WAVs with bounded format diagnostics
+- Current pytest collection is 1079 tests
+
+Phase 82
 
 - Future voice expansion only after separate approval
 - Wake word
 - Bounded background-listening design
 
-Phase 81
+Phase 83
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 82
+Phase 84
 
 - Robotics
 - ROS2

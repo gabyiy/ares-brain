@@ -649,6 +649,29 @@ This fixes the prior failure mode where every frame above one static silence thr
 
 `SingleTurnVoicePipeline` selects calibrated `auto_stop`, calibration-disabled manual thresholds, or the preserved `fixed_duration` path through its existing request contract. No-speech or invalid-audio results stop before Whisper, Brain, Piper, and speaker execution. The bounded multi-turn session propagates the same capture settings per turn and applies its existing recoverable no-speech policy. `VoiceStageCoordinator` continues to enforce microphone/speaker and Whisper/Piper mutual exclusion.
 
+# Canonical Linux Audio Capture Boundary
+
+Real Raspberry Pi testing proved that a raw ALSA hardware device can accept a requested rate without supplying that rate. In the observed case, `hw:2,0` was requested at 16 kHz but `arecord` reported and wrote 44.1 kHz. The previous headerless streaming path sized 20 ms frames from the requested 16 kHz value, reinterpreted 44.1 kHz bytes at the wrong timing, and then labeled the output WAV as 16 kHz. That corrupted VAD timing and degraded Whisper input even though direct hardware recordings were clear.
+
+The corrected boundary is:
+
+```text
+requested ALSA device
+  -> resolve raw numeric hw:C,D to plughw:C,D for streaming VAD
+  -> request S16_LE / mono / 16000 from ALSA plug conversion
+  -> canonical PCM frames only
+  -> RmsVoiceActivityCapture
+  -> atomically finalized canonical WAV
+  -> reopen and validate actual header
+  -> Whisper
+```
+
+Fixed-duration capture retains explicit raw-device configurability. It records to a unique raw WAV, reads that file's actual header, validates complete PCM data, downmixes supported channel layouts, converts supported PCM widths, resamples supported rates to 16 kHz, and atomically writes a separate canonical WAV. It never reinterprets source bytes at a different rate. Normal production defaults use `plughw:2,0` for the verified card 2/device 0 microphone and `plughw:CARD=Device,DEV=0` for speaker output.
+
+The canonical contract is 16 kHz, mono, signed 16-bit little-endian PCM in a valid RIFF/WAV envelope. `core.WavAudio` owns normalization and header validation. `LinuxAlsaMicrophoneAdapter` owns ALSA resolution and subprocesses. VAD accepts only canonical PCM, while `SingleTurnVoicePipeline` reopens the finalized normalized path and refuses noncanonical adapter output before Whisper. Brain, CoreService, SkillManager, IntentParser, Planner, ExecutionPipeline, and skills do not know ALSA devices, source rates, resampling details, or diagnostic paths.
+
+Format diagnostics remain structured on the V1 capture/result boundary: requested and resolved device, requested rate, actual source rate/channels/width, canonical rate/channels/width, raw and normalized paths/durations, and final Whisper input path. `--diagnostic-audio` explicitly retains distinct raw/pre-VAD and final normalized WAVs. Normal operation does not retain the raw diagnostic capture. Unique temporary names, closed WAV writers, canonical revalidation, cancellation, lifecycle/resource gates, and microphone/speaker mutual exclusion remain mandatory.
+
 # Transcript Normalization and Voice Calculator Routing
 
 `core.TranscriptNormalization` owns deterministic STT cleanup before `VoiceCommandRouter`. The Brain, IntentParser, Planner, and CalculatorSkill remain unaware of Whisper formatting and model output.
@@ -670,7 +693,7 @@ Adjacent phrase blocks are collapsed only when they repeat beyond the configured
 
 Natural-language calculator extraction is an anchored operation inside the same normalizer. The real Raspberry Pi transcript `I'll calculate 2 plus 2.` previously failed because arithmetic-candidate detection ran, but `I'll calculate` was not an approved removable prefix; the apostrophe and words then violated the arithmetic-source grammar. The V1 extractor now accepts only registered leading forms: direct calculator actions (`calculate`, `compute`, `solve`, `work out`), bounded polite action requests (`please`, `can/could/would you`), question forms (`what is`, `what's`, `how much is`), `tell me what ... is`, `I'll/I will calculate`, and an optional leading `Ares` vocative. Matching is case-insensitive after Unicode normalization and requires a word or punctuation boundary.
 
-The extractor never removes arbitrary middle words. Only `tell me what <expression> is` may remove one exact trailing `is`. The remainder must be one complete supported arithmetic expression. Additional commands, a second expression, identifiers, imports, function calls, attributes, assignments, paths, shell syntax, malformed operators, or unsupported words fail before routing. Successful or rejected wrapper extraction records `calculator_natural_language_wrapper`; repetition cleanup and wrapper extraction may both be represented. CalculatorSkill remains the sole arithmetic executor and its AST safety policy is unchanged.
+The extractor never removes arbitrary middle words. Only `tell me what <expression> is` may remove one exact trailing `is`. The anchored `I want you to calculate <expression>` form is also supported. The remainder must be one complete supported arithmetic expression. Additional commands, a second expression, identifiers, imports, function calls, attributes, assignments, paths, shell syntax, malformed operators, or unsupported words fail before routing. Successful or rejected wrapper extraction records `calculator_natural_language_wrapper`; repetition cleanup and wrapper extraction may both be represented. CalculatorSkill remains the sole arithmetic executor and its AST safety policy is unchanged.
 
 ## Production Calculator Routing Boundary
 
@@ -697,7 +720,7 @@ Normalization uses finite wrappers, complete token consumption, a 1024-character
 
 The Linux ALSA manifest explicitly provides `voice.capture.activity`, consumes and produces the V1 VAD contracts, declares one task slot and a small logical resource reservation, and remains disabled by default. Fixed-duration capture remains available as an explicit fallback. No wake word, background listener, persistent transcript, GPT, cloud service, or autonomous capture was added.
 
-The original VAD checkpoint collection was 912 tests. Adaptive calibration checkpoint collection was 959 tests. Production-registry routing checkpoint collection was 1002 tests. Current natural-language calculator extraction collection: 1058 tests.
+The original VAD checkpoint collection was 912 tests. Adaptive calibration checkpoint collection was 959 tests. Production-registry routing checkpoint collection was 1002 tests. Natural-language calculator extraction checkpoint collection was 1058 tests. Current format-safe capture collection: 1079 tests.
 
 # Architecture Hardening Checkpoint
 

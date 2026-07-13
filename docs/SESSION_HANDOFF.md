@@ -4,13 +4,13 @@ Last Updated: 2026-07-13
 
 Current Version
 
-ARES v1.84 - Safe Natural-Language Calculator Extraction
+ARES v1.85 - Format-Safe Raspberry Pi Voice Capture
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, and production-factory-verified natural-language calculator routing.
+ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, canonical 16 kHz mono PCM normalization, and production-factory-verified natural-language calculator routing.
 
 Checkpoint root causes and fixes:
 
@@ -21,6 +21,8 @@ Checkpoint root causes and fixes:
 - The next real Raspberry Pi run produced `I'll calculate 2 plus 2.` and failed at transcript normalization. Candidate detection saw arithmetic, but `I'll calculate` was not an approved removable prefix, so its apostrophe and letters correctly triggered `unsupported_arithmetic_text`.
 - The shared normalizer now applies one anchored `calculator_natural_language_wrapper` registry and permits only a finite set of direct, polite, question, first-person, `Ares`, and `tell me what ... is` forms. It never removes arbitrary middle words and leaves CalculatorSkill validation unchanged.
 - Windows CI verifies this extraction checkpoint with injected hardware adapters and does not claim the final post-pull Raspberry Pi calculator response.
+- Real ALSA diagnostics then proved `hw:2,0` did not honor a requested 16 kHz rate: it supplied 44.1 kHz. The old headerless VAD stream nevertheless used 16 kHz frame sizes and WAV metadata, which explains growling, repetition, and unstable end-of-speech/routing despite clear direct recordings.
+- Auto-stop now resolves numeric raw devices through `plughw`, fixed capture reads the actual WAV header, and both routes enforce one centralized 16 kHz mono signed 16-bit PCM boundary before VAD/Whisper. No raw PCM bytes are relabeled at another rate.
 
 Confirmed Phase 3 foundation:
 
@@ -84,11 +86,14 @@ Confirmed Phase 3 foundation:
 - Production-factory integration through the real registered CalculatorSkill
 - Versioned candidate-skill and per-stage routing diagnostics plus `--diagnostic-routing`
 - Anchored natural-language calculator wrapper extraction with one-expression-only safety
+- ALSA raw-device resolution to `plughw` for canonical streaming capture
+- Actual-header WAV normalization before VAD/Whisper with atomic finalization
+- Distinct raw/final diagnostics through owner-requested `--diagnostic-audio`
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1058 tests.
+Current pytest collection: 1079 tests.
 
-The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, and the bounded multi-turn session. Adaptive calibration remains inside the VAD boundary; transcript normalization and routing diagnostics remain between STT and `VoiceCommandRouter`/SkillManager. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, VAD, Whisper, Piper, or normalization internals. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
+The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, centralized canonical WAV conversion through `core.WavAudio`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, and the bounded multi-turn session. Adaptive calibration remains inside the VAD boundary; transcript normalization and routing diagnostics remain between STT and `VoiceCommandRouter`/SkillManager. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, conversion, VAD, Whisper, Piper, or normalization internals. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
 
 `skills.VoiceSessionSkill` now starts a bounded mock voice session from text commands: "start voice session", "start mock voice", and "run voice test". It uses only `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop`, returns a transcript summary, and is wired through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path.
 
@@ -367,10 +372,10 @@ Single-turn behavior:
 Exact commands:
 
 ```bash
-git pull origin main
+git pull --ff-only origin main
 python scripts/manual_verify_single_turn_voice.py --text-input "calculate 2 + 2"
 python scripts/manual_verify_single_turn_voice.py \
-  --microphone-device hw:2,0 \
+  --microphone-device plughw:2,0 \
   --speaker-device plughw:CARD=Device,DEV=0 \
   --auto-stop \
   --auto-calibration \
@@ -387,6 +392,7 @@ python scripts/manual_verify_single_turn_voice.py \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --whisper-model models/whisper/ggml-base.en.bin \
   --voice-profile en_US-hfc_male-medium \
+  --diagnostic-audio \
   --diagnostic-routing \
   --timeout 300 \
   --playback
@@ -416,7 +422,7 @@ Session behavior:
 Exact bounded-session commands:
 
 ```bash
-git pull origin main
+git pull --ff-only origin main
 python scripts/manual_verify_multi_turn_voice.py \
   --text-turn "calculate 2 + 2" \
   --text-turn "goodbye Ares" \
@@ -431,7 +437,7 @@ python scripts/manual_verify_multi_turn_voice.py \
   --no-closing-phrase
 
 python scripts/manual_verify_multi_turn_voice.py \
-  --microphone-device hw:2,0 \
+  --microphone-device plughw:2,0 \
   --speaker-device plughw:CARD=Device,DEV=0 \
   --auto-stop \
   --auto-calibration \
@@ -448,6 +454,7 @@ python scripts/manual_verify_multi_turn_voice.py \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --whisper-model models/whisper/ggml-base.en.bin \
   --voice-profile en_US-hfc_male-medium \
+  --diagnostic-audio \
   --playback \
   --max-turns 5 \
   --max-session-seconds 180 \
@@ -481,9 +488,9 @@ Capture behavior:
 Exact Raspberry Pi threshold-calibration command:
 
 ```bash
-git pull origin main
+git pull --ff-only origin main
 python scripts/manual_verify_voice_activity_capture.py \
-  --microphone-device hw:2,0 \
+  --microphone-device plughw:2,0 \
   --auto-calibration \
   --calibration-seconds 0.75 \
   --speech-start-rms 200 \
@@ -497,6 +504,7 @@ python scripts/manual_verify_voice_activity_capture.py \
   --max-utterance-seconds 15 \
   --pre-roll-seconds 0.25 \
   --frame-ms 20 \
+  --diagnostic-audio \
   --frame-debug \
   --verbose
 ```
@@ -2080,11 +2088,11 @@ Text REPL
 
 Immediate Next Milestone
 
-Calibrate the new RMS thresholds on the verified Raspberry Pi microphone, then run the auto-stop single-turn and bounded multi-turn commands and record segmentation/timing/cleanup results. Fix only real integration defects found by those explicit tests. Do not add wake words, background listening, or an unbounded conversation service without separate approval.
+Pull the format-safe capture checkpoint on Raspberry Pi, run calibration with `plughw:2,0` and `--diagnostic-audio`, then confirm the reported actual and final formats are canonical before testing the calculator turn. Record only observed format, segmentation, timing, transcript, routing, and cleanup results. Do not add wake words, background listening, or an unbounded conversation service without separate approval.
 
 Next technical choices:
 
-- Pull latest `main`, run `scripts/manual_verify_voice_activity_capture.py`, then run the single-turn and multi-turn scripts with `--auto-stop`, `hw:2,0`, `plughw:CARD=Device,DEV=0`, `ggml-base.en.bin`, the configured male profile, explicit playback, and the documented limits.
+- Pull latest `main`, run `scripts/manual_verify_voice_activity_capture.py`, then run the single-turn and multi-turn scripts with `--auto-stop`, `plughw:2,0`, `plughw:CARD=Device,DEV=0`, `ggml-base.en.bin`, `--diagnostic-audio`, the configured male profile, explicit playback, and the documented limits.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
 - Measure bounded turns on real hardware and tune thresholds only from observed results.
 - Only later add wake-word/background listening.
@@ -2104,22 +2112,23 @@ Future Roadmap
 5. Raspberry Pi USB capture, end-of-speech, and base English Whisper transcription verified by owner
 6. Production voice calculator routing hardening completed in CI
 7. Anchored natural-language calculator wrapper extraction completed in CI
-8. Pull and verify `I'll calculate 2 plus 2.` with `--diagnostic-routing` on Raspberry Pi
-9. Only later add wake-word/background listening
-10. GPT fallback integration
-11. Raspberry Pi deployment
-12. Robot body / sensors
-13. Vision
-14. Robotics
-15. Jetson Orin migration
-16. Autonomous ARES
+8. Canonical ALSA/WAV normalization before VAD and Whisper completed in CI
+9. Pull and verify `calculate two plus two` with `--diagnostic-audio --diagnostic-routing` on Raspberry Pi
+10. Only later add wake-word/background listening
+11. GPT fallback integration
+12. Raspberry Pi deployment
+13. Robot body / sensors
+14. Vision
+15. Robotics
+16. Jetson Orin migration
+17. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1058 tests.
+- Current pytest collection: 1079 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2186,6 +2195,7 @@ Verification Notes
 
 Latest Commits
 
+- `e8a881b` Normalize ALSA capture before voice processing
 - `419cb7d` Support safe natural-language calculator wrappers
 - `40255ad` Document production voice calculator routing
 - `45cfb9c` Harden production voice calculator routing

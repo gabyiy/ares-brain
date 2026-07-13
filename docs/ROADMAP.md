@@ -1021,11 +1021,21 @@ Phase 80: Safe Natural-Language Calculator Extraction
 - Ambiguous requests, trailing commands, multiple expressions, identifiers, imports, calls, assignments, paths, shell syntax, and unsupported operators fail before IntentParser.
 - Successful and rejected extraction records `calculator_natural_language_wrapper`; diagnostic mode renders that rule with raw, cleaned, normalized, intent, candidate, planner, execution, and rejection fields.
 - Production-factory integration proves `I'll calculate 2 plus 2.` and `What is two plus two?` reach the registered CalculatorSkill and return `Result: 4` with no unknown fallback.
-- Current pytest collection is 1058 tests.
+- Historical checkpoint collection was 1058 tests.
+
+Phase 81: Format-Safe Raspberry Pi Microphone Capture
+
+- Root cause confirmed from Raspberry Pi ALSA output: raw `hw:2,0` accepted a 16 kHz request but supplied 44.1 kHz, while the old headerless VAD stream assumed the request had been honored.
+- Production auto-stop resolves raw numeric hardware IDs to ALSA `plughw` conversion and requests canonical 16 kHz mono signed 16-bit PCM before framing or RMS analysis.
+- Fixed-duration capture reads the actual WAV header and uses the centralized `core.WavAudio` boundary to downmix/resample supported PCM into a separately finalized canonical WAV.
+- VAD and Whisper reject noncanonical, missing, empty, corrupt, truncated, or unsupported WAV input instead of reinterpreting bytes.
+- Single-turn and bounded multi-turn requests propagate explicit `diagnostic_audio`; owner scripts expose `--diagnostic-audio` and report raw/final paths plus requested, actual, and canonical formats.
+- The fixed-duration fallback remains available, microphone monitoring remains disabled, and Brain/CoreService remain free of ALSA/resampling code.
+- Current pytest collection is 1079 tests.
 
 Current State
 
-ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, shared production skill registration, and safe anchored natural-language calculator routing. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control.
+ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, a canonical 16 kHz mono PCM normalization boundary, shared production skill registration, and safe anchored natural-language calculator routing. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control.
 
 The current active interface is:
 
@@ -1040,7 +1050,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1058 tests.
+The current pytest collection is 1079 tests.
 
 The current memory paths are:
 
@@ -1094,9 +1104,11 @@ Phase 3 Real Voice Integration
 13. Validate clear USB capture, `completed_after_silence`, and base English Whisper transcription on Raspberry Pi. Completed by owner.
 14. Centralize production skill registration and add bounded routing diagnostics. Completed.
 15. Add bounded anchored natural-language calculator wrapper extraction. Completed.
-16. Pull this checkpoint and confirm `I'll calculate 2 plus 2.` returns and speaks `Result: 4` with `--diagnostic-routing`.
-17. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
-18. Only later consider wake-word/background listening.
+16. Add canonical ALSA device resolution and validated 16 kHz mono PCM normalization before VAD/Whisper. Completed.
+17. Pull this checkpoint and verify requested/actual/canonical format diagnostics with `plughw:2,0` and `--diagnostic-audio` on Raspberry Pi.
+18. Confirm `calculate two plus two` returns and speaks `Result: 4` from the normalized real-audio route.
+19. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
+20. Only later consider wake-word/background listening.
 
 What Must Not Be Started Yet
 

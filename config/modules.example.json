@@ -2,6 +2,9 @@
   "voice_profiles_config": "config/voice_profiles.json",
   "voice_activity_capture": {
     "mode": "fixed_duration",
+    "microphone_device": "plughw:2,0",
+    "raw_hardware_device": "hw:2,0",
+    "alsa_conversion_required_for_raw_stream": true,
     "sample_rate_hz": 16000,
     "channels": 1,
     "sample_width_bytes": 2,
@@ -24,7 +27,8 @@
     "maximum_speech_continue_rms": 900,
     "minimum_silence_rms": 80,
     "maximum_silence_rms": 600,
-    "frame_debug_enabled": false
+    "frame_debug_enabled": false,
+    "diagnostic_audio": false
   },
   "voice_command_routing": {
     "transcript_normalization_enabled": true,
