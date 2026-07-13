@@ -26,6 +26,13 @@
     "maximum_silence_rms": 600,
     "frame_debug_enabled": false
   },
+  "voice_command_routing": {
+    "transcript_normalization_enabled": true,
+    "maximum_transcript_length": 1024,
+    "maximum_arithmetic_source_length": 256,
+    "repetition_limit": 2,
+    "diagnostic_routing": false
+  },
   "enabled_modules": {
     "voice": true,
     "mock_microphone_adapter": true,

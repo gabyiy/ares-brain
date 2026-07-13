@@ -668,9 +668,32 @@ The result preserves `raw_transcript`, `cleaned_transcript`, and `normalized_com
 
 Adjacent phrase blocks are collapsed only when they repeat beyond the configured limit. Thus `two plus two plus two` remains a legitimate three-term expression, while a longer exact adjacent Whisper loop is reduced and reported through `repetition_detected`, `repetitions_removed`, and `cleanup_rule`. Unsupported arithmetic words, malformed number grammar, and unsafe characters return a structured rejection before Brain execution. Unknown non-arithmetic requests remain unknown rather than being forced into calculator routing.
 
+## Production Calculator Routing Boundary
+
+The text REPL, typed voice simulation, and real single-turn voice script now obtain built-in skills through one `create_builtin_skill_manager()` factory. This removes duplicated plugin-registration assembly and ensures the real voice path uses the same registered `CalculatorSkill`, IntentParser, Planner, and ExecutionPipeline as local text execution. Tests inject hardware adapters into the production `create_pipeline()` factory; they do not replace the calculator, command router, CoreService, planner, or execution layer.
+
+```text
+Whisper transcript
+  -> TranscriptNormalizationRequestV1 / ResultV1
+  -> VoiceCommandRouter
+  -> CoreService voice.text_loop capability
+  -> shared built-in SkillManager registry
+  -> IntentParser
+  -> ToolSelector candidate scoring
+  -> Planner
+  -> ExecutionPipeline
+  -> registered CalculatorSkill
+  -> structured text response
+  -> Piper / ALSA only when explicitly requested
+```
+
+Normalization uses finite wrappers, complete token consumption, a 1024-character transcript bound, and a 256-character arithmetic-source bound. Capitalization, terminal punctuation, bounded whitespace, digits, English number words through one thousand, and approved spoken operators normalize deterministically. Remaining letters, code/import syntax, assignments, file paths, shell punctuation, malformed operators, or oversized arithmetic fail before intent routing. The existing CalculatorSkill continues to use its approved AST operators and numeric bounds; `eval()` is not used.
+
+`SingleTurnVoiceResultV1` exposes raw, cleaned, and normalized text plus parsed intent, candidate-skill records, selected skill, planner decision, execution result, rejection reason, and bounded per-stage status. Candidate records include confidence, threshold, manifest registration/enabled state, capabilities, and the selection reason. Core classes do not print diagnostics; the owner-run script renders the fields only when `--diagnostic-routing` is requested.
+
 The Linux ALSA manifest explicitly provides `voice.capture.activity`, consumes and produces the V1 VAD contracts, declares one task slot and a small logical resource reservation, and remains disabled by default. Fixed-duration capture remains available as an explicit fallback. No wake word, background listener, persistent transcript, GPT, cloud service, or autonomous capture was added.
 
-The original VAD checkpoint collection was 912 tests. Current collection after adaptive calibration and transcript routing hardening: 959 tests.
+The original VAD checkpoint collection was 912 tests. Adaptive calibration checkpoint collection was 959 tests. Current production-routing collection: 1002 tests.
 
 # Architecture Hardening Checkpoint
 

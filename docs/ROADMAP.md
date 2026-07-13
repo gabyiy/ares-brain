@@ -998,12 +998,23 @@ Phase 78: Adaptive End-of-Speech and Voice Calculator Routing
 - Strict spoken arithmetic supports zero through one thousand, negatives, decimals, operators, and spoken parentheses before using the unchanged safe CalculatorSkill path.
 - Conservative adjacent repetition cleanup reports exactly what it removed and preserves legitimate three-term arithmetic.
 - Manual scripts expose capture thresholds, transition diagnostics, routing decisions, skill selection, execution status, and rejection reasons without printing private memory or secrets.
-- Current pytest collection is 959 tests.
-- Windows CI used synthetic PCM and mocked hardware; Raspberry Pi hardware behavior must be verified by the owner after pulling these commits.
+- Checkpoint pytest collection was 959 tests.
+- Windows CI used synthetic PCM and mocked hardware for that checkpoint.
+
+Phase 79: Production Voice Calculator Routing Hardening
+
+- The owner verified real Raspberry Pi USB capture, clear recorded speech, end-of-speech completion, and base English Whisper transcription of `Calculate 2 plus 2.`.
+- The observed `unknown` result isolated the remaining failure to transcript-to-skill routing rather than ALSA, VAD, or Whisper.
+- Built-in skill registration is centralized through `create_builtin_skill_manager()` for text REPL, typed voice simulation, and the real single-turn script.
+- Production-factory integration tests use injected hardware adapters while retaining the real VoiceCommandRouter, CoreService, SkillManager, IntentParser, Planner, ExecutionPipeline, and registered CalculatorSkill.
+- Finite conversational wrappers, complete token consumption, and bounded transcript/expression lengths harden normalization without weakening calculator AST validation.
+- `SingleTurnVoiceResultV1` now carries candidate skills and per-stage routing diagnostics; the manual script renders them only with `--diagnostic-routing`.
+- Current pytest collection is 1002 tests.
+- The owner must pull this checkpoint and confirm the new production trace and spoken `Result: 4`; Windows CI does not claim that final Raspberry Pi execution.
 
 Current State
 
-ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, and deterministic spoken-calculator routing. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control.
+ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, shared production skill registration, and diagnostic deterministic spoken-calculator routing. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control.
 
 The current active interface is:
 
@@ -1018,7 +1029,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 959 tests.
+The current pytest collection is 1002 tests.
 
 The current memory paths are:
 
@@ -1069,9 +1080,11 @@ Phase 3 Real Voice Integration
 10. Controlled owner-triggered bounded multi-turn voice session. Completed.
 11. RMS VAD and automatic end-of-speech capture with fixed-duration fallback. Completed.
 12. Adaptive ambient calibration and robust calculator voice routing. Completed in CI with synthetic PCM and real Brain routing.
-13. Pull the checkpoint to Raspberry Pi and validate derived thresholds plus `completed_after_silence` on the real USB microphone.
-14. Measure per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
-15. Only later consider wake-word/background listening.
+13. Validate clear USB capture, `completed_after_silence`, and base English Whisper transcription on Raspberry Pi. Completed by owner.
+14. Centralize production skill registration and add bounded routing diagnostics. Completed.
+15. Pull this checkpoint and confirm the registered CalculatorSkill returns and speaks `Result: 4` with `--diagnostic-routing`.
+16. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
+17. Only later consider wake-word/background listening.
 
 What Must Not Be Started Yet
 

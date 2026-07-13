@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.82 - Adaptive Voice Capture and Voice Calculator Routing
+ARES v1.83 - Production Voice Calculator Routing Hardening
 
 ---
 
@@ -57,6 +57,8 @@ Raspberry Pi speech-input verification is now hardened for real recordings. The 
 `core.RmsVoiceActivityCapture` adds hardware-neutral PCM-frame energy detection and automatic end-of-speech capture behind versioned V1 contracts. In calibrated `auto_stop` mode, it samples bounded ambient audio first, derives bounded speech-start, speech-continue, and silence thresholds, requires consecutive evidence to start or resume speech, preserves pre-roll, and uses `WAITING -> SPEECH -> POSSIBLE_SILENCE -> COMPLETE` hysteresis. Sub-speech trailing noise updates the noise floor conservatively and cannot reset the silence window indefinitely; isolated clicks cannot resume speech. No-speech, invalid PCM, cancellation, device failure, frame timeout, and maximum-duration outcomes remain explicit. The fixed-duration path and calibration-disabled manual thresholds remain available; no calculator safety rule was weakened.
 
 `core.TranscriptNormalization` is the versioned deterministic boundary between STT and `VoiceCommandRouter`. It preserves raw Whisper text, a conservatively cleaned transcript, and the normalized routing command. English spoken arithmetic from zero through one thousand, negatives, decimals, operators, and spoken parentheses is converted to numeric/operator text for the existing AST-based `CalculatorSkill`. Obvious adjacent Whisper phrase loops beyond the configured repetition limit are collapsed while legitimate `two plus two plus two` remains unchanged. Unsupported arithmetic words or unsafe characters fail before Brain execution; `eval()` is never used.
+
+The production voice calculator route is now assembled through the shared `create_builtin_skill_manager()` factory used by the text REPL, typed voice simulation, and real single-turn script. The prior integration tests manually registered `CalculatorSkill`, so they did not verify the same registry construction used on Raspberry Pi and could not explain a live `unknown` result. Production-factory integration now proves `Whisper transcript -> TranscriptNormalization -> VoiceCommandRouter -> CoreService -> SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> registered CalculatorSkill`. `SingleTurnVoiceResultV1` carries bounded candidate-skill and per-stage routing diagnostics, and `--diagnostic-routing` prints them without dumping memory, secrets, or unrestricted internal objects.
 
 `core.VoiceCommandRouter` now routes `TranscriptionResult` objects into Voice City without any speech engine dependency. It validates a configurable confidence threshold, ignores empty transcriptions safely, propagates transcription failures, routes valid text through CoreService's `voice.text_loop` capability, handles unknown commands with structured safe results, and records local routed/rejected metrics plus `voice_command.routed` and `voice_command.rejected` events.
 
@@ -535,7 +537,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 959 tests across current core modules
+- Pytest automated coverage for 1002 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -554,7 +556,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `959 tests`.
+Current pytest collection: `1002 tests`.
 
 Manual Calculator Launch Verification
 
@@ -849,11 +851,12 @@ python scripts/manual_verify_single_turn_voice.py \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --whisper-model models/whisper/ggml-base.en.bin \
   --voice-profile en_US-hfc_male-medium \
+  --diagnostic-routing \
   --timeout 300 \
   --playback
 ```
 
-Use `--fixed-duration --record-seconds 5` for the existing fallback capture, `--keep-audio` to retain successful input/response WAVs, and `--verbose` for the full structured V1 result. Failures preserve useful diagnostic audio automatically. Operational events store stage/status metadata, not transcript or audio contents.
+Say `Calculate two plus two.` The expected normalized command is `calculate 2 + 2`, the parsed intent is `calculate`, the selected registered skill is `calculator`, and the execution response is `Result: 4`. `--diagnostic-routing` prints raw/cleaned/normalized text, candidate scores and reasons, selected skill, planner decision, execution status, and the first rejection reason when a stage fails. Use `--fixed-duration --record-seconds 5` for the existing fallback capture, `--keep-audio` to retain successful input/response WAVs, and `--verbose` for the full structured V1 result. Failures preserve useful diagnostic audio automatically. Operational events store stage/status metadata, not transcript or audio contents.
 
 Controlled Multi-Turn Voice Session
 
@@ -1111,15 +1114,16 @@ Completed:
 - RMS voice activity detection and automatic end-of-speech capture with fixed-duration fallback
 - Adaptive ambient calibration, three-threshold hysteresis, and bounded end-of-speech diagnostics
 - Versioned raw/cleaned/normalized transcript routing and spoken calculator normalization
+- Shared production SkillManager registration and bounded routing diagnostics
 - Voice City foundation
 - Voice City input/output contracts
 - Voice City text loop foundation
 
 Next:
 
-1. Pull and run adaptive calibration on the Raspberry Pi microphone with the owner-run VAD script
-2. Validate calibrated auto-stop single-turn and bounded multi-turn capture on Raspberry Pi hardware
-3. Measure per-turn timing, segmentation, stop recognition, and cleanup from real results
+1. Pull this checkpoint and verify `Calculate two plus two.` with `--diagnostic-routing` on Raspberry Pi
+2. Confirm the production trace selects the registered CalculatorSkill and speaks `Result: 4`
+3. Continue measuring per-turn timing, segmentation, stop recognition, and cleanup from real results
 4. Only later consider wake-word/background listening
 5. GPT fallback integration
 6. Raspberry Pi deployment
@@ -1972,13 +1976,17 @@ Phase 78
 - Versioned raw, cleaned, and normalized transcript contracts
 - Strict spoken arithmetic normalization into the unchanged safe CalculatorSkill path
 - Conservative adjacent Whisper-loop cleanup and concise routing diagnostics
-- Current pytest collection is 959 tests
+- Checkpoint pytest collection was 959 tests
 - No wake word, background listening, GPT, cloud service, transcript persistence, or calculator/intent safety weakening was added
 
 Phase 79
 
-- Explicit Raspberry Pi hardware calibration and validation of auto-stop single-turn and bounded multi-turn commands
-- Measure ambient/speech RMS, segmentation, per-turn timing, stop recognition, and cleanup only from observed hardware results
+- Owner verified Raspberry Pi USB microphone capture, clear WAV audio, automatic end-of-speech completion, and `whisper.cpp` base English transcription of `Calculate 2 plus 2.`
+- Shared built-in SkillManager construction now prevents text/voice registry drift
+- Production-factory integration verifies the real registered CalculatorSkill through IntentParser, Planner, and ExecutionPipeline
+- Strict finite wrapper normalization, full token consumption, and bounded transcript/expression lengths fail closed
+- Versioned routing diagnostics expose candidates, selection, planning, execution, and rejection stages
+- Current pytest collection is 1002 tests
 
 Phase 80
 
