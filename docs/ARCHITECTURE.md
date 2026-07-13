@@ -613,6 +613,33 @@ The session acquires its own light lifecycle/resource reservation, while each tu
 
 Current collection after the bounded multi-turn checkpoint: 872 tests.
 
+# Voice Activity Detection and End-of-Speech Capture
+
+`core.VoiceActivityDetection` is a hardware-neutral foreground capture component. `RmsVoiceActivityCapture` consumes injected mono signed 16-bit PCM frames, so Linux/ALSA and subprocess details remain in `LinuxAlsaMicrophoneAdapter`. Brain, CoreService, SkillManager, IntentParser, Planner, ExecutionPipeline, calculator, Whisper, and Piper do not implement VAD rules.
+
+```text
+LinuxAlsaMicrophoneAdapter
+  -> foreground arecord raw PCM stream (argument list, shell=False)
+  -> RmsVoiceActivityCapture
+  -> wait for consecutive speech frames
+  -> preserve bounded pre-roll
+  -> retain short pauses using threshold hysteresis
+  -> trim terminal silence
+  -> atomically write and validate one mono PCM WAV
+  -> SingleTurnVoicePipeline
+  -> Whisper only when capture succeeded
+```
+
+The V1 boundary consists of `VoiceActivityCaptureRequestV1` and `VoiceActivityCaptureResultV1`. Requests carry sample format, frame size, separate speech-start and silence thresholds, required speech frames, silence timeout, speech wait timeout, utterance limit, pre-roll, selected device, and correlation/session IDs. Results carry the final status, WAV path, speech flag, duration, speech-duration estimate, terminal-silence duration, peak/RMS levels, ambient/speech RMS, frame count, selected device, stop reason, timing, and bounded safe metadata.
+
+Initial Raspberry Pi tuning defaults are 16 kHz, mono, 16-bit PCM, 20 ms frames, start RMS 200, silence RMS 120, three consecutive speech frames, 0.9 seconds of terminal silence, a 10-second speech wait, a 15-second maximum utterance, and 0.25 seconds of pre-roll. Separate thresholds provide hysteresis: frames above the start threshold begin speech, frames at or below the silence threshold contribute to end detection, and intermediate frames keep the utterance active. These values must be calibrated from observed ambient and speech levels rather than treated as universal hardware facts.
+
+`SingleTurnVoicePipeline` selects `auto_stop` or the preserved `fixed_duration` path through its existing request contract. In auto-stop mode, no-speech or invalid-audio results stop before Whisper, Brain, Piper, and speaker execution. The bounded multi-turn session propagates the same capture settings per turn and applies its existing recoverable no-speech policy. `VoiceStageCoordinator` continues to enforce microphone/speaker and Whisper/Piper mutual exclusion. Transcript cleanup is limited to whitespace normalization; repeated arithmetic words are not hidden with text-specific rules, and calculator/intent validation remains unchanged.
+
+The Linux ALSA manifest explicitly provides `voice.capture.activity`, consumes and produces the V1 VAD contracts, declares one task slot and a small logical resource reservation, and remains disabled by default. Fixed-duration capture remains available as an explicit fallback. No wake word, background listener, persistent transcript, GPT, cloud service, or autonomous capture was added.
+
+Current collection after the VAD checkpoint: 912 tests.
+
 # Architecture Hardening Checkpoint
 
 This checkpoint comes after the simulated Phase 3 Voice City command pipeline and before real hardware/adapters.
@@ -865,6 +892,8 @@ Current V1 contracts:
 
 - `MicrophoneCaptureRequestV1`
 - `MicrophoneCaptureResultV1`
+- `VoiceActivityCaptureRequestV1`
+- `VoiceActivityCaptureResultV1`
 - `SpeechToTextRequestV1`
 - `SpeechToTextResultV1`
 - `VoiceCommandRequestV1`
@@ -944,7 +973,7 @@ Manifest validation covers:
 - undeclared permissions blocked by policy
 - lifecycle declaration mismatch with the implementation
 
-Provider selection returns all valid candidates, respects explicit preferred-provider configuration, and otherwise uses deterministic ordering. ARES must not silently select an incompatible provider. Runtime fallback after provider failure is intentionally not implemented yet; it belongs to the later health-check and adapter fallback checkpoint.
+Provider selection returns all valid candidates, respects explicit preferred-provider configuration, and otherwise uses deterministic ordering. ARES must not silently select an incompatible provider. Controlled runtime fallback is handled by the centralized health/fallback policy and remains limited to explicitly retry-safe operations.
 
 CoreService activation gate:
 
@@ -960,7 +989,7 @@ CoreService activation gate:
 
 Failure before activation returns a structured manifest rejection, preserves the correlation id, does not start the module, does not alter unrelated city lifecycle state, and can record a `manifest.validation_failed` event-history entry when CoreService has an `EventHistoryStore` configured.
 
-Current registered manifest coverage includes PCService, Voice City, mock microphone adapter, disabled-by-default Linux ALSA microphone adapter, mock speech-to-text adapter, disabled-by-default Linux Whisper speech-to-text adapter, mock voice output adapter, VoiceCommandRouter, VoiceSessionSkill, and skill manifests registered by SkillRegistry. `config/modules.example.json` documents safe local configuration for enabled modules, preferred providers, and allowed permissions. It is not remote configuration and does not enable package downloads, dynamic imports, API keys, internet discovery, or automatic dependency installation.
+Current registered manifest coverage includes PCService, Voice City, mock microphone adapter, disabled-by-default Linux ALSA microphone adapter with `voice.capture.activity`, mock speech-to-text adapter, disabled-by-default Linux Whisper speech-to-text adapter, mock voice output adapter, VoiceCommandRouter, VoiceSessionSkill, and skill manifests registered by SkillRegistry. `config/modules.example.json` documents safe local configuration for enabled modules, preferred providers, VAD thresholds, and allowed permissions. It is not remote configuration and does not enable package downloads, dynamic imports, API keys, internet discovery, or automatic dependency installation.
 
 Future modules must register manifests through the central registry before activation. A future V2 contract must be introduced by registering its new contract version and updating manifests explicitly; unknown versions must be rejected rather than reinterpreted.
 

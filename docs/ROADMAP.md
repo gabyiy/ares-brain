@@ -974,12 +974,23 @@ Phase 76: Controlled Multi-Turn Voice Conversation Session
 - Exact normalized stop phrases are intercepted before Brain routing, and local greeting/closing output reuses the existing TTS/speaker path.
 - Defaults are five turns, 180 seconds, three consecutive failures, five-second captures, a 0.75-second delay, and playback off.
 - Lifecycle/resource gates, per-turn correlation IDs, mutual exclusion, structured cancellation, bounded redacted events, and cleanup are enforced.
-- Current pytest collection is 872 tests.
+- Bounded multi-turn checkpoint collection was 872 tests.
 - No wake word, background listener, boot service, unbounded conversation loop, GPT, cloud dependency, or automatic transcript persistence was added.
+
+Phase 77: Voice Activity Detection and Automatic End-of-Speech Capture
+
+- `VoiceActivityCaptureRequestV1` and `VoiceActivityCaptureResultV1` define the versioned PCM capture boundary.
+- `RmsVoiceActivityCapture` provides lightweight energy-based start detection, separate silence threshold hysteresis, consecutive speech frames, pre-roll, terminal-silence trimming, and bounded wait/utterance limits.
+- `LinuxAlsaMicrophoneAdapter` streams one foreground raw PCM capture from `arecord` with `shell=False`; fixed-duration WAV capture remains available.
+- `SingleTurnVoicePipeline` and `MultiTurnVoiceSession` propagate auto-stop settings without changing their Brain, Whisper, Piper, speaker, lifecycle, or resource boundaries.
+- No-speech or invalid capture stops before Whisper, Brain, TTS, and playback. Multi-turn no-speech handling uses the existing bounded failure policy.
+- `scripts/manual_verify_voice_activity_capture.py` reports ambient/speech RMS, peak, thresholds, duration, and stop reason without running Whisper or output audio.
+- Current pytest collection is 912 tests.
+- No wake word, background listener, GPT, cloud dependency, transcript persistence, or arithmetic/intent text workaround was added.
 
 Current State
 
-ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, a controlled owner-triggered single-turn voice pipeline, and a bounded owner-triggered multi-turn session. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, Whisper, Piper, model paths, subprocess details, and conversation hardware control.
+ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, and opt-in RMS automatic end-of-speech capture. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, VAD, Whisper, Piper, model paths, subprocess details, and conversation hardware control.
 
 The current active interface is:
 
@@ -991,10 +1002,10 @@ The current deterministic answer paths are:
 - `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, calendar, event-history queries, voice-session starts, and voice-session status queries
 - `Planner`, `MultiStepPlan`, `ConfirmationManager`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, voice sessions, voice-session status, context responses, confirmations, and conversation memory plan execution
 - `ToolAdapterRegistry`, `ExternalAdapterConfig`, `SecretsGuard`, `RealWeatherAdapter`, and `RealMarketAdapter` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
-- `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters and explicit-only real audio behavior.
+- `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 872 tests.
+The current pytest collection is 912 tests.
 
 The current memory paths are:
 
@@ -1026,7 +1037,7 @@ Core Services City is a shared infrastructure city for scheduler, permissions, l
 
 Codex City is a future maintenance city. It should check the ARES GitHub repository, pull latest code, run tests, check compile, check docs freshness, report problems, and suggest fixes. Codex City must never auto-edit without owner approval.
 
-This roadmap entry documents the current safe VoiceService skeleton, explicit microphone/STT/TTS/speaker adapters, validated Piper voice profiles, Raspberry Pi setup/verification scripts, VoiceCommandRouter, simulated VoicePipeline, controlled single-turn and bounded multi-turn orchestration, and completed Architecture Hardening foundation. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, internet runtime access, real APIs, notifications, daemon installation, background timers, threads, wake word, unbounded conversation loops, background listening, or cloud TTS fallback.
+This roadmap entry documents the current safe VoiceService skeleton, explicit microphone/STT/TTS/speaker adapters, validated Piper voice profiles, Raspberry Pi setup/verification scripts, versioned RMS VAD capture, VoiceCommandRouter, simulated VoicePipeline, controlled single-turn and bounded multi-turn orchestration, and completed Architecture Hardening foundation. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, internet runtime access, real APIs, notifications, daemon installation, background timers, threads, wake word, unbounded conversation loops, background listening, or cloud TTS fallback.
 
 Next Priorities
 
@@ -1043,9 +1054,10 @@ Phase 3 Real Voice Integration
 8. Install and audibly verify the default male profile on Raspberry Pi. Completed.
 9. Controlled owner-triggered single-turn voice pipeline. Completed.
 10. Controlled owner-triggered bounded multi-turn voice session. Completed.
-11. Run and validate the bounded session on Raspberry Pi hardware.
-12. Measure per-turn timing, stop recognition, RMS behavior, and cleanup from real results.
-13. Only later consider wake-word/background listening.
+11. RMS VAD and automatic end-of-speech capture with fixed-duration fallback. Completed.
+12. Calibrate thresholds and validate auto-stop single-turn/multi-turn capture on Raspberry Pi hardware.
+13. Measure per-turn timing, segmentation, stop recognition, and cleanup from real results.
+14. Only later consider wake-word/background listening.
 
 What Must Not Be Started Yet
 

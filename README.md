@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.80 - Controlled Multi-Turn Voice Sessions
+ARES v1.81 - Voice Activity Detection and Automatic End-of-Speech Capture
 
 ---
 
@@ -36,7 +36,7 @@ CoreService now accepts an optional `EventHistoryStore`. When configured, `handl
 
 `core.Microphone` now defines the microphone adapter abstraction for future real audio capture without binding ARES to Whisper, Vosk, Piper, wake word detection, or any hardware-specific implementation. `AudioChunk` models raw audio chunk metadata, `MicrophoneAdapter` defines `start()`, `stop()`, and `read_chunk(timeout_seconds, cancel_requested)`, and `MockMicrophoneAdapter` provides deterministic test behavior for lifecycle, timeout, cancellation, and safe failure paths. `PlaceholderVoiceService`, `NullVoiceInput`, and `MockVoiceInputAdapter` accept the microphone adapter through dependency injection so Voice City can swap implementations later without changing the Brain or current text/skill path.
 
-`core.LinuxAlsaMicrophoneAdapter` is the first real microphone adapter checkpoint for Raspberry Pi/Linux. It implements the existing `MicrophoneAdapter` contract through a narrow `arecord` subprocess wrapper that always uses argument lists and never `shell=True`. It can check whether `arecord` is available, list ALSA capture devices, run health checks, select an optional ALSA device such as `hw:1,0`, record a bounded WAV sample, validate the WAV output, and return structured `MicrophoneResult` data. It is disabled by default in `config/modules.example.json`, registered as a `linux_alsa_microphone_adapter` capability manifest provider, and is intended for explicit manual verification.
+`core.LinuxAlsaMicrophoneAdapter` is the real microphone adapter for Raspberry Pi/Linux. It implements the existing `MicrophoneAdapter` contract through narrow `arecord` subprocess wrappers that always use argument lists and never `shell=True`. It can check whether `arecord` is available, list ALSA capture devices, run health checks, select an optional ALSA device such as `hw:2,0`, record a fixed-duration WAV, or stream foreground mono PCM frames into the injected RMS voice-activity detector. It is disabled by default in `config/modules.example.json` and registered as the `linux_alsa_microphone_adapter` provider for `voice.capture` and `voice.capture.activity`.
 
 `core.SpeechToText` now defines the speech-to-text adapter abstraction for converting microphone `AudioChunk` objects into text without binding ARES to Whisper, Vosk, wake word detection, internet services, GPT, or hardware-specific code. `TranscriptionResult` includes transcription text, status, error details, and a bounded `confidence` field. `SpeechToTextAdapter` defines `transcribe(audio_chunk)`, `get_status()`, and `get_capabilities()`, and `MockSpeechToTextAdapter` provides deterministic success, empty-audio, low-confidence, no-transcription, and failure behavior. `PlaceholderVoiceService`, `NullVoiceInput`, and `MockVoiceInputAdapter` accept the speech-to-text adapter through dependency injection.
 
@@ -53,6 +53,8 @@ Raspberry Pi speech-input verification is now hardened for real recordings. The 
 `core.SingleTurnVoicePipeline` now performs one bounded owner-triggered voice turn and exits. It composes the existing microphone, STT, VoiceCommandRouter/CoreService, SkillManager text path, TTS, and speaker boundaries; lifecycle and resource managers gate execution, `VoiceStageCoordinator` prevents capture/playback and Whisper/Piper overlap, and versioned V1 contracts report every stage. The recognized text reaches the same `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path used by existing local text execution. No wake word, continuous loop, background service, GPT, cloud call, or automatic transcript memory write was added.
 
 `core.MultiTurnVoiceSession` now provides an explicitly owner-started, bounded conversation session by repeatedly invoking `SingleTurnVoicePipeline`. `MultiTurnVoiceSessionRequestV1` and `MultiTurnVoiceSessionResultV1` define limits, stop phrases, per-turn correlation IDs, summaries, cleanup state, and structured failure data. An exact normalized stop-phrase gate runs after transcription and before Brain routing. Local greeting and closing phrases use the existing TTS/speaker path without asking the Brain to generate them. The session defaults to five turns, 180 seconds, three consecutive failures, five-second captures, a 0.75-second inter-turn delay, and playback disabled. It remains a foreground owner-run process with no wake word, background listener, boot service, GPT, cloud dependency, or automatic transcript persistence.
+
+`core.RmsVoiceActivityCapture` adds hardware-neutral PCM-frame energy detection and automatic end-of-speech capture behind versioned V1 contracts. In `auto_stop` mode, Linux ALSA waits for consecutive speech frames, preserves a short pre-roll, applies separate start/silence thresholds, trims terminal silence, and stops after 0.9 seconds of continuous silence or a 15-second utterance limit. No-speech, invalid PCM, cancellation, device failure, and frame timeout return structured results before Whisper, Brain, or TTS can run. The existing fixed-duration mode remains available through `--fixed-duration`; no calculator or intent safety rule was changed to compensate for transcription artifacts.
 
 `core.VoiceCommandRouter` now routes `TranscriptionResult` objects into Voice City without any speech engine dependency. It validates a configurable confidence threshold, ignores empty transcriptions safely, propagates transcription failures, routes valid text through CoreService's `voice.text_loop` capability, handles unknown commands with structured safe results, and records local routed/rejected metrics plus `voice_command.routed` and `voice_command.rejected` events.
 
@@ -500,6 +502,7 @@ Implemented Features
 - Speech-to-text adapter abstraction with `TranscriptionResult`, `SpeechToTextAdapter`, `MockSpeechToTextAdapter`, confidence scores, empty transcription handling, low-confidence handling, safe failure results, and Voice City dependency injection
 - Text-to-speech adapter abstraction with `TextToSpeechRequestV1`, `TextToSpeechResultV1`, `TextToSpeechAdapter`, `MockTextToSpeechAdapter`, offline Piper generation support, safe text normalization, playback-disabled defaults, and Voice City dependency injection
 - Linux ALSA speaker adapter with explicit `aplay` WAV playback, selected-device discovery through `aplay -l`, safe argument-list subprocess execution, WAV validation, playback timeouts, and no microphone monitoring
+- Versioned RMS voice-activity capture with ALSA PCM streaming, speech-start hysteresis, pre-roll, terminal-silence trimming, bounded wait/utterance limits, fixed-duration fallback, and single-turn/multi-turn integration
 - Disabled-by-default Linux Piper TTS adapter with local ONNX voice model/config validation, offline WAV generation, optional explicit ALSA playback through the speaker adapter, structured failure results, and no cloud fallback
 - Hardened Raspberry Pi TTS verifier with correct nested V1 health evaluation, explicit WAV metadata checks, exact Piper/ALSA command diagnostics, raw subprocess failure output, deterministic exit codes, and generated-WAV preservation after playback failure
 - Voice Command Router with confidence gating, empty-transcription handling, unknown-command handling, CoreService `voice.text_loop` routing, routed/rejected metrics, and routed/rejected events
@@ -530,7 +533,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 872 tests across current core modules
+- Pytest automated coverage for 912 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -549,7 +552,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `872 tests`.
+Current pytest collection: `912 tests`.
 
 Manual Calculator Launch Verification
 
@@ -773,6 +776,28 @@ Verified Raspberry Pi 5 baseline: the local Piper runtime and profile registry w
 
 The corrected verifier treats health as valid only when the V1 TTS result has `success=true` and `status=healthy`, its nested speaker health is also successful and healthy, the Piper/model/config/output checks pass, and the selected ALSA device is present. It prints the resolved paths, selected device, exact Piper command, exact `aplay` command when playback is requested, process exit codes, raw failure output, and WAV duration/sample rate/channels/sample width/file size. Generated WAV samples are written under `data/manual_tts_samples/` by default and are ignored by git. This checkpoint does not add GPT, wake-word detection, background listening, automatic microphone activation, a conversation loop, or cloud fallback.
 
+Voice Activity Detection Calibration
+
+Automatic end-of-speech capture uses 16 kHz mono 16-bit PCM in 20 ms frames. Safe initial tuning values are start RMS `200`, silence RMS `120`, three consecutive start frames, `0.9` seconds of terminal silence, a `10` second speech wait, a `15` second utterance limit, and `0.25` seconds of pre-roll. These are starting values, not universal microphone calibration.
+
+Pull the checkpoint and run one owner-triggered calibration capture:
+
+```bash
+git pull origin main
+python scripts/manual_verify_voice_activity_capture.py \
+  --microphone-device hw:2,0 \
+  --speech-start-rms 200 \
+  --silence-rms 120 \
+  --silence-seconds 0.9 \
+  --speech-wait-timeout 10 \
+  --max-utterance-seconds 15 \
+  --pre-roll-seconds 0.25 \
+  --frame-ms 20 \
+  --verbose
+```
+
+The calibration script prints the exact argument-list `arecord` command, ambient RMS, speech RMS, peak amplitude, selected thresholds, captured duration, and final stop reason. It runs no Whisper, Brain, TTS, or speaker playback. Auto-stop sends only the validated trimmed WAV to Whisper; no-speech and invalid-audio results stop before downstream execution. Transcript normalization only collapses whitespace.
+
 Controlled Single-Turn Voice Verification
 
 The owner-run single-turn command records once, stops capture, validates the WAV and RMS level, transcribes locally, routes recognized text through the existing ARES text pipeline, synthesizes the response with the configured Piper profile, optionally plays it, releases lifecycle/resource state, and exits. Playback is disabled unless `--playback` is supplied.
@@ -785,23 +810,29 @@ python scripts/manual_verify_single_turn_voice.py \
   --text-input "calculate 2 + 2"
 ```
 
-Run one real Raspberry Pi turn with the verified devices, local tiny English Whisper model, configured male voice, and explicit playback:
+Run one real Raspberry Pi turn with automatic end-of-speech capture, the stronger local base English Whisper model, configured male voice, and explicit playback:
 
 ```bash
 python scripts/manual_verify_single_turn_voice.py \
-  --record-seconds 5 \
   --microphone-device hw:2,0 \
   --speaker-device plughw:CARD=Device,DEV=0 \
+  --auto-stop \
+  --speech-start-rms 200 \
+  --silence-rms 120 \
+  --silence-seconds 0.9 \
+  --speech-wait-timeout 10 \
+  --max-utterance-seconds 15 \
+  --pre-roll-seconds 0.25 \
+  --frame-ms 20 \
   --language en \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
-  --whisper-model models/whisper/ggml-tiny.en.bin \
+  --whisper-model models/whisper/ggml-base.en.bin \
   --voice-profile en_US-hfc_male-medium \
-  --min-rms 25 \
   --timeout 300 \
   --playback
 ```
 
-Use `--keep-audio` to retain successful input/response WAVs and `--verbose` for the full structured V1 result. Failures preserve useful diagnostic audio automatically. Operational events store stage/status metadata, not transcript or audio contents.
+Use `--fixed-duration --record-seconds 5` for the existing fallback capture, `--keep-audio` to retain successful input/response WAVs, and `--verbose` for the full structured V1 result. Failures preserve useful diagnostic audio automatically. Operational events store stage/status metadata, not transcript or audio contents.
 
 Controlled Multi-Turn Voice Session
 
@@ -852,10 +883,17 @@ Run the real owner-triggered Raspberry Pi session with explicit playback:
 python scripts/manual_verify_multi_turn_voice.py \
   --microphone-device hw:2,0 \
   --speaker-device plughw:CARD=Device,DEV=0 \
-  --record-seconds 5 \
+  --auto-stop \
+  --speech-start-rms 200 \
+  --silence-rms 120 \
+  --silence-seconds 0.9 \
+  --speech-wait-timeout 10 \
+  --max-utterance-seconds 15 \
+  --pre-roll-seconds 0.25 \
+  --frame-ms 20 \
   --language en \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
-  --whisper-model models/whisper/ggml-tiny.en.bin \
+  --whisper-model models/whisper/ggml-base.en.bin \
   --voice-profile en_US-hfc_male-medium \
   --playback \
   --max-turns 5 \
@@ -1046,18 +1084,20 @@ Completed:
 - Validated Piper voice-profile registry with `en_US-hfc_male-medium` as the configured default and Amy retained as optional
 - Controlled owner-triggered single-turn microphone -> Whisper -> Brain -> Piper -> ALSA pipeline
 - Controlled owner-triggered bounded multi-turn voice session reusing the single-turn pipeline
+- RMS voice activity detection and automatic end-of-speech capture with fixed-duration fallback
 - Voice City foundation
 - Voice City input/output contracts
 - Voice City text loop foundation
 
 Next:
 
-1. Run and validate the bounded multi-turn command on Raspberry Pi hardware
-2. Measure per-turn timing, audio thresholds, stop recognition, and cleanup from real results
-3. Only later consider wake-word/background listening
-4. GPT fallback integration
-5. Raspberry Pi deployment
-6. Robot body / sensors
+1. Calibrate RMS thresholds on the Raspberry Pi microphone with the owner-run VAD script
+2. Validate auto-stop single-turn and bounded multi-turn capture on Raspberry Pi hardware
+3. Measure per-turn timing, segmentation, stop recognition, and cleanup from real results
+4. Only later consider wake-word/background listening
+5. GPT fallback integration
+6. Raspberry Pi deployment
+7. Robot body / sensors
 
 ---
 
@@ -1886,28 +1926,38 @@ Phase 76
 - `MultiTurnVoiceSession` repeatedly reuses `SingleTurnVoicePipeline`; it does not duplicate microphone, Whisper, Brain, Piper, or speaker implementations
 - V1 request/result contracts enforce turn, duration, failure, stop-phrase, timeout, cleanup, and event limits
 - Stop phrases are handled before Brain routing, while greeting and closing phrases remain local configuration
-- Current pytest collection is 872 tests
+- Bounded multi-turn checkpoint collection was 872 tests
 - No wake word, background listening, boot service, GPT, cloud service, unbounded loop, or automatic transcript persistence was added
 
 Phase 77
 
-- Explicit Raspberry Pi hardware validation of the controlled multi-turn command
-- Measure per-turn timing, stop recognition, RMS behavior, and cleanup only from observed hardware results
+- Voice activity detection and automatic end-of-speech capture
+- Versioned `VoiceActivityCaptureRequestV1` / `VoiceActivityCaptureResultV1` contracts
+- Hardware-neutral `RmsVoiceActivityCapture` with hysteresis, consecutive speech frames, pre-roll, terminal-silence trimming, cancellation, and bounded wait/utterance limits
+- Linux ALSA raw-PCM streaming through an argument-list `arecord` subprocess boundary with `shell=False`
+- Auto-stop integration in controlled single-turn and bounded multi-turn pipelines, with the fixed-duration path preserved
+- Current pytest collection is 912 tests
+- No wake word, background listening, GPT, cloud service, transcript persistence, or calculator/intent safety weakening was added
 
 Phase 78
+
+- Explicit Raspberry Pi hardware calibration and validation of auto-stop single-turn and bounded multi-turn commands
+- Measure ambient/speech RMS, segmentation, per-turn timing, stop recognition, and cleanup only from observed hardware results
+
+Phase 79
 
 - Future voice expansion only after separate approval
 - Wake word
 - Bounded background-listening design
 
-Phase 78
+Phase 80
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 79
+Phase 81
 
 - Robotics
 - ROS2
