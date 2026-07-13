@@ -621,24 +621,56 @@ Current collection after the bounded multi-turn checkpoint: 872 tests.
 LinuxAlsaMicrophoneAdapter
   -> foreground arecord raw PCM stream (argument list, shell=False)
   -> RmsVoiceActivityCapture
+  -> calibrate bounded ambient PCM frames
+  -> derive start / continue / silence thresholds
   -> wait for consecutive speech frames
   -> preserve bounded pre-roll
-  -> retain short pauses using threshold hysteresis
+  -> WAITING / SPEECH / POSSIBLE_SILENCE state machine
+  -> retain short pauses only when speech resumes consecutively
   -> trim terminal silence
   -> atomically write and validate one mono PCM WAV
   -> SingleTurnVoicePipeline
   -> Whisper only when capture succeeded
 ```
 
-The V1 boundary consists of `VoiceActivityCaptureRequestV1` and `VoiceActivityCaptureResultV1`. Requests carry sample format, frame size, separate speech-start and silence thresholds, required speech frames, silence timeout, speech wait timeout, utterance limit, pre-roll, selected device, and correlation/session IDs. Results carry the final status, WAV path, speech flag, duration, speech-duration estimate, terminal-silence duration, peak/RMS levels, ambient/speech RMS, frame count, selected device, stop reason, timing, and bounded safe metadata.
+The V1 boundary consists of `VoiceActivityCaptureRequestV1` and `VoiceActivityCaptureResultV1`. Requests carry sample format, frame size, calibration policy, three threshold bounds, consecutive start/resume/end rules, hangover duration, speech wait timeout, utterance limit, pre-roll, selected device, and correlation/session IDs. Results carry ambient mean/median/p90/peak/noise-floor statistics, all derived thresholds, speech/trailing frame counts, speech start/end offsets, the final status, WAV path, duration, peak/RMS levels, stop reason, timing, and bounded transition diagnostics.
 
-Initial Raspberry Pi tuning defaults are 16 kHz, mono, 16-bit PCM, 20 ms frames, start RMS 200, silence RMS 120, three consecutive speech frames, 0.9 seconds of terminal silence, a 10-second speech wait, a 15-second maximum utterance, and 0.25 seconds of pre-roll. Separate thresholds provide hysteresis: frames above the start threshold begin speech, frames at or below the silence threshold contribute to end detection, and intermediate frames keep the utterance active. These values must be calibrated from observed ambient and speech levels rather than treated as universal hardware facts.
+Initial Raspberry Pi policy defaults are 16 kHz, mono, 16-bit PCM, 20 ms frames, 0.75 seconds of calibration, lower bounds of start RMS 200 / continue RMS 140 / silence RMS 80, three consecutive start and resume frames, five confirming low frames, 0.9 seconds of terminal hangover, a 10-second speech wait, a 15-second maximum utterance, and 0.25 seconds of pre-roll. Median and p90 statistics prevent one transient peak from defining the noise floor. Thresholds are clamped to configured minima/maxima. After speech starts, only sub-continue frames update the noise estimate, with bounded adaptation; actual speech cannot lift the ambient baseline indefinitely.
 
-`SingleTurnVoicePipeline` selects `auto_stop` or the preserved `fixed_duration` path through its existing request contract. In auto-stop mode, no-speech or invalid-audio results stop before Whisper, Brain, Piper, and speaker execution. The bounded multi-turn session propagates the same capture settings per turn and applies its existing recoverable no-speech policy. `VoiceStageCoordinator` continues to enforce microphone/speaker and Whisper/Piper mutual exclusion. Transcript cleanup is limited to whitespace normalization; repeated arithmetic words are not hidden with text-specific rules, and calculator/intent validation remains unchanged.
+The end-of-speech states are:
+
+1. `CALIBRATING`: sample ambient frames without treating them as an utterance.
+2. `WAITING`: require consecutive frames above the derived start threshold.
+3. `SPEECH`: accept frames above the continue threshold.
+4. `POSSIBLE_SILENCE`: retain an internal pause only after consecutive resume frames; otherwise complete after bounded hangover and low-frame evidence.
+5. `COMPLETE`: trim terminal pending frames and atomically validate the WAV.
+
+This fixes the prior failure mode where every frame above one static silence threshold reset trailing silence. Post-speech noise below the continue threshold no longer extends capture indefinitely, and one click cannot resume speech. `maximum_utterance_seconds`, speech wait timeout, cancellation, bounded buffers, lifecycle/resource gates, and fixed-duration capture remain hard safety limits.
+
+`SingleTurnVoicePipeline` selects calibrated `auto_stop`, calibration-disabled manual thresholds, or the preserved `fixed_duration` path through its existing request contract. No-speech or invalid-audio results stop before Whisper, Brain, Piper, and speaker execution. The bounded multi-turn session propagates the same capture settings per turn and applies its existing recoverable no-speech policy. `VoiceStageCoordinator` continues to enforce microphone/speaker and Whisper/Piper mutual exclusion.
+
+# Transcript Normalization and Voice Calculator Routing
+
+`core.TranscriptNormalization` owns deterministic STT cleanup before `VoiceCommandRouter`. The Brain, IntentParser, Planner, and CalculatorSkill remain unaware of Whisper formatting and model output.
+
+```text
+Whisper raw transcript
+  -> TranscriptNormalizationRequestV1
+  -> conservative adjacent-loop cleanup
+  -> strict spoken-arithmetic parser when arithmetic is detected
+  -> TranscriptNormalizationResultV1
+  -> VoiceCommandRouter
+  -> CoreService
+  -> SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill
+```
+
+The result preserves `raw_transcript`, `cleaned_transcript`, and `normalized_command`. General commands are Unicode/whitespace/punctuation normalized. Arithmetic commands additionally support English number words zero through one thousand, negatives, decimals, plus/add, minus/subtract, times/multiplied-by, divide/over, and explicit spoken parentheses. The output is numeric/operator text such as `calculate 2 + 2`; the existing calculator still performs strict character validation, AST parsing, finite/bounded arithmetic, and never uses `eval()`.
+
+Adjacent phrase blocks are collapsed only when they repeat beyond the configured limit. Thus `two plus two plus two` remains a legitimate three-term expression, while a longer exact adjacent Whisper loop is reduced and reported through `repetition_detected`, `repetitions_removed`, and `cleanup_rule`. Unsupported arithmetic words, malformed number grammar, and unsafe characters return a structured rejection before Brain execution. Unknown non-arithmetic requests remain unknown rather than being forced into calculator routing.
 
 The Linux ALSA manifest explicitly provides `voice.capture.activity`, consumes and produces the V1 VAD contracts, declares one task slot and a small logical resource reservation, and remains disabled by default. Fixed-duration capture remains available as an explicit fallback. No wake word, background listener, persistent transcript, GPT, cloud service, or autonomous capture was added.
 
-Current collection after the VAD checkpoint: 912 tests.
+The original VAD checkpoint collection was 912 tests. Current collection after adaptive calibration and transcript routing hardening: 959 tests.
 
 # Architecture Hardening Checkpoint
 
@@ -894,6 +926,8 @@ Current V1 contracts:
 - `MicrophoneCaptureResultV1`
 - `VoiceActivityCaptureRequestV1`
 - `VoiceActivityCaptureResultV1`
+- `TranscriptNormalizationRequestV1`
+- `TranscriptNormalizationResultV1`
 - `SpeechToTextRequestV1`
 - `SpeechToTextResultV1`
 - `VoiceCommandRequestV1`
@@ -904,6 +938,10 @@ Current V1 contracts:
 - `LifecycleExecutionResultV1`
 - `VoicePipelineRequestV1`
 - `VoicePipelineResultV1`
+- `SingleTurnVoiceRequestV1`
+- `SingleTurnVoiceResultV1`
+- `MultiTurnVoiceSessionRequestV1`
+- `MultiTurnVoiceSessionResultV1`
 - `EventPublicationEnvelopeV1`
 
 `ContractRegistry` is the central compatibility registry. It can list known contracts, report supported versions, report the current version, identify consumers, and validate whether a requested contract is compatible. Duplicate incompatible registrations are rejected.
@@ -916,6 +954,7 @@ Compatibility validation is integrated into:
 - ModuleLifecycleManager
 - microphone adapter boundary
 - speech-to-text adapter boundary
+- transcript normalization boundary
 - event publication envelope
 
 Safe rejection behavior:

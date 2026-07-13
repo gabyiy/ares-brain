@@ -4,13 +4,19 @@ Last Updated: 2026-07-13
 
 Current Version
 
-ARES v1.81 - Voice Activity Detection and Automatic End-of-Speech Capture
+ARES v1.82 - Adaptive Voice Capture and Voice Calculator Routing
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, and an opt-in RMS automatic end-of-speech capture path.
+ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, and deterministic spoken-calculator routing.
+
+Checkpoint root causes and fixes:
+
+- End-of-speech could reach `maximum_duration_reached` because the previous detector cleared all trailing-silence evidence for any frame above one static silence threshold. Adaptive calibration now derives three bounded thresholds, and `POSSIBLE_SILENCE` resumes only after consecutive frames above the continue threshold.
+- Voice arithmetic reached IntentParser as number words and Whisper formatting, so digit/operator intent rules returned `unknown`. The versioned transcript normalizer now preserves raw text and converts only strict supported arithmetic into the unchanged safe calculator route.
+- The implementation and synthetic PCM tests ran on Windows. Raspberry Pi microphone behavior for this checkpoint is not claimed as verified until the owner pulls and runs the documented commands.
 
 Confirmed Phase 3 foundation:
 
@@ -65,11 +71,16 @@ Confirmed Phase 3 foundation:
 - Linux ALSA foreground raw-PCM streaming for automatic end-of-speech capture with `shell=False`
 - Auto-stop integration in single-turn and bounded multi-turn pipelines with fixed-duration fallback preserved
 - Owner-run `scripts/manual_verify_voice_activity_capture.py` for Raspberry Pi threshold calibration
+- Bounded ambient RMS calibration with mean/median/p90/peak/noise-floor diagnostics
+- Three-threshold start/continue/silence hysteresis with consecutive resume/end evidence
+- Versioned raw/cleaned/normalized transcript contracts
+- Strict spoken arithmetic conversion into the unchanged safe CalculatorSkill path
+- Conservative adjacent Whisper repetition cleanup and concise manual routing traces
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 912 tests.
+Current pytest collection: 959 tests.
 
-The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, and the bounded multi-turn session. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, VAD, Whisper, or Piper internals. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
+The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, and the bounded multi-turn session. Adaptive calibration remains inside the VAD boundary; transcript normalization remains between STT and `VoiceCommandRouter`. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, VAD, Whisper, Piper, or normalization internals. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
 
 `skills.VoiceSessionSkill` now starts a bounded mock voice session from text commands: "start voice session", "start mock voice", and "run voice test". It uses only `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop`, returns a transcript summary, and is wired through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path.
 
@@ -354,7 +365,10 @@ python scripts/manual_verify_single_turn_voice.py \
   --microphone-device hw:2,0 \
   --speaker-device plughw:CARD=Device,DEV=0 \
   --auto-stop \
+  --auto-calibration \
+  --calibration-seconds 0.75 \
   --speech-start-rms 200 \
+  --speech-continue-rms 160 \
   --silence-rms 120 \
   --silence-seconds 0.9 \
   --speech-wait-timeout 10 \
@@ -411,7 +425,10 @@ python scripts/manual_verify_multi_turn_voice.py \
   --microphone-device hw:2,0 \
   --speaker-device plughw:CARD=Device,DEV=0 \
   --auto-stop \
+  --auto-calibration \
+  --calibration-seconds 0.75 \
   --speech-start-rms 200 \
+  --speech-continue-rms 160 \
   --silence-rms 120 \
   --silence-seconds 0.9 \
   --speech-wait-timeout 10 \
@@ -432,7 +449,7 @@ python scripts/manual_verify_multi_turn_voice.py \
 
 The fixed two-turn simulation was executed on Windows and returned calculator `Result: 4`; `goodbye Ares` was detected before Brain routing. Real Raspberry Pi auto-stop multi-turn execution remains the next owner-run hardware verification.
 
-Voice activity detection and automatic end-of-speech capture have been added.
+Adaptive voice activity calibration and robust calculator voice routing have been added on top of the original automatic end-of-speech checkpoint.
 
 Capture behavior:
 
@@ -440,13 +457,17 @@ Capture behavior:
 - New hardware-neutral component: `core.RmsVoiceActivityCapture`.
 - The Linux ALSA adapter owns the foreground `arecord` raw-PCM subprocess and passes bounded frames to the injected detector; the detector has no ALSA or subprocess dependency.
 - Default format is 16 kHz, mono, signed 16-bit PCM in 20 ms frames.
-- Initial tuning defaults are start RMS 200, silence RMS 120, three consecutive start frames, 0.9 seconds of silence, 10 seconds to begin speaking, 15 seconds maximum utterance, and 0.25 seconds pre-roll.
-- Terminal silence is omitted from the final validated WAV, while pauses shorter than the silence duration are retained.
+- Adaptive calibration samples 0.75 seconds of ambient audio and records mean, median, p90, peak, and robust noise-floor RMS.
+- Bounded start/continue/silence thresholds, consecutive start/resume/end evidence, and `POSSIBLE_SILENCE` hangover replace the old one-threshold reset behavior.
+- Sub-continue post-speech noise cannot extend capture indefinitely; isolated clicks cannot resume speech.
+- Terminal silence is omitted from the final validated WAV, while pauses with consecutive resumed speech are retained.
 - No-speech and invalid-audio results stop before Whisper, Brain, Piper, and speaker execution.
-- Transcript cleanup only normalizes whitespace. Calculator and intent safety validation are unchanged.
+- `TranscriptNormalizationRequestV1` / `TranscriptNormalizationResultV1` preserve raw, cleaned, and normalized forms.
+- Spoken arithmetic is converted deterministically into numeric/operator text before the existing IntentParser/Planner/ExecutionPipeline/CalculatorSkill path. Calculator character and AST safety validation are unchanged and `eval()` is not used.
+- Exact adjacent Whisper loops beyond the configured limit are collapsed conservatively; legitimate `two plus two plus two` is preserved.
 - `--fixed-duration --record-seconds 5` preserves the previous capture path as an explicit fallback.
 - The manifest advertises `voice.capture.activity`, V1 contract support, one task slot, and bounded logical resource metadata.
-- Current pytest collection: 912 tests.
+- Original VAD checkpoint collection: 912 tests. Current collection after adaptive calibration and routing hardening: 959 tests.
 
 Exact Raspberry Pi threshold-calibration command:
 
@@ -454,17 +475,26 @@ Exact Raspberry Pi threshold-calibration command:
 git pull origin main
 python scripts/manual_verify_voice_activity_capture.py \
   --microphone-device hw:2,0 \
+  --auto-calibration \
+  --calibration-seconds 0.75 \
   --speech-start-rms 200 \
+  --speech-continue-rms 160 \
   --silence-rms 120 \
+  --required-speech-frames 3 \
+  --required-continue-frames 3 \
+  --required-silence-frames 5 \
   --silence-seconds 0.9 \
   --speech-wait-timeout 10 \
   --max-utterance-seconds 15 \
   --pre-roll-seconds 0.25 \
   --frame-ms 20 \
+  --frame-debug \
   --verbose
 ```
 
-The calibration command prints measured ambient RMS, speech RMS, peak amplitude, thresholds, selected device, exact argument-list `arecord` command, output path, duration, and stop reason. It does not run Whisper, Brain, TTS, or playback. Thresholds remain hardware-specific calibration values and require owner verification on the Raspberry Pi.
+The calibration script runs no output audio by default. Add `--transcribe` for local Whisper diagnostics or `--transcribe --route` for the existing local Brain route. Use the controlled single-turn script with `--playback` for an audible response.
+
+The calibration command prints measured ambient RMS, speech RMS, peak amplitude, thresholds, selected device, exact argument-list `arecord` command, output path, duration, and stop reason. Without the optional flags it does not run Whisper or Brain, and it never runs TTS or playback. Thresholds remain hardware-specific calibration values and require owner verification on the Raspberry Pi.
 
 Speech-to-text adapter abstraction exists.
 
@@ -2077,7 +2107,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 912 tests.
+- Current pytest collection: 959 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2135,12 +2165,16 @@ Verification Notes
 - Whisper runtime setup tests cover clone/build/download/verification success, existing checkout/model reuse, missing dependency failure, build failure, import safety, runtime verifier success, missing command, missing model, missing WAV sample, transcription failure, empty transcription, and PASS/FAIL output paths without real network, Whisper, or Raspberry Pi hardware.
 - Speech-input hardening tests cover valid speech WAV diagnostics, silent WAV rejection, near-silent RMS rejection, corrupt WAV rejection, no-speech marker handling, English-only model language resolution, missing model/binary failures before subprocess execution, exact command diagnostics, runtime verifier diagnostics, runtime verifier `--language en` defaults, playback disabled by default, explicit playback opt-in, ALSA monitoring command planning, dry-run behavior, apply behavior, missing `amixer`, and preserving capture while muting mic playback monitoring.
 - VAD tests cover deterministic PCM no-speech, immediate/short/long utterances, pre-roll and first-syllable preservation, short pauses, threshold boundaries, hysteresis, maximum duration, cancellation, device/timeout/invalid-PCM failures, lifecycle, raw ALSA argument-list streaming, fixed-duration fallback, pipeline short-circuiting, single-turn/multi-turn routing, mutual exclusion, calibration script behavior, and hardware-free synthetic PCM integration through the real local Brain route.
+- Adaptive VAD tests cover quiet/noisy ambient calibration, a transient spike, derived bounds, start/continue/silence hysteresis, repeated internal pauses, post-speech sub-continue noise, normal trailing-silence completion, no-speech, maximum duration, cancellation, and calibration-disabled fallback.
+- Transcript normalization tests cover raw/cleaned/normalized preservation, number words zero through one thousand, negatives, decimals, spoken operators and parentheses, unsupported input rejection, conservative Whisper-loop cleanup, legitimate repeated arithmetic, versioned round trips, no `eval()`, and real Brain/CalculatorSkill routing to `Result: 4`.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Config and logging were left unchanged because the event bus and memory v1 work did not require changes there.
 
 Latest Commits
 
+- `fcc8a45` Harden calibrated voice capture and calculator routing
+- `a27575b` Document automatic end-of-speech capture
 - `9c57bdd` Implement automatic end-of-speech voice capture
 - `4b14766` Document controlled multi-turn voice sessions
 - `bbd0380` Add controlled multi-turn voice sessions
@@ -2247,8 +2281,8 @@ Latest Commits
 Next Planned Step
 
 - Architecture hardening before real hardware/adapters is complete: lifecycle, contracts, manifests, migrations, health/fallback, and measured resource budgets are implemented.
-- Phase 3 now includes verified owner-run ALSA, Whisper, Piper, speaker, voice-profile, single-turn, bounded multi-turn, and VAD auto-stop foundations.
-- Calibrate ambient/speech RMS on Raspberry Pi, then run the auto-stop single-turn and bounded multi-turn commands and record only observed segmentation, timing, stop-recognition, and cleanup behavior.
+- Phase 3 now includes verified owner-run ALSA, Whisper, Piper, speaker, voice-profile, single-turn, bounded multi-turn, adaptive VAD, and deterministic spoken-calculator routing foundations.
+- Pull `main` on Raspberry Pi, run adaptive calibration, then run the single-turn calculator command and record only observed thresholds, stop reason, segmentation, timing, transcript forms, and cleanup behavior.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not enable default real weather/market API behavior, Google Calendar integration, GPT, embeddings, vision, scheduling, notifications, or background automation yet.
