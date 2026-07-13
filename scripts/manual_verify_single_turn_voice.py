@@ -461,6 +461,9 @@ def _print_routing_diagnostics(
     output_func(f"Raw transcript: {result.raw_transcript or '(none)'}")
     output_func(f"Cleaned transcript: {result.cleaned_transcript or '(none)'}")
     output_func(f"Normalized command: {result.normalized_command or '(none)'}")
+    output_func(
+        f"Transcript cleanup rule: {result.transcript_cleanup_rule or 'none'}"
+    )
     output_func(f"Parsed intent: {result.detected_intent or 'unknown'}")
     output_func(f"Candidate skills: {candidate_summary or 'none'}")
     output_func(f"Selected skill: {result.routed_skill or 'none'}")

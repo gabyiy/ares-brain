@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple
 
 from core.Contracts import (
@@ -50,28 +51,7 @@ _TENS = {
 _NUMBER_WORDS = frozenset((*_UNITS, *_TEENS, *_TENS, "hundred", "thousand", "and"))
 _OPERATORS = {"plus": "+", "add": "+", "minus": "-", "subtract": "-", "times": "*"}
 _SYMBOLS = frozenset({"+", "-", "*", "/", "(", ")"})
-_WRAPPERS = (
-    "could you please calculate",
-    "can you please calculate",
-    "could you calculate",
-    "can you calculate",
-    "please calculate",
-    "could you work out",
-    "can you work out",
-    "please work out",
-    "tell me what is",
-    "tell me what",
-    "how much is",
-    "what's",
-    "what is",
-    "work out",
-    "calculate",
-    "compute",
-    "could you",
-    "can you",
-    "tell me",
-    "please",
-)
+CALCULATOR_NATURAL_LANGUAGE_WRAPPER = "calculator_natural_language_wrapper"
 _MULTIWORD_REPLACEMENTS = (
     (r"\bmultiplied\s+by\b", " * "),
     (r"\bdivided\s+by\b", " / "),
@@ -83,6 +63,52 @@ _TOKEN_PATTERN = re.compile(r"\d+(?:\.\d+)?|[a-z]+|[()+*/-]")
 _SAFE_ARITHMETIC_SOURCE = re.compile(r"^[a-z0-9\s()+*/.\-]+$")
 MAX_TRANSCRIPT_LENGTH = 1024
 MAX_ARITHMETIC_SOURCE_LENGTH = 256
+
+
+@dataclass(frozen=True)
+class _CalculatorWrapperRule:
+    prefix: str
+    explicit_calculator_request: bool = True
+    allow_trailing_is: bool = False
+
+
+@dataclass(frozen=True)
+class _CalculatorWrapperExtraction:
+    source: str
+    applied: bool = False
+    explicit_calculator_request: bool = False
+
+
+_CALCULATOR_WRAPPER_RULES = (
+    _CalculatorWrapperRule("could you please calculate"),
+    _CalculatorWrapperRule("would you please calculate"),
+    _CalculatorWrapperRule("can you please calculate"),
+    _CalculatorWrapperRule("could you calculate"),
+    _CalculatorWrapperRule("would you calculate"),
+    _CalculatorWrapperRule("can you calculate"),
+    _CalculatorWrapperRule("i'll calculate"),
+    _CalculatorWrapperRule("i will calculate"),
+    _CalculatorWrapperRule("please calculate"),
+    _CalculatorWrapperRule("tell me what is", explicit_calculator_request=False),
+    _CalculatorWrapperRule(
+        "tell me what",
+        explicit_calculator_request=False,
+        allow_trailing_is=True,
+    ),
+    _CalculatorWrapperRule("how much is", explicit_calculator_request=False),
+    _CalculatorWrapperRule("what's", explicit_calculator_request=False),
+    _CalculatorWrapperRule("what is", explicit_calculator_request=False),
+    _CalculatorWrapperRule("could you work out"),
+    _CalculatorWrapperRule("would you work out"),
+    _CalculatorWrapperRule("can you work out"),
+    _CalculatorWrapperRule("please work out"),
+    _CalculatorWrapperRule("work out"),
+    _CalculatorWrapperRule("solve"),
+    _CalculatorWrapperRule("calculate"),
+    _CalculatorWrapperRule("compute"),
+    _CalculatorWrapperRule("tell me", explicit_calculator_request=False),
+)
+_POLITE_ACTION_WRAPPERS = frozenset({"calculate", "compute", "solve", "work out"})
 
 
 class TranscriptNormalizer:
@@ -107,8 +133,9 @@ class TranscriptNormalizer:
         cleaned_base = _clean_text(raw)
         if len(cleaned_base) > MAX_TRANSCRIPT_LENGTH:
             return self._failure(request, "transcript_too_long")
+        initial_extraction = _extract_calculator_wrapper(cleaned_base.casefold())
         if (
-            _is_arithmetic_candidate(cleaned_base)
+            _is_arithmetic_candidate(cleaned_base, initial_extraction)
             and len(cleaned_base) > MAX_ARITHMETIC_SOURCE_LENGTH
         ):
             return self._failure(
@@ -116,6 +143,11 @@ class TranscriptNormalizer:
                 "arithmetic_expression_too_long",
                 cleaned_transcript=cleaned_base,
                 arithmetic_candidate=True,
+                cleanup_rule=(
+                    CALCULATOR_NATURAL_LANGUAGE_WRAPPER
+                    if initial_extraction.applied
+                    else "none"
+                ),
             )
         cleaned, detected, removed, cleanup_rule = _collapse_repetition_loops(
             cleaned_base,
@@ -131,9 +163,15 @@ class TranscriptNormalizer:
                 cleanup_rule=cleanup_rule,
             )
 
-        arithmetic_candidate = _is_arithmetic_candidate(cleaned)
+        extraction = _extract_calculator_wrapper(cleaned.casefold())
+        arithmetic_candidate = _is_arithmetic_candidate(cleaned, extraction)
         if arithmetic_candidate:
-            expression, rejection = _spoken_arithmetic_expression(cleaned)
+            if extraction.applied:
+                cleanup_rule = _merge_cleanup_rules(
+                    cleanup_rule,
+                    CALCULATOR_NATURAL_LANGUAGE_WRAPPER,
+                )
+            expression, rejection = _spoken_arithmetic_expression(extraction.source)
             if rejection:
                 return self._failure(
                     request,
@@ -258,20 +296,13 @@ def _collapse_repetition_loops(text: str, repetition_limit: int) -> Tuple[str, b
     return cleaned, bool(removed), removed, "adjacent_phrase_loop_v1" if removed else "none"
 
 
-def _is_arithmetic_candidate(text: str) -> bool:
+def _is_arithmetic_candidate(
+    text: str,
+    extraction: Optional[_CalculatorWrapperExtraction] = None,
+) -> bool:
     lowered = text.lower()
-    explicit_wrappers = (
-        "calculate",
-        "compute",
-        "work out",
-        "please calculate",
-        "can you calculate",
-        "could you calculate",
-    )
-    if any(
-        lowered == wrapper or lowered.startswith(f"{wrapper} ")
-        for wrapper in explicit_wrappers
-    ):
+    wrapper = extraction or _extract_calculator_wrapper(lowered)
+    if wrapper.applied and wrapper.explicit_calculator_request:
         return True
     if re.search(r"\d\s*(?:[+*/-]|\b(?:plus|minus|times|over)\b)", lowered):
         return True
@@ -285,12 +316,6 @@ def _is_arithmetic_candidate(text: str) -> bool:
 
 def _spoken_arithmetic_expression(text: str) -> Tuple[str, str]:
     source = text.casefold()
-    for _ in range(2):
-        stripped = _strip_wrapper(source)
-        if stripped == source:
-            break
-        source = stripped
-    source = re.sub(r"^is\s+", "", source)
     for pattern, replacement in _MULTIWORD_REPLACEMENTS:
         source = re.sub(pattern, replacement, source)
     source = re.sub(r"\bnegative\b", " - ", source)
@@ -353,16 +378,68 @@ def _spoken_arithmetic_expression(text: str) -> Tuple[str, str]:
     return expression, ""
 
 
-def _strip_wrapper(source: str) -> str:
-    for wrapper in _WRAPPERS:
-        if source == wrapper:
-            return ""
-        if not source.startswith(wrapper):
+def _extract_calculator_wrapper(source: str) -> _CalculatorWrapperExtraction:
+    original = source
+    working, _ = _strip_anchored_prefix(source, "ares")
+    match = _match_calculator_wrapper(working)
+
+    if match is None:
+        polite_source, polite = _strip_anchored_prefix(working, "please")
+        if polite:
+            match = _match_calculator_wrapper(
+                polite_source,
+                allowed_prefixes=_POLITE_ACTION_WRAPPERS,
+            )
+
+    if match is None:
+        return _CalculatorWrapperExtraction(source=original)
+
+    remainder, rule = match
+    if rule.allow_trailing_is:
+        remainder, _ = _strip_anchored_suffix(remainder, "is")
+    return _CalculatorWrapperExtraction(
+        source=remainder,
+        applied=True,
+        explicit_calculator_request=rule.explicit_calculator_request,
+    )
+
+
+def _match_calculator_wrapper(
+    source: str,
+    allowed_prefixes: Optional[frozenset[str]] = None,
+) -> Optional[Tuple[str, _CalculatorWrapperRule]]:
+    for rule in _CALCULATOR_WRAPPER_RULES:
+        if allowed_prefixes is not None and rule.prefix not in allowed_prefixes:
             continue
-        remainder = source[len(wrapper) :]
-        if remainder and (remainder[0].isspace() or remainder[0] in ",:;-"):
-            return remainder.lstrip(" ,:;-")
-    return source
+        remainder, matched = _strip_anchored_prefix(source, rule.prefix)
+        if matched:
+            return remainder, rule
+    return None
+
+
+def _strip_anchored_prefix(source: str, prefix: str) -> Tuple[str, bool]:
+    if source == prefix:
+        return "", True
+    if not source.startswith(prefix):
+        return source, False
+    remainder = source[len(prefix) :]
+    if not remainder or not (remainder[0].isspace() or remainder[0] in ",:;-"):
+        return source, False
+    return remainder.lstrip(" ,:;-"), True
+
+
+def _strip_anchored_suffix(source: str, suffix: str) -> Tuple[str, bool]:
+    if source == suffix:
+        return "", True
+    marker = f" {suffix}"
+    if not source.endswith(marker):
+        return source, False
+    return source[: -len(marker)].rstrip(), True
+
+
+def _merge_cleanup_rules(*rules: str) -> str:
+    applied = [rule for rule in rules if rule and rule != "none"]
+    return "+".join(dict.fromkeys(applied)) if applied else "none"
 
 
 def _parse_number(tokens: List[str], start: int) -> Tuple[str, int, str]:

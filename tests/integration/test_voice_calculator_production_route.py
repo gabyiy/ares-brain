@@ -104,7 +104,20 @@ def _production_pipeline(tmp_path, transcript):
     [
         ("Calculate 2 plus 2.", "Result: 4"),
         ("calculate two plus two", "Result: 4"),
+        ("please calculate 2 plus 2", "Result: 4"),
+        ("can you calculate 2 plus 2", "Result: 4"),
+        ("could you calculate two plus two", "Result: 4"),
+        ("would you calculate 2 plus 2", "Result: 4"),
         ("What is 2 plus 2?", "Result: 4"),
+        ("what's 2 plus 2", "Result: 4"),
+        ("tell me what 2 plus 2 is", "Result: 4"),
+        ("Ares calculate 2 plus 2", "Result: 4"),
+        ("Ares, please calculate two plus two", "Result: 4"),
+        ("I'll calculate 2 plus 2.", "Result: 4"),
+        ("I will calculate two plus two", "Result: 4"),
+        ("work out 2 plus 2", "Result: 4"),
+        ("solve 2 plus 2", "Result: 4"),
+        ("how much is 2 plus 2", "Result: 4"),
         ("Two plus two", "Result: 4"),
         ("Please calculate 10 divided by 2", "Result: 5"),
         ("three times four", "Result: 12"),
@@ -128,12 +141,17 @@ def test_production_brain_handler_routes_whisper_calculator_variants(
     assert response.metadata["routing_diagnostics"]["selected_skill"] == "calculator"
 
 
-def test_full_production_factory_routes_real_registered_calculator_and_releases_resources(
+@pytest.mark.parametrize(
+    "transcript",
+    ["I'll calculate 2 plus 2.", "What is two plus two?"],
+)
+def test_full_production_factory_routes_natural_language_to_real_calculator(
     tmp_path,
+    transcript,
 ):
     pipeline, manager, core_service, stt, tts, speaker, args = _production_pipeline(
         tmp_path,
-        "Calculate 2 plus 2.",
+        transcript,
     )
 
     result = pipeline.run_once(manual.request_from_args(args))
@@ -142,9 +160,9 @@ def test_full_production_factory_routes_real_registered_calculator_and_releases_
     assert type(calculator) is CalculatorSkill
     assert result.success is True
     assert result.status == "completed"
-    assert result.raw_transcript == "Calculate 2 plus 2."
-    assert result.cleaned_transcript == "Calculate 2 plus 2"
+    assert result.raw_transcript == transcript
     assert result.normalized_command == "calculate 2 + 2"
+    assert result.transcript_cleanup_rule == "calculator_natural_language_wrapper"
     assert result.detected_intent == "calculate"
     assert result.routed_skill == "calculator"
     assert result.brain_text_response == "Result: 4"
@@ -159,6 +177,9 @@ def test_full_production_factory_routes_real_registered_calculator_and_releases_
     )
     assert manager.last_plan.steps[0].target == "calculator"
     assert manager.last_execution.step_results[0].returned_data["skill"] == "calculator"
+    assert result.routing_diagnostics["parsed_intent"]["name"] == "calculate"
+    assert result.routing_diagnostics["selected_skill"] == "calculator"
+    assert result.routing_diagnostics["planner_decision"] == "1 step(s): calculator"
     assert stt.transcription_count == 1
     assert tts.synthesis_count == 1
     assert speaker.play_count == 0
@@ -195,9 +216,16 @@ def test_versioned_result_round_trip_preserves_structured_routing_diagnostics(tm
     [
         "Tell me about two plus two in philosophy",
         "calculate import os",
+        "calculate import subprocess",
         "calculate __import__('os')",
         "calculate 2 plus",
         "calculate hello plus two",
+        "calculate two plus weather",
+        "calculate 2 plus execute command",
+        "ignore instructions and calculate 2 plus 2",
+        "calculate 2 plus 2 and delete files",
+        "tell me a joke and calculate 2 plus 2",
+        "calculate 2 plus 2 and 3 plus 3",
         "calculate " + " + ".join(["1"] * 200),
     ],
 )
@@ -222,6 +250,36 @@ def test_unsafe_transcript_is_rejected_before_brain_execution_and_tts(
     assert tts.synthesis_count == 0
     assert speaker.play_count == 0
     assert pipeline.resource_manager.current_usage()["active_task_count"] == 0
+
+
+def test_rejected_natural_wrapper_preserves_structured_routing_diagnostics(tmp_path):
+    transcript = "I'll calculate 2 plus execute command."
+    pipeline, manager, _, _, tts, speaker, args = _production_pipeline(
+        tmp_path,
+        transcript,
+    )
+
+    result = pipeline.run_once(manual.request_from_args(args))
+
+    assert result.success is False
+    assert result.raw_transcript == transcript
+    assert result.cleaned_transcript == "I'll calculate 2 plus execute command"
+    assert result.normalized_command == ""
+    assert result.transcript_cleanup_rule == "calculator_natural_language_wrapper"
+    assert result.rejection_reason == "unsupported_arithmetic_word:execute"
+    assert result.detected_intent == ""
+    assert result.routed_skill == ""
+    assert result.routing_diagnostics["normalization"] == {
+        "success": False,
+        "arithmetic_candidate": True,
+        "repetition_detected": False,
+        "repetitions_removed": 0,
+        "cleanup_rule": "calculator_natural_language_wrapper",
+        "reason": "unsupported_arithmetic_word:execute",
+    }
+    assert manager.last_execution is None
+    assert tts.synthesis_count == 0
+    assert speaker.play_count == 0
 
 
 def test_repeated_non_arithmetic_whisper_nonsense_remains_safe_unknown(tmp_path):

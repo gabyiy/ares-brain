@@ -76,6 +76,7 @@ def test_diagnostic_routing_flag_prints_bounded_structured_report():
             raw_transcript="Calculate 2 plus 2.",
             cleaned_transcript="Calculate 2 plus 2",
             normalized_command="calculate 2 + 2",
+            transcript_cleanup_rule="calculator_natural_language_wrapper",
             detected_intent="calculate",
             candidate_skills=[
                 {
@@ -105,6 +106,9 @@ def test_diagnostic_routing_flag_prints_bounded_structured_report():
     assert "Raw transcript: Calculate 2 plus 2." in outputs
     assert "Cleaned transcript: Calculate 2 plus 2" in outputs
     assert "Normalized command: calculate 2 + 2" in outputs
+    assert (
+        "Transcript cleanup rule: calculator_natural_language_wrapper" in outputs
+    )
     assert "Parsed intent: calculate" in outputs
     assert "Candidate skills: calculator (confidence=1.000, selected)" in outputs
     assert "Selected skill: calculator" in outputs

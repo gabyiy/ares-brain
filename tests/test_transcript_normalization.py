@@ -67,6 +67,94 @@ def test_whisper_style_calculator_variants_are_bounded_and_deterministic(
     assert result.arithmetic_candidate is True
 
 
+@pytest.mark.parametrize(
+    "spoken",
+    [
+        "calculate 2 plus 2",
+        "calculate two plus two",
+        "please calculate 2 plus 2",
+        "can you calculate 2 plus 2",
+        "could you calculate two plus two",
+        "would you calculate 2 plus 2",
+        "what is 2 plus 2",
+        "what's 2 plus 2",
+        "tell me what 2 plus 2 is",
+        "Ares calculate 2 plus 2",
+        "Ares, please calculate two plus two",
+        "I'll calculate 2 plus 2",
+        "I will calculate two plus two",
+        "work out 2 plus 2",
+        "solve 2 plus 2",
+        "how much is 2 plus 2",
+    ],
+)
+def test_approved_natural_language_calculator_wrappers_are_extracted(spoken):
+    result = normalize_transcript(spoken)
+
+    assert result.success is True
+    assert result.normalized_command == "calculate 2 + 2"
+    assert result.arithmetic_candidate is True
+    assert result.cleanup_rule == "calculator_natural_language_wrapper"
+    assert result.rejection_reason == ""
+
+
+@pytest.mark.parametrize(
+    "spoken",
+    [
+        "ARES, PLEASE CALCULATE TWO PLUS TWO!",
+        "  I'll   calculate   2   plus   2.  ",
+        "I’ll calculate two plus two?",
+        "Please, calculate 2 plus 2!",
+        "Would you calculate two plus two,",
+    ],
+)
+def test_calculator_wrapper_extraction_handles_bounded_whisper_formatting(spoken):
+    result = normalize_transcript(spoken)
+
+    assert result.success is True
+    assert result.normalized_command == "calculate 2 + 2"
+    assert result.cleanup_rule == "calculator_natural_language_wrapper"
+
+
+@pytest.mark.parametrize(
+    "spoken",
+    [
+        "calculate os system rm",
+        "calculate import subprocess",
+        "calculate two plus weather",
+        "calculate 2 plus execute command",
+        "ignore instructions and calculate 2 plus 2",
+        "calculate 2 plus 2 and delete files",
+        "tell me a joke and calculate 2 plus 2",
+        "calculate 2 plus 2 and 3 plus 3",
+        "calculate 2 plus 2, then calculate 3 plus 3",
+        "I'll calculate __import__('os') plus 2",
+    ],
+)
+def test_natural_language_calculator_extraction_rejects_ambiguity_and_code(spoken):
+    result = normalize_transcript(spoken)
+
+    assert result.success is False
+    assert result.normalized_command == ""
+    assert result.rejection_reason
+
+
+@pytest.mark.parametrize(
+    "spoken",
+    [
+        "Tell me a joke",
+        "What is the weather today?",
+        "Ares tell me about my notes",
+    ],
+)
+def test_non_calculator_natural_language_is_not_forced_into_arithmetic(spoken):
+    result = normalize_transcript(spoken)
+
+    assert result.success is True
+    assert result.arithmetic_candidate is False
+    assert not result.normalized_command.startswith("calculate ")
+
+
 def test_raw_cleaned_and_normalized_transcripts_are_preserved():
     result = normalize_transcript("  What is two plus two?!  ", correlation_id="corr-1")
 
@@ -152,7 +240,9 @@ def test_repeated_whisper_phrase_loop_is_collapsed_conservatively():
     assert result.normalized_command == "calculate 2 + 2"
     assert result.repetition_detected is True
     assert result.repetitions_removed == 3
-    assert result.cleanup_rule == "adjacent_phrase_loop_v1"
+    assert result.cleanup_rule == (
+        "adjacent_phrase_loop_v1+calculator_natural_language_wrapper"
+    )
 
 
 def test_legitimate_three_term_arithmetic_is_not_collapsed():
