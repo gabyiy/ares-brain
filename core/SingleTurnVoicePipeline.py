@@ -580,10 +580,22 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         preserve = request.cleanup_policy == PIPELINE_CLEANUP_KEEP or result is None or not result.success
         removed: List[str] = []
         preserved: List[str] = []
-        for raw_path in (
+        recording = dict(result.data.get("recording") or {}) if result else {}
+        recording_data = dict(recording.get("data") or {})
+        candidate_paths = [
             request.recording_output_path,
+            result.recorded_wav_path if result else "",
             result.generated_speech_wav_path if result else "",
-        ):
+            recording.get("raw_wav_path", ""),
+            recording.get("assembled_wav_path", ""),
+            recording.get("normalized_wav_path", ""),
+            recording_data.get("raw_wav_path", ""),
+            recording_data.get("assembled_wav_path", ""),
+            recording_data.get("normalized_wav_path", ""),
+            recording_data.get("final_whisper_input_path", ""),
+        ]
+        stage_directories = set()
+        for raw_path in dict.fromkeys(str(item or "") for item in candidate_paths):
             if not raw_path:
                 continue
             path = Path(raw_path).expanduser()
@@ -595,8 +607,15 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
             try:
                 path.unlink()
                 removed.append(str(path))
+                if ".turn." in path.parent.name:
+                    stage_directories.add(path.parent)
             except OSError:
                 preserved.append(str(path))
+        for directory in sorted(stage_directories, key=str, reverse=True):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
         return {"policy": request.cleanup_policy, "removed": removed, "preserved": preserved}
 
     def _failure(

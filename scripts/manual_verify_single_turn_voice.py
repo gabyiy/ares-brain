@@ -48,6 +48,7 @@ DEFAULT_FRAME_MS = 20
 DEFAULT_REQUIRED_SPEECH_FRAMES = 3
 DEFAULT_REQUIRED_CONTINUE_FRAMES = 3
 DEFAULT_REQUIRED_SILENCE_FRAMES = 5
+DEFAULT_DURATION_LOSS_TOLERANCE_SECONDS = 0.05
 
 WARNING = (
     "WARNING: This runs exactly one owner-triggered local ARES voice turn and exits. "
@@ -133,6 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--frame-debug", action="store_true")
     parser.add_argument("--diagnostic-audio", action="store_true")
+    parser.add_argument(
+        "--duration-loss-tolerance",
+        type=float,
+        default=DEFAULT_DURATION_LOSS_TOLERANCE_SECONDS,
+    )
+    parser.add_argument("--playback-debug-stages", action="store_true")
     parser.add_argument("--diagnostic-routing", action="store_true")
     parser.add_argument("--playback", action="store_true")
     parser.add_argument("--keep-audio", action="store_true")
@@ -359,6 +366,7 @@ def request_from_args(args: argparse.Namespace) -> SingleTurnVoiceRequestV1:
         maximum_utterance_seconds=args.max_utterance_seconds,
         pre_roll_seconds=args.pre_roll_seconds,
         frame_duration_ms=args.frame_ms,
+        duration_loss_tolerance_seconds=args.duration_loss_tolerance,
         frame_debug_enabled=bool(args.frame_debug),
         diagnostic_audio=bool(args.diagnostic_audio),
         tts_voice_profile=args.voice_profile,
@@ -388,6 +396,9 @@ def run_manual_verification(
 ) -> int:
     args = build_parser().parse_args(argv)
     output_func(WARNING)
+    if args.playback_debug_stages and not args.diagnostic_audio:
+        output_func("FAIL: --playback-debug-stages requires --diagnostic-audio.")
+        return 2
     if not args.playback:
         output_func("Speaker playback is disabled. Add --playback to hear the response.")
     request = request_from_args(args)
@@ -424,6 +435,22 @@ def run_manual_verification(
         frame_debug=bool(args.frame_debug or args.verbose),
         diagnostic_audio=bool(args.diagnostic_audio),
     )
+    transcript_output_path = ""
+    if args.diagnostic_audio:
+        transcript_output_path = _write_diagnostic_transcript(result)
+        output_func(
+            "Whisper transcript output path: "
+            f"{transcript_output_path or '(not written)'}"
+        )
+    playback_debug_success = True
+    if args.playback_debug_stages:
+        playback_debug_success = _play_diagnostic_audio_stages(
+            active_pipeline,
+            result,
+            args.speaker_device,
+            args.timeout,
+            output_func,
+        )
     if result.error_reason:
         output_func(f"Failure stage: {result.error_stage}")
         output_func(f"Failure reason: {result.error_reason}")
@@ -431,7 +458,7 @@ def run_manual_verification(
         output_func(f"Generated speech WAV: {result.generated_speech_wav_path}")
     if args.verbose:
         output_func(json.dumps(result.to_dict(), indent=2, sort_keys=True))
-    return 0 if result.success else 2
+    return 0 if result.success and playback_debug_success else 2
 
 
 def _stage_printer(output_func: Callable[[str], None]):
@@ -537,10 +564,56 @@ def _print_capture_diagnostics(
         f"Normalized sample width: {value('normalized_sample_width_bytes', 0)} bytes"
     )
     output_func(f"Raw WAV path: {value('raw_wav_path', '(not retained)') or '(not retained)'}")
+    output_func(
+        f"Assembled WAV path: {value('assembled_wav_path', '(not retained)') or '(not retained)'}"
+    )
     output_func(f"Normalized WAV path: {value('normalized_wav_path', result.recorded_wav_path)}")
     output_func(f"Raw duration: {float(value('raw_duration_seconds', 0.0)):.3f}s")
     output_func(
+        "Assembled duration before normalization: "
+        f"{float(value('assembled_duration_seconds', 0.0)):.3f}s"
+    )
+    output_func(
         f"Normalized duration: {float(value('normalized_duration_seconds', 0.0)):.3f}s"
+    )
+    output_func(
+        "Whisper input duration: "
+        f"{float(value('whisper_input_duration_seconds', 0.0)):.3f}s"
+    )
+    output_func(f"Total ALSA frames read: {int(value('total_frames_read', 0))}")
+    output_func(f"Total raw samples: {int(value('total_raw_samples', 0))}")
+    output_func(f"Raw PCM byte count: {int(value('raw_byte_count', 0))}")
+    output_func(
+        f"Pre-roll frames retained: {int(value('pre_roll_frames_retained', 0))}"
+    )
+    output_func(
+        f"Speech frames retained: {int(value('speech_frames_retained', 0))}"
+    )
+    output_func(
+        "Possible-silence frames retained: "
+        f"{int(value('possible_silence_frames_retained', 0))}"
+    )
+    output_func(
+        f"Final assembled frame count: {int(value('final_assembled_frame_count', 0))}"
+    )
+    output_func(
+        f"Final assembled sample count: {int(value('final_assembled_sample_count', 0))}"
+    )
+    output_func(
+        f"Final assembled byte count: {int(value('final_assembled_byte_count', 0))}"
+    )
+    output_func(f"Normalized sample count: {int(value('normalized_sample_count', 0))}")
+    output_func(f"Normalized byte count: {int(value('normalized_byte_count', 0))}")
+    output_func(
+        "Leading silence trimmed: "
+        f"{float(value('leading_silence_trimmed_seconds', 0.0)):.3f}s"
+    )
+    output_func(
+        "Trailing silence trimmed: "
+        f"{float(value('trailing_silence_trimmed_seconds', 0.0)):.3f}s"
+    )
+    output_func(
+        f"Duration invariant: {value('duration_invariant_status', 'not_checked')}"
     )
     output_func(
         f"Final Whisper input path: {value('final_whisper_input_path', result.recorded_wav_path)}"
@@ -571,6 +644,82 @@ def _print_capture_diagnostics(
                 f"  {transition.get('from')} -> {transition.get('to')} "
                 f"(frame={transition.get('frame')}, rms={transition.get('rms')})"
             )
+
+
+def _diagnostic_audio_paths(result: Any) -> dict[str, str]:
+    recording = dict(result.data.get("recording") or {})
+    data = dict(recording.get("data") or {})
+
+    def value(name: str) -> str:
+        return str(recording.get(name) or data.get(name) or "")
+
+    return {
+        "raw capture": value("raw_wav_path"),
+        "assembled utterance": value("assembled_wav_path"),
+        "normalized Whisper input": value("normalized_wav_path")
+        or str(result.recorded_wav_path or ""),
+    }
+
+
+def _write_diagnostic_transcript(result: Any) -> str:
+    normalized_path = _diagnostic_audio_paths(result)["normalized Whisper input"]
+    transcript = str(result.raw_transcript or result.recognized_text or "")
+    if not normalized_path or not transcript:
+        return ""
+    directory = Path(normalized_path).expanduser().parent
+    output_path = directory / "whisper_transcript.txt"
+    temporary_path = directory / ".whisper_transcript.txt.tmp"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        temporary_path.write_text(transcript + "\n", encoding="utf-8")
+        temporary_path.replace(output_path)
+    except OSError:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return ""
+    return str(output_path)
+
+
+def _play_diagnostic_audio_stages(
+    pipeline: Any,
+    result: Any,
+    speaker_device: str,
+    timeout_seconds: float,
+    output_func: Callable[[str], None],
+) -> bool:
+    speaker = getattr(pipeline, "speaker_adapter", None)
+    if speaker is None:
+        output_func("FAIL: diagnostic playback speaker adapter is unavailable.")
+        return False
+    paths = _diagnostic_audio_paths(result)
+    if any(not path or not Path(path).expanduser().exists() for path in paths.values()):
+        output_func("FAIL: one or more diagnostic audio stages are unavailable.")
+        return False
+    started = speaker.start()
+    if not getattr(started, "success", False):
+        output_func("FAIL: diagnostic playback speaker could not start.")
+        return False
+    success = True
+    try:
+        for label, path in paths.items():
+            output_func(f"Playing diagnostic {label}: {path}")
+            playback = speaker.play_wav(
+                path,
+                device=speaker_device,
+                timeout_seconds=timeout_seconds,
+            )
+            if not getattr(playback, "success", False):
+                output_func(
+                    f"FAIL: diagnostic {label} playback failed: "
+                    f"{getattr(playback, 'error_message', 'playback_failed')}"
+                )
+                success = False
+                break
+    finally:
+        speaker.stop()
+    return success
 
 
 def main() -> None:

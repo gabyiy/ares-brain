@@ -181,6 +181,49 @@ class FakeVadMicrophone(FakeMicrophone):
         )
 
 
+class TruncatedVadMicrophone(FakeVadMicrophone):
+    def record_until_silence(self, output_path, **kwargs):
+        self.order.append("microphone.vad_record")
+        self.vad_calls.append(dict(kwargs))
+        normalized = Path(output_path).parent / "current-normalized.wav"
+        _write_wav(normalized, sample=self.sample, frames=16000)
+        return VoiceActivityCaptureResultV1(
+            success=True,
+            status=VAD_STATUS_COMPLETED_AFTER_SILENCE,
+            wav_path=str(normalized),
+            assembled_wav_path=str(Path(output_path).parent / "assembled.wav"),
+            normalized_wav_path=str(normalized),
+            final_whisper_input_path=str(normalized),
+            speech_detected=True,
+            duration_seconds=1.0,
+            assembled_duration_seconds=3.42,
+            normalized_duration_seconds=1.0,
+            whisper_input_duration_seconds=1.0,
+            stop_reason=VAD_STATUS_COMPLETED_AFTER_SILENCE,
+        )
+
+
+class FinalizedPathVadMicrophone(FakeVadMicrophone):
+    def record_until_silence(self, output_path, **kwargs):
+        self.order.append("microphone.vad_record")
+        self.vad_calls.append(dict(kwargs))
+        _write_wav(output_path, sample=100, frames=800)
+        finalized = Path(output_path).parent / "current-turn-normalized.wav"
+        _write_wav(finalized, sample=self.sample, frames=1600)
+        return VoiceActivityCaptureResultV1(
+            success=True,
+            status=VAD_STATUS_COMPLETED_AFTER_SILENCE,
+            wav_path=str(finalized),
+            normalized_wav_path=str(finalized),
+            final_whisper_input_path=str(finalized),
+            speech_detected=True,
+            duration_seconds=0.1,
+            assembled_duration_seconds=0.1,
+            normalized_duration_seconds=0.1,
+            stop_reason=VAD_STATUS_COMPLETED_AFTER_SILENCE,
+        )
+
+
 class FakeSpeechToText:
     def __init__(self, order, text="calculate 2 + 2", fail=False, clock=None, advance=0, on_call=None):
         self.order = order
@@ -190,6 +233,7 @@ class FakeSpeechToText:
         self.advance = advance
         self.on_call = on_call
         self.calls = 0
+        self.audio_chunks = []
 
     def health_check(self):
         return TranscriptionResult(True, "healthy", data={})
@@ -197,6 +241,7 @@ class FakeSpeechToText:
     def transcribe(self, audio_chunk):
         self.order.append("whisper.transcribe")
         self.calls += 1
+        self.audio_chunks.append(audio_chunk)
         if self.on_call:
             self.on_call()
         if self.clock:
@@ -1083,6 +1128,60 @@ def test_auto_stop_capture_calls_whisper_once_with_final_trimmed_wav(tmp_path):
     assert microphone.vad_calls[0]["required_silence_frames"] == 5
     assert result.data["recording"]["data"]["terminal_silence_trimmed"] is True
     assert order.index("microphone.vad_record") < order.index("whisper.transcribe")
+
+
+def test_auto_stop_rejects_unexplained_duration_loss_before_whisper(tmp_path):
+    order = []
+    microphone = TruncatedVadMicrophone(order)
+    stt = FakeSpeechToText(order)
+    pipeline, _, _, _, tts, speaker, handled, _ = _pipeline(
+        tmp_path,
+        microphone=microphone,
+        stt=stt,
+    )
+
+    result = pipeline.run_once(
+        _request(
+            tmp_path,
+            capture_mode=CAPTURE_MODE_AUTO_STOP,
+            playback_enabled=False,
+        )
+    )
+
+    assert result.success is False
+    assert result.status == "invalid_recording"
+    assert result.error_reason == "audio_duration_invariant_failed"
+    assert stt.calls == 0
+    assert handled == []
+    assert tts.requests == []
+    assert speaker.play_count == 0
+
+
+def test_auto_stop_whisper_reads_current_finalized_normalized_file(tmp_path):
+    order = []
+    microphone = FinalizedPathVadMicrophone(order)
+    stt = FakeSpeechToText(order)
+    pipeline, _, _, _, _, _, _, _ = _pipeline(
+        tmp_path,
+        microphone=microphone,
+        stt=stt,
+    )
+
+    result = pipeline.run_once(
+        _request(
+            tmp_path,
+            capture_mode=CAPTURE_MODE_AUTO_STOP,
+            playback_enabled=False,
+        )
+    )
+
+    assert result.success is True
+    assert stt.calls == 1
+    assert result.recorded_wav_path.endswith("current-turn-normalized.wav")
+    assert stt.audio_chunks[0].metadata["wav_path"] == result.recorded_wav_path
+    assert stt.audio_chunks[0].metadata["final_whisper_input_path"] == (
+        result.recorded_wav_path
+    )
 
 
 def test_auto_stop_capture_and_speaker_playback_remain_mutually_exclusive(tmp_path):

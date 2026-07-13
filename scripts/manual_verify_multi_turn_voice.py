@@ -28,6 +28,7 @@ from scripts.manual_verify_single_turn_voice import (  # noqa: E402
     DEFAULT_REQUIRED_SPEECH_FRAMES,
     DEFAULT_REQUIRED_CONTINUE_FRAMES,
     DEFAULT_REQUIRED_SILENCE_FRAMES,
+    DEFAULT_DURATION_LOSS_TOLERANCE_SECONDS,
     DEFAULT_SILENCE_RMS,
     DEFAULT_SILENCE_SECONDS,
     DEFAULT_SPEECH_START_RMS,
@@ -158,6 +159,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--frame-debug", action="store_true")
     parser.add_argument("--diagnostic-audio", action="store_true")
+    parser.add_argument(
+        "--duration-loss-tolerance",
+        type=float,
+        default=DEFAULT_DURATION_LOSS_TOLERANCE_SECONDS,
+    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--text-turn", action="append", default=[])
     parser.add_argument("--interactive-text", action="store_true")
@@ -193,6 +199,7 @@ def request_from_args(args: argparse.Namespace) -> MultiTurnVoiceSessionRequestV
         maximum_utterance_seconds=args.max_utterance_seconds,
         pre_roll_seconds=args.pre_roll_seconds,
         frame_duration_ms=args.frame_ms,
+        duration_loss_tolerance_seconds=args.duration_loss_tolerance,
         frame_debug_enabled=bool(args.frame_debug),
         diagnostic_audio=bool(args.diagnostic_audio),
         tts_voice_profile=args.voice_profile,

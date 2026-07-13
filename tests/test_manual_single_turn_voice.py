@@ -1,15 +1,16 @@
 from pathlib import Path
 
-from core import SingleTurnVoiceResultV1
+from core import SingleTurnVoiceResultV1, SpeakerPlaybackResult
 from core.Intent import Intent
 from scripts import manual_verify_single_turn_voice as manual
 
 
 class StubPipeline:
-    def __init__(self, result):
+    def __init__(self, result, speaker_adapter=None):
         self.result = result
         self.requests = []
         self.stop_calls = []
+        self.speaker_adapter = speaker_adapter
 
     def run_once(self, request):
         self.requests.append(request)
@@ -17,6 +18,23 @@ class StubPipeline:
 
     def stop(self, request):
         self.stop_calls.append(request)
+
+
+class FakeSpeaker:
+    def __init__(self):
+        self.calls = []
+
+    def start(self):
+        self.calls.append("start")
+        return SpeakerPlaybackResult(True, "started")
+
+    def play_wav(self, wav_path, device=None, timeout_seconds=None):
+        self.calls.append(("play", str(wav_path), device, timeout_seconds))
+        return SpeakerPlaybackResult(True, "played", wav_path=str(wav_path))
+
+    def stop(self):
+        self.calls.append("stop")
+        return SpeakerPlaybackResult(True, "stopped")
 
 
 def _success_result():
@@ -43,7 +61,9 @@ def test_manual_script_import_is_safe_and_defaults_are_hardware_specific_only_as
     assert args.whisper_model == "models/whisper/ggml-base.en.bin"
     assert args.playback is False
     assert args.diagnostic_audio is False
+    assert args.playback_debug_stages is False
     assert args.diagnostic_routing is False
+    assert args.duration_loss_tolerance == 0.05
 
 
 def test_manual_text_simulation_builds_request_and_prints_concise_summary():
@@ -163,6 +183,79 @@ def test_diagnostic_audio_prints_requested_actual_and_normalized_formats():
     assert "Final Whisper input path: normalized.wav" in outputs
 
 
+def test_debug_stage_playback_requires_explicit_diagnostic_audio():
+    pipeline = StubPipeline(_success_result())
+    outputs = []
+
+    code = manual.run_manual_verification(
+        ["--text-input", "status", "--playback-debug-stages"],
+        output_func=outputs.append,
+        pipeline=pipeline,
+    )
+
+    assert code == 2
+    assert pipeline.requests == []
+    assert "requires --diagnostic-audio" in "\n".join(outputs)
+
+
+def test_diagnostic_audio_preserves_transcript_and_plays_stages_in_order(tmp_path):
+    raw = tmp_path / "raw_capture.wav"
+    assembled = tmp_path / "assembled_utterance.wav"
+    normalized = tmp_path / "normalized_whisper_input.wav"
+    for path in (raw, assembled, normalized):
+        path.write_bytes(b"diagnostic-audio")
+    result = SingleTurnVoiceResultV1(
+        success=True,
+        status="completed",
+        raw_transcript="Hello Ares, what is two plus two?",
+        recorded_wav_path=str(normalized),
+        data={
+            "recording": {
+                "success": True,
+                "status": "completed_after_silence",
+                "data": {
+                    "raw_wav_path": str(raw),
+                    "assembled_wav_path": str(assembled),
+                    "normalized_wav_path": str(normalized),
+                    "final_whisper_input_path": str(normalized),
+                },
+            }
+        },
+    )
+    speaker = FakeSpeaker()
+    pipeline = StubPipeline(result, speaker_adapter=speaker)
+    outputs = []
+
+    code = manual.run_manual_verification(
+        [
+            "--text-input",
+            "status",
+            "--diagnostic-audio",
+            "--playback-debug-stages",
+            "--speaker-device",
+            "plughw:CARD=Device,DEV=0",
+            "--timeout",
+            "12",
+        ],
+        output_func=outputs.append,
+        pipeline=pipeline,
+    )
+
+    assert code == 0
+    assert speaker.calls == [
+        "start",
+        ("play", str(raw), "plughw:CARD=Device,DEV=0", 12.0),
+        ("play", str(assembled), "plughw:CARD=Device,DEV=0", 12.0),
+        ("play", str(normalized), "plughw:CARD=Device,DEV=0", 12.0),
+        "stop",
+    ]
+    transcript_path = normalized.parent / "whisper_transcript.txt"
+    assert transcript_path.read_text(encoding="utf-8") == (
+        "Hello Ares, what is two plus two?\n"
+    )
+    assert "Whisper transcript output path: " + str(transcript_path) in outputs
+
+
 def test_manual_real_arguments_are_forwarded_to_versioned_request():
     pipeline = StubPipeline(_success_result())
 
@@ -215,6 +308,7 @@ def test_manual_auto_stop_arguments_are_forwarded_without_changing_intent_safety
             "--required-speech-frames", "4",
             "--required-continue-frames", "3",
             "--required-silence-frames", "6",
+            "--duration-loss-tolerance", "0.08",
             "--frame-debug",
             "--diagnostic-audio",
         ],
@@ -240,6 +334,7 @@ def test_manual_auto_stop_arguments_are_forwarded_without_changing_intent_safety
     assert request.required_speech_frames == 4
     assert request.required_continue_frames == 3
     assert request.required_silence_frames == 6
+    assert request.duration_loss_tolerance_seconds == 0.08
     assert request.frame_debug_enabled is True
 
 

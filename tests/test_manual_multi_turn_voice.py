@@ -216,6 +216,7 @@ def test_request_preserves_auto_stop_capture_configuration():
             "--max-utterance-seconds", "12",
             "--pre-roll-seconds", "0.2",
             "--frame-ms", "20",
+            "--duration-loss-tolerance", "0.07",
             "--diagnostic-audio",
         ]
     )
@@ -233,5 +234,6 @@ def test_request_preserves_auto_stop_capture_configuration():
     assert request.maximum_utterance_seconds == 12
     assert request.pre_roll_seconds == 0.2
     assert request.frame_duration_ms == 20
+    assert request.duration_loss_tolerance_seconds == 0.07
     assert request.diagnostic_audio is True
     assert request.cleanup_policy == "keep"

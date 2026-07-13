@@ -90,6 +90,11 @@ _CALCULATOR_WRAPPER_RULES = (
     _CalculatorWrapperRule("i'll calculate"),
     _CalculatorWrapperRule("i will calculate"),
     _CalculatorWrapperRule("please calculate"),
+    _CalculatorWrapperRule(
+        "can you tell me what",
+        explicit_calculator_request=False,
+        allow_trailing_is=True,
+    ),
     _CalculatorWrapperRule("tell me what is", explicit_calculator_request=False),
     _CalculatorWrapperRule(
         "tell me what",
@@ -381,7 +386,12 @@ def _spoken_arithmetic_expression(text: str) -> Tuple[str, str]:
 
 def _extract_calculator_wrapper(source: str) -> _CalculatorWrapperExtraction:
     original = source
-    working, _ = _strip_anchored_prefix(source, "ares")
+    working = source
+    for vocative in ("hello, ares", "hello ares", "ares"):
+        candidate, matched = _strip_anchored_prefix(working, vocative)
+        if matched:
+            working = candidate
+            break
     match = _match_calculator_wrapper(working)
 
     if match is None:

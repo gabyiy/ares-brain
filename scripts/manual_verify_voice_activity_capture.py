@@ -27,6 +27,7 @@ from scripts.manual_verify_single_turn_voice import (  # noqa: E402
     DEFAULT_REQUIRED_SPEECH_FRAMES,
     DEFAULT_REQUIRED_CONTINUE_FRAMES,
     DEFAULT_REQUIRED_SILENCE_FRAMES,
+    DEFAULT_DURATION_LOSS_TOLERANCE_SECONDS,
     DEFAULT_SILENCE_RMS,
     DEFAULT_SILENCE_SECONDS,
     DEFAULT_SPEECH_START_RMS,
@@ -108,6 +109,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--frame-debug", action="store_true")
     parser.add_argument("--diagnostic-audio", action="store_true")
+    parser.add_argument(
+        "--duration-loss-tolerance",
+        type=float,
+        default=DEFAULT_DURATION_LOSS_TOLERANCE_SECONDS,
+    )
     parser.add_argument("--transcribe", action="store_true")
     parser.add_argument("--route", action="store_true")
     parser.add_argument("--language", default="en")
@@ -158,6 +164,7 @@ def run_manual_verification(
             maximum_utterance_seconds=args.max_utterance_seconds,
             pre_roll_seconds=args.pre_roll_seconds,
             frame_duration_ms=args.frame_ms,
+            duration_loss_tolerance_seconds=args.duration_loss_tolerance,
             frame_debug_enabled=bool(args.frame_debug),
             diagnostic_audio=bool(args.diagnostic_audio),
         )
@@ -181,9 +188,13 @@ def run_manual_verification(
     output_func(f"Normalized channels: {result.normalized_channels}")
     output_func(f"Normalized sample width: {result.normalized_sample_width_bytes} bytes")
     output_func(f"Raw WAV path: {result.raw_wav_path or '(not retained)'}")
+    output_func(f"Assembled WAV path: {result.assembled_wav_path or '(not retained)'}")
     output_func(f"Normalized WAV path: {result.normalized_wav_path or result.wav_path}")
     output_func(f"Raw duration: {result.raw_duration_seconds:.3f}s")
+    output_func(f"Untrimmed utterance duration: {result.untrimmed_duration_seconds:.3f}s")
+    output_func(f"Assembled duration: {result.assembled_duration_seconds:.3f}s")
     output_func(f"Normalized duration: {result.normalized_duration_seconds:.3f}s")
+    output_func(f"Whisper input duration: {result.whisper_input_duration_seconds:.3f}s")
     output_func(
         f"Final Whisper input path: {result.final_whisper_input_path or result.wav_path}"
     )
@@ -206,6 +217,26 @@ def run_manual_verification(
         f"silence={result.derived_silence_rms or args.silence_rms}"
     )
     output_func(f"Speech frames: {result.speech_frame_count}")
+    output_func(f"Total ALSA frames read: {result.total_frames_read}")
+    output_func(f"Total raw samples: {result.total_raw_samples}")
+    output_func(f"Raw PCM byte count: {result.raw_byte_count}")
+    output_func(f"Pre-roll frames retained: {result.pre_roll_frames_retained}")
+    output_func(f"Speech frames retained: {result.speech_frames_retained}")
+    output_func(
+        f"Possible-silence frames retained: {result.possible_silence_frames_retained}"
+    )
+    output_func(f"Final assembled frame count: {result.final_assembled_frame_count}")
+    output_func(f"Final assembled sample count: {result.final_assembled_sample_count}")
+    output_func(f"Final assembled byte count: {result.final_assembled_byte_count}")
+    output_func(f"Normalized sample count: {result.normalized_sample_count}")
+    output_func(f"Normalized byte count: {result.normalized_byte_count}")
+    output_func(
+        f"Leading silence trimmed: {result.leading_silence_trimmed_seconds:.3f}s"
+    )
+    output_func(
+        f"Trailing silence trimmed: {result.trailing_silence_trimmed_seconds:.3f}s"
+    )
+    output_func(f"Duration invariant: {result.duration_invariant_status}")
     output_func(f"Trailing-silence frames: {result.trailing_silence_frame_count}")
     output_func(f"Captured duration: {result.duration_seconds:.3f}s")
     output_func(f"Speech duration estimate: {result.speech_duration_seconds:.3f}s")

@@ -166,6 +166,9 @@ class RmsVoiceActivityCapture:
         listening_frames = 0
         total_frames = 0
         speech_frame_count = 0
+        pre_roll_frames_retained = 0
+        trailing_silence_frames_trimmed = 0
+        leading_silence_frames_trimmed = 0
         last_confirmed_speech_frame = 0
         speech_start_frame = 0
         stop_reason = ""
@@ -302,16 +305,27 @@ class RmsVoiceActivityCapture:
                     ambient_levels.append(rms)
                 if consecutive_speech >= request.required_speech_frames:
                     speech_detected = True
-                    captured.extend(item[0] for item in pre_roll)
+                    retained_pre_roll = list(pre_roll)
+                    captured.extend(item[0] for item in retained_pre_roll)
+                    speech_start_frame = total_frames - request.required_speech_frames + 1
+                    pre_roll_frames_retained = sum(
+                        frame_index < speech_start_frame
+                        for _, _, frame_index in retained_pre_roll
+                    )
+                    if retained_pre_roll:
+                        leading_silence_frames_trimmed = max(
+                            0,
+                            retained_pre_roll[0][2] - 1,
+                        )
                     qualifying = [
                         level
-                        for _, level, _ in pre_roll
-                        if level >= thresholds.speech_continue_rms
+                        for _, level, frame_index in retained_pre_roll
+                        if frame_index >= speech_start_frame
+                        and level >= thresholds.speech_continue_rms
                     ]
                     speech_levels.extend(qualifying)
                     speech_frame_count += len(qualifying)
                     active_frames = request.required_speech_frames
-                    speech_start_frame = total_frames - request.required_speech_frames + 1
                     last_confirmed_speech_frame = total_frames
                     _record_transition(
                         transitions,
@@ -414,12 +428,29 @@ class RmsVoiceActivityCapture:
                     detection_state = DETECTION_STATE_SPEECH
                     consecutive_resume = 0
                     consecutive_below_silence = 0
-                elif (
-                    len(pending_silence) >= silence_frames
-                    and consecutive_below_silence >= request.required_silence_frames
+                elif consecutive_below_silence >= max(
+                    silence_frames,
+                    request.required_silence_frames,
                 ):
+                    trailing_silence_frames_trimmed = consecutive_below_silence
+                    retained_pending = pending_silence[
+                        :-trailing_silence_frames_trimmed
+                    ]
+                    captured.extend(item[0] for item in retained_pending)
+                    retained_speech_levels = [
+                        level
+                        for _, level, _ in retained_pending
+                        if level >= thresholds.speech_continue_rms
+                    ]
+                    speech_levels.extend(retained_speech_levels)
+                    speech_frame_count += len(retained_speech_levels)
+                    if retained_pending:
+                        last_confirmed_speech_frame = max(
+                            last_confirmed_speech_frame,
+                            retained_pending[-1][2],
+                        )
                     stop_reason = VAD_STATUS_COMPLETED_AFTER_SILENCE
-                    silence_at_stop = len(pending_silence) * frame_seconds
+                    silence_at_stop = trailing_silence_frames_trimmed * frame_seconds
                     _record_transition(
                         transitions,
                         DETECTION_STATE_POSSIBLE_SILENCE,
@@ -432,8 +463,15 @@ class RmsVoiceActivityCapture:
 
             if active_frames >= maximum_frames:
                 stop_reason = VAD_STATUS_MAXIMUM_DURATION
-                silence_at_stop = len(pending_silence) * frame_seconds
+                silence_at_stop = consecutive_below_silence * frame_seconds
                 captured.extend(item[0] for item in pending_silence)
+                retained_speech_levels = [
+                    level
+                    for _, level, _ in pending_silence
+                    if level >= thresholds.speech_continue_rms
+                ]
+                speech_levels.extend(retained_speech_levels)
+                speech_frame_count += len(retained_speech_levels)
                 pending_silence.clear()
                 break
 
@@ -448,6 +486,31 @@ class RmsVoiceActivityCapture:
                 frame_count=total_frames,
                 levels=all_levels,
             )
+
+        assembled_frame_count = len(captured)
+        assembled_sample_count = assembled_frame_count * samples_per_frame
+        assembled_byte_count = len(pcm)
+        expected_assembled_bytes = (
+            assembled_sample_count * request.channels * request.sample_width_bytes
+        )
+        if assembled_byte_count != expected_assembled_bytes:
+            return self._failure(
+                request,
+                VAD_STATUS_INVALID_AUDIO,
+                "assembled_pcm_byte_count_mismatch",
+                started_at,
+                speech_detected=True,
+                frame_count=total_frames,
+                levels=all_levels,
+            )
+        possible_silence_frames_retained = max(
+            0,
+            assembled_frame_count - pre_roll_frames_retained - speech_frame_count,
+        )
+        assembled_duration_seconds = assembled_sample_count / request.sample_rate_hz
+        untrimmed_duration_seconds = (
+            assembled_frame_count + trailing_silence_frames_trimmed
+        ) * frame_seconds
 
         try:
             wav_path = _write_pcm_wav_atomic(request, pcm)
@@ -504,8 +567,36 @@ class RmsVoiceActivityCapture:
             sample_width_bytes=request.sample_width_bytes,
             frame_count=total_frames,
             speech_frame_count=speech_frame_count,
-            trailing_silence_frame_count=len(pending_silence),
+            trailing_silence_frame_count=trailing_silence_frames_trimmed,
             selected_device=request.microphone_device,
+            assembled_wav_path=str(wav_path),
+            normalized_wav_path=str(wav_path),
+            raw_duration_seconds=round(total_frames * frame_seconds, 6),
+            untrimmed_duration_seconds=round(untrimmed_duration_seconds, 6),
+            assembled_duration_seconds=round(assembled_duration_seconds, 6),
+            normalized_duration_seconds=float(wav.get("duration_seconds", 0.0)),
+            leading_silence_trimmed_seconds=round(
+                leading_silence_frames_trimmed * frame_seconds,
+                6,
+            ),
+            trailing_silence_trimmed_seconds=round(
+                trailing_silence_frames_trimmed * frame_seconds,
+                6,
+            ),
+            total_frames_read=total_frames,
+            total_raw_samples=total_frames * samples_per_frame,
+            raw_byte_count=total_frames * frame_bytes,
+            pre_roll_frames_retained=pre_roll_frames_retained,
+            speech_frames_retained=speech_frame_count,
+            possible_silence_frames_retained=possible_silence_frames_retained,
+            final_assembled_frame_count=assembled_frame_count,
+            final_assembled_sample_count=assembled_sample_count,
+            final_assembled_byte_count=assembled_byte_count,
+            normalized_sample_count=int(wav.get("frames", 0)),
+            normalized_byte_count=max(0, int(wav.get("byte_count", 0)) - 44),
+            whisper_input_duration_seconds=float(wav.get("duration_seconds", 0.0)),
+            duration_invariant_status="assembled_only",
+            final_whisper_input_path=str(wav_path),
             stop_reason=stop_reason,
             calibration_enabled=request.calibration_enabled,
             calibration_duration_seconds=(calibration_frames * frame_seconds),
@@ -540,6 +631,27 @@ class RmsVoiceActivityCapture:
                 "speech_start_status": VAD_STATUS_SPEECH_DETECTED,
                 "silence_frames_required": silence_frames,
                 "pre_roll_frames": pre_roll_frames,
+                "pre_roll_frames_retained": pre_roll_frames_retained,
+                "speech_frames_retained": speech_frame_count,
+                "possible_silence_frames_retained": possible_silence_frames_retained,
+                "trailing_silence_frames_trimmed": trailing_silence_frames_trimmed,
+                "leading_silence_frames_trimmed": leading_silence_frames_trimmed,
+                "total_frames_read": total_frames,
+                "total_raw_samples": total_frames * samples_per_frame,
+                "raw_byte_count": total_frames * frame_bytes,
+                "final_assembled_frame_count": assembled_frame_count,
+                "final_assembled_sample_count": assembled_sample_count,
+                "final_assembled_byte_count": assembled_byte_count,
+                "untrimmed_duration_seconds": round(untrimmed_duration_seconds, 6),
+                "assembled_duration_seconds": round(assembled_duration_seconds, 6),
+                "leading_silence_trimmed_seconds": round(
+                    leading_silence_frames_trimmed * frame_seconds,
+                    6,
+                ),
+                "trailing_silence_trimmed_seconds": round(
+                    trailing_silence_frames_trimmed * frame_seconds,
+                    6,
+                ),
                 "terminal_silence_trimmed": True,
                 "transitions": transitions,
                 "wav": wav,
@@ -696,6 +808,8 @@ def validate_voice_activity_request(
         raise ValueError("pre_roll_seconds_out_of_range")
     if not 0.01 <= request.frame_read_timeout_seconds <= 30.0:
         raise ValueError("frame_read_timeout_seconds_out_of_range")
+    if not 0.0 <= request.duration_loss_tolerance_seconds <= 2.0:
+        raise ValueError("duration_loss_tolerance_seconds_out_of_range")
     if not str(request.output_wav_path or "").lower().endswith(".wav"):
         raise ValueError("voice_activity_output_path_must_be_wav")
     return request

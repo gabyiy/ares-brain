@@ -27,7 +27,12 @@ from core.SingleTurnVoiceSupport import (
     speech_output_path,
 )
 from core.SpeechToText import TranscriptionResult
-from core.WavAudio import read_audio_chunk_wav, validate_canonical_wav, write_audio_chunk_wav
+from core.WavAudio import (
+    read_audio_chunk_wav,
+    validate_canonical_wav,
+    validate_duration_invariant,
+    write_audio_chunk_wav,
+)
 from core.VoiceActivityDetection import (
     CAPTURE_MODE_AUTO_STOP,
     VAD_STATUS_CANCELLED,
@@ -443,6 +448,9 @@ class SingleTurnVoiceStageMixin:
                     maximum_speech_continue_rms=request.maximum_speech_continue_rms,
                     minimum_silence_rms=request.minimum_silence_rms,
                     maximum_silence_rms=request.maximum_silence_rms,
+                    duration_loss_tolerance_seconds=(
+                        request.duration_loss_tolerance_seconds
+                    ),
                     frame_debug_enabled=request.frame_debug_enabled,
                     diagnostic_audio=request.diagnostic_audio,
                     frame_read_timeout_seconds=min(
@@ -533,6 +541,16 @@ class SingleTurnVoiceStageMixin:
                 {},
                 empty_audio_chunk(),
             )
+        capture_data = dict(getattr(capture, "data", {}) or {})
+        finalized_path = str(
+            getattr(capture, "final_whisper_input_path", "")
+            or getattr(capture, "wav_path", "")
+            or capture_data.get("final_whisper_input_path")
+            or capture_data.get("normalized_wav_path")
+            or output_path
+        )
+        output_path = Path(finalized_path).expanduser()
+        state.recorded_wav_path = str(output_path)
         wav = validate_canonical_wav(output_path)
         if not wav.get("success"):
             state.recording_status = "invalid_recording"
@@ -543,6 +561,30 @@ class SingleTurnVoiceStageMixin:
                     str(wav.get("error_message") or "invalid_wav"),
                     "invalid_recording",
                     data={"wav": wav},
+                ),
+                wav,
+                empty_audio_chunk(),
+            )
+        assembled_duration = float(
+            getattr(capture, "assembled_duration_seconds", 0.0)
+            or capture_data.get("assembled_duration_seconds", 0.0)
+            or wav.get("duration_seconds", 0.0)
+        )
+        duration_invariant = validate_duration_invariant(
+            assembled_duration,
+            float(wav.get("duration_seconds", 0.0)),
+            request.duration_loss_tolerance_seconds,
+        )
+        state.data["audio_duration_invariant"] = duration_invariant
+        if not duration_invariant["success"]:
+            state.recording_status = "invalid_recording"
+            return (
+                self._failure(
+                    state,
+                    "recording_validation",
+                    "audio_duration_invariant_failed",
+                    "invalid_recording",
+                    data={"wav": wav, "duration_invariant": duration_invariant},
                 ),
                 wav,
                 empty_audio_chunk(),

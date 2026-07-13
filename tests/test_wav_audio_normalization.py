@@ -11,7 +11,10 @@ from core.WavAudio import (
     CANONICAL_SAMPLE_RATE_HZ,
     analyze_wav_audio,
     normalize_wav_audio,
+    pcm_duration_seconds,
     pcm_frame_sample_count,
+    pcm_sample_count,
+    validate_duration_invariant,
     validate_canonical_wav,
 )
 
@@ -148,3 +151,41 @@ def test_truncated_wav_fails_without_replacing_existing_output(tmp_path):
 
     assert result.success is False
     assert output.read_bytes() == b"preserve-me"
+
+
+@pytest.mark.parametrize("duration", [0.5, 1.0, 2.0, 3.42, 7.0, 12.0])
+def test_canonical_normalization_never_truncates_to_one_second(tmp_path, duration):
+    source = tmp_path / f"canonical-{duration}.wav"
+    output = tmp_path / f"normalized-{duration}.wav"
+    write_tone_wav(source, 16000, duration_seconds=duration)
+
+    result = normalize_wav_audio(source, output)
+    normalized = validate_canonical_wav(output)
+
+    expected_samples = round(16000 * duration)
+    assert result.success is True
+    assert result.data["resampling"] == "lossless_pcm_copy_v1"
+    assert result.data["source_sample_count"] == expected_samples
+    assert result.data["normalized_sample_count"] == expected_samples
+    assert normalized["frames"] == expected_samples
+    assert normalized["duration_seconds"] == pytest.approx(duration, abs=1 / 16000)
+
+
+def test_pcm_byte_sample_and_duration_math_for_mono_16_bit_audio():
+    pcm_bytes = 54720 * 2
+
+    assert pcm_sample_count(pcm_bytes, channels=1, sample_width_bytes=2) == 54720
+    assert pcm_duration_seconds(
+        pcm_bytes,
+        sample_rate_hz=16000,
+        channels=1,
+        sample_width_bytes=2,
+    ) == pytest.approx(3.42)
+
+
+def test_duration_invariant_rejects_unexplained_one_second_output():
+    result = validate_duration_invariant(3.42, 1.0, 0.05)
+
+    assert result["success"] is False
+    assert result["status"] == "unexplained_duration_loss"
+    assert result["unexplained_loss_seconds"] == pytest.approx(2.42)

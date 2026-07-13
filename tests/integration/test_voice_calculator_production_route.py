@@ -114,6 +114,9 @@ def _production_pipeline(tmp_path, transcript):
         ("tell me what 2 plus 2 is", "Result: 4"),
         ("Ares calculate 2 plus 2", "Result: 4"),
         ("Ares, please calculate two plus two", "Result: 4"),
+        ("Hello Ares, what is two plus two?", "Result: 4"),
+        ("Can you tell me what two plus two is?", "Result: 4"),
+        ("What is twenty divided by four?", "Result: 5"),
         ("I'll calculate 2 plus 2.", "Result: 4"),
         ("I will calculate two plus two", "Result: 4"),
         ("work out 2 plus 2", "Result: 4"),
@@ -143,16 +146,30 @@ def test_production_brain_handler_routes_whisper_calculator_variants(
 
 
 @pytest.mark.parametrize(
-    "transcript",
+    ("transcript", "normalized_command", "expected_response"),
     [
-        "I'll calculate 2 plus 2.",
-        "What is two plus two?",
-        "I want you to calculate two plus two",
+        ("I'll calculate 2 plus 2.", "calculate 2 + 2", "Result: 4"),
+        ("What is two plus two?", "calculate 2 + 2", "Result: 4"),
+        ("I want you to calculate two plus two", "calculate 2 + 2", "Result: 4"),
+        ("Hello Ares, what is two plus two?", "calculate 2 + 2", "Result: 4"),
+        ("Ares, calculate two plus two", "calculate 2 + 2", "Result: 4"),
+        (
+            "Can you tell me what two plus two is?",
+            "calculate 2 + 2",
+            "Result: 4",
+        ),
+        (
+            "What is twenty divided by four?",
+            "calculate 20 / 4",
+            "Result: 5",
+        ),
     ],
 )
 def test_full_production_factory_routes_natural_language_to_real_calculator(
     tmp_path,
     transcript,
+    normalized_command,
+    expected_response,
 ):
     pipeline, manager, core_service, stt, tts, speaker, args = _production_pipeline(
         tmp_path,
@@ -166,11 +183,11 @@ def test_full_production_factory_routes_natural_language_to_real_calculator(
     assert result.success is True
     assert result.status == "completed"
     assert result.raw_transcript == transcript
-    assert result.normalized_command == "calculate 2 + 2"
+    assert result.normalized_command == normalized_command
     assert result.transcript_cleanup_rule == "calculator_natural_language_wrapper"
     assert result.detected_intent == "calculate"
     assert result.routed_skill == "calculator"
-    assert result.brain_text_response == "Result: 4"
+    assert result.brain_text_response == expected_response
     assert result.execution_result == "success"
     assert result.rejection_reason == ""
     assert any(

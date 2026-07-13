@@ -283,7 +283,10 @@ from core.WavAudio import (
     CANONICAL_SAMPLE_WIDTH_BYTES,
     WavNormalizationResult,
     normalize_wav_audio,
+    pcm_duration_seconds,
     pcm_frame_sample_count,
+    pcm_sample_count,
+    validate_duration_invariant,
     validate_canonical_wav,
 )
 from core.VoiceActivityDetection import (
@@ -773,7 +776,10 @@ __all__ = [
     "WavNormalizationResult",
     "normalize_wav_audio",
     "validate_canonical_wav",
+    "validate_duration_invariant",
+    "pcm_duration_seconds",
     "pcm_frame_sample_count",
+    "pcm_sample_count",
     "CANONICAL_SAMPLE_RATE_HZ",
     "CANONICAL_CHANNELS",
     "CANONICAL_SAMPLE_WIDTH_BYTES",

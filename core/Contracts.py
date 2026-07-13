@@ -361,6 +361,7 @@ class VoiceActivityCaptureRequestV1(VersionedContract):
     maximum_speech_continue_rms: float = 900.0
     minimum_silence_rms: float = 80.0
     maximum_silence_rms: float = 600.0
+    duration_loss_tolerance_seconds: float = 0.05
     frame_debug_enabled: bool = False
 
 
@@ -401,9 +402,27 @@ class VoiceActivityCaptureResultV1(VersionedContract):
     normalized_channels: int = 1
     normalized_sample_width_bytes: int = 2
     raw_wav_path: str = ""
+    assembled_wav_path: str = ""
     normalized_wav_path: str = ""
     raw_duration_seconds: float = 0.0
+    untrimmed_duration_seconds: float = 0.0
+    assembled_duration_seconds: float = 0.0
     normalized_duration_seconds: float = 0.0
+    leading_silence_trimmed_seconds: float = 0.0
+    trailing_silence_trimmed_seconds: float = 0.0
+    total_frames_read: int = 0
+    total_raw_samples: int = 0
+    raw_byte_count: int = 0
+    pre_roll_frames_retained: int = 0
+    speech_frames_retained: int = 0
+    possible_silence_frames_retained: int = 0
+    final_assembled_frame_count: int = 0
+    final_assembled_sample_count: int = 0
+    final_assembled_byte_count: int = 0
+    normalized_sample_count: int = 0
+    normalized_byte_count: int = 0
+    whisper_input_duration_seconds: float = 0.0
+    duration_invariant_status: str = "not_checked"
     final_whisper_input_path: str = ""
     stop_reason: str = ""
     calibration_enabled: bool = False
@@ -601,6 +620,7 @@ class SingleTurnVoiceRequestV1(VersionedContract):
     maximum_speech_continue_rms: float = 900.0
     minimum_silence_rms: float = 80.0
     maximum_silence_rms: float = 600.0
+    duration_loss_tolerance_seconds: float = 0.05
     frame_debug_enabled: bool = False
     diagnostic_audio: bool = False
     tts_voice_profile: str = ""
@@ -690,6 +710,7 @@ class MultiTurnVoiceSessionRequestV1(VersionedContract):
     maximum_speech_continue_rms: float = 900.0
     minimum_silence_rms: float = 80.0
     maximum_silence_rms: float = 600.0
+    duration_loss_tolerance_seconds: float = 0.05
     frame_debug_enabled: bool = False
     diagnostic_audio: bool = False
     tts_voice_profile: str = ""

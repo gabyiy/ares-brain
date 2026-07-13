@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from core import (
     LinuxAlsaMicrophoneAdapter,
     SafeProcessResult,
@@ -85,7 +87,10 @@ def test_linux_alsa_auto_stop_streams_raw_pcm_with_argument_list(tmp_path):
     ]
     assert result.requested_device == "hw:2,0"
     assert result.resolved_capture_device == "plughw:2,0"
-    assert result.final_whisper_input_path == str(tmp_path / "vad.wav")
+    assert result.final_whisper_input_path != str(tmp_path / "vad.wav")
+    assert Path(result.final_whisper_input_path).exists()
+    assert Path(result.final_whisper_input_path).name == "normalized_whisper_input.wav"
+    assert result.duration_invariant_status == "duration_consistent"
     assert result.data["process"]["shell"] is False
     assert result.metadata["subprocess_shell"] is False
 
@@ -112,11 +117,63 @@ def test_linux_alsa_auto_stop_diagnostics_keep_distinct_raw_and_trimmed_wavs(tmp
 
     assert result.success is True
     assert result.raw_wav_path
-    assert result.raw_wav_path != result.normalized_wav_path
-    assert result.normalized_wav_path == str(tmp_path / "vad.wav")
+    assert result.assembled_wav_path
+    assert len(
+        {result.raw_wav_path, result.assembled_wav_path, result.normalized_wav_path}
+    ) == 3
+    assert all(
+        Path(path).exists()
+        for path in (
+            result.raw_wav_path,
+            result.assembled_wav_path,
+            result.normalized_wav_path,
+        )
+    )
     assert result.final_whisper_input_path == result.normalized_wav_path
     assert result.actual_sample_rate_hz == 16000
     assert result.normalized_sample_rate_hz == 16000
+    assert result.assembled_duration_seconds == result.normalized_duration_seconds
+    assert result.normalized_sample_count == result.final_assembled_sample_count
+
+
+def test_auto_stop_uses_unique_current_turn_paths(tmp_path):
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(
+            FrameSource([frame(400), frame(450), *([frame(20)] * 5)])
+        ),
+    )
+    adapter.start()
+    first = adapter.record_until_silence(
+        tmp_path / "vad.wav",
+        calibration_enabled=False,
+        required_speech_frames=2,
+        silence_seconds=0.1,
+        speech_wait_timeout_seconds=0.1,
+        maximum_utterance_seconds=0.2,
+        pre_roll_seconds=0.0,
+        diagnostic_audio=True,
+    )
+    adapter.stream_runner = StreamRunner(
+        FrameSource([frame(500), frame(550), *([frame(20)] * 5)])
+    )
+    second = adapter.record_until_silence(
+        tmp_path / "vad.wav",
+        calibration_enabled=False,
+        required_speech_frames=2,
+        silence_seconds=0.1,
+        speech_wait_timeout_seconds=0.1,
+        maximum_utterance_seconds=0.2,
+        pre_roll_seconds=0.0,
+        diagnostic_audio=True,
+    )
+
+    assert first.success is True
+    assert second.success is True
+    assert first.final_whisper_input_path != second.final_whisper_input_path
+    assert Path(first.final_whisper_input_path).exists()
+    assert Path(second.final_whisper_input_path).exists()
 
 
 def test_auto_stop_stream_requests_canonical_format_even_if_adapter_defaults_differ(tmp_path):

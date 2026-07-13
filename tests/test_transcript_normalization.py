@@ -82,6 +82,8 @@ def test_whisper_style_calculator_variants_are_bounded_and_deterministic(
         "tell me what 2 plus 2 is",
         "Ares calculate 2 plus 2",
         "Ares, please calculate two plus two",
+        "Hello Ares, what is two plus two?",
+        "Can you tell me what two plus two is?",
         "I'll calculate 2 plus 2",
         "I will calculate two plus two",
         "work out 2 plus 2",

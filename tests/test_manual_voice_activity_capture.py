@@ -119,6 +119,7 @@ def test_manual_vad_forwards_adaptive_calibration_configuration(tmp_path):
             "--speech-continue-rms", "170",
             "--required-continue-frames", "4",
             "--required-silence-frames", "7",
+            "--duration-loss-tolerance", "0.06",
             "--frame-debug",
             "--diagnostic-audio",
         ],
@@ -134,6 +135,7 @@ def test_manual_vad_forwards_adaptive_calibration_configuration(tmp_path):
     assert kwargs["speech_continue_rms"] == 170
     assert kwargs["required_continue_frames"] == 4
     assert kwargs["required_silence_frames"] == 7
+    assert kwargs["duration_loss_tolerance_seconds"] == 0.06
     assert kwargs["frame_debug_enabled"] is True
     assert kwargs["diagnostic_audio"] is True
 

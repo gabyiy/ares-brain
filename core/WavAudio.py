@@ -166,6 +166,67 @@ def pcm_frame_sample_count(sample_rate_hz: int, frame_duration_ms: int) -> int:
     return numerator // 1000
 
 
+def pcm_sample_count(
+    pcm_byte_count: int,
+    channels: int = CANONICAL_CHANNELS,
+    sample_width_bytes: int = CANONICAL_SAMPLE_WIDTH_BYTES,
+) -> int:
+    """Return complete PCM sample frames from bytes, channels, and sample width."""
+
+    byte_count = int(pcm_byte_count)
+    bytes_per_frame = int(channels) * int(sample_width_bytes)
+    if byte_count < 0 or bytes_per_frame <= 0:
+        raise ValueError("invalid_pcm_dimensions")
+    if byte_count % bytes_per_frame:
+        raise ValueError("pcm_byte_count_not_frame_aligned")
+    return byte_count // bytes_per_frame
+
+
+def pcm_duration_seconds(
+    pcm_byte_count: int,
+    sample_rate_hz: int,
+    channels: int = CANONICAL_CHANNELS,
+    sample_width_bytes: int = CANONICAL_SAMPLE_WIDTH_BYTES,
+) -> float:
+    rate = int(sample_rate_hz)
+    if rate <= 0:
+        raise ValueError("sample_rate_must_be_positive")
+    return pcm_sample_count(
+        pcm_byte_count,
+        channels=channels,
+        sample_width_bytes=sample_width_bytes,
+    ) / rate
+
+
+def validate_duration_invariant(
+    assembled_duration_seconds: float,
+    normalized_duration_seconds: float,
+    allowed_loss_seconds: float,
+) -> Dict[str, Any]:
+    assembled = max(0.0, float(assembled_duration_seconds))
+    normalized = max(0.0, float(normalized_duration_seconds))
+    tolerance = float(allowed_loss_seconds)
+    if not 0.0 <= tolerance <= 2.0:
+        return {
+            "success": False,
+            "status": "invalid_duration_tolerance",
+            "assembled_duration_seconds": assembled,
+            "normalized_duration_seconds": normalized,
+            "allowed_loss_seconds": tolerance,
+            "unexplained_loss_seconds": max(0.0, assembled - normalized),
+        }
+    loss = max(0.0, assembled - normalized)
+    success = normalized + tolerance >= assembled
+    return {
+        "success": success,
+        "status": "duration_consistent" if success else "unexplained_duration_loss",
+        "assembled_duration_seconds": assembled,
+        "normalized_duration_seconds": normalized,
+        "allowed_loss_seconds": tolerance,
+        "unexplained_loss_seconds": loss,
+    }
+
+
 def validate_canonical_wav(path: str | Path) -> Dict[str, Any]:
     analysis = analyze_wav_audio(path)
     if not analysis.get("success"):
@@ -253,13 +314,22 @@ def normalize_wav_audio(
         )
 
     try:
-        normalized_pcm = _canonical_pcm(
-            pcm,
-            source_frames=source_frames,
-            source_rate_hz=source_rate,
-            source_channels=source_channels,
-            source_width_bytes=source_width,
-        )
+        if (
+            source_rate == CANONICAL_SAMPLE_RATE_HZ
+            and source_channels == CANONICAL_CHANNELS
+            and source_width == CANONICAL_SAMPLE_WIDTH_BYTES
+        ):
+            normalized_pcm = bytes(pcm)
+            normalization_method = "lossless_pcm_copy_v1"
+        else:
+            normalized_pcm = _canonical_pcm(
+                pcm,
+                source_frames=source_frames,
+                source_rate_hz=source_rate,
+                source_channels=source_channels,
+                source_width_bytes=source_width,
+            )
+            normalization_method = "linear_pcm_v1"
         _write_pcm_wav_atomic(
             output,
             normalized_pcm,
@@ -305,9 +375,15 @@ def normalize_wav_audio(
         data={
             "source_frame_count": source_frames,
             "normalized_frame_count": int(final.get("frames", 0)),
+            "source_sample_count": source_frames,
+            "normalized_sample_count": int(final.get("frames", 0)),
             "source_byte_count": len(pcm),
-            "normalized_byte_count": max(0, int(final.get("byte_count", 0)) - 44),
-            "resampling": "linear_pcm_v1",
+            "normalized_byte_count": (
+                int(final.get("frames", 0))
+                * CANONICAL_CHANNELS
+                * CANONICAL_SAMPLE_WIDTH_BYTES
+            ),
+            "resampling": normalization_method,
             "byte_reinterpretation": False,
             "validation": final,
         },

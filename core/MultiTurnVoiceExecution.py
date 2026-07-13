@@ -515,6 +515,7 @@ class MultiTurnVoiceExecutionMixin:
             maximum_speech_continue_rms=request.maximum_speech_continue_rms,
             minimum_silence_rms=request.minimum_silence_rms,
             maximum_silence_rms=request.maximum_silence_rms,
+            duration_loss_tolerance_seconds=request.duration_loss_tolerance_seconds,
             frame_debug_enabled=request.frame_debug_enabled,
             diagnostic_audio=request.diagnostic_audio,
             tts_voice_profile=request.tts_voice_profile,
