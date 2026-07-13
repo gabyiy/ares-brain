@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.83 - Production Voice Calculator Routing Hardening
+ARES v1.84 - Safe Natural-Language Calculator Extraction
 
 ---
 
@@ -59,6 +59,8 @@ Raspberry Pi speech-input verification is now hardened for real recordings. The 
 `core.TranscriptNormalization` is the versioned deterministic boundary between STT and `VoiceCommandRouter`. It preserves raw Whisper text, a conservatively cleaned transcript, and the normalized routing command. English spoken arithmetic from zero through one thousand, negatives, decimals, operators, and spoken parentheses is converted to numeric/operator text for the existing AST-based `CalculatorSkill`. Obvious adjacent Whisper phrase loops beyond the configured repetition limit are collapsed while legitimate `two plus two plus two` remains unchanged. Unsupported arithmetic words or unsafe characters fail before Brain execution; `eval()` is never used.
 
 The production voice calculator route is now assembled through the shared `create_builtin_skill_manager()` factory used by the text REPL, typed voice simulation, and real single-turn script. The prior integration tests manually registered `CalculatorSkill`, so they did not verify the same registry construction used on Raspberry Pi and could not explain a live `unknown` result. Production-factory integration now proves `Whisper transcript -> TranscriptNormalization -> VoiceCommandRouter -> CoreService -> SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> registered CalculatorSkill`. `SingleTurnVoiceResultV1` carries bounded candidate-skill and per-stage routing diagnostics, and `--diagnostic-routing` prints them without dumping memory, secrets, or unrestricted internal objects.
+
+Real Raspberry Pi transcription subsequently produced `I'll calculate 2 plus 2.`. The old arithmetic-candidate detector recognized the numbers and operator, but its wrapper table did not remove the anchored `I'll calculate` phrase; the remaining apostrophe and letters therefore failed the strict arithmetic-source grammar as `unsupported_arithmetic_text`. The shared normalizer now applies `calculator_natural_language_wrapper` only to an explicit finite set of leading forms: calculator verbs (`calculate`, `compute`, `solve`, `work out`), bounded polite requests (`please`, `can/could/would you`), question forms (`what is`, `what's`, `how much is`), `tell me what ... is`, first-person `I'll/I will calculate`, and an optional leading `Ares` vocative. Only the approved trailing `is` form is removed at the end. Any remaining word, second expression, code/import syntax, assignment, path, shell punctuation, unsupported operator, or oversized expression still fails before IntentParser; CalculatorSkill validation is unchanged.
 
 `core.VoiceCommandRouter` now routes `TranscriptionResult` objects into Voice City without any speech engine dependency. It validates a configurable confidence threshold, ignores empty transcriptions safely, propagates transcription failures, routes valid text through CoreService's `voice.text_loop` capability, handles unknown commands with structured safe results, and records local routed/rejected metrics plus `voice_command.routed` and `voice_command.rejected` events.
 
@@ -537,7 +539,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 1002 tests across current core modules
+- Pytest automated coverage for 1058 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -556,7 +558,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1002 tests`.
+Current pytest collection: `1058 tests`.
 
 Manual Calculator Launch Verification
 
@@ -856,7 +858,7 @@ python scripts/manual_verify_single_turn_voice.py \
   --playback
 ```
 
-Say `Calculate two plus two.` The expected normalized command is `calculate 2 + 2`, the parsed intent is `calculate`, the selected registered skill is `calculator`, and the execution response is `Result: 4`. `--diagnostic-routing` prints raw/cleaned/normalized text, candidate scores and reasons, selected skill, planner decision, execution status, and the first rejection reason when a stage fails. Use `--fixed-duration --record-seconds 5` for the existing fallback capture, `--keep-audio` to retain successful input/response WAVs, and `--verbose` for the full structured V1 result. Failures preserve useful diagnostic audio automatically. Operational events store stage/status metadata, not transcript or audio contents.
+Say `I'll calculate 2 plus 2.` The expected normalized command is `calculate 2 + 2`, cleanup rule is `calculator_natural_language_wrapper`, parsed intent is `calculate`, selected registered skill is `calculator`, and execution response is `Result: 4`. `--diagnostic-routing` prints raw/cleaned/normalized text, cleanup rule, candidate scores and reasons, selected skill, planner decision, execution status, and the first rejection reason when a stage fails. Use `--fixed-duration --record-seconds 5` for the existing fallback capture, `--keep-audio` to retain successful input/response WAVs, and `--verbose` for the full structured V1 result. Failures preserve useful diagnostic audio automatically. Operational events store stage/status metadata, not transcript or audio contents.
 
 Controlled Multi-Turn Voice Session
 
@@ -1121,7 +1123,7 @@ Completed:
 
 Next:
 
-1. Pull this checkpoint and verify `Calculate two plus two.` with `--diagnostic-routing` on Raspberry Pi
+1. Pull this checkpoint and verify `I'll calculate 2 plus 2.` with `--diagnostic-routing` on Raspberry Pi
 2. Confirm the production trace selects the registered CalculatorSkill and speaks `Result: 4`
 3. Continue measuring per-turn timing, segmentation, stop recognition, and cleanup from real results
 4. Only later consider wake-word/background listening
@@ -1986,7 +1988,15 @@ Phase 79
 - Production-factory integration verifies the real registered CalculatorSkill through IntentParser, Planner, and ExecutionPipeline
 - Strict finite wrapper normalization, full token consumption, and bounded transcript/expression lengths fail closed
 - Versioned routing diagnostics expose candidates, selection, planning, execution, and rejection stages
-- Current pytest collection is 1002 tests
+- Checkpoint pytest collection was 1002 tests
+
+Phase 80
+
+- Added anchored deterministic extraction for harmless calculator request wrappers, including the real Whisper phrase `I'll calculate 2 plus 2.`
+- Added the `calculator_natural_language_wrapper` diagnostic rule and exposed it in `--diagnostic-routing`
+- Preserved one-expression-only parsing and unchanged CalculatorSkill AST validation
+- Added production-factory acceptance and rejection coverage for polite forms, contractions, vocatives, ambiguity, multiple expressions, and injection-like text
+- Current pytest collection is 1058 tests
 
 Phase 80
 

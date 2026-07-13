@@ -4,13 +4,13 @@ Last Updated: 2026-07-13
 
 Current Version
 
-ARES v1.83 - Production Voice Calculator Routing Hardening
+ARES v1.84 - Safe Natural-Language Calculator Extraction
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, and production-factory-verified spoken-calculator routing.
+ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, and production-factory-verified natural-language calculator routing.
 
 Checkpoint root causes and fixes:
 
@@ -18,7 +18,9 @@ Checkpoint root causes and fixes:
 - Voice arithmetic reached IntentParser as number words and Whisper formatting, so digit/operator intent rules returned `unknown`. The versioned transcript normalizer now preserves raw text and converts only strict supported arithmetic into the unchanged safe calculator route.
 - The owner subsequently verified clear Raspberry Pi USB capture, end-of-speech completion, and base English Whisper output `Calculate 2 plus 2.`; the remaining observed `unknown` result was therefore inside routing.
 - Routing tests had manually registered CalculatorSkill instead of constructing the same built-in registry used by the real script. Registration is now centralized, the production script factory is integration-tested, and structured diagnostics identify parser, candidate, planner, execution, or rejection failures independently.
-- Windows CI verifies this routing checkpoint with injected hardware adapters and does not claim the final post-pull Raspberry Pi calculator response.
+- The next real Raspberry Pi run produced `I'll calculate 2 plus 2.` and failed at transcript normalization. Candidate detection saw arithmetic, but `I'll calculate` was not an approved removable prefix, so its apostrophe and letters correctly triggered `unsupported_arithmetic_text`.
+- The shared normalizer now applies one anchored `calculator_natural_language_wrapper` registry and permits only a finite set of direct, polite, question, first-person, `Ares`, and `tell me what ... is` forms. It never removes arbitrary middle words and leaves CalculatorSkill validation unchanged.
+- Windows CI verifies this extraction checkpoint with injected hardware adapters and does not claim the final post-pull Raspberry Pi calculator response.
 
 Confirmed Phase 3 foundation:
 
@@ -81,9 +83,10 @@ Confirmed Phase 3 foundation:
 - Shared `create_builtin_skill_manager()` construction for text REPL, typed voice simulation, and real single-turn voice
 - Production-factory integration through the real registered CalculatorSkill
 - Versioned candidate-skill and per-stage routing diagnostics plus `--diagnostic-routing`
+- Anchored natural-language calculator wrapper extraction with one-expression-only safety
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1002 tests.
+Current pytest collection: 1058 tests.
 
 The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, and the bounded multi-turn session. Adaptive calibration remains inside the VAD boundary; transcript normalization and routing diagnostics remain between STT and `VoiceCommandRouter`/SkillManager. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, VAD, Whisper, Piper, or normalization internals. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
 
@@ -389,7 +392,7 @@ python scripts/manual_verify_single_turn_voice.py \
   --playback
 ```
 
-Say `Calculate two plus two.` The expected trace is normalized command `calculate 2 + 2`, intent `calculate`, selected registered skill `calculator`, planner target `calculator`, execution `success`, response `Result: 4`, and no rejection reason. The automated Windows production-factory test produced this result through CoreService, SkillManager, IntentParser, Planner, ExecutionPipeline, and the real CalculatorSkill. Final Raspberry Pi execution after pulling this checkpoint remains owner-run verification.
+Say `I'll calculate 2 plus 2.` The expected trace is normalized command `calculate 2 + 2`, cleanup rule `calculator_natural_language_wrapper`, intent `calculate`, selected registered skill `calculator`, planner target `calculator`, execution `success`, response `Result: 4`, and no rejection reason. The automated Windows production-factory test produced this result through CoreService, SkillManager, IntentParser, Planner, ExecutionPipeline, and the real CalculatorSkill. Final Raspberry Pi execution after pulling this checkpoint remains owner-run verification.
 
 Controlled bounded multi-turn voice session has been added.
 
@@ -2100,22 +2103,23 @@ Future Roadmap
 4. RMS VAD and automatic end-of-speech capture completed
 5. Raspberry Pi USB capture, end-of-speech, and base English Whisper transcription verified by owner
 6. Production voice calculator routing hardening completed in CI
-7. Pull and verify registered CalculatorSkill selection with `--diagnostic-routing` on Raspberry Pi
-8. Only later add wake-word/background listening
-9. GPT fallback integration
-10. Raspberry Pi deployment
-11. Robot body / sensors
-12. Vision
-13. Robotics
-14. Jetson Orin migration
-15. Autonomous ARES
+7. Anchored natural-language calculator wrapper extraction completed in CI
+8. Pull and verify `I'll calculate 2 plus 2.` with `--diagnostic-routing` on Raspberry Pi
+9. Only later add wake-word/background listening
+10. GPT fallback integration
+11. Raspberry Pi deployment
+12. Robot body / sensors
+13. Vision
+14. Robotics
+15. Jetson Orin migration
+16. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1002 tests.
+- Current pytest collection: 1058 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2174,14 +2178,16 @@ Verification Notes
 - Speech-input hardening tests cover valid speech WAV diagnostics, silent WAV rejection, near-silent RMS rejection, corrupt WAV rejection, no-speech marker handling, English-only model language resolution, missing model/binary failures before subprocess execution, exact command diagnostics, runtime verifier diagnostics, runtime verifier `--language en` defaults, playback disabled by default, explicit playback opt-in, ALSA monitoring command planning, dry-run behavior, apply behavior, missing `amixer`, and preserving capture while muting mic playback monitoring.
 - VAD tests cover deterministic PCM no-speech, immediate/short/long utterances, pre-roll and first-syllable preservation, short pauses, threshold boundaries, hysteresis, maximum duration, cancellation, device/timeout/invalid-PCM failures, lifecycle, raw ALSA argument-list streaming, fixed-duration fallback, pipeline short-circuiting, single-turn/multi-turn routing, mutual exclusion, calibration script behavior, and hardware-free synthetic PCM integration through the real local Brain route.
 - Adaptive VAD tests cover quiet/noisy ambient calibration, a transient spike, derived bounds, start/continue/silence hysteresis, repeated internal pauses, post-speech sub-continue noise, normal trailing-silence completion, no-speech, maximum duration, cancellation, and calibration-disabled fallback.
-- Transcript normalization tests cover raw/cleaned/normalized preservation, number words zero through one thousand, negatives, decimals, spoken operators and parentheses, unsupported input rejection, conservative Whisper-loop cleanup, legitimate repeated arithmetic, versioned round trips, no `eval()`, and real Brain/CalculatorSkill routing to `Result: 4`.
-- Production voice calculator tests cover the shared runtime registry, exact script factory, capitalization/punctuation/polite wrappers, unsafe and ambiguous input rejection, bounded lengths, empty transcript/audio, safe unknown handling, candidate/manifest diagnostics, Planner/ExecutionPipeline evidence, V1 round trips, TTS handoff, and lifecycle/resource cleanup without a mock calculator or GPT fallback.
+- Transcript normalization tests cover raw/cleaned/normalized preservation, number words zero through one thousand, negatives, decimals, spoken operators and parentheses, anchored direct/polite/question/first-person/vocative wrappers, contraction and punctuation handling, ambiguity and multiple-expression rejection, conservative Whisper-loop cleanup, versioned round trips, no `eval()`, and real Brain/CalculatorSkill routing to `Result: 4`.
+- Production voice calculator tests cover the shared runtime registry, exact script factory, `I'll calculate 2 plus 2.`, `What is two plus two?`, all approved wrapper categories, unsafe and ambiguous input rejection, bounded lengths, empty transcript/audio, safe unknown handling, cleanup/candidate/manifest diagnostics, Planner/ExecutionPipeline evidence, V1 round trips, TTS handoff, and lifecycle/resource cleanup without a mock calculator or GPT fallback.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Example configuration now documents bounded transcript-routing defaults and keeps diagnostic output disabled unless explicitly requested.
 
 Latest Commits
 
+- `419cb7d` Support safe natural-language calculator wrappers
+- `40255ad` Document production voice calculator routing
 - `45cfb9c` Harden production voice calculator routing
 - `fcb47f1` Document adaptive voice capture and calculator routing
 - `fcc8a45` Harden calibrated voice capture and calculator routing

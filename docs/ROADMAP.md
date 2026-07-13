@@ -1009,12 +1009,23 @@ Phase 79: Production Voice Calculator Routing Hardening
 - Production-factory integration tests use injected hardware adapters while retaining the real VoiceCommandRouter, CoreService, SkillManager, IntentParser, Planner, ExecutionPipeline, and registered CalculatorSkill.
 - Finite conversational wrappers, complete token consumption, and bounded transcript/expression lengths harden normalization without weakening calculator AST validation.
 - `SingleTurnVoiceResultV1` now carries candidate skills and per-stage routing diagnostics; the manual script renders them only with `--diagnostic-routing`.
-- Current pytest collection is 1002 tests.
+- Checkpoint pytest collection was 1002 tests.
 - The owner must pull this checkpoint and confirm the new production trace and spoken `Result: 4`; Windows CI does not claim that final Raspberry Pi execution.
+
+Phase 80: Safe Natural-Language Calculator Extraction
+
+- A real Raspberry Pi fixed-duration turn produced the clear Whisper transcript `I'll calculate 2 plus 2.` but normalization rejected it as `unsupported_arithmetic_text` before routing.
+- Root cause: arithmetic-candidate detection recognized the expression, while the approved wrapper list did not remove `I'll calculate`; the apostrophe and wrapper words then correctly failed the strict arithmetic grammar.
+- `TranscriptNormalizer` now uses one bounded anchored wrapper registry for direct actions, polite requests, question forms, first-person requests, `tell me what ... is`, and an optional leading `Ares` vocative.
+- The extractor removes no arbitrary middle words and permits only one exact trailing `is` form. The complete remainder must still satisfy one-expression-only arithmetic parsing and the unchanged CalculatorSkill AST policy.
+- Ambiguous requests, trailing commands, multiple expressions, identifiers, imports, calls, assignments, paths, shell syntax, and unsupported operators fail before IntentParser.
+- Successful and rejected extraction records `calculator_natural_language_wrapper`; diagnostic mode renders that rule with raw, cleaned, normalized, intent, candidate, planner, execution, and rejection fields.
+- Production-factory integration proves `I'll calculate 2 plus 2.` and `What is two plus two?` reach the registered CalculatorSkill and return `Result: 4` with no unknown fallback.
+- Current pytest collection is 1058 tests.
 
 Current State
 
-ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, shared production skill registration, and diagnostic deterministic spoken-calculator routing. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control.
+ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, shared production skill registration, and safe anchored natural-language calculator routing. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control.
 
 The current active interface is:
 
@@ -1029,7 +1040,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1002 tests.
+The current pytest collection is 1058 tests.
 
 The current memory paths are:
 
@@ -1082,9 +1093,10 @@ Phase 3 Real Voice Integration
 12. Adaptive ambient calibration and robust calculator voice routing. Completed in CI with synthetic PCM and real Brain routing.
 13. Validate clear USB capture, `completed_after_silence`, and base English Whisper transcription on Raspberry Pi. Completed by owner.
 14. Centralize production skill registration and add bounded routing diagnostics. Completed.
-15. Pull this checkpoint and confirm the registered CalculatorSkill returns and speaks `Result: 4` with `--diagnostic-routing`.
-16. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
-17. Only later consider wake-word/background listening.
+15. Add bounded anchored natural-language calculator wrapper extraction. Completed.
+16. Pull this checkpoint and confirm `I'll calculate 2 plus 2.` returns and speaks `Result: 4` with `--diagnostic-routing`.
+17. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
+18. Only later consider wake-word/background listening.
 
 What Must Not Be Started Yet
 
