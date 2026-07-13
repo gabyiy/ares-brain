@@ -19,15 +19,19 @@ from core import (  # noqa: E402
 )
 from scripts.manual_verify_single_turn_voice import (  # noqa: E402
     DEFAULT_MICROPHONE_DEVICE,
+    DEFAULT_CALIBRATION_SECONDS,
     DEFAULT_PIPELINE_TIMEOUT,
     DEFAULT_FRAME_MS,
     DEFAULT_MAX_UTTERANCE_SECONDS,
     DEFAULT_PRE_ROLL_SECONDS,
     DEFAULT_RECORD_SECONDS,
     DEFAULT_REQUIRED_SPEECH_FRAMES,
+    DEFAULT_REQUIRED_CONTINUE_FRAMES,
+    DEFAULT_REQUIRED_SILENCE_FRAMES,
     DEFAULT_SILENCE_RMS,
     DEFAULT_SILENCE_SECONDS,
     DEFAULT_SPEECH_START_RMS,
+    DEFAULT_SPEECH_CONTINUE_RMS,
     DEFAULT_SPEECH_WAIT_TIMEOUT,
     DEFAULT_SPEAKER_DEVICE,
     DEFAULT_WHISPER_COMMAND,
@@ -100,7 +104,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keep-audio", action="store_true")
     parser.add_argument("--timeout", type=float, default=DEFAULT_PIPELINE_TIMEOUT)
     parser.add_argument("--min-rms", type=float, default=0.0)
+    calibration = parser.add_mutually_exclusive_group()
+    calibration.add_argument(
+        "--auto-calibration",
+        dest="calibration_enabled",
+        action="store_true",
+    )
+    calibration.add_argument(
+        "--no-auto-calibration",
+        dest="calibration_enabled",
+        action="store_false",
+    )
+    parser.set_defaults(calibration_enabled=True)
+    parser.add_argument(
+        "--calibration-seconds",
+        type=float,
+        default=DEFAULT_CALIBRATION_SECONDS,
+    )
     parser.add_argument("--speech-start-rms", type=float, default=DEFAULT_SPEECH_START_RMS)
+    parser.add_argument(
+        "--speech-continue-rms",
+        type=float,
+        default=DEFAULT_SPEECH_CONTINUE_RMS,
+    )
     parser.add_argument("--silence-rms", type=float, default=DEFAULT_SILENCE_RMS)
     parser.add_argument("--silence-seconds", type=float, default=DEFAULT_SILENCE_SECONDS)
     parser.add_argument(
@@ -120,6 +146,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_REQUIRED_SPEECH_FRAMES,
     )
+    parser.add_argument(
+        "--required-continue-frames",
+        type=int,
+        default=DEFAULT_REQUIRED_CONTINUE_FRAMES,
+    )
+    parser.add_argument(
+        "--required-silence-frames",
+        type=int,
+        default=DEFAULT_REQUIRED_SILENCE_FRAMES,
+    )
+    parser.add_argument("--frame-debug", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--text-turn", action="append", default=[])
     parser.add_argument("--interactive-text", action="store_true")
@@ -142,14 +179,20 @@ def request_from_args(args: argparse.Namespace) -> MultiTurnVoiceSessionRequestV
         whisper_model_profile=str(_repo_path(args.whisper_model)),
         minimum_rms=args.min_rms,
         capture_mode=args.capture_mode,
+        calibration_enabled=bool(args.calibration_enabled),
+        calibration_duration_seconds=args.calibration_seconds,
         speech_start_rms=args.speech_start_rms,
+        speech_continue_rms=args.speech_continue_rms,
         silence_rms=args.silence_rms,
         required_speech_frames=args.required_speech_frames,
+        required_continue_frames=args.required_continue_frames,
+        required_silence_frames=args.required_silence_frames,
         silence_duration_seconds=args.silence_seconds,
         speech_wait_timeout_seconds=args.speech_wait_timeout,
         maximum_utterance_seconds=args.max_utterance_seconds,
         pre_roll_seconds=args.pre_roll_seconds,
         frame_duration_ms=args.frame_ms,
+        frame_debug_enabled=bool(args.frame_debug),
         tts_voice_profile=args.voice_profile,
         playback_enabled=bool(args.playback),
         maximum_turns=args.max_turns,
@@ -193,7 +236,10 @@ def run_manual_verification(
     if args.capture_mode == CAPTURE_MODE_AUTO_STOP:
         output_func(
             "Automatic end-of-speech capture: "
-            f"start_rms={args.speech_start_rms}, silence_rms={args.silence_rms}, "
+            f"calibration={args.calibration_enabled}, "
+            f"start_rms={args.speech_start_rms}, "
+            f"continue_rms={args.speech_continue_rms}, "
+            f"silence_rms={args.silence_rms}, "
             f"silence_seconds={args.silence_seconds}, frame_ms={args.frame_ms}"
         )
     request = request_from_args(args)
@@ -241,7 +287,17 @@ def _progress_printer(output_func: Callable[[str], None]) -> Callable[[str, dict
             output_func(f"Turn {payload['turn_number']}")
             output_func("Simulated input..." if payload.get("simulated_input") else "Listening...")
         elif event_type == "turn_result":
-            output_func(f"Recognized: {payload.get('recognized_text') or '(none)'}")
+            output_func(f"Raw transcript: {payload.get('raw_transcript') or '(none)'}")
+            output_func(f"Cleaned transcript: {payload.get('cleaned_transcript') or '(none)'}")
+            output_func(f"Normalized command: {payload.get('normalized_command') or '(none)'}")
+            output_func(f"Detected intent: {payload.get('detected_intent') or 'unknown'}")
+            selected = payload.get("routed_skill")
+            output_func(f"Selected skill: {selected if selected not in {'', 'unknown', None} else 'none'}")
+            output_func(f"Planner decision: {payload.get('planner_decision') or '(none)'}")
+            output_func(
+                f"Execution result: {payload.get('execution_result') or payload.get('status')}"
+            )
+            output_func(f"Rejection reason: {payload.get('rejection_reason') or '(none)'}")
             if payload.get("response_text"):
                 output_func(f"ARES: {payload['response_text']}")
             if payload.get("capture_mode") == CAPTURE_MODE_AUTO_STOP:
@@ -250,7 +306,10 @@ def _progress_printer(output_func: Callable[[str], None]) -> Callable[[str, dict
                     f"stop={payload.get('capture_stop_reason') or '(none)'}, "
                     f"ambient_rms={float(payload.get('ambient_rms', 0.0)):.3f}, "
                     f"speech_rms={float(payload.get('speech_rms', 0.0)):.3f}, "
-                    f"peak={int(payload.get('peak_amplitude', 0))}"
+                    f"peak={int(payload.get('peak_amplitude', 0))}, "
+                    f"thresholds={float(payload.get('speech_start_rms', 0.0)):.1f}/"
+                    f"{float(payload.get('speech_continue_rms', 0.0)):.1f}/"
+                    f"{float(payload.get('silence_rms', 0.0)):.1f}"
                 )
         elif event_type == "stop_phrase_detected":
             output_func(f"Stop phrase detected: {payload['matched_stop_phrase']}")

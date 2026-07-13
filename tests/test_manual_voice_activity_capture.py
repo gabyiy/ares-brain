@@ -1,4 +1,6 @@
-from core import MicrophoneResult, VoiceActivityCaptureResultV1
+from types import SimpleNamespace
+
+from core import MicrophoneResult, TranscriptionResult, VoiceActivityCaptureResultV1
 from scripts import manual_verify_voice_activity_capture as manual_vad
 
 
@@ -73,7 +75,7 @@ def test_manual_vad_success_prints_calibration_metrics(tmp_path):
     assert adapter.calls[-1] == "stop"
     assert any("Ambient RMS: 35.000" in line for line in output)
     assert any("Speech RMS: 600.000" in line for line in output)
-    assert any("start=220.0, silence=110.0" in line for line in output)
+    assert any("start=220.0, continue=160.0, silence=110.0" in line for line in output)
     assert output[-1] == "PASS"
 
 
@@ -105,6 +107,75 @@ def test_manual_vad_no_speech_returns_failure_exit_code():
 def test_manual_vad_import_does_not_access_hardware():
     assert callable(manual_vad.main)
     assert callable(manual_vad.run_manual_verification)
+
+
+def test_manual_vad_forwards_adaptive_calibration_configuration(tmp_path):
+    adapter = FakeAdapter()
+
+    exit_code = manual_vad.run_manual_verification(
+        [
+            "--output", str(tmp_path / "capture.wav"),
+            "--calibration-seconds", "0.65",
+            "--speech-continue-rms", "170",
+            "--required-continue-frames", "4",
+            "--required-silence-frames", "7",
+            "--frame-debug",
+        ],
+        output_func=lambda _: None,
+        adapter=adapter,
+    )
+
+    capture_call = next(item for item in adapter.calls if isinstance(item, tuple))
+    kwargs = capture_call[2]
+    assert exit_code == 0
+    assert kwargs["calibration_enabled"] is True
+    assert kwargs["calibration_duration_seconds"] == 0.65
+    assert kwargs["speech_continue_rms"] == 170
+    assert kwargs["required_continue_frames"] == 4
+    assert kwargs["required_silence_frames"] == 7
+    assert kwargs["frame_debug_enabled"] is True
+
+
+def test_manual_vad_optional_transcription_and_brain_route_use_normalized_text(tmp_path):
+    class FakeStt:
+        def health_check(self):
+            return TranscriptionResult(True, "healthy")
+
+        def transcribe_wav(self, path, language, timeout_seconds):
+            return TranscriptionResult(
+                True,
+                "transcribed",
+                text="What is two plus two?",
+                confidence=0.95,
+            )
+
+    class FakeRouter:
+        def __init__(self):
+            self.requests = []
+
+        def route(self, transcription):
+            self.requests.append(transcription)
+            return SimpleNamespace(
+                success=True,
+                status="routed",
+                response_text="Result: 4",
+                error_message="",
+            )
+
+    router = FakeRouter()
+    outputs = []
+    exit_code = manual_vad.run_manual_verification(
+        ["--output", str(tmp_path / "capture.wav"), "--transcribe", "--route"],
+        output_func=outputs.append,
+        adapter=FakeAdapter(),
+        speech_to_text_adapter=FakeStt(),
+        command_router=router,
+    )
+
+    assert exit_code == 0
+    assert router.requests[0].text == "calculate 2 + 2"
+    assert "Normalized command: calculate 2 + 2" in outputs
+    assert "ARES response: Result: 4" in outputs
 
 
 def test_manual_vad_script_contains_no_subprocess_or_alsa_implementation():

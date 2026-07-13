@@ -885,6 +885,54 @@ def test_integration_recognized_text_uses_real_skill_manager_then_tts_and_speake
     assert core_service.resource_manager.current_usage()["active_task_count"] == 0
 
 
+@pytest.mark.parametrize(
+    "spoken",
+    ["calculate two plus two", "what is two plus two?", "two plus two"],
+)
+def test_spoken_calculator_transcript_uses_real_brain_route_and_returns_four(tmp_path, spoken):
+    from core import CoreService
+    from events import EventBus as SkillEventBus
+    from skills import SkillManager
+    from skills.builtin.calculator import CalculatorSkill
+
+    order = []
+    microphone = FakeMicrophone(order)
+    stt = FakeSpeechToText(order, text=spoken)
+    tts = FakeTextToSpeech(order)
+    speaker = FakeSpeaker(order, microphone)
+    core_service = CoreService()
+    manager = SkillManager(event_bus=SkillEventBus(), core_service=core_service)
+    manager.register(CalculatorSkill())
+
+    def real_text_path(text):
+        intent = manager.parse_intent(text)
+        response = manager.handle(text, run_before_intents=True)
+        assert response is not None
+        return SkillResponse(
+            response.text,
+            response.skill,
+            {**dict(response.metadata), "detected_intent": intent.intent_name},
+        )
+
+    pipeline = SingleTurnVoicePipeline(
+        microphone,
+        stt,
+        tts,
+        speaker,
+        real_text_path,
+        core_service=core_service,
+    )
+
+    result = pipeline.run_once(_request(tmp_path, playback_enabled=False))
+
+    assert result.success is True
+    assert result.raw_transcript == spoken
+    assert result.normalized_command == "calculate 2 + 2"
+    assert result.detected_intent == "calculate"
+    assert result.routed_skill == "calculator"
+    assert result.brain_text_response == "Result: 4"
+
+
 def test_pre_brain_hook_can_intercept_stop_phrase_before_handler(tmp_path):
     pipeline, order, _, stt, tts, speaker, handled, _ = _pipeline(tmp_path)
     stt.text = "goodbye Ares"
@@ -970,7 +1018,12 @@ def test_auto_stop_capture_calls_whisper_once_with_final_trimmed_wav(tmp_path):
     assert result.success is True
     assert stt.calls == 1
     assert handled == ["calculate 2 + 2"]
+    assert microphone.vad_calls[0]["calibration_enabled"] is True
+    assert microphone.vad_calls[0]["calibration_duration_seconds"] == 0.75
     assert microphone.vad_calls[0]["speech_start_rms"] == 200.0
+    assert microphone.vad_calls[0]["speech_continue_rms"] == 160.0
+    assert microphone.vad_calls[0]["required_continue_frames"] == 3
+    assert microphone.vad_calls[0]["required_silence_frames"] == 5
     assert result.data["recording"]["data"]["terminal_silence_trimmed"] is True
     assert order.index("microphone.vad_record") < order.index("whisper.transcribe")
 

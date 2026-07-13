@@ -4,7 +4,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from core.Contracts import SingleTurnVoiceRequestV1, SingleTurnVoiceResultV1, TextToSpeechRequestV1
+from core.Contracts import (
+    SingleTurnVoiceRequestV1,
+    SingleTurnVoiceResultV1,
+    TextToSpeechRequestV1,
+    TranscriptNormalizationRequestV1,
+)
 from core.Health import RETRY_SAFE
 from core.Microphone import AudioChunk, MicrophoneResult
 from core.ResourceBudget import CancellationToken
@@ -72,6 +77,10 @@ class SingleTurnVoiceStageMixin:
             transcription = self._transcription_stage(request, state, audio_chunk)
             if isinstance(transcription, SingleTurnVoiceResultV1):
                 return transcription
+
+        transcription = self._normalize_transcription(request, state, transcription)
+        if isinstance(transcription, SingleTurnVoiceResultV1):
+            return transcription
 
         cancelled = self._cancelled(state, cancellation_token, "before_brain")
         if cancelled:
@@ -297,6 +306,38 @@ class SingleTurnVoiceStageMixin:
         self._stage(3, "Transcribing", "completed")
         return transcription
 
+    def _normalize_transcription(
+        self,
+        request: SingleTurnVoiceRequestV1,
+        state: SingleTurnRunState,
+        transcription: TranscriptionResult,
+    ) -> TranscriptionResult | SingleTurnVoiceResultV1:
+        normalization = self.transcript_normalizer.normalize(
+            TranscriptNormalizationRequestV1(
+                raw_transcript=transcription.text,
+                correlation_id=request.correlation_id,
+                session_id=request.session_id,
+                metadata={"source": "single_turn_voice_pipeline"},
+            )
+        )
+        state.raw_transcript = normalization.raw_transcript
+        state.cleaned_transcript = normalization.cleaned_transcript
+        state.normalized_command = normalization.normalized_command
+        state.recognized_text = normalization.cleaned_transcript
+        state.repetition_detected = normalization.repetition_detected
+        state.repetitions_removed = normalization.repetitions_removed
+        state.transcript_cleanup_rule = normalization.cleanup_rule
+        state.data["transcript_normalization"] = normalization.to_dict()
+        if not normalization.success:
+            state.rejection_reason = normalization.rejection_reason
+            return self._failure(
+                state,
+                "transcript_normalization",
+                normalization.rejection_reason or "transcript_rejected",
+                "transcript_rejected",
+            )
+        return replace(transcription, text=normalization.normalized_command)
+
     def _brain_stage(
         self,
         request: SingleTurnVoiceRequestV1,
@@ -365,14 +406,26 @@ class SingleTurnVoiceStageMixin:
                 capture = record_until_silence(
                     output_path,
                     device=request.microphone_device or None,
+                    calibration_enabled=request.calibration_enabled,
+                    calibration_duration_seconds=request.calibration_duration_seconds,
                     speech_start_rms=request.speech_start_rms,
+                    speech_continue_rms=request.speech_continue_rms,
                     silence_rms=request.silence_rms,
                     required_speech_frames=request.required_speech_frames,
+                    required_continue_frames=request.required_continue_frames,
+                    required_silence_frames=request.required_silence_frames,
                     silence_seconds=request.silence_duration_seconds,
                     speech_wait_timeout_seconds=request.speech_wait_timeout_seconds,
                     maximum_utterance_seconds=request.maximum_utterance_seconds,
                     pre_roll_seconds=request.pre_roll_seconds,
                     frame_duration_ms=request.frame_duration_ms,
+                    minimum_speech_start_rms=request.minimum_speech_start_rms,
+                    maximum_speech_start_rms=request.maximum_speech_start_rms,
+                    minimum_speech_continue_rms=request.minimum_speech_continue_rms,
+                    maximum_speech_continue_rms=request.maximum_speech_continue_rms,
+                    minimum_silence_rms=request.minimum_silence_rms,
+                    maximum_silence_rms=request.maximum_silence_rms,
+                    frame_debug_enabled=request.frame_debug_enabled,
                     frame_read_timeout_seconds=min(
                         1.0,
                         request.recording_timeout_seconds or 1.0,
@@ -538,6 +591,23 @@ class SingleTurnVoiceStageMixin:
         handler_metadata = dict(handler_response.get("metadata") or {})
         state.detected_intent = str(handler_metadata.get("detected_intent") or "")
         state.routed_skill = str(handler_response.get("skill") or "")
+        plan = handler_metadata.get("plan")
+        execution = handler_metadata.get("execution")
+        if isinstance(plan, dict):
+            steps = list(plan.get("steps") or [])
+            targets = [str(step.get("target") or "") for step in steps if isinstance(step, dict)]
+            state.planner_decision = (
+                f"{len(steps)} step(s): {', '.join(target for target in targets if target)}"
+                if steps
+                else str(plan.get("status") or "no executable steps")
+            )
+        if isinstance(execution, dict):
+            state.execution_result = str(execution.get("status") or "completed")
+        if state.detected_intent == "unknown" or state.routed_skill == "unknown":
+            state.rejection_reason = str(
+                handler_metadata.get("rejection_reason")
+                or "no registered skill matched normalized command"
+            )
         state.data["brain_routing"] = routing.to_dict()
         if routing.success and routing.response_text.strip():
             state.brain_text_response = routing.response_text.strip()

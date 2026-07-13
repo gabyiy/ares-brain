@@ -67,6 +67,7 @@ def test_linux_alsa_auto_stop_streams_raw_pcm_with_argument_list(tmp_path):
     assert adapter.start().success is True
     result = adapter.record_until_silence(
         tmp_path / "vad.wav",
+        calibration_enabled=False,
         required_speech_frames=2,
         silence_seconds=0.1,
         speech_wait_timeout_seconds=0.1,
@@ -97,6 +98,7 @@ def test_linux_alsa_auto_stop_no_speech_returns_structured_failure(tmp_path):
 
     result = adapter.record_until_silence(
         tmp_path / "silent.wav",
+        calibration_enabled=False,
         required_speech_frames=2,
         silence_seconds=0.1,
         speech_wait_timeout_seconds=0.1,

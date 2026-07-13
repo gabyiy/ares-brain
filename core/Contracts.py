@@ -14,6 +14,8 @@ CONTRACT_MICROPHONE_CAPTURE_REQUEST = "microphone.capture.request"
 CONTRACT_MICROPHONE_CAPTURE_RESULT = "microphone.capture.result"
 CONTRACT_VOICE_ACTIVITY_CAPTURE_REQUEST = "voice.activity_capture.request"
 CONTRACT_VOICE_ACTIVITY_CAPTURE_RESULT = "voice.activity_capture.result"
+CONTRACT_TRANSCRIPT_NORMALIZATION_REQUEST = "voice.transcript_normalization.request"
+CONTRACT_TRANSCRIPT_NORMALIZATION_RESULT = "voice.transcript_normalization.result"
 CONTRACT_SPEECH_TO_TEXT_REQUEST = "speech_to_text.transcribe.request"
 CONTRACT_SPEECH_TO_TEXT_RESULT = "speech_to_text.transcribe.result"
 CONTRACT_TEXT_TO_SPEECH_REQUEST = "text_to_speech.synthesize.request"
@@ -340,14 +342,26 @@ class VoiceActivityCaptureRequestV1(VersionedContract):
     channels: int = 1
     sample_width_bytes: int = 2
     frame_duration_ms: int = 20
+    calibration_enabled: bool = True
+    calibration_duration_seconds: float = 0.75
     speech_start_rms: float = 200.0
+    speech_continue_rms: float = 160.0
     silence_rms: float = 120.0
     required_speech_frames: int = 3
+    required_continue_frames: int = 3
+    required_silence_frames: int = 5
     silence_duration_seconds: float = 0.9
     speech_wait_timeout_seconds: float = 10.0
     maximum_utterance_seconds: float = 15.0
     pre_roll_seconds: float = 0.25
     frame_read_timeout_seconds: float = 1.0
+    minimum_speech_start_rms: float = 200.0
+    maximum_speech_start_rms: float = 1200.0
+    minimum_speech_continue_rms: float = 140.0
+    maximum_speech_continue_rms: float = 900.0
+    minimum_silence_rms: float = 80.0
+    maximum_silence_rms: float = 600.0
+    frame_debug_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -363,16 +377,53 @@ class VoiceActivityCaptureResultV1(VersionedContract):
     peak_amplitude: int = 0
     rms_amplitude: float = 0.0
     ambient_rms: float = 0.0
+    ambient_rms_mean: float = 0.0
+    ambient_rms_median: float = 0.0
+    ambient_rms_percentile: float = 0.0
+    ambient_rms_peak: float = 0.0
+    ambient_noise_floor: float = 0.0
     speech_rms: float = 0.0
     maximum_frame_rms: float = 0.0
     sample_rate_hz: int = 16000
     channels: int = 1
     sample_width_bytes: int = 2
     frame_count: int = 0
+    speech_frame_count: int = 0
+    trailing_silence_frame_count: int = 0
     selected_device: str = ""
     stop_reason: str = ""
+    calibration_enabled: bool = False
+    calibration_duration_seconds: float = 0.0
+    derived_speech_start_rms: float = 0.0
+    derived_speech_continue_rms: float = 0.0
+    derived_silence_rms: float = 0.0
+    speech_start_offset_seconds: Optional[float] = None
+    speech_end_offset_seconds: Optional[float] = None
+    maximum_duration_reached: bool = False
     processing_time_seconds: float = 0.0
     error_message: str = ""
+    data: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TranscriptNormalizationRequestV1(VersionedContract):
+    contract_name: str = CONTRACT_TRANSCRIPT_NORMALIZATION_REQUEST
+    raw_transcript: str = ""
+    repetition_limit: int = 2
+
+
+@dataclass(frozen=True)
+class TranscriptNormalizationResultV1(VersionedContract):
+    contract_name: str = CONTRACT_TRANSCRIPT_NORMALIZATION_RESULT
+    success: bool = False
+    raw_transcript: str = ""
+    cleaned_transcript: str = ""
+    normalized_command: str = ""
+    arithmetic_candidate: bool = False
+    repetition_detected: bool = False
+    repetitions_removed: int = 0
+    cleanup_rule: str = "none"
+    rejection_reason: str = ""
     data: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -517,14 +568,26 @@ class SingleTurnVoiceRequestV1(VersionedContract):
     whisper_model_profile: str = "models/whisper/ggml-tiny.en.bin"
     minimum_rms: float = 0.0
     capture_mode: str = "fixed_duration"
+    calibration_enabled: bool = True
+    calibration_duration_seconds: float = 0.75
     speech_start_rms: float = 200.0
+    speech_continue_rms: float = 160.0
     silence_rms: float = 120.0
     required_speech_frames: int = 3
+    required_continue_frames: int = 3
+    required_silence_frames: int = 5
     silence_duration_seconds: float = 0.9
     speech_wait_timeout_seconds: float = 10.0
     maximum_utterance_seconds: float = 15.0
     pre_roll_seconds: float = 0.25
     frame_duration_ms: int = 20
+    minimum_speech_start_rms: float = 200.0
+    maximum_speech_start_rms: float = 1200.0
+    minimum_speech_continue_rms: float = 140.0
+    maximum_speech_continue_rms: float = 900.0
+    minimum_silence_rms: float = 80.0
+    maximum_silence_rms: float = 600.0
+    frame_debug_enabled: bool = False
     tts_voice_profile: str = ""
     speaker_device: str = "plughw:CARD=Device,DEV=0"
     playback_enabled: bool = False
@@ -551,10 +614,19 @@ class SingleTurnVoiceResultV1(VersionedContract):
     rms_amplitude: float = 0.0
     transcription_status: str = "not_started"
     recognized_text: str = ""
+    raw_transcript: str = ""
+    cleaned_transcript: str = ""
+    normalized_command: str = ""
+    repetition_detected: bool = False
+    repetitions_removed: int = 0
+    transcript_cleanup_rule: str = "none"
     transcription_processing_time_seconds: float = 0.0
     brain_execution_status: str = "not_started"
     detected_intent: str = ""
     routed_skill: str = ""
+    planner_decision: str = ""
+    execution_result: str = ""
+    rejection_reason: str = ""
     brain_text_response: str = ""
     brain_fallback_used: bool = False
     tts_status: str = "not_started"
@@ -582,14 +654,26 @@ class MultiTurnVoiceSessionRequestV1(VersionedContract):
     whisper_model_profile: str = "models/whisper/ggml-tiny.en.bin"
     minimum_rms: float = 0.0
     capture_mode: str = "fixed_duration"
+    calibration_enabled: bool = True
+    calibration_duration_seconds: float = 0.75
     speech_start_rms: float = 200.0
+    speech_continue_rms: float = 160.0
     silence_rms: float = 120.0
     required_speech_frames: int = 3
+    required_continue_frames: int = 3
+    required_silence_frames: int = 5
     silence_duration_seconds: float = 0.9
     speech_wait_timeout_seconds: float = 10.0
     maximum_utterance_seconds: float = 15.0
     pre_roll_seconds: float = 0.25
     frame_duration_ms: int = 20
+    minimum_speech_start_rms: float = 200.0
+    maximum_speech_start_rms: float = 1200.0
+    minimum_speech_continue_rms: float = 140.0
+    maximum_speech_continue_rms: float = 900.0
+    minimum_silence_rms: float = 80.0
+    maximum_silence_rms: float = 600.0
+    frame_debug_enabled: bool = False
     tts_voice_profile: str = ""
     playback_enabled: bool = False
     maximum_turns: int = 5
@@ -668,6 +752,14 @@ def build_default_contract_registry() -> ContractRegistry:
     registry.register(
         CONTRACT_VOICE_ACTIVITY_CAPTURE_RESULT,
         consumers=["RmsVoiceActivityCapture", "LinuxAlsaMicrophoneAdapter", "SingleTurnVoicePipeline"],
+    )
+    registry.register(
+        CONTRACT_TRANSCRIPT_NORMALIZATION_REQUEST,
+        consumers=["TranscriptNormalizer", "SingleTurnVoicePipeline"],
+    )
+    registry.register(
+        CONTRACT_TRANSCRIPT_NORMALIZATION_RESULT,
+        consumers=["TranscriptNormalizer", "SingleTurnVoicePipeline", "VoiceCommandRouter"],
     )
     registry.register(
         CONTRACT_SPEECH_TO_TEXT_REQUEST,

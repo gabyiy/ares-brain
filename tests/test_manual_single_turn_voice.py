@@ -106,7 +106,9 @@ def test_manual_auto_stop_arguments_are_forwarded_without_changing_intent_safety
     exit_code = manual.run_manual_verification(
         [
             "--auto-stop",
+            "--calibration-seconds", "0.6",
             "--speech-start-rms", "220",
+            "--speech-continue-rms", "165",
             "--silence-rms", "110",
             "--silence-seconds", "0.8",
             "--speech-wait-timeout", "9",
@@ -114,6 +116,9 @@ def test_manual_auto_stop_arguments_are_forwarded_without_changing_intent_safety
             "--pre-roll-seconds", "0.3",
             "--frame-ms", "30",
             "--required-speech-frames", "4",
+            "--required-continue-frames", "3",
+            "--required-silence-frames", "6",
+            "--frame-debug",
         ],
         output_func=lambda text: None,
         pipeline=pipeline,
@@ -122,7 +127,10 @@ def test_manual_auto_stop_arguments_are_forwarded_without_changing_intent_safety
     request = pipeline.requests[0]
     assert exit_code == 0
     assert request.capture_mode == "auto_stop"
+    assert request.calibration_enabled is True
+    assert request.calibration_duration_seconds == 0.6
     assert request.speech_start_rms == 220
+    assert request.speech_continue_rms == 165
     assert request.silence_rms == 110
     assert request.silence_duration_seconds == 0.8
     assert request.speech_wait_timeout_seconds == 9
@@ -130,6 +138,9 @@ def test_manual_auto_stop_arguments_are_forwarded_without_changing_intent_safety
     assert request.pre_roll_seconds == 0.3
     assert request.frame_duration_ms == 30
     assert request.required_speech_frames == 4
+    assert request.required_continue_frames == 3
+    assert request.required_silence_frames == 6
+    assert request.frame_debug_enabled is True
 
 
 def test_manual_failure_returns_nonzero_and_prints_stage_reason():

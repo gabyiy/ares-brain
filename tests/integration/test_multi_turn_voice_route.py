@@ -12,6 +12,7 @@ from core import (
     SingleTurnVoicePipeline,
     SpeakerPlaybackResult,
     VoiceActivityCaptureRequestV1,
+    VAD_STATUS_COMPLETED_AFTER_SILENCE,
 )
 from events import EventBus
 from scripts.manual_verify_single_turn_voice import build_existing_brain_handler
@@ -85,13 +86,25 @@ class SyntheticVadMicrophone:
                 output_wav_path=str(output_path),
                 microphone_device=kwargs.get("device") or "synthetic",
                 frame_duration_ms=kwargs["frame_duration_ms"],
+                calibration_enabled=kwargs["calibration_enabled"],
+                calibration_duration_seconds=kwargs["calibration_duration_seconds"],
                 speech_start_rms=kwargs["speech_start_rms"],
+                speech_continue_rms=kwargs["speech_continue_rms"],
                 silence_rms=kwargs["silence_rms"],
                 required_speech_frames=kwargs["required_speech_frames"],
+                required_continue_frames=kwargs["required_continue_frames"],
+                required_silence_frames=kwargs["required_silence_frames"],
                 silence_duration_seconds=kwargs["silence_seconds"],
                 speech_wait_timeout_seconds=kwargs["speech_wait_timeout_seconds"],
                 maximum_utterance_seconds=kwargs["maximum_utterance_seconds"],
                 pre_roll_seconds=kwargs["pre_roll_seconds"],
+                minimum_speech_start_rms=kwargs["minimum_speech_start_rms"],
+                maximum_speech_start_rms=kwargs["maximum_speech_start_rms"],
+                minimum_speech_continue_rms=kwargs["minimum_speech_continue_rms"],
+                maximum_speech_continue_rms=kwargs["maximum_speech_continue_rms"],
+                minimum_silence_rms=kwargs["minimum_silence_rms"],
+                maximum_silence_rms=kwargs["maximum_silence_rms"],
+                frame_debug_enabled=kwargs["frame_debug_enabled"],
                 correlation_id=kwargs["correlation_id"],
                 session_id=kwargs["session_id"],
             ),
@@ -223,6 +236,7 @@ def test_synthetic_pcm_vad_routes_trimmed_utterance_through_real_brain(tmp_path)
             recording_output_path=str(tmp_path / "detected.wav"),
             recording_duration_seconds=1,
             capture_mode=CAPTURE_MODE_AUTO_STOP,
+            calibration_enabled=False,
             speech_start_rms=200,
             silence_rms=120,
             required_speech_frames=2,
@@ -269,6 +283,7 @@ def test_multi_turn_session_reuses_auto_stop_single_turn_with_cancellation_token
             recording_output_directory=str(tmp_path),
             recording_duration_seconds=1,
             capture_mode=CAPTURE_MODE_AUTO_STOP,
+            calibration_enabled=False,
             speech_start_rms=200,
             silence_rms=120,
             required_speech_frames=2,
@@ -290,3 +305,90 @@ def test_multi_turn_session_reuses_auto_stop_single_turn_with_cancellation_token
     assert result.turn_summaries[0]["brain_text_response"] == "Result: 15"
     assert stt.transcription_count == 1
     assert microphone.active is False
+
+
+def test_adaptive_calibration_single_turn_routes_only_trimmed_speech(tmp_path):
+    core_service = CoreService()
+    manager = SkillManager(event_bus=EventBus(), core_service=core_service)
+    manager.register(CalculatorSkill())
+    microphone = SyntheticVadMicrophone(
+        [*([_pcm_frame(40)] * 5), _pcm_frame(450), _pcm_frame(500), *([_pcm_frame(20)] * 5)]
+    )
+    pipeline = SingleTurnVoicePipeline(
+        microphone,
+        MockSpeechToTextAdapter(transcripts=["what is two plus two?"]),
+        MockTextToSpeechAdapter(),
+        NoAudioSpeaker(),
+        build_existing_brain_handler(manager),
+        core_service=core_service,
+    )
+
+    result = pipeline.run_once(
+        SingleTurnVoiceRequestV1(
+            recording_output_path=str(tmp_path / "adaptive.wav"),
+            recording_duration_seconds=1,
+            capture_mode=CAPTURE_MODE_AUTO_STOP,
+            calibration_enabled=True,
+            calibration_duration_seconds=0.1,
+            required_speech_frames=2,
+            required_continue_frames=2,
+            required_silence_frames=3,
+            silence_duration_seconds=0.1,
+            speech_wait_timeout_seconds=0.1,
+            maximum_utterance_seconds=0.2,
+            pre_roll_seconds=0.02,
+            playback_enabled=False,
+            cleanup_policy="keep",
+        )
+    )
+
+    assert result.success is True
+    assert result.data["recording"]["calibration_enabled"] is True
+    assert result.data["recording"]["stop_reason"] == VAD_STATUS_COMPLETED_AFTER_SILENCE
+    assert result.normalized_command == "calculate 2 + 2"
+    assert result.brain_text_response == "Result: 4"
+
+
+def test_adaptive_calibration_is_reused_by_bounded_multi_turn_session(tmp_path):
+    core_service = CoreService()
+    manager = SkillManager(event_bus=EventBus(), core_service=core_service)
+    manager.register(CalculatorSkill())
+    microphone = SyntheticVadMicrophone(
+        [*([_pcm_frame(40)] * 5), _pcm_frame(500), _pcm_frame(550), *([_pcm_frame(20)] * 5)]
+    )
+    pipeline = SingleTurnVoicePipeline(
+        microphone,
+        MockSpeechToTextAdapter(transcripts=["two plus two"]),
+        MockTextToSpeechAdapter(),
+        NoAudioSpeaker(),
+        build_existing_brain_handler(manager),
+        core_service=core_service,
+    )
+    session = MultiTurnVoiceSession(pipeline, sleeper=lambda _: None)
+
+    result = session.run_session(
+        MultiTurnVoiceSessionRequestV1(
+            recording_output_directory=str(tmp_path),
+            recording_duration_seconds=1,
+            capture_mode=CAPTURE_MODE_AUTO_STOP,
+            calibration_enabled=True,
+            calibration_duration_seconds=0.1,
+            required_speech_frames=2,
+            required_continue_frames=2,
+            required_silence_frames=3,
+            silence_duration_seconds=0.1,
+            speech_wait_timeout_seconds=0.1,
+            maximum_utterance_seconds=0.2,
+            pre_roll_seconds=0.02,
+            maximum_turns=1,
+            inter_turn_delay_seconds=0,
+            greeting_enabled=False,
+            closing_phrase_enabled=False,
+            cleanup_policy="keep",
+        )
+    )
+
+    assert result.success is True
+    assert result.successful_turns == 1
+    assert result.turn_summaries[0]["normalized_command"] == "calculate 2 + 2"
+    assert result.turn_summaries[0]["brain_text_response"] == "Result: 4"

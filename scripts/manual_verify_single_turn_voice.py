@@ -38,13 +38,17 @@ DEFAULT_RECORDING_OUTPUT = "data/manual_voice_samples/single_turn_input.wav"
 DEFAULT_RECORD_SECONDS = 5
 DEFAULT_PIPELINE_TIMEOUT = 300.0
 DEFAULT_SPEECH_START_RMS = 200.0
+DEFAULT_SPEECH_CONTINUE_RMS = 160.0
 DEFAULT_SILENCE_RMS = 120.0
+DEFAULT_CALIBRATION_SECONDS = 0.75
 DEFAULT_SILENCE_SECONDS = 0.9
 DEFAULT_SPEECH_WAIT_TIMEOUT = 10.0
 DEFAULT_MAX_UTTERANCE_SECONDS = 15.0
 DEFAULT_PRE_ROLL_SECONDS = 0.25
 DEFAULT_FRAME_MS = 20
 DEFAULT_REQUIRED_SPEECH_FRAMES = 3
+DEFAULT_REQUIRED_CONTINUE_FRAMES = 3
+DEFAULT_REQUIRED_SILENCE_FRAMES = 5
 
 WARNING = (
     "WARNING: This runs exactly one owner-triggered local ARES voice turn and exits. "
@@ -76,7 +80,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--whisper-command", default=DEFAULT_WHISPER_COMMAND)
     parser.add_argument("--voice-profile", default="")
     parser.add_argument("--min-rms", type=float, default=0.0)
+    calibration = parser.add_mutually_exclusive_group()
+    calibration.add_argument(
+        "--auto-calibration",
+        dest="calibration_enabled",
+        action="store_true",
+    )
+    calibration.add_argument(
+        "--no-auto-calibration",
+        dest="calibration_enabled",
+        action="store_false",
+    )
+    parser.set_defaults(calibration_enabled=True)
+    parser.add_argument(
+        "--calibration-seconds",
+        type=float,
+        default=DEFAULT_CALIBRATION_SECONDS,
+    )
     parser.add_argument("--speech-start-rms", type=float, default=DEFAULT_SPEECH_START_RMS)
+    parser.add_argument(
+        "--speech-continue-rms",
+        type=float,
+        default=DEFAULT_SPEECH_CONTINUE_RMS,
+    )
     parser.add_argument("--silence-rms", type=float, default=DEFAULT_SILENCE_RMS)
     parser.add_argument("--silence-seconds", type=float, default=DEFAULT_SILENCE_SECONDS)
     parser.add_argument(
@@ -96,6 +122,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_REQUIRED_SPEECH_FRAMES,
     )
+    parser.add_argument(
+        "--required-continue-frames",
+        type=int,
+        default=DEFAULT_REQUIRED_CONTINUE_FRAMES,
+    )
+    parser.add_argument(
+        "--required-silence-frames",
+        type=int,
+        default=DEFAULT_REQUIRED_SILENCE_FRAMES,
+    )
+    parser.add_argument("--frame-debug", action="store_true")
     parser.add_argument("--playback", action="store_true")
     parser.add_argument("--keep-audio", action="store_true")
     parser.add_argument("--timeout", type=float, default=DEFAULT_PIPELINE_TIMEOUT)
@@ -133,7 +170,10 @@ def build_existing_brain_handler(skill_manager: SkillManager):
             return SkillResponse(
                 text="I cannot handle that request yet.",
                 skill="unknown",
-                metadata={"detected_intent": intent.intent_name},
+                metadata={
+                    "detected_intent": intent.intent_name,
+                    "rejection_reason": "no registered skill matched normalized command",
+                },
             )
         return SkillResponse(
             text=response.text,
@@ -201,14 +241,20 @@ def request_from_args(args: argparse.Namespace) -> SingleTurnVoiceRequestV1:
         whisper_model_profile=str(_repo_path(args.whisper_model)),
         minimum_rms=args.min_rms,
         capture_mode=args.capture_mode,
+        calibration_enabled=bool(args.calibration_enabled),
+        calibration_duration_seconds=args.calibration_seconds,
         speech_start_rms=args.speech_start_rms,
+        speech_continue_rms=args.speech_continue_rms,
         silence_rms=args.silence_rms,
         required_speech_frames=args.required_speech_frames,
+        required_continue_frames=args.required_continue_frames,
+        required_silence_frames=args.required_silence_frames,
         silence_duration_seconds=args.silence_seconds,
         speech_wait_timeout_seconds=args.speech_wait_timeout,
         maximum_utterance_seconds=args.max_utterance_seconds,
         pre_roll_seconds=args.pre_roll_seconds,
         frame_duration_ms=args.frame_ms,
+        frame_debug_enabled=bool(args.frame_debug),
         tts_voice_profile=args.voice_profile,
         speaker_device=args.speaker_device,
         playback_enabled=bool(args.playback),
@@ -247,13 +293,26 @@ def run_manual_verification(
 
     output_func("")
     output_func("Single-turn summary")
+    output_func(f"Raw transcript: {result.raw_transcript or '(none)'}")
+    output_func(f"Cleaned transcript: {result.cleaned_transcript or '(none)'}")
+    output_func(f"Normalized command: {result.normalized_command or '(none)'}")
     output_func(f"Recognized text: {result.recognized_text or '(none)'}")
+    output_func(f"Detected intent: {result.detected_intent or 'unknown'}")
+    selected_skill = result.routed_skill if result.routed_skill not in {"", "unknown"} else "none"
+    output_func(f"Selected skill: {selected_skill}")
     detected = result.detected_intent or result.routed_skill or "unknown"
     output_func(f"Detected intent/skill: {detected}")
+    output_func(f"Planner decision: {result.planner_decision or '(none)'}")
+    output_func(f"Execution result: {result.execution_result or result.brain_execution_status}")
+    output_func(f"Rejection reason: {result.rejection_reason or '(none)'}")
     output_func(f"ARES response: {result.brain_text_response or '(none)'}")
     output_func(f"Total processing time: {result.total_processing_time_seconds:.3f}s")
     output_func(f"Final status: {result.status}")
-    _print_capture_diagnostics(result, output_func)
+    _print_capture_diagnostics(
+        result,
+        output_func,
+        frame_debug=bool(args.frame_debug or args.verbose),
+    )
     if result.error_reason:
         output_func(f"Failure stage: {result.error_stage}")
         output_func(f"Failure reason: {result.error_reason}")
@@ -300,23 +359,48 @@ def _default_piper_command() -> str:
 
 def _recording_timeout(args: argparse.Namespace) -> float:
     if args.capture_mode == CAPTURE_MODE_AUTO_STOP:
-        return float(args.speech_wait_timeout + args.max_utterance_seconds + 5.0)
+        return float(
+            args.calibration_seconds
+            + args.speech_wait_timeout
+            + args.max_utterance_seconds
+            + 5.0
+        )
     return float(args.record_seconds + 5)
 
 
-def _print_capture_diagnostics(result: Any, output_func: Callable[[str], None]) -> None:
+def _print_capture_diagnostics(
+    result: Any,
+    output_func: Callable[[str], None],
+    frame_debug: bool = False,
+) -> None:
     recording = dict(result.data.get("recording") or {})
     if not recording or recording.get("metadata", {}).get("source") != "rms_voice_activity_capture":
         return
     output_func(f"Capture stop reason: {recording.get('stop_reason') or recording.get('status')}")
     output_func(f"Ambient RMS: {float(recording.get('ambient_rms', 0.0)):.3f}")
+    output_func(
+        "Ambient statistics: "
+        f"mean={float(recording.get('ambient_rms_mean', 0.0)):.3f}, "
+        f"median={float(recording.get('ambient_rms_median', 0.0)):.3f}, "
+        f"p90={float(recording.get('ambient_rms_percentile', 0.0)):.3f}, "
+        f"peak={float(recording.get('ambient_rms_peak', 0.0)):.3f}"
+    )
     output_func(f"Speech RMS: {float(recording.get('speech_rms', 0.0)):.3f}")
     output_func(f"Peak amplitude: {int(recording.get('peak_amplitude', 0))}")
     data = dict(recording.get("data") or {})
     output_func(
         "Selected thresholds: "
-        f"start={data.get('speech_start_rms')}, silence={data.get('silence_rms')}"
+        f"start={data.get('speech_start_rms')}, "
+        f"continue={data.get('speech_continue_rms')}, "
+        f"silence={data.get('silence_rms')}"
     )
+    if frame_debug and data.get("transitions"):
+        output_func("Capture transitions:")
+        for transition in data["transitions"]:
+            output_func(
+                f"  {transition.get('from')} -> {transition.get('to')} "
+                f"(frame={transition.get('frame')}, rms={transition.get('rms')})"
+            )
 
 
 def main() -> None:

@@ -37,6 +37,7 @@ from core.SingleTurnVoiceSupport import (
 )
 from core.SpeechToText import SpeechToTextAdapter
 from core.TextToSpeech import TextToSpeechAdapter
+from core.TranscriptNormalization import TranscriptNormalizer
 from core.VoiceCommandRouter import VoiceCommandRouter
 
 
@@ -100,6 +101,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         event_history_store: Any = None,
         fallback_policy: Optional[AdapterFallbackPolicy] = None,
         speech_to_text_candidates: Optional[List[AdapterCandidate]] = None,
+        transcript_normalizer: Optional[TranscriptNormalizer] = None,
         stage_callback: Optional[StageCallback] = None,
         clock: Clock = time.perf_counter,
     ):
@@ -130,6 +132,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         self.event_history_store = event_history_store
         self.fallback_policy = fallback_policy
         self.speech_to_text_candidates = list(speech_to_text_candidates or [])
+        self.transcript_normalizer = transcript_normalizer or TranscriptNormalizer()
         self.stage_callback = stage_callback
         self._stage_observers: List[StageCallback] = []
         self.clock = clock
@@ -643,10 +646,19 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
             rms_amplitude=state.rms_amplitude,
             transcription_status=state.transcription_status,
             recognized_text=state.recognized_text,
+            raw_transcript=state.raw_transcript,
+            cleaned_transcript=state.cleaned_transcript,
+            normalized_command=state.normalized_command,
+            repetition_detected=state.repetition_detected,
+            repetitions_removed=state.repetitions_removed,
+            transcript_cleanup_rule=state.transcript_cleanup_rule,
             transcription_processing_time_seconds=state.transcription_processing_time_seconds,
             brain_execution_status=state.brain_execution_status,
             detected_intent=state.detected_intent,
             routed_skill=state.routed_skill,
+            planner_decision=state.planner_decision,
+            execution_result=state.execution_result,
+            rejection_reason=state.rejection_reason,
             brain_text_response=state.brain_text_response,
             brain_fallback_used=state.brain_fallback_used,
             tts_status=state.tts_status,

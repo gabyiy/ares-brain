@@ -207,7 +207,9 @@ def test_request_preserves_auto_stop_capture_configuration():
     args = manual.build_parser().parse_args(
         [
             "--auto-stop",
+            "--calibration-seconds", "0.7",
             "--speech-start-rms", "210",
+            "--speech-continue-rms", "155",
             "--silence-rms", "105",
             "--silence-seconds", "0.85",
             "--speech-wait-timeout", "8",
@@ -220,7 +222,10 @@ def test_request_preserves_auto_stop_capture_configuration():
     request = manual.request_from_args(args)
 
     assert request.capture_mode == "auto_stop"
+    assert request.calibration_enabled is True
+    assert request.calibration_duration_seconds == 0.7
     assert request.speech_start_rms == 210
+    assert request.speech_continue_rms == 155
     assert request.silence_rms == 105
     assert request.silence_duration_seconds == 0.85
     assert request.speech_wait_timeout_seconds == 8
