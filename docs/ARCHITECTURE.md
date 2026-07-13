@@ -626,8 +626,8 @@ LinuxAlsaMicrophoneAdapter
   -> wait for consecutive speech frames
   -> preserve bounded pre-roll
   -> WAITING / SPEECH / POSSIBLE_SILENCE state machine
-  -> retain short pauses only when speech resumes consecutively
-  -> trim terminal silence
+  -> append resumed speech and internal pauses to one ordered utterance
+  -> trim only the confirmed consecutive terminal-silence suffix
   -> atomically write and validate one mono PCM WAV
   -> SingleTurnVoicePipeline
   -> Whisper only when capture succeeded
@@ -642,8 +642,8 @@ The end-of-speech states are:
 1. `CALIBRATING`: sample ambient frames without treating them as an utterance.
 2. `WAITING`: require consecutive frames above the derived start threshold.
 3. `SPEECH`: accept frames above the continue threshold.
-4. `POSSIBLE_SILENCE`: retain an internal pause only after consecutive resume frames; otherwise complete after bounded hangover and low-frame evidence.
-5. `COMPLETE`: trim terminal pending frames and atomically validate the WAV.
+4. `POSSIBLE_SILENCE`: buffer every frame in order; consecutive resumed speech commits the whole pending block, while completion commits every frame before the final consecutive terminal-silence suffix.
+5. `COMPLETE`: trim only that confirmed suffix, preserve the prior utterance, and atomically validate the WAV.
 
 This fixes the prior failure mode where every frame above one static silence threshold reset trailing silence. Post-speech noise below the continue threshold no longer extends capture indefinitely, and one click cannot resume speech. `maximum_utterance_seconds`, speech wait timeout, cancellation, bounded buffers, lifecycle/resource gates, and fixed-duration capture remain hard safety limits.
 
@@ -670,7 +670,25 @@ Fixed-duration capture retains explicit raw-device configurability. It records t
 
 The canonical contract is 16 kHz, mono, signed 16-bit little-endian PCM in a valid RIFF/WAV envelope. `core.WavAudio` owns normalization and header validation. `LinuxAlsaMicrophoneAdapter` owns ALSA resolution and subprocesses. VAD accepts only canonical PCM, while `SingleTurnVoicePipeline` reopens the finalized normalized path and refuses noncanonical adapter output before Whisper. Brain, CoreService, SkillManager, IntentParser, Planner, ExecutionPipeline, and skills do not know ALSA devices, source rates, resampling details, or diagnostic paths.
 
-Format diagnostics remain structured on the V1 capture/result boundary: requested and resolved device, requested rate, actual source rate/channels/width, canonical rate/channels/width, raw and normalized paths/durations, and final Whisper input path. `--diagnostic-audio` explicitly retains distinct raw/pre-VAD and final normalized WAVs. Normal operation does not retain the raw diagnostic capture. Unique temporary names, closed WAV writers, canonical revalidation, cancellation, lifecycle/resource gates, and microphone/speaker mutual exclusion remain mandatory.
+Format diagnostics remain structured on the V1 capture/result boundary: requested and resolved device, requested rate, actual source rate/channels/width, canonical rate/channels/width, raw/assembled/normalized paths and durations, frame/sample/byte counts, intentional leading/trailing trim, duration-invariant status, and final Whisper input path. `--diagnostic-audio` explicitly retains distinct raw capture, ordered VAD assembly, and final normalized WAVs in a unique per-turn directory. The manual single-turn verifier also writes the Whisper transcript beside those files and can explicitly play the three WAV stages after capture has stopped. Normal operation does not retain raw or assembled diagnostic capture. Unique temporary names, closed WAV writers, canonical revalidation, cancellation, lifecycle/resource gates, and microphone/speaker mutual exclusion remain mandatory.
+
+# Post-VAD Utterance Assembly and Whisper Handoff
+
+The original `POSSIBLE_SILENCE` implementation combined two different concepts: all frames seen since speech dropped below the continue threshold, and the consecutive terminal-silence suffix. It allowed the total pending-buffer length to satisfy the configured hangover while requiring only the smaller low-frame confirmation count. Completion then discarded the entire pending buffer. With repeated `SPEECH -> POSSIBLE_SILENCE -> SPEECH` transitions, low-energy words and internal pauses could accumulate in the final pending block and be removed together, even though ALSA and VAD had processed the complete stream.
+
+The corrected assembly rules are:
+
+1. Pre-roll is copied once when speech is confirmed.
+2. Confirmed speech frames append once to one persistent utterance buffer.
+3. `POSSIBLE_SILENCE` frames remain ordered in a separate pending block.
+4. A confirmed resume appends that complete pending block once and clears it.
+5. Completion requires the full configured count of consecutive frames below the silence threshold.
+6. Only that final consecutive suffix is omitted; earlier pending speech and pauses append to the utterance.
+7. Maximum-duration completion appends all pending frames rather than dropping them.
+
+`core.WavAudio` calculates samples and duration from channels and sample width: `sample_count = pcm_bytes / (channels * sample_width_bytes)` and `duration = sample_count / sample_rate`. Already-canonical 16 kHz mono signed 16-bit PCM uses a lossless byte-for-byte normalization path. `LinuxAlsaMicrophoneAdapter` writes unique `raw_capture.wav`, `assembled_utterance.wav`, and `normalized_whisper_input.wav` stages, closes each writer before the next reader starts, and exposes the current turn's exact final path.
+
+Before Whisper, `SingleTurnVoicePipeline` reopens the finalized normalized file and enforces `normalized_duration >= assembled_duration - duration_loss_tolerance_seconds`. The default tolerance is `0.05` seconds. An unexplained loss fails as `audio_duration_invariant_failed`; Whisper, Brain routing, Piper, and speaker playback do not run. This invariant is a corruption/truncation guard, not permission to remove speech.
 
 # Transcript Normalization and Voice Calculator Routing
 
@@ -720,7 +738,7 @@ Normalization uses finite wrappers, complete token consumption, a 1024-character
 
 The Linux ALSA manifest explicitly provides `voice.capture.activity`, consumes and produces the V1 VAD contracts, declares one task slot and a small logical resource reservation, and remains disabled by default. Fixed-duration capture remains available as an explicit fallback. No wake word, background listener, persistent transcript, GPT, cloud service, or autonomous capture was added.
 
-The original VAD checkpoint collection was 912 tests. Adaptive calibration checkpoint collection was 959 tests. Production-registry routing checkpoint collection was 1002 tests. Natural-language calculator extraction checkpoint collection was 1058 tests. Current format-safe capture collection: 1079 tests.
+The original VAD checkpoint collection was 912 tests. Adaptive calibration checkpoint collection was 959 tests. Production-registry routing checkpoint collection was 1002 tests. Natural-language calculator extraction checkpoint collection was 1058 tests. Format-safe capture checkpoint collection was 1079 tests. Current post-VAD assembly checkpoint collection: 1105 tests.
 
 # Architecture Hardening Checkpoint
 

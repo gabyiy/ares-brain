@@ -4,13 +4,13 @@ Last Updated: 2026-07-13
 
 Current Version
 
-ARES v1.85 - Format-Safe Raspberry Pi Voice Capture
+ARES v1.86 - Complete VAD Utterance Assembly
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, canonical 16 kHz mono PCM normalization, and production-factory-verified natural-language calculator routing.
+ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, and production-factory-verified natural-language calculator routing.
 
 Checkpoint root causes and fixes:
 
@@ -23,6 +23,8 @@ Checkpoint root causes and fixes:
 - Windows CI verifies this extraction checkpoint with injected hardware adapters and does not claim the final post-pull Raspberry Pi calculator response.
 - Real ALSA diagnostics then proved `hw:2,0` did not honor a requested 16 kHz rate: it supplied 44.1 kHz. The old headerless VAD stream nevertheless used 16 kHz frame sizes and WAV metadata, which explains growling, repetition, and unstable end-of-speech/routing despite clear direct recordings.
 - Auto-stop now resolves numeric raw devices through `plughw`, fixed capture reads the actual WAV header, and both routes enforce one centralized 16 kHz mono signed 16-bit PCM boundary before VAD/Whisper. No raw PCM bytes are relabeled at another rate.
+- The owner then proved a separate post-capture defect: ALSA/VAD processed 3.42 seconds through frame 171, but the normalized Whisper input contained exactly 1.0 second. `POSSIBLE_SILENCE` used total pending-buffer length to satisfy hangover, required only the smaller consecutive-low-frame count, and discarded the whole pending block at completion. Low-energy words and internal pauses could therefore disappear together.
+- The VAD now preserves one persistent ordered utterance, appends each resumed pending block exactly once, requires the full configured consecutive terminal-silence duration, and trims only that suffix. Canonical normalization is lossless for already-canonical PCM, and a 0.05-second duration invariant blocks Whisper when unexplained truncation occurs.
 
 Confirmed Phase 3 foundation:
 
@@ -88,10 +90,11 @@ Confirmed Phase 3 foundation:
 - Anchored natural-language calculator wrapper extraction with one-expression-only safety
 - ALSA raw-device resolution to `plughw` for canonical streaming capture
 - Actual-header WAV normalization before VAD/Whisper with atomic finalization
-- Distinct raw/final diagnostics through owner-requested `--diagnostic-audio`
+- Distinct per-turn raw/assembled/normalized WAV diagnostics plus transcript output through owner-requested `--diagnostic-audio`
+- Pre-Whisper assembled/normalized duration invariant with fail-closed truncation handling
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1079 tests.
+Current pytest collection: 1105 tests.
 
 The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, centralized canonical WAV conversion through `core.WavAudio`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, and the bounded multi-turn session. Adaptive calibration remains inside the VAD boundary; transcript normalization and routing diagnostics remain between STT and `VoiceCommandRouter`/SkillManager. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, conversion, VAD, Whisper, Piper, or normalization internals. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
 
@@ -388,17 +391,19 @@ python scripts/manual_verify_single_turn_voice.py \
   --max-utterance-seconds 15 \
   --pre-roll-seconds 0.25 \
   --frame-ms 20 \
+  --duration-loss-tolerance 0.05 \
   --language en \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --whisper-model models/whisper/ggml-base.en.bin \
   --voice-profile en_US-hfc_male-medium \
   --diagnostic-audio \
   --diagnostic-routing \
+  --playback-debug-stages \
   --timeout 300 \
   --playback
 ```
 
-Say `I'll calculate 2 plus 2.` The expected trace is normalized command `calculate 2 + 2`, cleanup rule `calculator_natural_language_wrapper`, intent `calculate`, selected registered skill `calculator`, planner target `calculator`, execution `success`, response `Result: 4`, and no rejection reason. The automated Windows production-factory test produced this result through CoreService, SkillManager, IntentParser, Planner, ExecutionPipeline, and the real CalculatorSkill. Final Raspberry Pi execution after pulling this checkpoint remains owner-run verification.
+Say `Hello Ares, what is two plus two?` The expected trace is normalized command `calculate 2 + 2`, cleanup rule `calculator_natural_language_wrapper`, intent `calculate`, selected registered skill `calculator`, planner target `calculator`, execution `success`, response `Result: 4`, and no rejection reason. The automated Windows production-factory test produced this result through CoreService, SkillManager, IntentParser, Planner, ExecutionPipeline, and the real CalculatorSkill. `--diagnostic-audio` retains unique `raw_capture.wav`, `assembled_utterance.wav`, `normalized_whisper_input.wav`, and `whisper_transcript.txt` files. `--playback-debug-stages` explicitly plays the three WAV stages only after capture/pipeline completion. Final Raspberry Pi execution after pulling this checkpoint remains owner-run verification.
 
 Controlled bounded multi-turn voice session has been added.
 
@@ -477,6 +482,9 @@ Capture behavior:
 - Bounded start/continue/silence thresholds, consecutive start/resume/end evidence, and `POSSIBLE_SILENCE` hangover replace the old one-threshold reset behavior.
 - Sub-continue post-speech noise cannot extend capture indefinitely; isolated clicks cannot resume speech.
 - Terminal silence is omitted from the final validated WAV, while pauses with consecutive resumed speech are retained.
+- `POSSIBLE_SILENCE` now distinguishes the complete ordered pending block from its truly consecutive terminal-silence suffix. Resume commits the whole pending block once; completion commits everything before the suffix and trims only the suffix.
+- Canonical input uses a lossless PCM-copy normalization path. Frame/sample/byte math is explicit, and the pipeline rejects unexplained assembled-to-normalized duration loss before Whisper.
+- Auto-stop uses unique per-turn raw, assembled, and normalized filenames. Owner-requested diagnostics can also preserve the Whisper transcript and play each finalized WAV stage after capture stops.
 - No-speech and invalid-audio results stop before Whisper, Brain, Piper, and speaker execution.
 - `TranscriptNormalizationRequestV1` / `TranscriptNormalizationResultV1` preserve raw, cleaned, and normalized forms.
 - Spoken arithmetic is converted deterministically into numeric/operator text before the existing IntentParser/Planner/ExecutionPipeline/CalculatorSkill path. Calculator character and AST safety validation are unchanged and `eval()` is not used.
@@ -2113,22 +2121,23 @@ Future Roadmap
 6. Production voice calculator routing hardening completed in CI
 7. Anchored natural-language calculator wrapper extraction completed in CI
 8. Canonical ALSA/WAV normalization before VAD and Whisper completed in CI
-9. Pull and verify `calculate two plus two` with `--diagnostic-audio --diagnostic-routing` on Raspberry Pi
-10. Only later add wake-word/background listening
-11. GPT fallback integration
-12. Raspberry Pi deployment
-13. Robot body / sensors
-14. Vision
-15. Robotics
-16. Jetson Orin migration
-17. Autonomous ARES
+9. Complete ordered post-VAD assembly and duration-safe Whisper handoff in CI
+10. Pull and verify `Hello Ares, what is two plus two?` with raw/assembled/normalized diagnostics on Raspberry Pi
+11. Only later add wake-word/background listening
+12. GPT fallback integration
+13. Raspberry Pi deployment
+14. Robot body / sensors
+15. Vision
+16. Robotics
+17. Jetson Orin migration
+18. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1079 tests.
+- Current pytest collection: 1105 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2195,6 +2204,8 @@ Verification Notes
 
 Latest Commits
 
+- `188174d` Preserve complete VAD utterances for Whisper
+- `7934987` Document format-safe Raspberry Pi audio capture
 - `e8a881b` Normalize ALSA capture before voice processing
 - `419cb7d` Support safe natural-language calculator wrappers
 - `40255ad` Document production voice calculator routing

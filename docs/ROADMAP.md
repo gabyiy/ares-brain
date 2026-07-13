@@ -1029,13 +1029,24 @@ Phase 81: Format-Safe Raspberry Pi Microphone Capture
 - Production auto-stop resolves raw numeric hardware IDs to ALSA `plughw` conversion and requests canonical 16 kHz mono signed 16-bit PCM before framing or RMS analysis.
 - Fixed-duration capture reads the actual WAV header and uses the centralized `core.WavAudio` boundary to downmix/resample supported PCM into a separately finalized canonical WAV.
 - VAD and Whisper reject noncanonical, missing, empty, corrupt, truncated, or unsupported WAV input instead of reinterpreting bytes.
-- Single-turn and bounded multi-turn requests propagate explicit `diagnostic_audio`; owner scripts expose `--diagnostic-audio` and report raw/final paths plus requested, actual, and canonical formats.
+- Single-turn and bounded multi-turn requests propagate explicit `diagnostic_audio`; owner scripts expose `--diagnostic-audio` and report raw/assembled/normalized paths plus requested, actual, and canonical formats.
 - The fixed-duration fallback remains available, microphone monitoring remains disabled, and Brain/CoreService remain free of ALSA/resampling code.
-- Current pytest collection is 1079 tests.
+- Historical checkpoint collection was 1079 tests.
+
+Phase 82: Complete VAD Utterance Assembly and Duration-Safe Whisper Handoff
+
+- Root cause isolated after real Raspberry Pi diagnostics: `POSSIBLE_SILENCE` compared the total pending-buffer length with the hangover, required only the smaller consecutive-low-frame guard, and discarded the entire pending block at completion.
+- Repeated speech/pause transitions now append resumed pending frames exactly once to one persistent utterance buffer.
+- Completion requires the full configured consecutive terminal-silence duration and removes only that suffix; earlier low-energy words and internal pauses remain ordered.
+- Canonical 16 kHz mono signed 16-bit PCM normalization preserves every sample through a lossless copy path.
+- Unique per-turn raw capture, assembled utterance, normalized Whisper input, and transcript diagnostic paths prevent stale-file and preview-file handoff.
+- A configurable duration invariant fails before Whisper when normalized audio loses unexplained duration relative to the assembled utterance.
+- Manual diagnostics report frame/sample/byte counts, intentional trim durations, stage paths, and the exact Whisper input duration. Stage playback is owner opt-in and occurs only after capture stops.
+- Current pytest collection is 1105 tests.
 
 Current State
 
-ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, a canonical 16 kHz mono PCM normalization boundary, shared production skill registration, and safe anchored natural-language calculator routing. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control.
+ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, and safe anchored natural-language calculator routing. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control.
 
 The current active interface is:
 
@@ -1050,7 +1061,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1079 tests.
+The current pytest collection is 1105 tests.
 
 The current memory paths are:
 
@@ -1105,10 +1116,11 @@ Phase 3 Real Voice Integration
 14. Centralize production skill registration and add bounded routing diagnostics. Completed.
 15. Add bounded anchored natural-language calculator wrapper extraction. Completed.
 16. Add canonical ALSA device resolution and validated 16 kHz mono PCM normalization before VAD/Whisper. Completed.
-17. Pull this checkpoint and verify requested/actual/canonical format diagnostics with `plughw:2,0` and `--diagnostic-audio` on Raspberry Pi.
-18. Confirm `calculate two plus two` returns and speaks `Result: 4` from the normalized real-audio route.
-19. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
-20. Only later consider wake-word/background listening.
+17. Preserve complete VAD utterances across repeated pause/resume transitions and reject unexplained normalized-duration loss. Completed in CI with deterministic PCM.
+18. Pull this checkpoint and verify raw/assembled/normalized durations with `plughw:2,0`, `--diagnostic-audio`, and the owner-opt-in stage playback flag on Raspberry Pi.
+19. Confirm `Hello Ares, what is two plus two?` reaches Whisper intact and returns and speaks `Result: 4` from the normalized real-audio route.
+20. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
+21. Only later consider wake-word/background listening.
 
 What Must Not Be Started Yet
 

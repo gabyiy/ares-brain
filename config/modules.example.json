@@ -27,6 +27,7 @@
     "maximum_speech_continue_rms": 900,
     "minimum_silence_rms": 80,
     "maximum_silence_rms": 600,
+    "duration_loss_tolerance_seconds": 0.05,
     "frame_debug_enabled": false,
     "diagnostic_audio": false
   },

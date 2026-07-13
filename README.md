@@ -539,7 +539,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 1079 tests across current core modules
+- Pytest automated coverage for 1105 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -558,7 +558,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1079 tests`.
+Current pytest collection: `1105 tests`.
 
 Manual Calculator Launch Verification
 
@@ -790,6 +790,10 @@ The Raspberry Pi USB microphone exposed a format mismatch that the old raw-strea
 
 `core.WavAudio` is the canonical audio boundary. It validates uncompressed RIFF/WAV input, rejects missing, empty, malformed, truncated, or unsupported audio, downmixes supported PCM to mono, resamples supported rates to 16 kHz, converts to signed 16-bit little-endian PCM, writes atomically, and validates the final header. VAD accepts only canonical PCM, and `SingleTurnVoicePipeline` reopens the finalized canonical WAV rather than trusting requested settings or an adapter's stale chunk metadata. Whisper receives only `final_whisper_input_path`.
 
+The post-VAD assembly path is also duration-safe. The previous `POSSIBLE_SILENCE` implementation used the total pending-buffer length to satisfy the 0.9-second hangover, required only the smaller consecutive-low-frame guard, and then discarded the whole pending buffer. Low-energy words and internal pauses could therefore accumulate in that buffer and be dropped together at completion; repeated speech/pause transitions could leave Whisper with only the earlier segment. The corrected state machine requires the configured number of truly consecutive terminal-silence frames, appends every earlier pending frame exactly once, and removes only that confirmed trailing-silence suffix. Resumed speech never recreates the assembled utterance buffer.
+
+Canonical 16 kHz mono 16-bit input now takes a lossless PCM-copy path. Before Whisper, the pipeline verifies that normalized duration is no shorter than assembled duration beyond the configured `0.05`-second tolerance. An unexplained duration loss fails closed before transcription, Brain routing, TTS, or playback.
+
 Pull the checkpoint and run one owner-triggered calibration capture:
 
 ```bash
@@ -809,12 +813,13 @@ python scripts/manual_verify_voice_activity_capture.py \
   --max-utterance-seconds 15 \
   --pre-roll-seconds 0.25 \
   --frame-ms 20 \
+  --duration-loss-tolerance 0.05 \
   --diagnostic-audio \
   --frame-debug \
   --verbose
 ```
 
-The calibration script prints the requested and resolved devices, requested and actual capture format, canonical format, distinct raw/normalized paths, both durations, final Whisper input, exact argument-list `arecord` command, ambient mean/median/p90/peak/noise-floor RMS, speech RMS, peak amplitude, derived thresholds, bounded state transitions, and final stop reason. `--diagnostic-audio` retains the pre-VAD capture and trimmed canonical WAV; without it, raw diagnostic audio is not retained. By default the script runs no Whisper, Brain, TTS, or speaker playback. Add `--transcribe` for local Whisper or `--transcribe --route` for the existing Brain path. No-speech and invalid-audio outcomes stop before downstream execution.
+The calibration script prints the requested and resolved devices, requested and actual capture format, canonical format, distinct raw/assembled/normalized paths, frame/sample/byte counts, untrimmed and trimmed durations, final Whisper input, exact argument-list `arecord` command, ambient mean/median/p90/peak/noise-floor RMS, speech RMS, peak amplitude, derived thresholds, bounded state transitions, duration-invariant status, and final stop reason. `--diagnostic-audio` retains the full raw capture, ordered VAD assembly, and normalized Whisper input; without it, raw and assembled diagnostic audio are not retained. By default the script runs no Whisper, Brain, TTS, or speaker playback. Add `--transcribe` for local Whisper or `--transcribe --route` for the existing Brain path. No-speech and invalid-audio outcomes stop before downstream execution.
 
 Routing examples after deterministic normalization:
 
@@ -854,17 +859,21 @@ python scripts/manual_verify_single_turn_voice.py \
   --max-utterance-seconds 15 \
   --pre-roll-seconds 0.25 \
   --frame-ms 20 \
+  --duration-loss-tolerance 0.05 \
   --language en \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --whisper-model models/whisper/ggml-base.en.bin \
   --voice-profile en_US-hfc_male-medium \
   --diagnostic-audio \
   --diagnostic-routing \
+  --playback-debug-stages \
   --timeout 300 \
   --playback
 ```
 
-Say `I'll calculate 2 plus 2.` The expected normalized command is `calculate 2 + 2`, cleanup rule is `calculator_natural_language_wrapper`, parsed intent is `calculate`, selected registered skill is `calculator`, and execution response is `Result: 4`. `--diagnostic-routing` prints raw/cleaned/normalized text, cleanup rule, candidate scores and reasons, selected skill, planner decision, execution status, and the first rejection reason when a stage fails. Use `--fixed-duration --record-seconds 5` for the existing fallback capture, `--keep-audio` to retain successful input/response WAVs, and `--verbose` for the full structured V1 result. Failures preserve useful diagnostic audio automatically. Operational events store stage/status metadata, not transcript or audio contents.
+Say `Hello Ares, what is two plus two?` The expected normalized command is `calculate 2 + 2`, cleanup rule is `calculator_natural_language_wrapper`, parsed intent is `calculate`, selected registered skill is `calculator`, and execution response is `Result: 4`. `--diagnostic-routing` prints raw/cleaned/normalized text, cleanup rule, candidate scores and reasons, selected skill, planner decision, execution status, and the first rejection reason when a stage fails. `--diagnostic-audio` keeps unique per-turn `raw_capture.wav`, `assembled_utterance.wav`, and `normalized_whisper_input.wav` files plus `whisper_transcript.txt`. `--playback-debug-stages` explicitly plays those three WAVs in that order after the turn; it is rejected unless diagnostic audio is enabled and never enables live microphone monitoring. Use `--fixed-duration --record-seconds 5` for the existing fallback capture, `--keep-audio` to retain successful input/response WAVs, and `--verbose` for the full structured V1 result. Failures preserve useful diagnostic audio automatically. Operational events store stage/status metadata, not transcript or audio contents.
+
+For the observed frame-171 Raspberry Pi case, raw capture should remain about `3.42` seconds. The assembled duration is expected to be shorter only by calibration/waiting frames outside retained pre-roll and the explicitly trimmed terminal-silence suffix; it must not be forced to `1.00` second. Normalized duration and Whisper input duration must match the assembled duration within `0.05` seconds, and canonical input normally matches exactly.
 
 Controlled Multi-Turn Voice Session
 
@@ -2012,22 +2021,31 @@ Phase 81
 - Fixed-duration capture reads the actual WAV header and normalizes supported PCM rates/channels/widths
 - VAD and Whisper consume only validated 16 kHz mono signed 16-bit PCM
 - `--diagnostic-audio` retains distinct pre-VAD/raw and final normalized WAVs with bounded format diagnostics
-- Current pytest collection is 1079 tests
+- Historical format-safe capture collection was 1079 tests
 
 Phase 82
+
+- Complete post-VAD utterance assembly and duration-safe Whisper handoff
+- Preserve internal pauses and low-energy speech across repeated `SPEECH -> POSSIBLE_SILENCE -> SPEECH` transitions
+- Trim only the confirmed consecutive terminal-silence suffix
+- Retain unique raw, assembled, normalized, and transcript diagnostics on explicit owner request
+- Fail closed before Whisper when normalized duration loses more than the configured tolerance
+- Current pytest collection is 1105 tests
+
+Phase 83
 
 - Future voice expansion only after separate approval
 - Wake word
 - Bounded background-listening design
 
-Phase 83
+Phase 84
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 84
+Phase 85
 
 - Robotics
 - ROS2
