@@ -792,7 +792,7 @@ Phase 64: Memory Schema Migration Foundation
 - `SchemaEnvelope` wraps durable JSON stores with `schema_name`, `schema_version`, `created_at`, `updated_at`, `data`, and optional `metadata`.
 - `MigrationRegistry` handles schema registration, current-version lookup, supported-version lookup, migration-path calculation, sequential execution, dry-run mode, duplicate edge rejection, cycle rejection, missing path rejection, and pre/post migration validation.
 - Active schemas are `ares.user_profile`, `ares.goals`, `ares.notes`, `ares.tasks`, `ares.memory.short`, `ares.memory.long`, and `ares.event_history`.
-- At the Phase 64 checkpoint, production schemas remained v1; a controlled fixture demonstrated v1 -> v2 migration. Phase 87 later moved only `ares.owner_profile` to production v2 through a registered preserving migration.
+- At the Phase 64 checkpoint, production schemas remained v1; a controlled fixture demonstrated v1 -> v2 migration. Phase 87 moved `ares.owner_profile` to v2, and Phase 88 extended that same preserving path sequentially to v3.
 - Known legacy unversioned JSON formats import into v1 only when the structure matches the requested store exactly.
 - Backup-before-write, temporary writes, atomic replacement where practical, final load verification, simple local write locks, and read-only inspection reports are implemented.
 - Corrupted files, truncated files, malformed envelopes, wrong schema names, future versions, downgrades, missing paths, failed migration steps, and validation failures fail closed without resetting memory to empty data.
@@ -1092,11 +1092,20 @@ Phase 87: Central General Owner Memory
 - Enforced 100 facts, 64-character normalized keys, 256-character strings, 10 scalar list items, and 65,536 serialized data bytes, plus protected-key and executable/instruction rejection.
 - Added owner transaction locking, one retained last-known-good backup, atomic validated replacement, corruption fail-closed behavior, read-only inspection, and fresh-process verification.
 - Added architecture guards proving voice does not own memory, the memory package imports no audio hardware providers, and production defines only one canonical owner-profile path.
-- Current pytest collection is 1350 tests.
+- Historical Phase 87 pytest collection was 1350 tests.
+
+Phase 88: General Explicit Long-Term Owner Memory
+
+- Kept authoritative owner memory behind `CoreService -> OwnerMemorySkill -> OwnerMemoryService -> OwnerProfileStore`; voice remains an adapter and has no store or parser authority.
+- Migrated `ares.owner_profile` v2 to v3 sequentially while preserving every keyed fact and adding structured `memories` plus bounded broad-deletion confirmation state.
+- Added explicit long-term trigger cleanup, a finite memory-type classifier, deterministic topic/token retrieval, exact-signature duplicate prevention, explicit superseding updates, and bounded forget/list behavior.
+- Added a two-step exact confirmation for deleting all long-term owner memory; ambiguous or single-turn broad deletion fails closed.
+- Added read-only memory/topic/type inspection, a fresh-process general-memory verifier, production voice/text parity, and static guards against voice-owned or hardware-coupled memory.
+- Current pytest collection is 1427 tests.
 
 Current State
 
-ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, the short production-style single-turn launcher, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and CoreService-owned general owner memory. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control. Owner facts are written only by explicit bounded memory commands; ordinary transcripts and recordings are not persisted.
+ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, the short production-style single-turn launcher, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and CoreService-owned general explicit long-term owner memory. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control. Owner facts and general memories are written only by explicit bounded memory commands; ordinary transcripts and recordings are not persisted.
 
 The current active interface is:
 
@@ -1112,13 +1121,13 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1350 tests.
+The current pytest collection is 1427 tests.
 
 The current memory paths are:
 
 - `MemoryStore` for conversation-style memory
 - `UserProfileStore` for persistent user facts
-- `OwnerMemoryService` as the central Brain-facing owner-fact API, backed by one `OwnerProfileStore` at `data/memory/owner_profile.json`
+- `OwnerMemoryService` as the central Brain-facing keyed-fact and general explicit long-term memory API, backed by one v3 `OwnerProfileStore` at `data/memory/owner_profile.json`
 - `GoalsStore` for persistent long-term goals
 - `NotesStore` for persistent local notes
 - `TasksStore` for persistent offline tasks
@@ -1176,8 +1185,10 @@ Phase 3 Real Voice Integration
 22. Add explicit bounded owner-fact persistence through the real production skill route. Completed in deterministic CI and verified by the owner for favorite-color save/recall across processes.
 23. Harden owner-memory routing priority and the canonical repository-root profile path. Completed.
 24. Centralize general owner facts behind CoreService, migrate the profile to v2, and add inspection/fresh-process verification. Completed in deterministic CI; Raspberry Pi voice verification remains owner-run.
-25. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, transcription quality, and explicit owner-memory phrasing from real results.
-26. Only later consider wake-word/background listening.
+25. Add bounded general explicit long-term memories, migrate the profile from v2 to v3, and verify one central Brain-owned route for text and voice. Completed in deterministic CI; Raspberry Pi voice verification remains owner-run.
+26. Verify preference save, topic recall, duplicate prevention, forget, and inspection through fresh Raspberry Pi `run_ares_voice.py` processes.
+27. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, transcription quality, and explicit owner-memory phrasing from real results.
+28. Only later consider wake-word/background listening.
 
 What Must Not Be Started Yet
 
