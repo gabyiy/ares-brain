@@ -261,6 +261,61 @@ def test_general_unknown_request_remains_general_unknown_text():
 
 
 @pytest.mark.parametrize(
+    ("spoken", "normalized", "rule"),
+    [
+        (
+            "Remember that modified white color is blue.",
+            "remember that my favorite color is blue",
+            "owner_memory_whisper_alias_v1",
+        ),
+        (
+            "My favorite colour is blue.",
+            "remember that my favorite color is blue",
+            "owner_memory_declarative_v1",
+        ),
+        (
+            "Update my favorite color to red.",
+            "update my favorite color to red",
+            "none",
+        ),
+        (
+            "Delete my favorite color.",
+            "forget my favorite color",
+            "owner_memory_delete_v1",
+        ),
+    ],
+)
+def test_explicit_owner_memory_transcripts_are_normalized_before_task_routing(
+    spoken,
+    normalized,
+    rule,
+):
+    result = normalize_transcript(spoken)
+
+    assert result.success is True
+    assert result.raw_transcript == spoken
+    assert result.normalized_command == normalized
+    assert result.cleanup_rule == rule
+    assert result.data["owner_memory_candidate"] is True
+    assert result.data["owner_memory_key"] == "favorite_color"
+
+
+@pytest.mark.parametrize(
+    "spoken",
+    [
+        "remember to buy milk",
+        "remember the modified white wall",
+        "what is the weather forecast",
+    ],
+)
+def test_unrelated_speech_is_not_coerced_into_owner_memory(spoken):
+    result = normalize_transcript(spoken)
+
+    assert result.success is True
+    assert result.data.get("owner_memory_candidate") is not True
+
+
+@pytest.mark.parametrize(
     "spoken",
     [
         "calculate two plus banana",

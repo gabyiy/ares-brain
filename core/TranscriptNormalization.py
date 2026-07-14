@@ -11,6 +11,10 @@ from core.Contracts import (
     TranscriptNormalizationResultV1,
     validate_contract,
 )
+from core.OwnerMemory import (
+    owner_memory_uses_explicit_store,
+    parse_owner_memory_command,
+)
 
 
 _UNITS = {
@@ -164,9 +168,14 @@ class TranscriptNormalizer:
         cleaned_base = _clean_text(raw)
         if len(cleaned_base) > MAX_TRANSCRIPT_LENGTH:
             return self._failure(request, "transcript_too_long")
+        initial_owner_command = parse_owner_memory_command(cleaned_base)
+        initial_owner_candidate = owner_memory_uses_explicit_store(
+            initial_owner_command
+        )
         initial_extraction = _extract_calculator_wrapper(cleaned_base.casefold())
         if (
-            _is_arithmetic_candidate(cleaned_base, initial_extraction)
+            not initial_owner_candidate
+            and _is_arithmetic_candidate(cleaned_base, initial_extraction)
             and len(cleaned_base) > MAX_ARITHMETIC_SOURCE_LENGTH
         ):
             return self._failure(
@@ -193,6 +202,37 @@ class TranscriptNormalizer:
                 repetition_detected=detected,
                 repetitions_removed=removed,
                 cleanup_rule=cleanup_rule,
+            )
+
+        owner_command = parse_owner_memory_command(cleaned)
+        if owner_memory_uses_explicit_store(owner_command):
+            normalized = owner_command.routing_text or cleaned.casefold()
+            normalized = normalized.casefold()
+            if normalized != cleaned.casefold():
+                cleanup_rule = _merge_cleanup_rules(
+                    cleanup_rule,
+                    owner_command.parser_rule,
+                )
+            return TranscriptNormalizationResultV1(
+                success=True,
+                raw_transcript=raw,
+                cleaned_transcript=cleaned,
+                normalized_command=normalized,
+                arithmetic_candidate=False,
+                repetition_detected=detected,
+                repetitions_removed=removed,
+                cleanup_rule=cleanup_rule,
+                correlation_id=request.correlation_id,
+                session_id=request.session_id,
+                data={
+                    "safe": True,
+                    "normalizer": "deterministic_v1",
+                    "owner_memory_candidate": True,
+                    "owner_memory_action": owner_command.action,
+                    "owner_memory_key": owner_command.normalized_key,
+                    "owner_memory_parser_rule": owner_command.parser_rule,
+                },
+                metadata={**dict(request.metadata or {}), "safe": True},
             )
 
         extraction = _extract_calculator_wrapper(cleaned.casefold())

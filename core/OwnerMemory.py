@@ -7,24 +7,67 @@ from typing import Any, Dict, Tuple
 
 
 OWNER_MEMORY_SAVE = "save"
+OWNER_MEMORY_UPDATE = "update"
 OWNER_MEMORY_RECALL = "recall"
 OWNER_MEMORY_FORGET = "forget"
 OWNER_MEMORY_REJECT = "reject"
+
+OWNER_MEMORY_EXPLICIT_RULE = "owner_memory_explicit_v1"
+OWNER_MEMORY_DECLARATIVE_RULE = "owner_memory_declarative_v1"
+OWNER_MEMORY_UPDATE_RULE = "owner_memory_update_v1"
+OWNER_MEMORY_DELETE_RULE = "owner_memory_delete_v1"
+OWNER_MEMORY_WHISPER_ALIAS_RULE = "owner_memory_whisper_alias_v1"
 
 MAX_OWNER_FACT_KEY_SOURCE_LENGTH = 80
 MAX_OWNER_FACT_KEY_LENGTH = 64
 MAX_OWNER_FACT_VALUE_LENGTH = 256
 SENSITIVE_ENTITY_FIELDS = "_sensitive_fields"
 
-_SAVE_PATTERN = re.compile(
-    r"^remember(?:\s+that)?\s+my\s+(?P<key>.+?)\s+is\s+(?P<value>.+)$",
+_SAVE_PATTERNS = (
+    (
+        re.compile(
+            r"^remember(?:\s+that)?\s+my\s+(?P<key>.+?)\s+is\s+(?P<value>.+)$",
+            flags=re.IGNORECASE,
+        ),
+        OWNER_MEMORY_SAVE,
+        OWNER_MEMORY_EXPLICIT_RULE,
+    ),
+    (
+        re.compile(
+            r"^my\s+(?P<key>.+?)\s+is\s+(?P<value>.+)$",
+            flags=re.IGNORECASE,
+        ),
+        OWNER_MEMORY_SAVE,
+        OWNER_MEMORY_DECLARATIVE_RULE,
+    ),
+    (
+        re.compile(
+            r"^update\s+my\s+(?P<key>.+?)\s+to\s+(?P<value>.+)$",
+            flags=re.IGNORECASE,
+        ),
+        OWNER_MEMORY_UPDATE,
+        OWNER_MEMORY_UPDATE_RULE,
+    ),
+)
+_WHISPER_ALIAS_SAVE_PATTERN = re.compile(
+    r"^remember(?:\s+that)?\s+"
+    r"(?P<key>modified\s+white\s+colou?r)\s+is\s+(?P<value>.+)$",
     flags=re.IGNORECASE,
 )
 _RECALL_PATTERNS = (
     re.compile(r"^(?:what\s+is|what's)\s+my\s+(?P<key>.+)$", re.IGNORECASE),
     re.compile(r"^do\s+you\s+remember\s+my\s+(?P<key>.+)$", re.IGNORECASE),
 )
-_FORGET_PATTERN = re.compile(r"^forget\s+my\s+(?P<key>.+)$", re.IGNORECASE)
+_FORGET_PATTERNS = (
+    (
+        re.compile(r"^forget\s+my\s+(?P<key>.+)$", re.IGNORECASE),
+        OWNER_MEMORY_EXPLICIT_RULE,
+    ),
+    (
+        re.compile(r"^delete\s+my\s+(?P<key>.+)$", re.IGNORECASE),
+        OWNER_MEMORY_DELETE_RULE,
+    ),
+)
 _OWNER_PREFIXES = (
     "remember that my",
     "remember my",
@@ -32,7 +75,14 @@ _OWNER_PREFIXES = (
     "what's my",
     "do you remember my",
     "forget my",
+    "delete my",
+    "update my",
 )
+_WHISPER_KEY_ALIASES = {
+    # Exact, owner-command-only correction observed from the local Whisper model.
+    "modified white color": "favorite color",
+    "modified white colour": "favorite color",
+}
 _PROTECTED_TOKEN_SEQUENCES: Tuple[Tuple[str, ...], ...] = (
     ("password",),
     ("passcode",),
@@ -86,7 +136,7 @@ class OwnerMemoryCommand:
     value: str = ""
     rejection_reason: str = ""
     protected: bool = False
-    parser_rule: str = "owner_memory_explicit_v1"
+    parser_rule: str = OWNER_MEMORY_EXPLICIT_RULE
 
     @property
     def safe_raw_text(self) -> str:
@@ -94,6 +144,21 @@ class OwnerMemoryCommand:
             return ""
         key = self.normalized_key or "fact"
         return f"owner memory {self.action or OWNER_MEMORY_REJECT} {key}"
+
+    @property
+    def routing_text(self) -> str:
+        if not self.recognized or self.action == OWNER_MEMORY_REJECT:
+            return ""
+        key = self.display_key or owner_fact_display_name(self.normalized_key)
+        if self.action == OWNER_MEMORY_SAVE:
+            return f"remember that my {key} is {self.value}"
+        if self.action == OWNER_MEMORY_UPDATE:
+            return f"update my {key} to {self.value}"
+        if self.action == OWNER_MEMORY_RECALL:
+            return f"what is my {key}"
+        if self.action == OWNER_MEMORY_FORGET:
+            return f"forget my {key}"
+        return ""
 
     def to_entities(self) -> Dict[str, Any]:
         entities: Dict[str, Any] = {
@@ -121,19 +186,39 @@ def parse_owner_memory_command(text: str) -> OwnerMemoryCommand:
             return _rejected_command("control_character_rejected")
         return OwnerMemoryCommand(False)
 
-    clean = source.rstrip(" \t\r\n?!.,;:").strip()
-    save_match = _SAVE_PATTERN.fullmatch(clean)
-    if save_match:
-        return _save_command(save_match.group("key"), save_match.group("value"))
+    clean = _normalize_command_punctuation(source).rstrip(" \t\r\n?!.,;:").strip()
+    for pattern, action, parser_rule in _SAVE_PATTERNS:
+        save_match = pattern.fullmatch(clean)
+        if save_match:
+            return _save_command(
+                save_match.group("key"),
+                save_match.group("value"),
+                action=action,
+                parser_rule=parser_rule,
+            )
+
+    whisper_match = _WHISPER_ALIAS_SAVE_PATTERN.fullmatch(clean)
+    if whisper_match:
+        return _save_command(
+            whisper_match.group("key"),
+            whisper_match.group("value"),
+            action=OWNER_MEMORY_SAVE,
+            parser_rule=OWNER_MEMORY_WHISPER_ALIAS_RULE,
+        )
 
     for pattern in _RECALL_PATTERNS:
         match = pattern.fullmatch(clean)
         if match:
             return _key_command(OWNER_MEMORY_RECALL, match.group("key"))
 
-    forget_match = _FORGET_PATTERN.fullmatch(clean)
-    if forget_match:
-        return _key_command(OWNER_MEMORY_FORGET, forget_match.group("key"))
+    for pattern, parser_rule in _FORGET_PATTERNS:
+        forget_match = pattern.fullmatch(clean)
+        if forget_match:
+            return _key_command(
+                OWNER_MEMORY_FORGET,
+                forget_match.group("key"),
+                parser_rule=parser_rule,
+            )
 
     if _looks_like_owner_prefix(clean):
         return _rejected_command("malformed_owner_memory_command")
@@ -144,6 +229,11 @@ def owner_memory_uses_explicit_store(command: OwnerMemoryCommand) -> bool:
     if not command.recognized:
         return False
     if command.normalized_key in {"name", "birthday"}:
+        return False
+    if (
+        command.parser_rule == OWNER_MEMORY_DECLARATIVE_RULE
+        and command.normalized_key != "favorite_color"
+    ):
         return False
     if (
         command.action == OWNER_MEMORY_RECALL
@@ -238,7 +328,16 @@ def is_protected_owner_fact_key(normalized_key: str) -> bool:
     return "api" in tokens and "key" in tokens
 
 
-def _save_command(key_source: str, value_source: str) -> OwnerMemoryCommand:
+def _save_command(
+    key_source: str,
+    value_source: str,
+    *,
+    action: str = OWNER_MEMORY_SAVE,
+    parser_rule: str = OWNER_MEMORY_EXPLICIT_RULE,
+) -> OwnerMemoryCommand:
+    key_source, alias_applied = _canonicalize_owner_key_source(key_source)
+    if alias_applied:
+        parser_rule = OWNER_MEMORY_WHISPER_ALIAS_RULE
     try:
         key = normalize_owner_fact_key(key_source)
         value = normalize_owner_fact_value(value_source)
@@ -250,14 +349,23 @@ def _save_command(key_source: str, value_source: str) -> OwnerMemoryCommand:
         )
     return OwnerMemoryCommand(
         True,
-        action=OWNER_MEMORY_SAVE,
+        action=action,
         normalized_key=key,
         display_key=owner_fact_display_name(key),
         value=value,
+        parser_rule=parser_rule,
     )
 
 
-def _key_command(action: str, key_source: str) -> OwnerMemoryCommand:
+def _key_command(
+    action: str,
+    key_source: str,
+    *,
+    parser_rule: str = OWNER_MEMORY_EXPLICIT_RULE,
+) -> OwnerMemoryCommand:
+    key_source, alias_applied = _canonicalize_owner_key_source(key_source)
+    if alias_applied:
+        parser_rule = OWNER_MEMORY_WHISPER_ALIAS_RULE
     try:
         key = normalize_owner_fact_key(key_source)
     except OwnerMemoryValidationError as error:
@@ -271,6 +379,7 @@ def _key_command(action: str, key_source: str) -> OwnerMemoryCommand:
         action=action,
         normalized_key=key,
         display_key=owner_fact_display_name(key),
+        parser_rule=parser_rule,
     )
 
 
@@ -296,9 +405,40 @@ def _normalize_source(value: str) -> str:
     return " ".join(normalized.strip().split())
 
 
+def _normalize_command_punctuation(value: str) -> str:
+    source = str(value or "")
+    source = re.sub(
+        r"^(remember(?:\s+that)?|what\s+is|do\s+you\s+remember|forget|delete|update)"
+        r"\s*[,;:]\s*",
+        r"\1 ",
+        source,
+        flags=re.IGNORECASE,
+    )
+    source = re.sub(r"\bmy\s*[,;:]\s*", "my ", source, flags=re.IGNORECASE)
+    return " ".join(source.split())
+
+
+def _canonicalize_owner_key_source(value: str) -> tuple[str, bool]:
+    source = " ".join(str(value or "").strip().split())
+    alias = _WHISPER_KEY_ALIASES.get(source.casefold())
+    return (alias, True) if alias else (source, False)
+
+
 def _looks_like_owner_prefix(value: str) -> bool:
     lowered = str(value or "").casefold()
-    return any(lowered == prefix or lowered.startswith(f"{prefix} ") for prefix in _OWNER_PREFIXES)
+    if any(
+        lowered == prefix or lowered.startswith(f"{prefix} ")
+        for prefix in _OWNER_PREFIXES
+    ):
+        return True
+    if lowered.startswith("my ") and " is " in lowered:
+        return True
+    return bool(
+        re.match(
+            r"^remember(?:\s+that)?\s+modified\s+white\s+colou?r(?:\s|$)",
+            lowered,
+        )
+    )
 
 
 def _contains_control_character(value: str) -> bool:

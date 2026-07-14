@@ -6,6 +6,7 @@ from memory.owner_profile import (
     OWNER_PROFILE_ID,
     OwnerProfileResultV1,
     OwnerProfileStore,
+    resolve_owner_profile_path,
 )
 from memory.profile import ProfileFact, UserProfileStore, detect_profile_facts
 from memory.reminder_scheduler import ReminderScheduler, parse_due_text
@@ -40,6 +41,7 @@ __all__ = [
     "OWNER_PROFILE_ID",
     "OwnerProfileResultV1",
     "OwnerProfileStore",
+    "resolve_owner_profile_path",
     "ProfileFact",
     "ReminderScheduler",
     "SCHEMA_EVENT_HISTORY",

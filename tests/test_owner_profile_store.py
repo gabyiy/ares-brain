@@ -7,7 +7,11 @@ from core.OwnerMemory import (
     MAX_OWNER_FACT_VALUE_LENGTH,
 )
 from events import EventBus
-from memory import OwnerProfileStore
+from memory import (
+    DEFAULT_OWNER_PROFILE_PATH,
+    OwnerProfileStore,
+    resolve_owner_profile_path,
+)
 from memory.schema_migrations import SCHEMA_OWNER_PROFILE, SchemaEnvelope
 
 
@@ -29,6 +33,38 @@ def test_missing_profile_is_empty_without_creating_a_file(tmp_path):
         "fact_count": 0,
     }
     assert not path.exists()
+
+
+def test_default_profile_path_is_canonical_and_not_cwd_relative(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    store = OwnerProfileStore(event_bus=EventBus())
+
+    assert store.path == DEFAULT_OWNER_PROFILE_PATH
+    assert store.path.is_absolute()
+    assert store.path.name == "owner_profile.json"
+    assert store.path.parent.name == "memory"
+    assert not (tmp_path / "data" / "memory" / "owner_profile.json").exists()
+
+
+def test_relative_profile_override_resolves_from_repository_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    resolved = resolve_owner_profile_path("isolated/owner_profile.json")
+
+    assert resolved == DEFAULT_OWNER_PROFILE_PATH.parents[2] / "isolated" / "owner_profile.json"
+
+
+def test_operation_metadata_reports_resolved_path_and_prior_existence(tmp_path):
+    path = tmp_path / "owner_profile.json"
+    store = OwnerProfileStore(path, event_bus=EventBus())
+
+    created = store.save_fact("favorite color", "blue")
+    recalled = store.recall_fact("favorite color")
+
+    assert created.metadata["profile_path"] == str(path.resolve())
+    assert created.metadata["file_existed_before"] is False
+    assert recalled.metadata["file_existed_before"] is True
 
 
 def test_save_creates_parent_and_versioned_utf8_profile_atomically(tmp_path):

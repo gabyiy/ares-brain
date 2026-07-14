@@ -45,6 +45,12 @@ EXPECTED_STEPS = (
     ),
 )
 
+ROUTING_PRIORITY_CHECK = (
+    "remember that modified white color is blue",
+    "I will remember that your favorite color is blue.",
+    "created",
+)
+
 ProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -64,41 +70,48 @@ def verify_persistence(
 ) -> bool:
     with TemporaryDirectory(prefix="ares_owner_memory_") as directory:
         profile_path = Path(directory) / "owner_profile.json"
+        routing_profile_path = Path(directory) / "routing_priority_owner_profile.json"
+        routing_text, routing_response, routing_status = ROUTING_PRIORITY_CHECK
+        priority_result = _run_child(
+            runner,
+            routing_profile_path,
+            routing_text,
+        )
+        if isinstance(priority_result, str):
+            output_func(f"FAIL routing priority: {priority_result}")
+            return False
+        priority_payload, priority_stderr = priority_result
+        if (
+            priority_payload.get("response") != routing_response
+            or priority_payload.get("storage_status") != routing_status
+            or priority_payload.get("parsed_intent") != "owner_memory"
+            or priority_payload.get("selected_skill") != "owner_memory"
+        ):
+            output_func(
+                "FAIL routing priority: imperfect explicit owner-memory speech "
+                f"did not select owner_memory: {priority_payload!r}."
+            )
+            if priority_stderr:
+                output_func(priority_stderr)
+            return False
+        if verbose:
+            output_func(
+                "PASS routing priority: imperfect explicit speech selected owner_memory."
+            )
+
         for index, (text, expected_response, expected_status) in enumerate(
             EXPECTED_STEPS,
             start=1,
         ):
-            completed = runner(
-                [
-                    sys.executable,
-                    str(MANUAL_SCRIPT),
-                    "--profile-path",
-                    str(profile_path),
-                    "--text",
-                    text,
-                    "--json",
-                ],
-                cwd=str(REPO_ROOT),
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-            if completed.returncode != 0:
-                output_func(
-                    f"FAIL step {index}: child process exited {completed.returncode}."
-                )
-                if completed.stderr:
-                    output_func(completed.stderr.strip())
+            child_result = _run_child(runner, profile_path, text)
+            if isinstance(child_result, str):
+                output_func(f"FAIL step {index}: {child_result}")
                 return False
-            try:
-                payload = json.loads(completed.stdout.strip().splitlines()[-1])
-            except (IndexError, json.JSONDecodeError):
-                output_func(f"FAIL step {index}: child process returned invalid JSON.")
-                return False
+            payload, _ = child_result
             if (
                 payload.get("response") != expected_response
                 or payload.get("storage_status") != expected_status
+                or payload.get("parsed_intent") != "owner_memory"
                 or payload.get("selected_skill") != "owner_memory"
             ):
                 output_func(
@@ -130,6 +143,39 @@ def verify_persistence(
     output_func("PASS: update, forget, and missing recall behavior matched exactly.")
     output_func("PASS: verification used an isolated temporary profile only.")
     return True
+
+
+def _run_child(
+    runner: ProcessRunner,
+    profile_path: Path,
+    text_value: str,
+) -> tuple[dict[str, Any], str] | str:
+    completed = runner(
+        [
+            sys.executable,
+            str(MANUAL_SCRIPT),
+            "--profile-path",
+            str(profile_path),
+            "--text",
+            text_value,
+            "--json",
+        ],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        message = f"child process exited {completed.returncode}."
+        if completed.stderr:
+            message = f"{message} {completed.stderr.strip()}"
+        return message
+    try:
+        payload = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        return "child process returned invalid JSON."
+    return payload, completed.stderr.strip()
 
 
 def run_verification(

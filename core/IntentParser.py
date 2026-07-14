@@ -159,6 +159,11 @@ class IntentParser:
         return None
 
     def _parse_task(self, text: ParsedText) -> Optional[Intent]:
+        # Explicit owner-profile syntax must never fall through to generic
+        # `remember` task creation, even when a legacy profile owns the key.
+        if parse_owner_memory_command(text.raw_text).recognized:
+            return None
+
         if text.is_exact("list tasks", "show tasks"):
             return self._intent("task", 0.96, text.raw_text, action="list")
 

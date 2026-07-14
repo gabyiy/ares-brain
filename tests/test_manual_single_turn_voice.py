@@ -174,6 +174,73 @@ def test_diagnostic_routing_flag_prints_bounded_structured_report():
     assert "Rejection reason: (none)" in outputs
 
 
+def test_diagnostic_routing_prints_bounded_owner_memory_operation_fields(tmp_path):
+    outputs = []
+    profile_path = tmp_path / "owner_profile.json"
+    pipeline = StubPipeline(
+        SingleTurnVoiceResultV1(
+            success=True,
+            status="completed",
+            raw_transcript="Remember that modified white color is blue.",
+            cleaned_transcript="Remember that modified white color is blue",
+            normalized_command="remember that my favorite color is blue",
+            transcript_cleanup_rule="owner_memory_whisper_alias_v1",
+            detected_intent="owner_memory",
+            candidate_skills=[
+                {
+                    "skill": "owner_memory",
+                    "considered": True,
+                    "eligible": True,
+                    "selected": True,
+                    "confidence": 1.0,
+                    "reason": "structured intent match: owner_memory",
+                },
+                {
+                    "skill": "tasks",
+                    "considered": True,
+                    "eligible": False,
+                    "selected": False,
+                    "confidence": 0.0,
+                    "reason": "intent mismatch",
+                },
+            ],
+            routed_skill="owner_memory",
+            planner_decision="1 step(s): owner_memory",
+            execution_result="success",
+            brain_text_response="I will remember that your favorite color is blue.",
+            routing_diagnostics={
+                "owner_memory": {
+                    "action": "save",
+                    "normalized_key": "favorite_color",
+                    "extracted_value": "blue",
+                    "profile_path": str(profile_path),
+                    "file_existed_before": False,
+                    "operation_result": "created",
+                }
+            },
+        )
+    )
+
+    exit_code = manual.run_manual_verification(
+        [
+            "--text-input",
+            "Remember that modified white color is blue.",
+            "--diagnostic-routing",
+        ],
+        output_func=outputs.append,
+        pipeline=pipeline,
+    )
+
+    assert exit_code == 0
+    assert "Parsed owner-memory action: save" in outputs
+    assert "Extracted owner-memory key: favorite_color" in outputs
+    assert "Extracted owner-memory value: blue" in outputs
+    assert f"Resolved owner-profile path: {profile_path}" in outputs
+    assert "Owner-profile file existed before operation: False" in outputs
+    assert "Owner-memory operation result: created" in outputs
+    assert "Selected skill: owner_memory" in outputs
+
+
 def test_diagnostic_audio_prints_requested_actual_and_normalized_formats():
     outputs = []
     result = SingleTurnVoiceResultV1(

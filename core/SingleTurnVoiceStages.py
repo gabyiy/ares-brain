@@ -337,18 +337,32 @@ class SingleTurnVoiceStageMixin:
         state.transcript_cleanup_rule = normalization.cleanup_rule
         state.data["transcript_normalization"] = normalization.to_dict()
         normalization_reason = normalization.rejection_reason if not normalization.success else ""
-        state.routing_diagnostics = {
-            "normalization": {
-                "success": normalization.success,
-                "arithmetic_candidate": normalization.arithmetic_candidate,
-                "repetition_detected": normalization.repetition_detected,
-                "repetitions_removed": normalization.repetitions_removed,
-                "cleanup_rule": normalization.cleanup_rule,
-                "extracted_calculator_expression": (
-                    normalization.extracted_calculator_expression
+        normalization_diagnostics = {
+            "success": normalization.success,
+            "arithmetic_candidate": normalization.arithmetic_candidate,
+            "repetition_detected": normalization.repetition_detected,
+            "repetitions_removed": normalization.repetitions_removed,
+            "cleanup_rule": normalization.cleanup_rule,
+            "extracted_calculator_expression": (
+                normalization.extracted_calculator_expression
+            ),
+            "reason": normalization_reason,
+        }
+        owner_memory_candidate = bool(
+            normalization.data.get("owner_memory_candidate")
+        )
+        if owner_memory_candidate:
+            normalization_diagnostics["owner_memory"] = {
+                "action": str(normalization.data.get("owner_memory_action") or ""),
+                "normalized_key": str(
+                    normalization.data.get("owner_memory_key") or ""
                 ),
-                "reason": normalization_reason,
-            },
+                "parser_rule": str(
+                    normalization.data.get("owner_memory_parser_rule") or ""
+                ),
+            }
+        state.routing_diagnostics = {
+            "normalization": normalization_diagnostics,
             "stages": [
                 {
                     "stage": "transcript_normalization",

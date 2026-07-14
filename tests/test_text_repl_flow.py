@@ -1,10 +1,20 @@
 import io
 
+import pytest
+
 from core import IntentParser
 import memory.v1 as memory_v1
 from events import get_global_bus
 from interfaces import text_repl
 from memory import MemoryStore, NotesStore, TasksStore, UserProfileStore
+
+
+@pytest.fixture(autouse=True)
+def isolate_owner_profile(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "ARES_OWNER_PROFILE_PATH",
+        str(tmp_path / "owner_profile.json"),
+    )
 
 
 def test_text_repl_records_turns_and_recalls_profile(monkeypatch, tmp_path, capsys):

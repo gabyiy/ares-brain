@@ -3,7 +3,11 @@ import json
 import pytest
 
 from core import IntentParser, Planner
-from core.OwnerMemory import OWNER_MEMORY_REJECT, parse_owner_memory_command
+from core.OwnerMemory import (
+    OWNER_MEMORY_REJECT,
+    owner_memory_uses_explicit_store,
+    parse_owner_memory_command,
+)
 from events import EventBus
 from memory import OwnerProfileStore
 from skills import create_builtin_skill_manager
@@ -24,10 +28,18 @@ def _manager(tmp_path, bus=None):
     [
         ("remember that my favorite color is blue", "save", "favorite_color"),
         ("remember my favorite colour is blue.", "save", "favorite_color"),
+        ("my favorite color is blue.", "save", "favorite_color"),
+        ("update my favorite color to red.", "update", "favorite_color"),
         ("what is my favorite color?", "recall", "favorite_color"),
         ("what's my favorite colour", "recall", "favorite_color"),
         ("do you remember my favorite color?", "recall", "favorite_color"),
         ("forget my favorite color.", "forget", "favorite_color"),
+        ("delete my favorite color.", "forget", "favorite_color"),
+        (
+            "remember that modified white color is blue.",
+            "save",
+            "favorite_color",
+        ),
     ],
 )
 def test_explicit_owner_memory_intents_are_deterministic(text, action, key):
@@ -47,6 +59,30 @@ def test_owner_memory_parser_rejects_ambiguous_command_instead_of_guessing():
     assert command.recognized is True
     assert command.action == OWNER_MEMORY_REJECT
     assert command.rejection_reason == "ambiguous_value_rejected"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "remember to buy milk",
+        "remember buy milk tomorrow",
+        "remind me to buy milk",
+        "remind me about the appointment",
+    ],
+)
+def test_generic_task_reminders_remain_tasks(text):
+    assert IntentParser().parse(text).intent_name == "task"
+
+
+def test_legacy_declarative_profile_facts_are_not_claimed_by_owner_memory_skill():
+    skill = OwnerMemorySkill()
+    command = parse_owner_memory_command("My favorite tank is Leopard 2")
+
+    assert command.recognized is True
+    assert owner_memory_uses_explicit_store(command) is False
+    assert skill.can_handle("My favorite tank is Leopard 2") is False
+    assert skill.can_handle("My name is Gabi") is False
+    assert skill.can_handle("My favorite color is blue") is True
 
 
 def test_protected_key_intent_does_not_retain_supplied_value():
@@ -194,8 +230,30 @@ def test_owner_memory_skill_manifest_is_registered_with_explicit_capabilities(tm
     assert manifest.enabled_by_default is True
     assert set(manifest.capabilities) == {
         "memory.owner_fact.save",
+        "memory.owner_fact.update",
         "memory.owner_fact.recall",
         "memory.owner_fact.forget",
+    }
+
+
+def test_owner_memory_response_exposes_bounded_operation_diagnostics(tmp_path):
+    manager, store, _ = _manager(tmp_path)
+
+    response = manager.handle(
+        "remember that my favorite color is blue",
+        run_before_intents=True,
+    )
+
+    diagnostics = response.metadata["owner_memory_diagnostics"]
+    assert diagnostics == {
+        "action": "save",
+        "normalized_key": "favorite_color",
+        "extracted_value": "blue",
+        "parser_rule": "owner_memory_explicit_v1",
+        "profile_path": str(store.path),
+        "file_existed_before": False,
+        "operation_result": "created",
+        "rejection_reason": "",
     }
 
 

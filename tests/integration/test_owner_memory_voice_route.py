@@ -182,6 +182,128 @@ def test_save_then_fresh_production_manager_recalls_persisted_value(tmp_path):
     assert recalled.brain_text_response == "Your favorite color is blue."
 
 
+def test_imperfect_whisper_owner_phrase_outranks_tasks_in_production_route(tmp_path):
+    profile_path = tmp_path / "memory" / "owner_profile.json"
+
+    result, manager, _, _, _, _, _ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "Remember that modified white color is blue.",
+        playback=False,
+        turn=1,
+    )
+
+    assert result.success is True
+    assert result.normalized_command == "remember that my favorite color is blue"
+    assert result.transcript_cleanup_rule == "owner_memory_whisper_alias_v1"
+    assert result.detected_intent == "owner_memory"
+    assert result.routed_skill == "owner_memory"
+    assert result.brain_text_response == (
+        "I will remember that your favorite color is blue."
+    )
+    assert manager.last_plan.steps[0].target == "owner_memory"
+    assert profile_path.exists()
+    assert not (tmp_path / "tasks.json").exists()
+    owner_diagnostics = result.routing_diagnostics["owner_memory"]
+    assert owner_diagnostics["action"] == "save"
+    assert owner_diagnostics["normalized_key"] == "favorite_color"
+    assert owner_diagnostics["profile_path"] == str(profile_path.resolve())
+    assert owner_diagnostics["file_existed_before"] is False
+    assert owner_diagnostics["operation_result"] == "created"
+    task_candidate = next(
+        candidate
+        for candidate in result.candidate_skills
+        if candidate["skill"] == "tasks"
+    )
+    assert task_candidate["selected"] is False
+
+
+def test_declarative_update_and_delete_forms_use_owner_memory_pipeline(tmp_path):
+    profile_path = tmp_path / "memory" / "owner_profile.json"
+    interactions = (
+        (
+            "My favorite color is blue.",
+            "I will remember that your favorite color is blue.",
+            "created",
+        ),
+        (
+            "Update my favorite color to red.",
+            "I updated your favorite color to red.",
+            "updated",
+        ),
+        (
+            "Delete my favorite color.",
+            "I forgot your favorite color.",
+            "forgotten",
+        ),
+    )
+
+    for turn, (text, expected_response, expected_status) in enumerate(
+        interactions,
+        start=1,
+    ):
+        result, manager, *_ = _run_voice_turn(
+            tmp_path,
+            profile_path,
+            text,
+            playback=False,
+            turn=turn,
+        )
+
+        assert result.success is True
+        assert result.detected_intent == "owner_memory"
+        assert result.routed_skill == "owner_memory"
+        assert result.brain_text_response == expected_response
+        assert manager.last_execution.step_results[0].returned_data["metadata"][
+            "storage_status"
+        ] == expected_status
+
+
+def test_production_skill_construction_uses_canonical_profile_override_across_runs(
+    tmp_path,
+    monkeypatch,
+):
+    profile_path = tmp_path / "isolated" / "owner_profile.json"
+    tasks_path = tmp_path / "tasks.json"
+    monkeypatch.setenv("ARES_OWNER_PROFILE_PATH", str(profile_path))
+
+    def build_manager(turn):
+        event_bus = EventBus(max_history=500)
+        return manual.create_skill_manager(
+            CoreService(),
+            event_history_store=EventHistoryStore(
+                tmp_path / f"events_{turn}.json"
+            ),
+            event_bus=event_bus,
+            memory_store=MemoryStore(
+                short_path=tmp_path / "short_memory.json",
+                long_path=tmp_path / "long_memory.json",
+                event_bus=event_bus,
+            ),
+            profile_store=UserProfileStore(
+                tmp_path / "user_profile.json",
+                event_bus=event_bus,
+            ),
+            goals_store=GoalsStore(tmp_path / "goals.json", event_bus=event_bus),
+            notes_store=NotesStore(tmp_path / "notes.json", event_bus=event_bus),
+            tasks_store=TasksStore(tasks_path, event_bus=event_bus),
+        )
+
+    first = manual.build_existing_brain_handler(build_manager(1))(
+        "remember that my favorite color is blue"
+    )
+    second = manual.build_existing_brain_handler(build_manager(2))(
+        "what is my favorite color"
+    )
+
+    assert first.skill == "owner_memory"
+    assert first.text == "I will remember that your favorite color is blue."
+    assert second.skill == "owner_memory"
+    assert second.text == "Your favorite color is blue."
+    assert profile_path.exists()
+    assert not tasks_path.exists()
+
+
 def test_voice_response_tts_and_speaker_remain_explicitly_opt_in(tmp_path):
     profile_path = tmp_path / "owner_profile.json"
     disabled, _, _, _, disabled_tts, disabled_speaker, _ = _run_voice_turn(

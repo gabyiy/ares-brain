@@ -229,6 +229,7 @@ def build_existing_brain_handler(skill_manager: SkillManager):
             selected_skill=selected_skill,
             plan=plan if isinstance(plan, dict) else {},
             execution=execution if isinstance(execution, dict) else {},
+            response_metadata=response_metadata,
         )
         if response is None:
             return SkillResponse(
@@ -261,6 +262,7 @@ def _build_routing_diagnostics(
     selected_skill: str,
     plan: dict[str, Any],
     execution: dict[str, Any],
+    response_metadata: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     intent_name = str(getattr(intent, "intent_name", "") or "unknown")
     intent_ok = intent_name != "unknown"
@@ -311,7 +313,7 @@ def _build_routing_diagnostics(
         else str(execution.get("error_message") or "not_started")
     )
     intent_data = intent.to_dict() if hasattr(intent, "to_dict") else {}
-    return {
+    diagnostics = {
         "parsed_intent": {
             "name": intent_name,
             "confidence": float(getattr(intent, "confidence", 0.0) or 0.0),
@@ -324,6 +326,12 @@ def _build_routing_diagnostics(
         "rejection_reason": rejection_reason,
         "stages": stages,
     }
+    owner_memory = dict(
+        (response_metadata or {}).get("owner_memory_diagnostics") or {}
+    )
+    if owner_memory:
+        diagnostics["owner_memory"] = owner_memory
+    return diagnostics
 
 
 def create_pipeline(
@@ -533,8 +541,34 @@ def _print_routing_diagnostics(
         f"Transcript cleanup rule: {result.transcript_cleanup_rule or 'none'}"
     )
     output_func(f"Parsed intent: {result.detected_intent or 'unknown'}")
+    owner_memory = dict(result.routing_diagnostics.get("owner_memory") or {})
+    output_func(
+        "Parsed owner-memory action: "
+        f"{owner_memory.get('action') or '(none)'}"
+    )
+    output_func(
+        "Extracted owner-memory key: "
+        f"{owner_memory.get('normalized_key') or '(none)'}"
+    )
+    output_func(
+        "Extracted owner-memory value: "
+        f"{owner_memory.get('extracted_value') or '(none)'}"
+    )
     output_func(f"Candidate skills: {candidate_summary or 'none'}")
     output_func(f"Selected skill: {result.routed_skill or 'none'}")
+    output_func(
+        "Resolved owner-profile path: "
+        f"{owner_memory.get('profile_path') or '(none)'}"
+    )
+    file_existed = owner_memory.get("file_existed_before")
+    output_func(
+        "Owner-profile file existed before operation: "
+        f"{file_existed if file_existed is not None else '(none)'}"
+    )
+    output_func(
+        "Owner-memory operation result: "
+        f"{owner_memory.get('operation_result') or '(none)'}"
+    )
     output_func(f"Planner decision: {result.planner_decision or '(none)'}")
     output_func(f"Execution result: {result.execution_result or 'not_started'}")
     output_func(f"Rejection reason: {result.rejection_reason or '(none)'}")

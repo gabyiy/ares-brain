@@ -20,6 +20,7 @@ from memory import (  # noqa: E402
     OwnerProfileStore,
     TasksStore,
     UserProfileStore,
+    resolve_owner_profile_path,
 )
 from scripts import manual_verify_single_turn_voice as single_turn  # noqa: E402
 
@@ -45,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_owner_memory_text(text: str, profile_path: Path) -> dict[str, Any]:
-    path = Path(profile_path).expanduser().resolve()
+    path = resolve_owner_profile_path(profile_path)
     support_dir = path.parent / ".owner_memory_verification"
     event_bus = EventBus()
     core_service = CoreService()
@@ -70,6 +71,7 @@ def run_owner_memory_text(text: str, profile_path: Path) -> dict[str, Any]:
     response = single_turn.build_existing_brain_handler(manager)(text)
     metadata = dict(response.metadata or {})
     storage_result = dict(metadata.get("storage_result") or {})
+    diagnostics = dict(metadata.get("owner_memory_diagnostics") or {})
     protected = bool(metadata.get("protected_key_rejected"))
     failure = str(metadata.get("error") or "")
     handled = response.skill == "owner_memory"
@@ -88,7 +90,9 @@ def run_owner_memory_text(text: str, profile_path: Path) -> dict[str, Any]:
         "protected_key_rejected": protected,
         "rejection_reason": str(metadata.get("rejection_reason") or ""),
         "error": failure,
-        "profile_path": str(path),
+        "profile_path": str(diagnostics.get("profile_path") or path),
+        "file_existed_before": diagnostics.get("file_existed_before"),
+        "parser_rule": str(diagnostics.get("parser_rule") or ""),
         "value_redacted": True,
     }
 

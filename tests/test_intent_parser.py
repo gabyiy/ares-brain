@@ -75,6 +75,28 @@ def test_intent_parser_cleans_remember_to_task_text():
     }
 
 
+@pytest.mark.parametrize(
+    ("text", "action"),
+    [
+        ("remember that my favorite color is blue", "save"),
+        ("remember my favorite color is blue", "save"),
+        ("my favorite color is blue", "save"),
+        ("what is my favorite color", "recall"),
+        ("do you remember my favorite color", "recall"),
+        ("forget my favorite color", "forget"),
+        ("delete my favorite color", "forget"),
+        ("update my favorite color to red", "update"),
+        ("remember that modified white color is blue", "save"),
+    ],
+)
+def test_owner_memory_phrases_outrank_task_and_device_rules(text, action):
+    intent = IntentParser().parse(text)
+
+    assert intent.intent_name == "owner_memory"
+    assert intent.extracted_entities["action"] == action
+    assert intent.extracted_entities["normalized_key"] == "favorite_color"
+
+
 def test_intent_parser_keeps_remember_this_note_text():
     intent = IntentParser().parse("remember this idea: build ARES memory")
 
