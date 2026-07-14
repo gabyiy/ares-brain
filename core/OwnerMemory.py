@@ -3,8 +3,10 @@ from __future__ import annotations
 import math
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Tuple
+
+from core.OwnerLongTermMemory import GeneralMemoryParse, parse_general_owner_memory
 
 
 OWNER_MEMORY_SAVE = "save"
@@ -12,6 +14,8 @@ OWNER_MEMORY_UPDATE = "update"
 OWNER_MEMORY_RECALL = "recall"
 OWNER_MEMORY_FORGET = "forget"
 OWNER_MEMORY_LIST = "list"
+OWNER_MEMORY_DELETE_ALL_REQUEST = "delete_all_request"
+OWNER_MEMORY_DELETE_ALL_CONFIRM = "delete_all_confirm"
 OWNER_MEMORY_REJECT = "reject"
 
 OWNER_MEMORY_EXPLICIT_RULE = "owner_memory_explicit_v1"
@@ -195,7 +199,12 @@ _AMBIGUOUS_VALUE_PATTERN = re.compile(
 )
 _UNSAFE_VALUE_PATTERN = re.compile(
     r"(?:__import__|\b(?:eval|exec)\s*\(|<script\b|\bimport\s+(?:os|sys|subprocess)\b|"
-    r"\bignore\s+(?:all\s+)?(?:previous|system)\s+instructions\b|\bsystem\s+prompt\b)",
+    r"\bignore\s+(?:all\s+)?(?:(?:previous|system)\s+){1,2}instructions\b|\bsystem\s+prompt\b)",
+    re.IGNORECASE,
+)
+_PATH_OR_BINARY_VALUE_PATTERN = re.compile(
+    r"(?:\.\.[/\\]|(?:^|\s)[a-z]:[/\\]|(?:^|\s)/(?:etc|usr|var|home|root)/|"
+    r"https?://|data:[^\s]+;base64,)",
     re.IGNORECASE,
 )
 
@@ -219,17 +228,30 @@ class OwnerMemoryCommand:
     rejection_reason: str = ""
     protected: bool = False
     parser_rule: str = OWNER_MEMORY_EXPLICIT_RULE
+    memory_kind: str = "fact"
+    memory: Dict[str, Any] = field(default_factory=dict)
+    query: Dict[str, Any] = field(default_factory=dict)
+    persistence: str = ""
+    explicit: bool = False
+    extracted_memory_phrase: str = ""
+    fact_text: str = ""
+    clarification_reason: str = ""
+    confirmation_required: bool = False
 
     @property
     def safe_raw_text(self) -> str:
         if not self.recognized:
             return ""
-        key = self.normalized_key or "facts"
+        key = self.normalized_key or self.memory_kind or "facts"
         return f"owner memory {self.action or OWNER_MEMORY_REJECT} {key}"
 
     @property
     def routing_text(self) -> str:
         if not self.recognized or self.action == OWNER_MEMORY_REJECT:
+            return ""
+        if self.memory_kind == "general":
+            # Preserve the cleaned explicit phrase through transcript normalization;
+            # the synthetic safe_raw_text is only for internal plan/event metadata.
             return ""
         key = self.display_key or owner_fact_display_name(self.normalized_key)
         if self.action == OWNER_MEMORY_SAVE:
@@ -242,6 +264,10 @@ class OwnerMemoryCommand:
             return f"forget my {key}"
         if self.action == OWNER_MEMORY_LIST:
             return "what do you remember about me"
+        if self.action == OWNER_MEMORY_DELETE_ALL_REQUEST:
+            return "delete all long term owner memory"
+        if self.action == OWNER_MEMORY_DELETE_ALL_CONFIRM:
+            return "yes delete all my long term owner memory"
         return ""
 
     def to_entities(self) -> Dict[str, Any]:
@@ -251,12 +277,23 @@ class OwnerMemoryCommand:
             "display_key": self.display_key,
             "protected": self.protected,
             "parser_rule": self.parser_rule,
+            "memory_kind": self.memory_kind,
+            "memory": dict(self.memory),
+            "query": dict(self.query),
+            "persistence": self.persistence,
+            "explicit": self.explicit,
+            "extracted_memory_phrase": self.extracted_memory_phrase,
+            "fact_text": self.fact_text,
+            "clarification_reason": self.clarification_reason,
+            "confirmation_required": self.confirmation_required,
         }
         if self.rejection_reason:
             entities["rejection_reason"] = self.rejection_reason
         if self.value not in ("", None) and not self.protected:
             entities["value"] = self.value
             entities[SENSITIVE_ENTITY_FIELDS] = ["value"]
+        if self.memory and not self.protected:
+            entities[SENSITIVE_ENTITY_FIELDS] = sorted(set(entities.get(SENSITIVE_ENTITY_FIELDS, ())) | {"memory"})
         return entities
 
 
@@ -271,9 +308,26 @@ def parse_owner_memory_command(text: str) -> OwnerMemoryCommand:
     clean = clean.rstrip(" \t\r\n?!.,;:").strip()
     lowered = clean.casefold()
     if lowered in _LIST_PHRASES:
-        return OwnerMemoryCommand(True, action=OWNER_MEMORY_LIST, parser_rule=OWNER_MEMORY_LIST_RULE)
+        return OwnerMemoryCommand(
+            True,
+            action=OWNER_MEMORY_LIST,
+            parser_rule=OWNER_MEMORY_LIST_RULE,
+            memory_kind="all",
+            persistence="long_term",
+            explicit=True,
+        )
     if lowered in _SPECIAL_RECALL_KEYS:
         return _key_command(OWNER_MEMORY_RECALL, _SPECIAL_RECALL_KEYS[lowered], parser_rule=OWNER_MEMORY_GENERAL_RULE)
+
+    early_general = parse_general_owner_memory(clean)
+    if early_general.recognized and early_general.action in {
+        "update",
+        "recall",
+        "forget",
+        "delete_all_request",
+        "delete_all_confirm",
+    }:
+        return _general_command(early_general)
 
     live_match = _LIVE_PATTERN.fullmatch(clean)
     if live_match:
@@ -305,6 +359,10 @@ def parse_owner_memory_command(text: str) -> OwnerMemoryCommand:
         match = pattern.fullmatch(clean)
         if match:
             return _key_command(OWNER_MEMORY_FORGET, match.group("key"), parser_rule=parser_rule)
+
+    general = parse_general_owner_memory(clean)
+    if general.recognized:
+        return _general_command(general)
 
     if _looks_like_owner_prefix(clean) or lowered in _LIST_PHRASES:
         return _rejected_command("malformed_owner_memory_command")
@@ -391,6 +449,8 @@ def normalize_owner_fact_value(value: Any) -> Any:
         raise OwnerMemoryValidationError("ambiguous_value_rejected", "Owner fact value contains another command.")
     if _UNSAFE_VALUE_PATTERN.search(clean):
         raise OwnerMemoryValidationError("unsafe_value_rejected", "Owner fact value contains unsafe executable or instruction content.")
+    if _PATH_OR_BINARY_VALUE_PATTERN.search(clean):
+        raise OwnerMemoryValidationError("unsafe_value_rejected", "Owner fact value contains path, URL, or binary content.")
     return clean
 
 
@@ -415,7 +475,16 @@ def _save_command(key_source: str, value_source: Any, *, action: str = OWNER_MEM
         value = normalize_owner_fact_value(value_source)
     except OwnerMemoryValidationError as error:
         return _rejected_command(error.code, normalized_key=error.normalized_key, protected=error.protected)
-    return OwnerMemoryCommand(True, action=action, normalized_key=key, display_key=owner_fact_display_name(key), value=value, parser_rule=parser_rule)
+    return OwnerMemoryCommand(
+        True,
+        action=action,
+        normalized_key=key,
+        display_key=owner_fact_display_name(key),
+        value=value,
+        parser_rule=parser_rule,
+        persistence="long_term",
+        explicit=True,
+    )
 
 
 def _key_command(action: str, key_source: str, *, parser_rule: str = OWNER_MEMORY_EXPLICIT_RULE) -> OwnerMemoryCommand:
@@ -426,11 +495,48 @@ def _key_command(action: str, key_source: str, *, parser_rule: str = OWNER_MEMOR
         key = normalize_owner_fact_key(key_source)
     except OwnerMemoryValidationError as error:
         return _rejected_command(error.code, normalized_key=error.normalized_key, protected=error.protected)
-    return OwnerMemoryCommand(True, action=action, normalized_key=key, display_key=owner_fact_display_name(key), parser_rule=parser_rule)
+    return OwnerMemoryCommand(
+        True,
+        action=action,
+        normalized_key=key,
+        display_key=owner_fact_display_name(key),
+        parser_rule=parser_rule,
+        persistence="long_term",
+        explicit=True,
+    )
 
 
 def _rejected_command(reason: str, *, normalized_key: str = "", protected: bool = False) -> OwnerMemoryCommand:
     return OwnerMemoryCommand(True, action=OWNER_MEMORY_REJECT, normalized_key=normalized_key, display_key=owner_fact_display_name(normalized_key), rejection_reason=reason, protected=protected)
+
+
+def _general_command(parsed: GeneralMemoryParse) -> OwnerMemoryCommand:
+    action = {
+        "save": OWNER_MEMORY_SAVE,
+        "update": OWNER_MEMORY_UPDATE,
+        "recall": OWNER_MEMORY_RECALL,
+        "forget": OWNER_MEMORY_FORGET,
+        "list": OWNER_MEMORY_LIST,
+        "delete_all_request": OWNER_MEMORY_DELETE_ALL_REQUEST,
+        "delete_all_confirm": OWNER_MEMORY_DELETE_ALL_CONFIRM,
+        "reject": OWNER_MEMORY_REJECT,
+    }.get(parsed.action, OWNER_MEMORY_REJECT)
+    return OwnerMemoryCommand(
+        True,
+        action=action,
+        rejection_reason=parsed.rejection_reason,
+        protected=parsed.protected,
+        parser_rule=parsed.parser_rule,
+        memory_kind="general" if action != OWNER_MEMORY_LIST else "all",
+        memory=dict(parsed.memory),
+        query=dict(parsed.query),
+        persistence="long_term",
+        explicit=True,
+        extracted_memory_phrase=parsed.extracted_phrase,
+        fact_text=parsed.fact_text,
+        clarification_reason=parsed.clarification_reason,
+        confirmation_required=parsed.confirmation_required,
+    )
 
 
 def _normalize_source(value: str) -> str:

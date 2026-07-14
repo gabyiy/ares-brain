@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from memory.owner_memory_contracts import (
+    OWNER_MEMORY_ACTION_DELETE_ALL_CONFIRM,
+    OWNER_MEMORY_ACTION_DELETE_ALL_REQUEST,
     OWNER_MEMORY_ACTION_FORGET,
     OWNER_MEMORY_ACTION_LIST,
     OWNER_MEMORY_ACTION_RECALL,
@@ -16,7 +18,7 @@ from memory.owner_profile import OwnerProfileStore
 
 
 class OwnerMemoryService:
-    """Central Brain-facing API for explicit bounded owner facts."""
+    """Central Brain-facing API for explicit bounded owner facts and memories."""
 
     def __init__(
         self,
@@ -50,12 +52,38 @@ class OwnerMemoryService:
 
         action = normalized_request.action
         key = normalized_request.normalized_key
-        if action != OWNER_MEMORY_ACTION_LIST and not key:
+        memory_kind = normalized_request.memory_kind or "fact"
+        general = memory_kind == "general"
+        if not general and action not in {
+            OWNER_MEMORY_ACTION_LIST,
+            OWNER_MEMORY_ACTION_DELETE_ALL_REQUEST,
+            OWNER_MEMORY_ACTION_DELETE_ALL_CONFIRM,
+        } and not key:
             return self._failure(normalized_request, "missing_fact_key", "Owner fact key is required.")
-        if action in {OWNER_MEMORY_ACTION_REMEMBER, OWNER_MEMORY_ACTION_UPDATE} and normalized_request.value is None:
+        if general and not normalized_request.explicit:
+            return self._failure(normalized_request, "explicit_memory_trigger_required", "General owner memory requires an explicit request.")
+        if general and normalized_request.persistence != "long_term":
+            return self._failure(normalized_request, "invalid_memory_persistence", "General owner memory persistence must be long_term.")
+        if general and action in {OWNER_MEMORY_ACTION_REMEMBER, OWNER_MEMORY_ACTION_UPDATE} and not normalized_request.memory:
+            return self._failure(normalized_request, "missing_general_memory", "Structured general owner memory is required.")
+        if not general and action in {OWNER_MEMORY_ACTION_REMEMBER, OWNER_MEMORY_ACTION_UPDATE} and normalized_request.value is None:
             return self._failure(normalized_request, "missing_fact_value", "Owner fact value is required.")
 
-        if action in {OWNER_MEMORY_ACTION_REMEMBER, OWNER_MEMORY_ACTION_UPDATE}:
+        if general and action in {OWNER_MEMORY_ACTION_REMEMBER, OWNER_MEMORY_ACTION_UPDATE}:
+            store_result = self._store.save_memory(
+                normalized_request.memory,
+                replace_query=normalized_request.query,
+                force_update=action == OWNER_MEMORY_ACTION_UPDATE,
+            )
+        elif general and action == OWNER_MEMORY_ACTION_RECALL:
+            store_result = self._store.recall_memories(normalized_request.query)
+        elif general and action == OWNER_MEMORY_ACTION_FORGET:
+            store_result = self._store.forget_memories(normalized_request.query)
+        elif action == OWNER_MEMORY_ACTION_DELETE_ALL_REQUEST:
+            store_result = self._store.request_delete_all()
+        elif action == OWNER_MEMORY_ACTION_DELETE_ALL_CONFIRM:
+            store_result = self._store.confirm_delete_all()
+        elif action in {OWNER_MEMORY_ACTION_REMEMBER, OWNER_MEMORY_ACTION_UPDATE}:
             store_result = self._store.save_fact(
                 key,
                 normalized_request.value,
@@ -66,7 +94,29 @@ class OwnerMemoryService:
         elif action == OWNER_MEMORY_ACTION_FORGET:
             store_result = self._store.forget_fact(key)
         elif action == OWNER_MEMORY_ACTION_LIST:
-            store_result = self._store.list_facts(include_values=True)
+            facts_result = self._store.list_facts(include_values=True)
+            memories_result = self._store.list_memories(include_inactive=False)
+            if not facts_result.success:
+                store_result = facts_result
+            elif not memories_result.success:
+                store_result = memories_result
+            else:
+                return OwnerMemoryResultV1(
+                    True,
+                    "listed",
+                    action,
+                    facts=facts_result.facts,
+                    memories=memories_result.memories,
+                    correlation_id=normalized_request.correlation_id,
+                    session_id=normalized_request.session_id,
+                    metadata={
+                        "profile_path": str(self.profile_path),
+                        "fact_count": len(facts_result.facts),
+                        "memory_count": len(memories_result.memories),
+                        "value_redacted": True,
+                        "memory_content_redacted": True,
+                    },
+                )
         else:
             return self._failure(normalized_request, "unsupported_owner_memory_action", "Owner memory action is unsupported.")
 
@@ -86,6 +136,9 @@ class OwnerMemoryService:
             previous_value=store_result.previous_value,
             changed=store_result.changed,
             facts=store_result.facts,
+            memory=store_result.memory,
+            memories=store_result.memories,
+            confirmation_required=store_result.confirmation_required,
             error_code=store_result.error_code,
             error_message=store_result.error_message,
             correlation_id=normalized_request.correlation_id,
@@ -112,12 +165,17 @@ class OwnerMemoryService:
                 "memory.owner_fact.recall",
                 "memory.owner_fact.forget",
                 "memory.owner_fact.list",
+                "memory.owner.general.remember",
+                "memory.owner.general.recall",
+                "memory.owner.general.forget",
+                "memory.owner.general.list",
             ],
             "metadata": {
                 "schema_name": report.get("schema_name", ""),
                 "detected_version": report.get("detected_version"),
                 "target_version": report.get("current_target_version"),
                 "fact_count": report.get("fact_count", 0),
+                "memory_count": report.get("memory_count", 0),
             },
         }
 

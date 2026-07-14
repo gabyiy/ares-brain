@@ -230,6 +230,10 @@ class TranscriptNormalizer:
                     "owner_memory_action": owner_command.action,
                     "owner_memory_key": owner_command.normalized_key,
                     "owner_memory_parser_rule": owner_command.parser_rule,
+                    "owner_memory_kind": owner_command.memory_kind,
+                    "owner_memory_type": str(owner_command.memory.get("memory_type") or ""),
+                    "owner_memory_persistence": owner_command.persistence,
+                    "owner_memory_explicit": owner_command.explicit,
                 },
                 metadata={**dict(request.metadata or {}), "safe": True},
             )

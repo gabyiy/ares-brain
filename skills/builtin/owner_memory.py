@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable
 
 from core.OwnerMemory import (
+    OWNER_MEMORY_DELETE_ALL_CONFIRM,
+    OWNER_MEMORY_DELETE_ALL_REQUEST,
     OWNER_MEMORY_FORGET,
     OWNER_MEMORY_LIST,
     OWNER_MEMORY_RECALL,
@@ -13,7 +15,14 @@ from core.OwnerMemory import (
     owner_memory_uses_explicit_store,
     parse_owner_memory_command,
 )
+from core.OwnerLongTermMemory import (
+    DELETE_ALL_CONFIRMATION_PHRASE,
+    MAX_SPOKEN_MEMORY_RESULTS,
+    general_memory_clause,
+)
 from memory.owner_memory_contracts import (
+    OWNER_MEMORY_ACTION_DELETE_ALL_CONFIRM,
+    OWNER_MEMORY_ACTION_DELETE_ALL_REQUEST,
     OWNER_MEMORY_ACTION_FORGET,
     OWNER_MEMORY_ACTION_LIST,
     OWNER_MEMORY_ACTION_RECALL,
@@ -30,15 +39,17 @@ _ACTION_MAP = {
     OWNER_MEMORY_RECALL: OWNER_MEMORY_ACTION_RECALL,
     OWNER_MEMORY_FORGET: OWNER_MEMORY_ACTION_FORGET,
     OWNER_MEMORY_LIST: OWNER_MEMORY_ACTION_LIST,
+    OWNER_MEMORY_DELETE_ALL_REQUEST: OWNER_MEMORY_ACTION_DELETE_ALL_REQUEST,
+    OWNER_MEMORY_DELETE_ALL_CONFIRM: OWNER_MEMORY_ACTION_DELETE_ALL_CONFIRM,
 }
 _MAX_SPOKEN_LIST_FACTS = 5
 
 
 class OwnerMemorySkill(Skill):
-    """Routes explicit owner facts through the CoreService-owned memory service."""
+    """Routes explicit owner facts and memories through the central service."""
 
     name = "owner_memory"
-    description = "Explicitly saves, recalls, updates, lists, or forgets bounded owner facts."
+    description = "Explicitly manages bounded owner facts and long-term memories."
     version = "2.0"
     intent_names = ("owner_memory",)
     run_before_intents = True
@@ -52,6 +63,10 @@ class OwnerMemorySkill(Skill):
         "memory.owner_fact.recall",
         "memory.owner_fact.forget",
         "memory.owner_fact.list",
+        "memory.owner.general.remember",
+        "memory.owner.general.recall",
+        "memory.owner.general.forget",
+        "memory.owner.general.list",
     )
 
     def can_handle(self, text: str) -> bool:
@@ -67,11 +82,12 @@ class OwnerMemorySkill(Skill):
                 rejection_reason="unrecognized_owner_memory_command",
             )
         if command.action == OWNER_MEMORY_REJECT:
-            message = (
-                "I cannot store or recall protected information such as passwords, tokens, API keys, or private keys."
-                if command.protected
-                else "I could not safely understand that owner-memory request."
-            )
+            if command.clarification_reason == "temporary_memory_requires_clarification":
+                message = "That sounds temporary. Should I save it as a temporary note instead?"
+            elif command.protected:
+                message = "I cannot store or recall protected information such as passwords, tokens, API keys, or private keys."
+            else:
+                message = "I could not safely understand that owner-memory request."
             return self._response(
                 message,
                 command,
@@ -95,9 +111,18 @@ class OwnerMemorySkill(Skill):
             normalized_key=command.normalized_key,
             display_key=command.display_key,
             value=command.value if command.action in {OWNER_MEMORY_SAVE, OWNER_MEMORY_UPDATE} else None,
+            memory_kind=command.memory_kind,
+            memory=dict(command.memory),
+            query=dict(command.query),
+            persistence=command.persistence,
+            explicit=command.explicit,
             correlation_id=str(context.metadata.get("correlation_id") or ""),
             session_id=str(context.metadata.get("session_id") or ""),
-            metadata={"source": "explicit_owner_statement", "value_redacted": True},
+            metadata={
+                "source": "explicit_owner_statement",
+                "value_redacted": True,
+                "memory_content_redacted": True,
+            },
         )
         result = execute(request)
 
@@ -142,6 +167,18 @@ class OwnerMemorySkill(Skill):
         )
 
     def _result_text(self, command: OwnerMemoryCommand, result: Any) -> str:
+        if command.action == OWNER_MEMORY_DELETE_ALL_REQUEST and result.status == "confirmation_required":
+            return (
+                "Deleting all long-term owner memory requires confirmation. "
+                f"Say: {DELETE_ALL_CONFIRMATION_PHRASE.capitalize()}."
+            )
+        if command.action == OWNER_MEMORY_DELETE_ALL_CONFIRM:
+            if result.status == "deleted_all":
+                return "I deleted all your long-term owner memory."
+            if result.status == "missing_confirmation":
+                return "There is no active request to delete all long-term owner memory."
+        if command.memory_kind == "general":
+            return self._general_result_text(command, result)
         key = result.normalized_key or command.normalized_key
         display_key = result.display_key or command.display_key
         if result.status == "created":
@@ -159,7 +196,42 @@ class OwnerMemorySkill(Skill):
                 return f"I was not storing your {display_key}."
             return f"I do not know your {display_key} yet."
         if result.status == "listed":
-            return self._list_text(result.facts)
+            return self._list_text(result.facts, result.memories)
+        return ""
+
+    def _general_result_text(self, command: OwnerMemoryCommand, result: Any) -> str:
+        memory = dict(result.memory or command.memory or {})
+        clause = general_memory_clause(memory) if memory else ""
+        if result.status == "created":
+            return f"I will remember that {clause}."
+        if result.status == "duplicate":
+            return f"I already remember that {clause}."
+        if result.status == "updated":
+            return f"I updated that memory to: {self._capitalize_clause(clause)}."
+        if result.status == "recalled":
+            memories = list(result.memories or (() if not memory else (memory,)))
+            style = str(result.metadata.get("response_style") or command.query.get("response_style") or "topic")
+            clauses = [general_memory_clause(item) for item in memories[:MAX_SPOKEN_MEMORY_RESULTS]]
+            if style == "assertion":
+                return f"Yes. You told me that {clauses[0]}."
+            if style in {"preference_list", "type_list"}:
+                return f"{self._capitalize_clause(self._join_phrases(clauses))}."
+            if len(clauses) == 1:
+                return f"You told me that {clauses[0]}."
+            return f"You told me that {self._join_phrases(clauses)}."
+        if result.status == "forgotten":
+            count = len(result.memories or ())
+            if count <= 1 and clause:
+                return f"I forgot that {clause}."
+            display = str(command.query.get("display_query") or "that topic")
+            return f"I forgot {count} long-term memories about {display}."
+        if result.status == "missing":
+            display = str(command.query.get("display_query") or "that topic")
+            if command.action == OWNER_MEMORY_FORGET:
+                return f"I was not storing an active long-term memory about {display}."
+            if command.query.get("memory_type"):
+                return f"I do not have any saved {display} yet."
+            return f"I do not have an active long-term memory about {display}."
         return ""
 
     def _remember_text(self, key: str, display_key: str, value: Any) -> str:
@@ -182,13 +254,20 @@ class OwnerMemorySkill(Skill):
             return f"You live in {self._format_value(value)}."
         return f"Your {display_key} is {self._format_value(value)}."
 
-    def _list_text(self, facts: Iterable[Dict[str, Any]]) -> str:
+    def _list_text(
+        self,
+        facts: Iterable[Dict[str, Any]],
+        memories: Iterable[Dict[str, Any]] = (),
+    ) -> str:
         facts_list = list(facts)
-        if not facts_list:
+        memories_list = list(memories)
+        if not facts_list and not memories_list:
             return "I do not have any saved facts about you yet."
-        phrases = [self._fact_clause(fact) for fact in facts_list[:_MAX_SPOKEN_LIST_FACTS]]
+        all_phrases = [self._fact_clause(fact) for fact in facts_list]
+        all_phrases.extend(general_memory_clause(memory) for memory in memories_list)
+        phrases = all_phrases[:_MAX_SPOKEN_LIST_FACTS]
         joined = self._join_phrases(phrases)
-        remaining = len(facts_list) - len(phrases)
+        remaining = len(all_phrases) - len(phrases)
         suffix = f" I have {remaining} additional saved fact{'s' if remaining != 1 else ''}." if remaining else ""
         return f"I remember that {joined}.{suffix}".strip()
 
@@ -222,6 +301,15 @@ class OwnerMemorySkill(Skill):
             rejection_reason=str(entities.get("rejection_reason") or ""),
             protected=bool(entities.get("protected")),
             parser_rule=str(entities.get("parser_rule") or "owner_memory_explicit_v1"),
+            memory_kind=str(entities.get("memory_kind") or "fact"),
+            memory=dict(entities.get("memory") or {}),
+            query=dict(entities.get("query") or {}),
+            persistence=str(entities.get("persistence") or ""),
+            explicit=bool(entities.get("explicit")),
+            extracted_memory_phrase=str(entities.get("extracted_memory_phrase") or ""),
+            fact_text=str(entities.get("fact_text") or ""),
+            clarification_reason=str(entities.get("clarification_reason") or ""),
+            confirmation_required=bool(entities.get("confirmation_required")),
         )
 
     def _response(self, text: str, command: OwnerMemoryCommand, *, result: Any = None, **metadata: Any) -> SkillResponse:
@@ -242,16 +330,28 @@ class OwnerMemorySkill(Skill):
             "normalized_key": command.normalized_key,
             "extracted_value": "[REDACTED]" if command.protected else command.value,
             "parser_rule": command.parser_rule,
+            "memory_kind": command.memory_kind,
+            "memory_type": str(command.memory.get("memory_type") or ""),
+            "persistence": command.persistence,
             "profile_path": str(result_metadata.get("profile_path") or ""),
             "file_existed_before": result_metadata.get("file_existed_before"),
             "operation_result": str(getattr(result, "status", "") or fallback_status),
             "rejection_reason": str(command.rejection_reason or getattr(result, "error_code", "") or ""),
+            "extracted_memory_phrase": command.extracted_memory_phrase,
+            "fact_text_length": len(command.fact_text),
+            "memory_id": str(getattr(result, "memory", {}).get("memory_id") or ""),
         }
 
     def _safe_failure_text(self, error_code: str) -> str:
-        if error_code in {"fact_limit_reached", "profile_size_limit_reached"}:
+        if error_code in {"fact_limit_reached", "memory_limit_reached", "profile_size_limit_reached"}:
             return "Owner memory has reached its safe storage limit."
+        if error_code == "general_memory_too_long":
+            return "That long-term memory is too long to store safely."
         return "I could not update owner memory safely."
+
+    @staticmethod
+    def _capitalize_clause(value: str) -> str:
+        return value[:1].upper() + value[1:] if value else value
 
     @staticmethod
     def _format_value(value: Any) -> str:

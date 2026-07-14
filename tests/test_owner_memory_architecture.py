@@ -17,6 +17,12 @@ VOICE_BOUNDARY_FILES = (
     "core/MultiTurnVoiceSession.py",
     "core/VoicePipeline.py",
 )
+AUDIO_ADAPTER_FILES = (
+    "core/LinuxAlsaMicrophone.py",
+    "core/LinuxAlsaSpeaker.py",
+    "core/LinuxPiperTextToSpeech.py",
+    "core/LinuxWhisperSpeechToText.py",
+)
 FORBIDDEN_MEMORY_IMPORT_TOKENS = (
     "alsa",
     "whisper",
@@ -39,6 +45,33 @@ def test_voice_boundaries_do_not_construct_or_import_concrete_owner_store():
         assert "OwnerProfileStore" not in source, relative_path
         assert "owner_profile.json" not in source, relative_path
         assert "memory.owner_profile" not in imported_names, relative_path
+        assert ".save_memory(" not in source, relative_path
+        assert ".save_fact(" not in source, relative_path
+
+
+def test_production_voice_launcher_does_not_write_owner_json_directly():
+    source = (REPO_ROOT / "scripts/run_ares_voice.py").read_text(encoding="utf-8")
+
+    assert "json.dump" not in source
+    assert "json.dumps" not in source
+    assert ".write_text(" not in source
+    assert ".write_bytes(" not in source
+    assert "owner_profile.json" not in source
+    assert "OwnerProfileStore" not in source
+
+
+def test_audio_adapters_do_not_import_or_write_owner_memory():
+    for relative_path in AUDIO_ADAPTER_FILES:
+        source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imported_modules = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported_modules.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported_modules.append(node.module or "")
+        assert not any(module == "memory" or module.startswith("memory.") for module in imported_modules), relative_path
+        assert "owner_profile" not in source.casefold(), relative_path
 
 
 def test_memory_package_has_no_audio_or_voice_hardware_imports():
@@ -90,6 +123,36 @@ def test_voice_and_text_transports_produce_same_central_memory_result(tmp_path):
     assert voice_response.skill == "owner_memory"
 
 
+def test_general_memory_text_and_voice_transports_share_structured_central_operation(tmp_path):
+    path = tmp_path / "owner_profile.json"
+    text_service = OwnerMemoryService(path, event_bus=EventBus())
+    voice_service = OwnerMemoryService(path, event_bus=EventBus())
+    text_manager = single_turn.create_skill_manager(
+        CoreService(owner_memory_service=text_service),
+        event_bus=EventBus(),
+    )
+    voice_manager = single_turn.create_skill_manager(
+        CoreService(owner_memory_service=voice_service),
+        event_bus=EventBus(),
+    )
+
+    text_response = text_manager.handle(
+        "Remember in your long-term memory that I like going to the gym.",
+        run_before_intents=True,
+    )
+    voice_response = single_turn.build_existing_brain_handler(voice_manager)(
+        "What do you remember about the gym?"
+    )
+
+    text_diagnostics = text_response.metadata["owner_memory_diagnostics"]
+    voice_diagnostics = voice_response.metadata["owner_memory_diagnostics"]
+    assert text_response.skill == voice_response.skill == "owner_memory"
+    assert text_diagnostics["memory_kind"] == voice_diagnostics["memory_kind"] == "general"
+    assert text_diagnostics["persistence"] == voice_diagnostics["persistence"] == "long_term"
+    assert text_response.text == "I will remember that you like going to the gym."
+    assert voice_response.text == "You told me that you like going to the gym."
+
+
 def test_no_voice_specific_owner_memory_files_are_defined():
     forbidden = {
         "voice_owner_profile.json",
@@ -101,7 +164,10 @@ def test_no_voice_specific_owner_memory_files_are_defined():
     for folder in ("core", "memory", "skills", "interfaces", "scripts", "config"):
         for path in (REPO_ROOT / folder).rglob("*"):
             if path.is_file() and path.suffix in {".py", ".json"}:
-                if path.name == "manual_verify_general_owner_memory.py":
+                if path.name in {
+                    "manual_verify_general_owner_memory.py",
+                    "manual_verify_general_long_term_memory.py",
+                }:
                     continue
                 source = path.read_text(encoding="utf-8", errors="ignore")
                 declared.update(name for name in forbidden if name in source)

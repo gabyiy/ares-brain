@@ -198,7 +198,7 @@ def test_direct_text_instances_share_one_central_profile(tmp_path):
 
     assert saved.text == "I will remember that your birthday is June 8."
     assert recalled.text == "Your birthday is June 8."
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 2
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 3
 
 
 def _manager_with_path(support_path, profile_path):

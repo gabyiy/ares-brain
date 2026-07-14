@@ -14,12 +14,16 @@ OWNER_MEMORY_ACTION_UPDATE = "update"
 OWNER_MEMORY_ACTION_RECALL = "recall"
 OWNER_MEMORY_ACTION_FORGET = "forget"
 OWNER_MEMORY_ACTION_LIST = "list"
+OWNER_MEMORY_ACTION_DELETE_ALL_REQUEST = "delete_all_request"
+OWNER_MEMORY_ACTION_DELETE_ALL_CONFIRM = "delete_all_confirm"
 OWNER_MEMORY_ACTIONS = {
     OWNER_MEMORY_ACTION_REMEMBER,
     OWNER_MEMORY_ACTION_UPDATE,
     OWNER_MEMORY_ACTION_RECALL,
     OWNER_MEMORY_ACTION_FORGET,
     OWNER_MEMORY_ACTION_LIST,
+    OWNER_MEMORY_ACTION_DELETE_ALL_REQUEST,
+    OWNER_MEMORY_ACTION_DELETE_ALL_CONFIRM,
 }
 
 
@@ -33,6 +37,11 @@ class OwnerMemoryRequestV1:
     normalized_key: str = ""
     display_key: str = ""
     value: Any = None
+    memory_kind: str = "fact"
+    memory: Dict[str, Any] = field(default_factory=dict)
+    query: Dict[str, Any] = field(default_factory=dict)
+    persistence: str = ""
+    explicit: bool = False
     correlation_id: str = ""
     session_id: str = ""
     created_at: str = field(default_factory=owner_memory_timestamp)
@@ -51,6 +60,11 @@ class OwnerMemoryRequestV1:
             "normalized_key": self.normalized_key,
             "display_key": self.display_key,
             "value": self.value,
+            "memory_kind": self.memory_kind,
+            "memory": dict(self.memory),
+            "query": dict(self.query),
+            "persistence": self.persistence,
+            "explicit": self.explicit,
             "metadata": dict(self.metadata),
         }
 
@@ -72,11 +86,20 @@ class OwnerMemoryRequestV1:
         metadata = payload.get("metadata", {})
         if not isinstance(metadata, Mapping):
             raise ValueError("Owner memory request metadata must be an object")
+        memory = payload.get("memory", {})
+        query = payload.get("query", {})
+        if not isinstance(memory, Mapping) or not isinstance(query, Mapping):
+            raise ValueError("Owner memory request memory and query must be objects")
         return cls(
             action=action,
             normalized_key=str(payload.get("normalized_key") or ""),
             display_key=str(payload.get("display_key") or ""),
             value=payload.get("value"),
+            memory_kind=str(payload.get("memory_kind") or "fact"),
+            memory=dict(memory),
+            query=dict(query),
+            persistence=str(payload.get("persistence") or ""),
+            explicit=bool(payload.get("explicit")),
             correlation_id=str(payload.get("correlation_id") or ""),
             session_id=str(payload.get("session_id") or ""),
             created_at=str(payload.get("created_at") or owner_memory_timestamp()),
@@ -95,6 +118,9 @@ class OwnerMemoryResultV1:
     previous_value: Any = None
     changed: bool = False
     facts: Tuple[Dict[str, Any], ...] = ()
+    memory: Dict[str, Any] = field(default_factory=dict)
+    memories: Tuple[Dict[str, Any], ...] = ()
+    confirmation_required: bool = False
     error_code: str = ""
     error_message: str = ""
     correlation_id: str = ""
@@ -120,6 +146,7 @@ class OwnerMemoryResultV1:
             "error_code": self.error_code,
             "error_message": self.error_message,
             "metadata": dict(self.metadata),
+            "confirmation_required": self.confirmation_required,
         }
         if include_values:
             if self.value is not None:
@@ -128,6 +155,12 @@ class OwnerMemoryResultV1:
                 payload["previous_value"] = self.previous_value
             if self.facts:
                 payload["facts"] = [dict(fact) for fact in self.facts]
+            if self.memory:
+                payload["memory"] = dict(self.memory)
+            if self.memories:
+                payload["memories"] = [dict(memory) for memory in self.memories]
         elif self.facts:
             payload["fact_count"] = len(self.facts)
+        if not include_values and self.memories:
+            payload["memory_count"] = len(self.memories)
         return payload

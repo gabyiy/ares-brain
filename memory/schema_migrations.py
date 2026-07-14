@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 SCHEMA_VERSION_1 = 1
 SCHEMA_VERSION_2 = 2
+SCHEMA_VERSION_3 = 3
 
 SCHEMA_USER_PROFILE = "ares.user_profile"
 SCHEMA_OWNER_PROFILE = "ares.owner_profile"
@@ -975,7 +976,7 @@ def _validate_owner_profile_v1_data(data: Any) -> None:
             )
 
 
-def _validate_owner_profile_data(data: Any) -> None:
+def _validate_owner_profile_v2_data(data: Any) -> None:
     if not isinstance(data, dict):
         raise MigrationError(
             "Owner profile data must be an object",
@@ -1103,6 +1104,154 @@ def _owner_profile_migration_v1_to_v2(envelope: SchemaEnvelope) -> SchemaEnvelop
     )
 
 
+def _validate_owner_profile_data(data: Any) -> None:
+    if not isinstance(data, dict) or set(data) != {
+        "owner_id",
+        "facts",
+        "memories",
+        "pending_delete_all",
+    }:
+        raise MigrationError(
+            "Owner profile v3 requires owner_id, facts, memories, and pending_delete_all",
+            schema_name=SCHEMA_OWNER_PROFILE,
+            status="invalid_store_data",
+        )
+    _validate_owner_profile_v2_data(
+        {"owner_id": data.get("owner_id"), "facts": data.get("facts")}
+    )
+    memories = data.get("memories")
+    if not isinstance(memories, list) or len(memories) > 120:
+        raise MigrationError(
+            "Owner profile memories must be a bounded list",
+            schema_name=SCHEMA_OWNER_PROFILE,
+            status="invalid_store_data",
+        )
+    memory_ids = set()
+    active_count = 0
+    for index, entry in enumerate(memories):
+        _validate_owner_memory_entry(entry, index)
+        memory_id = entry["memory_id"]
+        if memory_id in memory_ids:
+            raise MigrationError(
+                "Owner profile contains duplicate memory ids",
+                schema_name=SCHEMA_OWNER_PROFILE,
+                status="invalid_store_data",
+            )
+        memory_ids.add(memory_id)
+        if entry["status"] == "active":
+            active_count += 1
+    if active_count > 100:
+        raise MigrationError(
+            "Owner profile active memory limit exceeded",
+            schema_name=SCHEMA_OWNER_PROFILE,
+            status="invalid_store_data",
+        )
+    pending = data.get("pending_delete_all")
+    if pending is not None:
+        if not isinstance(pending, dict) or set(pending) != {"requested_at", "expires_at"}:
+            raise MigrationError(
+                "Owner profile pending deletion marker is invalid",
+                schema_name=SCHEMA_OWNER_PROFILE,
+                status="invalid_store_data",
+            )
+        if not all(isinstance(pending.get(name), str) and pending.get(name) for name in ("requested_at", "expires_at")):
+            raise MigrationError(
+                "Owner profile pending deletion timestamps are invalid",
+                schema_name=SCHEMA_OWNER_PROFILE,
+                status="invalid_store_data",
+            )
+    serialized_size = len(json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    if serialized_size > 65536:
+        raise MigrationError(
+            "Owner profile exceeds its bounded serialized size",
+            schema_name=SCHEMA_OWNER_PROFILE,
+            status="invalid_store_data",
+        )
+
+
+def _validate_owner_memory_entry(entry: Any, index: int) -> None:
+    required = {
+        "memory_id",
+        "memory_type",
+        "subject",
+        "predicate",
+        "object",
+        "canonical_text",
+        "owner_spoken_text",
+        "topics",
+        "persistence",
+        "source",
+        "confidence",
+        "created_at",
+        "updated_at",
+        "status",
+    }
+    optional = {"superseded_at", "replaced_by"}
+    if not isinstance(entry, dict) or not required.issubset(entry) or set(entry) - required - optional:
+        raise MigrationError(
+            f"Owner memory entry {index} has an invalid shape",
+            schema_name=SCHEMA_OWNER_PROFILE,
+            status="invalid_store_data",
+        )
+    if not isinstance(entry["memory_id"], str) or not re.fullmatch(r"mem-[a-f0-9]{16}", entry["memory_id"]):
+        raise MigrationError("Owner memory id is invalid", schema_name=SCHEMA_OWNER_PROFILE, status="invalid_store_data")
+    if entry["memory_type"] not in {
+        "preference",
+        "dislike",
+        "routine",
+        "personal_fact",
+        "relationship",
+        "possession",
+        "goal",
+        "biographical_fact",
+        "instruction_preference",
+    }:
+        raise MigrationError("Owner memory type is invalid", schema_name=SCHEMA_OWNER_PROFILE, status="invalid_store_data")
+    for name, maximum in (
+        ("subject", 120),
+        ("predicate", 120),
+        ("object", 320),
+        ("owner_spoken_text", 320),
+        ("canonical_text", 360),
+        ("created_at", 80),
+        ("updated_at", 80),
+    ):
+        value = entry.get(name)
+        if not isinstance(value, str) or not value or len(value) > maximum or any(ord(character) < 32 or ord(character) == 127 for character in value):
+            raise MigrationError(f"Owner memory {name} is invalid", schema_name=SCHEMA_OWNER_PROFILE, status="invalid_store_data")
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", entry["predicate"]):
+        raise MigrationError("Owner memory predicate is invalid", schema_name=SCHEMA_OWNER_PROFILE, status="invalid_store_data")
+    topics = entry.get("topics")
+    if not isinstance(topics, list) or len(topics) > 8 or len(set(topics)) != len(topics):
+        raise MigrationError("Owner memory topics are invalid", schema_name=SCHEMA_OWNER_PROFILE, status="invalid_store_data")
+    if any(not isinstance(topic, str) or not topic or len(topic) > 48 or not re.fullmatch(r"[a-z0-9]+", topic) for topic in topics):
+        raise MigrationError("Owner memory topic is invalid", schema_name=SCHEMA_OWNER_PROFILE, status="invalid_store_data")
+    if entry.get("persistence") != "long_term" or entry.get("source") != "explicit_owner_statement" or entry.get("confidence") != 1.0:
+        raise MigrationError("Owner memory metadata is invalid", schema_name=SCHEMA_OWNER_PROFILE, status="invalid_store_data")
+    if entry.get("status") not in {"active", "superseded", "forgotten"}:
+        raise MigrationError("Owner memory status is invalid", schema_name=SCHEMA_OWNER_PROFILE, status="invalid_store_data")
+    for optional_name in optional:
+        if optional_name in entry and (not isinstance(entry[optional_name], str) or not entry[optional_name]):
+            raise MigrationError(f"Owner memory {optional_name} is invalid", schema_name=SCHEMA_OWNER_PROFILE, status="invalid_store_data")
+
+
+def _owner_profile_migration_v2_to_v3(envelope: SchemaEnvelope) -> SchemaEnvelope:
+    _validate_owner_profile_v2_data(envelope.data)
+    metadata = dict(envelope.metadata)
+    metadata["owner_profile_migrated_from"] = 2
+    metadata["purpose"] = "explicit_owner_memory"
+    return envelope.with_data(
+        {
+            "owner_id": "primary_owner",
+            "facts": _copy_json_data(dict(envelope.data.get("facts") or {})),
+            "memories": [],
+            "pending_delete_all": None,
+        },
+        SCHEMA_VERSION_3,
+        metadata=metadata,
+    )
+
+
 def _validate_notes_data(data: Any) -> None:
     _validate_list_data(data, item_label="Notes")
     for index, entry in enumerate(data):
@@ -1213,11 +1362,12 @@ def _build_default_registry() -> MigrationRegistry:
     registry.register_schema(SCHEMA_USER_PROFILE, SCHEMA_VERSION_1, _validate_profile_data, _legacy_profile)
     registry.register_schema(
         SCHEMA_OWNER_PROFILE,
-        SCHEMA_VERSION_2,
+        SCHEMA_VERSION_3,
         _validate_owner_profile_data,
         validators={
             SCHEMA_VERSION_1: _validate_owner_profile_v1_data,
-            SCHEMA_VERSION_2: _validate_owner_profile_data,
+            SCHEMA_VERSION_2: _validate_owner_profile_v2_data,
+            SCHEMA_VERSION_3: _validate_owner_profile_data,
         },
     )
     registry.register_schema(SCHEMA_GOALS, SCHEMA_VERSION_1, _validate_goals_data, _legacy_goals)
@@ -1241,6 +1391,12 @@ def _build_default_registry() -> MigrationRegistry:
         SCHEMA_VERSION_1,
         SCHEMA_VERSION_2,
         _owner_profile_migration_v1_to_v2,
+    )
+    registry.register_migration(
+        SCHEMA_OWNER_PROFILE,
+        SCHEMA_VERSION_2,
+        SCHEMA_VERSION_3,
+        _owner_profile_migration_v2_to_v3,
     )
     return registry
 

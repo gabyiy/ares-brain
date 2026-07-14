@@ -250,6 +250,10 @@ def test_owner_memory_skill_manifest_is_registered_with_explicit_capabilities(tm
         "memory.owner_fact.recall",
         "memory.owner_fact.forget",
         "memory.owner_fact.list",
+        "memory.owner.general.remember",
+        "memory.owner.general.recall",
+        "memory.owner.general.forget",
+        "memory.owner.general.list",
     }
 
 
@@ -267,10 +271,16 @@ def test_owner_memory_response_exposes_bounded_operation_diagnostics(tmp_path):
         "normalized_key": "favorite_color",
         "extracted_value": "blue",
         "parser_rule": "owner_memory_explicit_v1",
+        "memory_kind": "fact",
+        "memory_type": "",
+        "persistence": "long_term",
         "profile_path": str(store.path),
         "file_existed_before": False,
         "operation_result": "created",
         "rejection_reason": "",
+        "extracted_memory_phrase": "",
+        "fact_text_length": 0,
+        "memory_id": "",
     }
 
 

@@ -555,6 +555,18 @@ def _print_routing_diagnostics(
         "Extracted owner-memory value: "
         f"{owner_memory.get('extracted_value') or '(none)'}"
     )
+    output_func(
+        "Extracted explicit-memory phrase: "
+        f"{owner_memory.get('extracted_memory_phrase') or '(none)'}"
+    )
+    output_func(
+        "Owner-memory type: "
+        f"{owner_memory.get('memory_type') or '(none)'}"
+    )
+    output_func(
+        "Owner-memory persistence: "
+        f"{owner_memory.get('persistence') or '(none)'}"
+    )
     output_func(f"Candidate skills: {candidate_summary or 'none'}")
     output_func(f"Selected skill: {result.routed_skill or 'none'}")
     output_func(
@@ -569,6 +581,10 @@ def _print_routing_diagnostics(
     output_func(
         "Owner-memory operation result: "
         f"{owner_memory.get('operation_result') or '(none)'}"
+    )
+    output_func(
+        "Owner-memory id: "
+        f"{owner_memory.get('memory_id') or '(none)'}"
     )
     output_func(f"Planner decision: {result.planner_decision or '(none)'}")
     output_func(f"Execution result: {result.execution_result or 'not_started'}")

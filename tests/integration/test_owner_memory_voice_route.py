@@ -210,6 +210,72 @@ def test_general_owner_fact_uses_mock_voice_transport_and_central_brain_service(
     assert recalled_manager.owner_memory_service is recalled_manager.core_service.owner_memory_service
 
 
+def test_general_long_term_memory_uses_production_voice_route_and_fresh_central_service(tmp_path):
+    profile_path = tmp_path / "memory" / "owner_profile.json"
+    saved, saved_manager, _, _, saved_tts, saved_speaker, saved_pipeline = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "Remember in your long-term memory that I like going to the gym.",
+        playback=True,
+        turn=1,
+    )
+    recalled, recalled_manager, _, _, recalled_tts, recalled_speaker, recalled_pipeline = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "What do you remember about the gym?",
+        playback=True,
+        turn=2,
+    )
+
+    assert saved.success is True
+    assert saved.detected_intent == "owner_memory"
+    assert saved.routed_skill == "owner_memory"
+    assert saved.planner_decision == "1 step(s): owner_memory"
+    assert saved.execution_result == "success"
+    assert saved.brain_text_response == "I will remember that you like going to the gym."
+    assert saved_manager.last_plan.steps[0].target == "owner_memory"
+    assert saved_manager.last_execution.step_results[0].returned_data["metadata"]["storage_status"] == "created"
+    assert saved_tts.requests[0].text == saved.brain_text_response
+    assert saved_speaker.play_count == 1
+
+    assert recalled.success is True
+    assert recalled.detected_intent == "owner_memory"
+    assert recalled.routed_skill == "owner_memory"
+    assert recalled.brain_text_response == "You told me that you like going to the gym."
+    assert recalled_manager.last_plan.steps[0].target == "owner_memory"
+    assert recalled_manager.last_execution.step_results[0].returned_data["metadata"]["storage_status"] == "recalled"
+    assert recalled_tts.requests[0].text == recalled.brain_text_response
+    assert recalled_speaker.play_count == 1
+
+    payload = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert payload["schema_name"] == "ares.owner_profile"
+    assert payload["schema_version"] == 3
+    assert payload["data"]["facts"] == {}
+    assert len(payload["data"]["memories"]) == 1
+    assert payload["data"]["memories"][0]["canonical_text"] == "The owner likes going to the gym."
+    assert saved_manager.owner_memory_service is saved_manager.core_service.owner_memory_service
+    assert recalled_manager.owner_memory_service is recalled_manager.core_service.owner_memory_service
+    for pipeline in (saved_pipeline, recalled_pipeline):
+        usage = pipeline.resource_manager.current_usage()
+        assert usage["active_task_count"] == 0
+        assert "single_turn_voice_pipeline" not in usage["reservation_names"]
+
+
+def test_ordinary_voice_statement_does_not_persist_general_owner_memory(tmp_path):
+    profile_path = tmp_path / "memory" / "owner_profile.json"
+
+    result, *_ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "I went to the gym today.",
+        playback=False,
+        turn=1,
+    )
+
+    assert result.routed_skill != "owner_memory"
+    assert not profile_path.exists()
+
+
 def test_imperfect_whisper_owner_phrase_outranks_tasks_in_production_route(tmp_path):
     profile_path = tmp_path / "memory" / "owner_profile.json"
 

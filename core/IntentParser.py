@@ -194,6 +194,7 @@ class IntentParser:
             )
 
         for phrase in (
+            "create a task",
             "add task",
             "save a task",
             "save task",

@@ -81,7 +81,7 @@ def test_save_creates_parent_and_versioned_utf8_profile_atomically(tmp_path):
 
     assert result.status == "created"
     assert payload["schema_name"] == SCHEMA_OWNER_PROFILE
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["data"] == {
         "owner_id": "primary_owner",
         "facts": {
@@ -94,6 +94,8 @@ def test_save_creates_parent_and_versioned_utf8_profile_atomically(tmp_path):
                 "value": "blå",
             }
         },
+        "memories": [],
+        "pending_delete_all": None,
     }
     assert not path.with_suffix(".json.tmp").exists()
 

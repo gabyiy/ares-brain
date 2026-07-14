@@ -12,7 +12,7 @@ from memory.owner_memory_contracts import OWNER_MEMORY_ACTION_REMEMBER
 from memory.schema_migrations import SCHEMA_OWNER_PROFILE, SchemaEnvelope
 
 
-def test_v1_profile_migrates_to_v2_without_losing_favorite_color(tmp_path):
+def test_v1_profile_migrates_sequentially_to_v3_without_losing_favorite_color(tmp_path):
     path = tmp_path / "owner_profile.json"
     v1 = SchemaEnvelope.create(
         SCHEMA_OWNER_PROFILE,
@@ -33,7 +33,7 @@ def test_v1_profile_migrates_to_v2_without_losing_favorite_color(tmp_path):
     migrated = json.loads(path.read_text(encoding="utf-8"))
 
     assert result.value == "blue"
-    assert migrated["schema_version"] == 2
+    assert migrated["schema_version"] == 3
     assert migrated["data"]["facts"]["favorite_color"] == {
         "value": "blue",
         "display_key": "favorite color",
@@ -42,6 +42,8 @@ def test_v1_profile_migrates_to_v2_without_losing_favorite_color(tmp_path):
         "updated_at": "2026-07-01T10:00:00Z",
         "source": "explicit_owner_statement",
     }
+    assert migrated["data"]["memories"] == []
+    assert migrated["data"]["pending_delete_all"] is None
     assert len(list((path.parent / ".migration_backups").glob("*.bak"))) == 1
 
 

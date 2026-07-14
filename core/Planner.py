@@ -206,19 +206,24 @@ class Planner:
     ) -> PlanStep:
         action = str(entities.get("action") or "reject")
         normalized_key = str(entities.get("normalized_key") or "")
-        can_execute = action in {"reject", "list"} or bool(normalized_key)
+        memory_kind = str(entities.get("memory_kind") or "fact")
+        can_execute = (
+            action in {"reject", "list", "delete_all_request", "delete_all_confirm"}
+            or bool(normalized_key)
+            or memory_kind == "general"
+        )
         return PlanStep(
             order=0,
             target="owner_memory",
             action=action,
             input_text=(
-                f"owner memory {action} {normalized_key or 'fact'}"
+                f"owner memory {action} {normalized_key or memory_kind or 'fact'}"
             ),
             intent_name="owner_memory",
             entities=dict(entities),
             can_execute=can_execute,
-            skip_reason="" if can_execute else "Missing owner fact key.",
-            description=f"Owner memory {action}: {normalized_key or 'fact'}.",
+            skip_reason="" if can_execute else "Missing owner memory target.",
+            description=f"Owner memory {action}: {normalized_key or memory_kind or 'fact'}.",
             redact_operational_events=True,
         )
 
