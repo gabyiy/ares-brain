@@ -266,7 +266,7 @@ Current voice loop foundation:
 - The loop does not own routing, planning, or skill execution logic.
 - The loop does not start background listening, wake word detection, microphone access, speaker access, GPT, or internet access.
 
-VoiceService remains the boundary. The current real-audio surface is limited to explicit Linux ALSA capture through `LinuxAlsaMicrophoneAdapter`, offline Whisper transcription through `LinuxWhisperSpeechToTextAdapter`, offline Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA playback through `LinuxAlsaSpeakerAdapter`, the controlled single-turn pipeline, and a bounded owner-triggered multi-turn session. All real providers remain replaceable and outside autonomous startup paths. Real Vosk, wake word, background listeners, GPT, internet, and unbounded conversation integrations come later.
+VoiceService remains the boundary. The current real-audio surface is limited to explicit Linux ALSA capture through `LinuxAlsaMicrophoneAdapter`, offline Whisper transcription through `LinuxWhisperSpeechToTextAdapter`, offline Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA playback through `LinuxAlsaSpeakerAdapter`, the controlled single-turn pipeline, its production-style owner launcher, and a bounded owner-triggered multi-turn session. All real providers remain replaceable and outside autonomous startup paths. Real Vosk, wake word, background listeners, GPT, internet, and unbounded conversation integrations come later.
 
 # Linux ALSA Microphone Adapter
 
@@ -580,6 +580,16 @@ Silence and blank transcription stop before Brain/TTS. Brain failures produce th
 
 The single-turn checkpoint collection was 812 tests.
 
+## Production-Style Voice Launcher
+
+`scripts/run_ares_voice.py` is an entry-point adapter around the existing production single-turn composition. It does not implement an alternate pipeline. It translates bounded CLI options into `SingleTurnVoiceRequestV1`, calls the same `scripts.manual_verify_single_turn_voice.create_pipeline()` factory, and invokes `SingleTurnVoicePipeline.run_once()`.
+
+Before printing that ARES is listening, the launcher starts the lifecycle-managed pipeline, performs its side-effect-safe component health check, and stops that preflight reservation. Missing ALSA commands/devices, Whisper binary/model, Piper runtime/profile files, or voice configuration therefore fail before capture. The actual turn then follows the normal pipeline sequence and owns its own lifecycle/resource cleanup.
+
+Repository-relative Whisper paths resolve from the script/repository location rather than the process working directory. Piper model/config resolution remains exclusively in `VoiceProfileRegistry`; the launcher knows only a profile identifier. Default response playback is enabled, while diagnostic WAV retention and captured-stage playback are independently disabled. `--diagnostic-routing` only prints bounded routing fields, `--retain-diagnostic-audio` only preserves intermediate files, and only `--play-diagnostic-audio` asks the existing speaker adapter to play captured stages. No option enables microphone monitoring.
+
+The launcher is one foreground owner action and exits after one result. It does not add a wake word, loop, service, boot hook, transcript persistence, GPT, cloud fallback, or new hardware boundary.
+
 # Controlled Multi-Turn Voice Session
 
 `core.MultiTurnVoiceSession` is a foreground, owner-triggered orchestrator that repeatedly invokes the existing `SingleTurnVoicePipeline`. It does not implement microphone capture, Whisper parsing, Brain routing, Piper synthesis, or ALSA playback. Those responsibilities remain in their existing adapters and single-turn boundaries.
@@ -839,11 +849,12 @@ Safety regression guarantees:
 
 # Next Project Block
 
-After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. Completed checkpoints now include ALSA capture/playback, offline Whisper, offline Piper, validated voice profiles, the controlled single-turn pipeline, and the bounded owner-triggered multi-turn session. The next planned sequence is:
+After Architecture Hardening, Phase 3 real voice integration proceeds only with explicit owner approval. Completed checkpoints now include ALSA capture/playback, offline Whisper, offline Piper, validated voice profiles, the controlled single-turn pipeline, its production-style one-command launcher, and the bounded owner-triggered multi-turn session. The next planned sequence is:
 
-1. run and validate the bounded multi-turn command on Raspberry Pi hardware
-2. measure per-turn timing, stop recognition, RMS thresholds, and cleanup from observed results
-3. only later consider wake-word/background listening
+1. pull and run `python scripts/run_ares_voice.py` on Raspberry Pi hardware
+2. record observed one-turn timing, stop reason, routing, response playback, and cleanup
+3. continue bounded multi-turn hardware verification separately
+4. only later consider wake-word/background listening
 
 This is a future implementation block. The current runtime still has no Vosk, wake word, GPT, internet access, background listener, daemon, scheduler, autonomous loop, unbounded conversation loop, boot-time microphone activation, or cloud TTS fallback.
 

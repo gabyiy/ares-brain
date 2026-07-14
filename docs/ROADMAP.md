@@ -1051,15 +1051,25 @@ Phase 83: Safe Natural Calculator Questions and Playback Isolation
 - Preserved strict full-token arithmetic parsing and the existing CalculatorSkill AST evaluator; ambiguous text, trailing instructions, code-like input, malformed arithmetic, and limits still fail closed.
 - Split intermediate-audio preservation from raw/assembled/normalized stage playback. Normal `--playback` now has one documented meaning: play the generated ARES response only.
 - Retained old diagnostic flags as compatibility aliases without allowing preservation to imply playback.
-- Current pytest collection is 1162 tests.
+- Historical Phase 83 pytest collection was 1162 tests.
+
+Phase 84: Production-Style Single-Turn Voice Launcher
+
+- Added `scripts/run_ares_voice.py` as the short owner-triggered command for exactly one production single-turn interaction.
+- Reused `SingleTurnVoiceRequestV1`, the existing production factory, lifecycle/component health checks, `SingleTurnVoicePipeline`, the real Brain/skill route, the configured Piper profile registry, and the ALSA speaker adapter.
+- Set verified Raspberry Pi defaults for `plughw:2,0`, `plughw:CARD=Device,DEV=0`, base English Whisper, `en_US-hfc_male-medium`, automatic end-of-speech, response playback, and a 300-second limit.
+- Kept diagnostic routing, intermediate-file retention, and captured-stage playback independent and disabled by default. Normal startup cannot enable microphone monitoring or replay microphone audio.
+- Added deterministic tests for repository-relative paths, defaults and overrides, preflight failure before capture, delegation, cleanup policy, response playback, diagnostic opt-in, exit codes, and the absence of duplicated speech-stage logic.
+- Current pytest collection is 1180 tests.
 
 Current State
 
-ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, and safe anchored natural-language calculator routing. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control.
+ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, the short production-style single-turn launcher, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, and safe anchored natural-language calculator routing. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control.
 
 The current active interface is:
 
 - `interfaces.text_repl`
+- `scripts.run_ares_voice` for one explicit foreground voice turn
 
 The current deterministic answer paths are:
 
@@ -1070,7 +1080,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1162 tests.
+The current pytest collection is 1180 tests.
 
 The current memory paths are:
 
@@ -1127,10 +1137,11 @@ Phase 3 Real Voice Integration
 16. Add canonical ALSA device resolution and validated 16 kHz mono PCM normalization before VAD/Whisper. Completed.
 17. Preserve complete VAD utterances across repeated pause/resume transitions and reject unexplained normalized-duration loss. Completed in CI with deterministic PCM.
 18. Verify raw/assembled/normalized duration preservation on Raspberry Pi. Completed by owner: `7.060s` raw and `5.400s` assembled/normalized/Whisper input with `duration_consistent`.
-19. Pull the safe-wrapper/playback-isolation checkpoint and confirm `How much is two plus two?` selects CalculatorSkill and speaks only `Result: 4` through normal `--playback`.
-20. Use `--preserve-diagnostic-audio` without stage-playback flags when retaining capture evidence; use explicit per-stage flags only for owner-requested audio debugging.
-21. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
-22. Only later consider wake-word/background listening.
+19. Confirm `How much is two plus two?` selects CalculatorSkill and speaks `Result: 4` while normal playback does not replay the microphone. Completed by owner.
+20. Add the production-style one-command launcher with verified Raspberry Pi defaults. Completed in deterministic CI; hardware run remains owner verification.
+21. Pull `main` and run `python scripts/run_ares_voice.py` on Raspberry Pi.
+22. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
+23. Only later consider wake-word/background listening.
 
 What Must Not Be Started Yet
 

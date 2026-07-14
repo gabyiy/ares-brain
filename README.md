@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.85 - Format-Safe Raspberry Pi Voice Capture
+ARES v1.88 - Production-Style Single-Turn Voice Launcher
 
 ---
 
@@ -51,6 +51,8 @@ Raspberry Pi speech-input verification is now hardened for real recordings. The 
 `core.VoiceProfiles` now provides the single validated Piper voice-profile boundary. `config/voice_profiles.json` selects the official `en_US-hfc_male-medium` profile as the default ARES voice and retains the previously verified `en_US-amy-low` profile as an optional voice. Profiles own model/config paths, locale, language, gender metadata, quality, sample rate, source metadata, enabled/default state, and file-integrity metadata. The Piper adapter resolves a requested profile or the one configured default and fails safely for unknown, disabled, malformed, missing, or unapproved-path profiles; Brain and CoreService never select ONNX files.
 
 `core.SingleTurnVoicePipeline` now performs one bounded owner-triggered voice turn and exits. It composes the existing microphone, STT, VoiceCommandRouter/CoreService, SkillManager text path, TTS, and speaker boundaries; lifecycle and resource managers gate execution, `VoiceStageCoordinator` prevents capture/playback and Whisper/Piper overlap, and versioned V1 contracts report every stage. The recognized text reaches the same `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path used by existing local text execution. No wake word, continuous loop, background service, GPT, cloud call, or automatic transcript memory write was added.
+
+`scripts/run_ares_voice.py` is the production-style owner entry point for exactly one real voice turn. It resolves repository-relative Whisper paths from the script location, reads the default Piper profile through the existing voice-profile registry, performs lifecycle/component health preflight before capture, then delegates to the existing `SingleTurnVoicePipeline`. Its Raspberry Pi defaults are `plughw:2,0`, `plughw:CARD=Device,DEV=0`, English, `external/whisper.cpp/build/bin/whisper-cli`, `models/whisper/ggml-base.en.bin`, `en_US-hfc_male-medium`, auto-stop capture, response playback enabled, diagnostic retention/playback disabled, and a 300-second timeout. It does not contain ALSA, Whisper, Piper, routing, calculator, or playback implementation code.
 
 `core.MultiTurnVoiceSession` now provides an explicitly owner-started, bounded conversation session by repeatedly invoking `SingleTurnVoicePipeline`. `MultiTurnVoiceSessionRequestV1` and `MultiTurnVoiceSessionResultV1` define limits, stop phrases, per-turn correlation IDs, summaries, cleanup state, and structured failure data. An exact normalized stop-phrase gate runs after transcription and before Brain routing. Local greeting and closing phrases use the existing TTS/speaker path without asking the Brain to generate them. The session defaults to five turns, 180 seconds, three consecutive failures, five-second captures, a 0.75-second inter-turn delay, and playback disabled. It remains a foreground owner-run process with no wake word, background listener, boot service, GPT, cloud dependency, or automatic transcript persistence.
 
@@ -541,7 +543,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 1162 tests across current core modules
+- Pytest automated coverage for 1180 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -560,7 +562,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1162 tests`.
+Current pytest collection: `1180 tests`.
 
 Manual Calculator Launch Verification
 
@@ -831,6 +833,31 @@ what is two plus two?   -> calculate 2 + 2
 two plus two            -> calculate 2 + 2
 negative five plus three -> calculate -5 + 3
 ```
+
+Production-Style Voice Launcher
+
+The short owner command uses the verified Raspberry Pi defaults and runs exactly one foreground turn through the existing production pipeline:
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+python scripts/run_ares_voice.py
+```
+
+Expected behavior: the terminal prints `ARES is listening...`; the owner says `How much is two plus two?`; auto-stop completes after trailing silence; the real registered calculator returns `Result: 4`; Piper generates the configured male voice; ALSA plays only that generated response; and the process exits. Raw, assembled, and normalized microphone WAVs are neither retained nor played by default. Microphone monitoring remains disabled.
+
+The launcher runs component health checks before capture. Missing `arecord`, `aplay`, Whisper binary/model, Piper runtime, configured voice model, or voice config returns a nonzero exit with an actionable local check. Silence and rejected transcription stop before Brain execution. Unknown requests use the existing safe local response; no GPT or cloud fallback is introduced.
+
+Routing diagnostics and intermediate-file retention remain explicit and do not replay the microphone:
+
+```bash
+python scripts/run_ares_voice.py \
+  --diagnostic-routing \
+  --retain-diagnostic-audio
+```
+
+Only `--play-diagnostic-audio` plays the retained raw, assembled, and normalized capture stages. `--playback` is the default response-only behavior; `--no-playback` disables the generated response. Use `--fixed-duration --record-seconds 5` only for the preserved fixed-duration fallback.
 
 Controlled Single-Turn Voice Verification
 
@@ -2072,15 +2099,23 @@ Phase 83
 - Added `extracted_calculator_expression` to versioned normalization and single-turn diagnostics
 - Kept unsupported words, trailing commands, unsafe syntax, limits, and CalculatorSkill AST validation fail closed
 - Separated intermediate-audio preservation, per-stage diagnostic playback, and normal Piper response playback
-- Current pytest collection is 1162 tests
+- Historical Phase 83 pytest collection was 1162 tests
 
 Phase 84
+
+- Added `scripts/run_ares_voice.py` as the short production-style owner command
+- Reused the existing versioned single-turn request, production factory, lifecycle health preflight, Brain/skill route, Piper adapter, and ALSA speaker adapter
+- Configured verified Raspberry Pi defaults with response-only playback and diagnostics disabled
+- Added deterministic dependency, path-resolution, delegation, option, cleanup-policy, and exit-code tests
+- Current pytest collection is 1180 tests
+
+Phase 85
 
 - Future voice expansion only after separate approval
 - Wake word
 - Bounded background-listening design
 
-Phase 85
+Phase 86
 
 - Future vision
 - Camera understanding

@@ -4,13 +4,13 @@ Last Updated: 2026-07-14
 
 Current Version
 
-ARES v1.87 - Safe Calculator Questions and Playback Isolation
+ARES v1.88 - Production-Style Single-Turn Voice Launcher
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, and production-factory-verified natural-language calculator routing.
+ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, a production-style one-command single-turn launcher, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, and production-factory-verified natural-language calculator routing.
 
 Checkpoint root causes and fixes:
 
@@ -29,6 +29,7 @@ Checkpoint root causes and fixes:
 - The next failure, `unsupported_arithmetic_word:much`, occurred when an arithmetic candidate used a natural question shape not represented by the finite anchored wrapper/suffix table. Strict token validation was correct; the extraction registry was incomplete.
 - The registry now recognizes explicit `how much`, `what does ... equal`, nested `tell me how much ... is`, answer/result, polite, first-person, and optional ARES-address forms. It records the extracted expression and never treats `much` as an arithmetic token or removes arbitrary middle words.
 - The previous manual command explicitly selected all capture stages with `--playback-debug-stages`, which is why the owner heard raw, assembled, and normalized speech. Normal `--playback` now has one documented purpose: play the generated Piper response. Preservation and each diagnostic stage are independently owner-controlled.
+- `scripts/run_ares_voice.py` now supplies the verified Raspberry Pi defaults and delegates to the existing production factory and `SingleTurnVoicePipeline`. It performs lifecycle/component health preflight before capture, resolves repository-relative Whisper paths from the script location, reads the default Piper profile from `config/voice_profiles.json`, plays only the generated response by default, and exits after one turn.
 
 Confirmed Phase 3 foundation:
 
@@ -98,11 +99,12 @@ Confirmed Phase 3 foundation:
 - Pre-Whisper assembled/normalized duration invariant with fail-closed truncation handling
 - Versioned extracted-calculator-expression routing diagnostics
 - Independent diagnostic preservation, per-stage capture playback, and response playback controls
+- Production-style `scripts/run_ares_voice.py` owner launcher with health preflight, repository-root path resolution, verified Raspberry Pi defaults, and response-only playback
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1162 tests.
+Current pytest collection: 1180 tests.
 
-The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, centralized canonical WAV conversion through `core.WavAudio`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, and the bounded multi-turn session. Adaptive calibration remains inside the VAD boundary; transcript normalization and routing diagnostics remain between STT and `VoiceCommandRouter`/SkillManager. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, conversion, VAD, Whisper, Piper, or normalization internals. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
+The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, centralized canonical WAV conversion through `core.WavAudio`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, its `scripts/run_ares_voice.py` owner launcher, and the bounded multi-turn session. Adaptive calibration remains inside the VAD boundary; transcript normalization and routing diagnostics remain between STT and `VoiceCommandRouter`/SkillManager. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, conversion, VAD, Whisper, Piper, or normalization internals. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
 
 `skills.VoiceSessionSkill` now starts a bounded mock voice session from text commands: "start voice session", "start mock voice", and "run voice test". It uses only `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop`, returns a transcript summary, and is wired through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path.
 
@@ -2143,7 +2145,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1162 tests.
+- Current pytest collection: 1180 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2204,12 +2206,28 @@ Verification Notes
 - Adaptive VAD tests cover quiet/noisy ambient calibration, a transient spike, derived bounds, start/continue/silence hysteresis, repeated internal pauses, post-speech sub-continue noise, normal trailing-silence completion, no-speech, maximum duration, cancellation, and calibration-disabled fallback.
 - Transcript normalization tests cover raw/cleaned/normalized preservation, number words zero through one thousand, negatives, decimals, spoken operators and parentheses, anchored direct/polite/question/first-person/vocative wrappers, contraction and punctuation handling, ambiguity and multiple-expression rejection, conservative Whisper-loop cleanup, versioned round trips, no `eval()`, and real Brain/CalculatorSkill routing to `Result: 4`.
 - Production voice calculator tests cover the shared runtime registry, exact script factory, `I'll calculate 2 plus 2.`, `What is two plus two?`, all approved wrapper categories, unsafe and ambiguous input rejection, bounded lengths, empty transcript/audio, safe unknown handling, cleanup/candidate/manifest diagnostics, Planner/ExecutionPipeline evidence, V1 round trips, TTS handoff, and lifecycle/resource cleanup without a mock calculator or GPT fallback.
+- Production launcher tests cover verified Raspberry Pi defaults, repository-root path resolution, delegation to the existing factory and single-turn pipeline, versioned request metadata, automatic/fixed capture selection, response-only playback, diagnostic opt-in, dependency and construction failures before capture, stable exit codes, and the absence of duplicated microphone/Whisper/Piper/speaker implementation.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Example configuration now documents bounded transcript-routing defaults and keeps diagnostic output disabled unless explicitly requested.
 
+Production Launcher Raspberry Pi Check
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+python scripts/run_ares_voice.py
+```
+
+Say `How much is two plus two?` The expected route selects the registered calculator, returns `Result: 4`, speaks only that Piper response through `plughw:CARD=Device,DEV=0`, and exits. Add `--diagnostic-routing --retain-diagnostic-audio` to preserve files and print bounded routing fields without replaying capture. Captured-stage playback remains a separate explicit `--play-diagnostic-audio` action.
+
 Latest Commits
 
+- `1f3294d` Add production single-turn voice launcher
+- `e9103d3` Document calculator wrappers and playback isolation
+- `bfdcff7` Harden spoken calculator routing and playback isolation
+- `6377d12` Document complete VAD utterance handoff
 - `188174d` Preserve complete VAD utterances for Whisper
 - `7934987` Document format-safe Raspberry Pi audio capture
 - `e8a881b` Normalize ALSA capture before voice processing
@@ -2325,8 +2343,8 @@ Latest Commits
 Next Planned Step
 
 - Architecture hardening before real hardware/adapters is complete: lifecycle, contracts, manifests, migrations, health/fallback, and measured resource budgets are implemented.
-- Phase 3 now includes verified owner-run ALSA, Whisper, Piper, speaker, voice-profile, single-turn, bounded multi-turn, adaptive VAD, and deterministic spoken-calculator routing foundations.
-- Pull `main` on Raspberry Pi, run adaptive calibration, then run the single-turn calculator command and record only observed thresholds, stop reason, segmentation, timing, transcript forms, and cleanup behavior.
+- Phase 3 now includes verified owner-run ALSA, Whisper, Piper, speaker, voice-profile, single-turn, bounded multi-turn, adaptive VAD, deterministic spoken-calculator routing, and a short production-style one-turn launcher.
+- Pull `main` on Raspberry Pi and run `python scripts/run_ares_voice.py`; record only observed stop reason, timing, routing, generated response playback, and cleanup behavior.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not enable default real weather/market API behavior, Google Calendar integration, GPT, embeddings, vision, scheduling, notifications, or background automation yet.
