@@ -664,6 +664,7 @@ class SingleTurnVoiceStageMixin:
         command_result = dict(routing.data.get("command_result") or {})
         handler_response = dict(command_result.get("handler_response") or {})
         handler_metadata = dict(handler_response.get("metadata") or {})
+        redact_transcript = bool(handler_metadata.get("redact_transcript"))
         handler_diagnostics = dict(handler_metadata.get("routing_diagnostics") or {})
         state.detected_intent = str(handler_metadata.get("detected_intent") or "")
         state.candidate_skills = [
@@ -729,6 +730,8 @@ class SingleTurnVoiceStageMixin:
                 "rejection_reason": state.rejection_reason,
                 "stages": stages,
             }
+        if redact_transcript:
+            self._redact_protected_owner_input(state)
         state.data["brain_routing"] = routing.to_dict()
         state.data["routing_diagnostics"] = dict(state.routing_diagnostics)
         if routing.success and routing.response_text.strip():
@@ -737,6 +740,28 @@ class SingleTurnVoiceStageMixin:
         state.brain_fallback_used = True
         state.brain_text_response = self.DEFAULT_BRAIN_FAILURE_RESPONSE
         state.brain_execution_status = f"{routing.status or 'failed'}_fallback"
+
+    def _redact_protected_owner_input(self, state: SingleTurnRunState) -> None:
+        state.data["protected_input_redacted"] = True
+        state.raw_transcript = "[REDACTED]"
+        state.cleaned_transcript = "[REDACTED]"
+        state.normalized_command = "[REDACTED]"
+        state.recognized_text = "[REDACTED]"
+        state.data["transcription"] = {
+            "success": True,
+            "status": "redacted_protected_owner_memory",
+            "text": "[REDACTED]",
+            "data": {"redacted": True},
+            "metadata": {"redacted": True},
+        }
+        state.data["transcript_normalization"] = {
+            "success": True,
+            "status": "redacted_protected_owner_memory",
+            "raw_transcript": "[REDACTED]",
+            "cleaned_transcript": "[REDACTED]",
+            "normalized_command": "[REDACTED]",
+            "metadata": {"redacted": True},
+        }
 
     def _synthesize(
         self,

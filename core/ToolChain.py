@@ -49,6 +49,12 @@ class ToolChainResult:
             "max_depth": self.max_depth,
         }
 
+    def to_event_dict(self) -> Dict[str, Any]:
+        payload = self.to_dict()
+        if self.execution:
+            payload["execution"] = self.execution.to_event_dict()
+        return payload
+
     def format(self) -> str:
         if not self.trace:
             if self.errors:
@@ -115,7 +121,7 @@ class ToolChain:
                 max_depth=self.max_depth,
             )
             self._remember(result)
-            self._publish("tool_chain.rejected", result.to_dict())
+            self._publish("tool_chain.rejected", result.to_event_dict())
             return result
 
         execution = self.execution_pipeline.execute(plan, context)
@@ -128,7 +134,7 @@ class ToolChain:
             max_depth=self.max_depth,
         )
         self._remember(result)
-        self._publish("tool_chain.completed", result.to_dict())
+        self._publish("tool_chain.completed", result.to_event_dict())
         return result
 
     def format_last(self) -> str:

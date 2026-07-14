@@ -270,21 +270,24 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
             cleanup = self._cleanup_files(normalized, result)
 
         assert result is not None
+        final_data = {
+            **dict(result.data),
+            "lifecycle": {
+                "start": start_result.to_dict() if start_result else {},
+                "health_check": health_result.to_dict() if health_result else {},
+                "stop": stop_result.to_dict() if stop_result else {},
+            },
+            "cleanup": cleanup,
+            "coordinator": self.coordinator.to_dict(),
+            "resource_usage": self.resource_manager.current_usage(),
+        }
+        if result.data.get("protected_input_redacted"):
+            final_data = _redact_protected_input_data(final_data, normalized.text_input)
         return replace(
             result,
             total_processing_time_seconds=elapsed(self.clock, state.started_at),
             events=[dict(event) for event in state.events],
-            data={
-                **dict(result.data),
-                "lifecycle": {
-                    "start": start_result.to_dict() if start_result else {},
-                    "health_check": health_result.to_dict() if health_result else {},
-                    "stop": stop_result.to_dict() if stop_result else {},
-                },
-                "cleanup": cleanup,
-                "coordinator": self.coordinator.to_dict(),
-                "resource_usage": self.resource_manager.current_usage(),
-            },
+            data=final_data,
         )
 
     def run_local_output(
@@ -422,14 +425,17 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
                 "invalid_single_turn_result",
                 "invalid_result",
             )
+        response_data = {
+            **dict(response.data),
+            "task_slot": task_slot.to_dict(),
+            "task_release": task_release.to_dict(),
+            "lifecycle_execute": lifecycle.to_dict(),
+        }
+        if response.data.get("protected_input_redacted"):
+            response_data = _redact_protected_input_data(response_data, request.text_input)
         return replace(
             response,
-            data={
-                **dict(response.data),
-                "task_slot": task_slot.to_dict(),
-                "task_release": task_release.to_dict(),
-                "lifecycle_execute": lifecycle.to_dict(),
-            },
+            data=response_data,
         )
 
     def _apply_health_state(
@@ -799,3 +805,19 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
             session_id=request.session_id if request else "",
             metadata={"source": "single_turn_voice_pipeline"},
         )
+
+
+def _redact_protected_input_data(value: Any, sensitive_text: str) -> Any:
+    sensitive = str(sensitive_text or "").strip()
+    if isinstance(value, dict):
+        return {
+            key: _redact_protected_input_data(item, sensitive)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_protected_input_data(item, sensitive) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_protected_input_data(item, sensitive) for item in value)
+    if isinstance(value, str) and sensitive and sensitive.casefold() in value.casefold():
+        return "[REDACTED]"
+    return value

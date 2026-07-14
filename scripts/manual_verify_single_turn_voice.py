@@ -24,7 +24,14 @@ from core import (  # noqa: E402
     get_global_conversation_context,
 )
 from events import EventHistoryStore, get_global_bus  # noqa: E402
-from memory import GoalsStore, MemoryStore, NotesStore, TasksStore, UserProfileStore  # noqa: E402
+from memory import (  # noqa: E402
+    GoalsStore,
+    MemoryStore,
+    NotesStore,
+    OwnerProfileStore,
+    TasksStore,
+    UserProfileStore,
+)
 from skills import SkillManager, create_builtin_skill_manager  # noqa: E402
 from skills.base import SkillResponse  # noqa: E402
 
@@ -177,6 +184,7 @@ def create_skill_manager(
     event_bus: Any = None,
     memory_store: Any = None,
     profile_store: Any = None,
+    owner_profile_store: Any = None,
     goals_store: Any = None,
     notes_store: Any = None,
     tasks_store: Any = None,
@@ -187,6 +195,7 @@ def create_skill_manager(
         event_bus=bus,
         memory_store=memory_store or MemoryStore(event_bus=bus),
         profile_store=profile_store or UserProfileStore(event_bus=bus),
+        owner_profile_store=owner_profile_store or OwnerProfileStore(event_bus=bus),
         goals_store=goals_store or GoalsStore(event_bus=bus),
         notes_store=notes_store or NotesStore(event_bus=bus),
         tasks_store=tasks_store or TasksStore(event_bus=bus),
@@ -301,11 +310,12 @@ def _build_routing_diagnostics(
         if execution_ok
         else str(execution.get("error_message") or "not_started")
     )
+    intent_data = intent.to_dict() if hasattr(intent, "to_dict") else {}
     return {
         "parsed_intent": {
             "name": intent_name,
             "confidence": float(getattr(intent, "confidence", 0.0) or 0.0),
-            "entities": dict(getattr(intent, "extracted_entities", {}) or {}),
+            "entities": dict(intent_data.get("extracted_entities") or {}),
         },
         "candidate_skills": [dict(candidate) for candidate in candidates],
         "selected_skill": selected_skill or "none",

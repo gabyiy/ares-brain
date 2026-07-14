@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
 from core.DeviceAction import DANGER_SAFE, classify_device_action
-from core.Intent import Intent
+from core.Intent import Intent, redact_sensitive_entities
 
 
 @dataclass(frozen=True)
@@ -17,6 +17,7 @@ class PlanStep:
     can_execute: bool = True
     skip_reason: str = ""
     description: str = ""
+    redact_operational_events: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -25,7 +26,7 @@ class PlanStep:
             "action": self.action,
             "input_text": self.input_text,
             "intent_name": self.intent_name,
-            "entities": dict(self.entities),
+            "entities": redact_sensitive_entities(self.entities),
             "can_execute": self.can_execute,
             "skip_reason": self.skip_reason,
             "description": self.description,
@@ -151,6 +152,12 @@ class Planner:
         )
 
     def _plan_intent(self, intent: Intent):
+        if intent.intent_name == "owner_memory":
+            return self._owner_memory_step(
+                intent.raw_text,
+                dict(intent.extracted_entities),
+            ), None
+
         if intent.intent_name == "goal":
             return self._goal_step(intent.raw_text, dict(intent.extracted_entities)), None
 
@@ -191,6 +198,29 @@ class Planner:
             return memory_step, None
 
         return None, f"No planner support for intent: {intent.intent_name}"
+
+    def _owner_memory_step(
+        self,
+        raw_text: str,
+        entities: Dict[str, Any],
+    ) -> PlanStep:
+        action = str(entities.get("action") or "reject")
+        normalized_key = str(entities.get("normalized_key") or "")
+        can_execute = action == "reject" or bool(normalized_key)
+        return PlanStep(
+            order=0,
+            target="owner_memory",
+            action=action,
+            input_text=(
+                f"owner memory {action} {normalized_key or 'fact'}"
+            ),
+            intent_name="owner_memory",
+            entities=dict(entities),
+            can_execute=can_execute,
+            skip_reason="" if can_execute else "Missing owner fact key.",
+            description=f"Owner memory {action}: {normalized_key or 'fact'}.",
+            redact_operational_events=True,
+        )
 
     def _plan_clause(self, clause: str, parent_intent: Intent):
         clean_clause = _clean_clause(clause)
@@ -1068,6 +1098,7 @@ def _renumber_step(step: PlanStep, order: int) -> PlanStep:
         can_execute=step.can_execute,
         skip_reason=step.skip_reason,
         description=step.description,
+        redact_operational_events=step.redact_operational_events,
     )
 
 

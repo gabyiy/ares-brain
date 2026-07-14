@@ -5,10 +5,14 @@ import sys
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from core import get_global_conversation_context
+from core import (
+    get_global_conversation_context,
+    owner_memory_uses_explicit_store,
+    parse_owner_memory_command,
+)
 from core.intent_router import IntentRouter
 from events import EventHistoryStore, get_global_bus
-from memory import GoalsStore, MemoryStore, NotesStore, TasksStore, UserProfileStore
+from memory import GoalsStore, MemoryStore, NotesStore, OwnerProfileStore, TasksStore, UserProfileStore
 from skills import create_builtin_skill_manager
 
 
@@ -34,6 +38,8 @@ def store_user_facts(profile_store, user_message: str):
 
 def print_and_record(memory_store, profile_store, user_message: str, response: str):
     print("ARES:", response)
+    if owner_memory_uses_explicit_store(parse_owner_memory_command(user_message)):
+        return
     store_user_facts(profile_store, user_message)
     record_conversation_turn(memory_store, user_message, response)
 
@@ -42,6 +48,7 @@ def main():
     event_bus = get_global_bus()
     memory_store = MemoryStore(event_bus=event_bus)
     profile_store = UserProfileStore(event_bus=event_bus)
+    owner_profile_store = OwnerProfileStore(event_bus=event_bus)
     goals_store = GoalsStore(event_bus=event_bus)
     notes_store = NotesStore(event_bus=event_bus)
     tasks_store = TasksStore(event_bus=event_bus)
@@ -51,6 +58,7 @@ def main():
         event_bus=event_bus,
         memory_store=memory_store,
         profile_store=profile_store,
+        owner_profile_store=owner_profile_store,
         goals_store=goals_store,
         notes_store=notes_store,
         tasks_store=tasks_store,

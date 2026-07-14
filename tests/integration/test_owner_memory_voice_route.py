@@ -1,0 +1,283 @@
+import json
+
+from core import (
+    CoreService,
+    MockMicrophoneAdapter,
+    MockSpeechToTextAdapter,
+    MockTextToSpeechAdapter,
+    SpeakerPlaybackResult,
+)
+from events import EventBus, EventHistoryStore
+from memory import (
+    GoalsStore,
+    MemoryStore,
+    NotesStore,
+    OwnerProfileStore,
+    TasksStore,
+    UserProfileStore,
+)
+from scripts import manual_verify_single_turn_voice as manual
+from scripts import run_ares_voice
+
+
+class CapturingTextToSpeech(MockTextToSpeechAdapter):
+    def __init__(self):
+        super().__init__()
+        self.requests = []
+
+    def synthesize(self, request):
+        self.requests.append(request)
+        return super().synthesize(request)
+
+
+class NoAudioSpeaker:
+    playing = False
+
+    def __init__(self):
+        self.play_count = 0
+        self.played_paths = []
+
+    def health_check(self):
+        return SpeakerPlaybackResult(True, "healthy", "Mock speaker is healthy.")
+
+    def start(self):
+        return SpeakerPlaybackResult(True, "started", "Mock speaker started.")
+
+    def stop(self):
+        return SpeakerPlaybackResult(True, "stopped", "Mock speaker stopped.")
+
+    def cancel_current(self):
+        return None
+
+    def play_wav(self, wav_path, *args, **kwargs):
+        self.play_count += 1
+        self.played_paths.append(str(wav_path))
+        return SpeakerPlaybackResult(True, "played", "Mock playback completed.")
+
+
+def _run_voice_turn(tmp_path, profile_path, text, *, playback=True, turn=1):
+    event_bus = EventBus(max_history=500)
+    core_service = CoreService()
+    manager = manual.create_skill_manager(
+        core_service,
+        event_history_store=EventHistoryStore(tmp_path / f"manager_events_{turn}.json"),
+        event_bus=event_bus,
+        memory_store=MemoryStore(
+            short_path=tmp_path / "short_memory.json",
+            long_path=tmp_path / "long_memory.json",
+            event_bus=event_bus,
+        ),
+        profile_store=UserProfileStore(tmp_path / "profile.json", event_bus=event_bus),
+        owner_profile_store=OwnerProfileStore(profile_path, event_bus=event_bus),
+        goals_store=GoalsStore(tmp_path / "goals.json", event_bus=event_bus),
+        notes_store=NotesStore(tmp_path / "notes.json", event_bus=event_bus),
+        tasks_store=TasksStore(tmp_path / "tasks.json", event_bus=event_bus),
+    )
+    tts = CapturingTextToSpeech()
+    speaker = NoAudioSpeaker()
+    arguments = [
+        "--text-input",
+        text,
+        "--recording-output",
+        str(tmp_path / f"owner_memory_turn_{turn}.wav"),
+    ]
+    if playback:
+        arguments.append("--playback")
+    args = manual.build_parser().parse_args(arguments)
+    history = EventHistoryStore(tmp_path / f"pipeline_events_{turn}.json")
+    pipeline = manual.create_pipeline(
+        args,
+        output_func=lambda _: None,
+        skill_manager=manager,
+        event_history_store=history,
+        microphone_adapter=MockMicrophoneAdapter(),
+        speech_to_text_adapter=MockSpeechToTextAdapter(),
+        text_to_speech_adapter=tts,
+        speaker_adapter=speaker,
+    )
+    result = pipeline.run_once(manual.request_from_args(args))
+    return result, manager, event_bus, history, tts, speaker, pipeline
+
+
+def test_all_required_owner_memory_interactions_use_production_voice_route(tmp_path):
+    profile_path = tmp_path / "memory" / "owner_profile.json"
+    interactions = (
+        (
+            "Remember that my favorite color is blue.",
+            "I will remember that your favorite color is blue.",
+            "created",
+        ),
+        (
+            "What is my favorite color?",
+            "Your favorite color is blue.",
+            "recalled",
+        ),
+        (
+            "Remember that my favorite color is red.",
+            "I updated your favorite color to red.",
+            "updated",
+        ),
+        (
+            "What is my favorite color?",
+            "Your favorite color is red.",
+            "recalled",
+        ),
+        (
+            "Forget my favorite color.",
+            "I forgot your favorite color.",
+            "forgotten",
+        ),
+        (
+            "What is my favorite color?",
+            "I do not know your favorite color yet.",
+            "missing",
+        ),
+    )
+
+    for turn, (text, expected, status) in enumerate(interactions, start=1):
+        result, manager, _, _, tts, speaker, pipeline = _run_voice_turn(
+            tmp_path,
+            profile_path,
+            text,
+            playback=True,
+            turn=turn,
+        )
+
+        assert result.success is True
+        assert result.status == "completed"
+        assert result.detected_intent == "owner_memory"
+        assert result.routed_skill == "owner_memory"
+        assert result.planner_decision == "1 step(s): owner_memory"
+        assert result.execution_result == "success"
+        assert result.brain_text_response == expected
+        assert manager.last_plan.steps[0].target == "owner_memory"
+        assert manager.last_execution.step_results[0].returned_data["metadata"][
+            "storage_status"
+        ] == status
+        assert tts.requests[0].text == expected
+        assert speaker.play_count == 1
+        usage = pipeline.resource_manager.current_usage()
+        assert usage["active_task_count"] == 0
+        assert "single_turn_voice_pipeline" not in usage["reservation_names"]
+
+
+def test_save_then_fresh_production_manager_recalls_persisted_value(tmp_path):
+    profile_path = tmp_path / "memory" / "owner_profile.json"
+    saved, *_ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "remember that my favorite color is blue",
+        playback=False,
+        turn=1,
+    )
+    recalled, *_ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "what is my favorite color",
+        playback=False,
+        turn=2,
+    )
+
+    assert saved.brain_text_response == "I will remember that your favorite color is blue."
+    assert recalled.brain_text_response == "Your favorite color is blue."
+
+
+def test_voice_response_tts_and_speaker_remain_explicitly_opt_in(tmp_path):
+    profile_path = tmp_path / "owner_profile.json"
+    disabled, _, _, _, disabled_tts, disabled_speaker, _ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "remember that my favorite color is blue",
+        playback=False,
+        turn=1,
+    )
+    enabled, _, _, _, enabled_tts, enabled_speaker, _ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "what is my favorite color",
+        playback=True,
+        turn=2,
+    )
+
+    assert disabled.playback_status == "playback_disabled"
+    assert disabled_tts.synthesis_count == 0
+    assert disabled_speaker.play_count == 0
+    assert enabled_tts.requests[0].text == "Your favorite color is blue."
+    assert enabled_speaker.play_count == 1
+
+
+def test_protected_voice_request_redacts_transcript_result_and_events(tmp_path):
+    secret = "VOICE_SECRET_789"
+    profile_path = tmp_path / "owner_profile.json"
+
+    result, _, event_bus, history, _, speaker, _ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        f"remember that my API key is {secret}",
+        playback=False,
+        turn=1,
+    )
+
+    assert result.success is True
+    assert result.routed_skill == "owner_memory"
+    assert result.raw_transcript == "[REDACTED]"
+    assert result.cleaned_transcript == "[REDACTED]"
+    assert result.normalized_command == "[REDACTED]"
+    assert secret not in json.dumps(result.to_dict())
+    assert secret not in json.dumps([event.payload for event in event_bus.history()])
+    assert secret not in json.dumps([record.to_dict() for record in history.recent()])
+    assert not profile_path.exists()
+    assert speaker.play_count == 0
+
+
+def test_profile_persists_only_normalized_fact_not_voice_artifacts(tmp_path):
+    profile_path = tmp_path / "owner_profile.json"
+    result, *_ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "remember that my favorite color is blue",
+        playback=False,
+        turn=1,
+    )
+    serialized = profile_path.read_text(encoding="utf-8")
+
+    assert result.success is True
+    assert "favorite_color" in serialized
+    assert "blue" in serialized
+    assert "remember that my" not in serialized
+    assert ".wav" not in serialized
+    assert "transcript" not in serialized
+
+
+def test_calculator_and_unknown_routes_remain_unchanged_with_owner_store(tmp_path):
+    profile_path = tmp_path / "owner_profile.json"
+    calculator, *_ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "calculate 2 + 2",
+        playback=False,
+        turn=1,
+    )
+    unknown, *_ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "explain quantum painting",
+        playback=False,
+        turn=2,
+    )
+
+    assert calculator.routed_skill == "calculator"
+    assert calculator.brain_text_response == "Result: 4"
+    assert unknown.routed_skill == "unknown"
+    assert unknown.brain_text_response == "I cannot handle that request yet."
+
+
+def test_run_ares_voice_hardware_defaults_are_unchanged():
+    args = run_ares_voice.build_parser().parse_args([])
+
+    assert args.microphone_device == "plughw:2,0"
+    assert args.speaker_device == "plughw:CARD=Device,DEV=0"
+    assert args.whisper_command == "external/whisper.cpp/build/bin/whisper-cli"
+    assert args.whisper_model == "models/whisper/ggml-base.en.bin"
+    assert args.voice_profile == "en_US-hfc_male-medium"
+    assert args.timeout == 300.0

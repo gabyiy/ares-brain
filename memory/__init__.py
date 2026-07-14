@@ -1,6 +1,12 @@
 from memory.v1 import MemoryRecord, MemoryStore, get_default_memory_store, recall, remember
 from memory.goals import GoalRecord, GoalsStore
 from memory.notes import NoteRecord, NotesStore
+from memory.owner_profile import (
+    DEFAULT_OWNER_PROFILE_PATH,
+    OWNER_PROFILE_ID,
+    OwnerProfileResultV1,
+    OwnerProfileStore,
+)
 from memory.profile import ProfileFact, UserProfileStore, detect_profile_facts
 from memory.reminder_scheduler import ReminderScheduler, parse_due_text
 from memory.schema_migrations import (
@@ -10,6 +16,7 @@ from memory.schema_migrations import (
     SCHEMA_MEMORY_LONG,
     SCHEMA_MEMORY_SHORT,
     SCHEMA_NOTES,
+    SCHEMA_OWNER_PROFILE,
     SCHEMA_TASKS,
     SCHEMA_USER_PROFILE,
     MigrationError,
@@ -29,6 +36,10 @@ __all__ = [
     "MigrationRegistry",
     "NoteRecord",
     "NotesStore",
+    "DEFAULT_OWNER_PROFILE_PATH",
+    "OWNER_PROFILE_ID",
+    "OwnerProfileResultV1",
+    "OwnerProfileStore",
     "ProfileFact",
     "ReminderScheduler",
     "SCHEMA_EVENT_HISTORY",
@@ -36,6 +47,7 @@ __all__ = [
     "SCHEMA_MEMORY_LONG",
     "SCHEMA_MEMORY_SHORT",
     "SCHEMA_NOTES",
+    "SCHEMA_OWNER_PROFILE",
     "SCHEMA_TASKS",
     "SCHEMA_USER_PROFILE",
     "SchemaEnvelope",

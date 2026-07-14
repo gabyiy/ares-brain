@@ -50,6 +50,14 @@ class MemoryRecallSkill(Skill):
         favorite_match = re.match(r"^what is my favorite\s+(.+)$", low)
         if favorite_match:
             subject = favorite_match.group(1).strip()
+            owner_profile = getattr(context, "owner_profile_store", None)
+            if owner_profile is not None:
+                owner_result = owner_profile.recall_fact(f"favorite_{subject}")
+                if owner_result.success and owner_result.status == "recalled":
+                    return self._answer(
+                        f"Your favorite {subject} is {owner_result.value}.",
+                        f"favorite_{subject}",
+                    )
             value = profile.get_favorite(subject)
             if value:
                 return self._answer(f"Your favorite {subject} is {value}.", f"favorite_{subject}")

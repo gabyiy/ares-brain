@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ SCHEMA_VERSION_1 = 1
 SCHEMA_VERSION_2 = 2
 
 SCHEMA_USER_PROFILE = "ares.user_profile"
+SCHEMA_OWNER_PROFILE = "ares.owner_profile"
 SCHEMA_GOALS = "ares.goals"
 SCHEMA_NOTES = "ares.notes"
 SCHEMA_TASKS = "ares.tasks"
@@ -623,8 +625,12 @@ def save_store_data(
     merged_metadata = {**existing_metadata, **dict(metadata or {})}
     envelope = SchemaEnvelope.create(schema_name, target_version, _copy_json_data(data), created_at=created_at, metadata=merged_metadata)
     registry.validate_envelope(envelope)
-    with StoreWriteLock(store_path):
-        _atomic_write_envelope(store_path, envelope, registry)
+    try:
+        with StoreWriteLock(store_path):
+            _atomic_write_envelope(store_path, envelope, registry)
+    except Exception:
+        _cleanup_temp(store_path)
+        raise
     return MigrationResult(
         success=True,
         status="written",
@@ -900,6 +906,75 @@ def _validate_profile_data(data: Any) -> None:
         raise MigrationError("Profile facts must be an object", schema_name=SCHEMA_USER_PROFILE, status="invalid_store_data")
 
 
+def _validate_owner_profile_data(data: Any) -> None:
+    if not isinstance(data, dict):
+        raise MigrationError(
+            "Owner profile data must be an object",
+            schema_name=SCHEMA_OWNER_PROFILE,
+            status="invalid_store_data",
+        )
+    if set(data) != {"owner_id", "facts"}:
+        raise MigrationError(
+            "Owner profile contains unsupported durable fields",
+            schema_name=SCHEMA_OWNER_PROFILE,
+            status="invalid_store_data",
+        )
+    if data.get("owner_id") != "primary_owner":
+        raise MigrationError(
+            "Owner profile requires primary_owner",
+            schema_name=SCHEMA_OWNER_PROFILE,
+            status="invalid_store_data",
+        )
+    facts = data.get("facts")
+    if not isinstance(facts, dict):
+        raise MigrationError(
+            "Owner profile facts must be an object",
+            schema_name=SCHEMA_OWNER_PROFILE,
+            status="invalid_store_data",
+        )
+    for key, entry in facts.items():
+        if (
+            not isinstance(key, str)
+            or len(key) > 64
+            or not re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+)*", key)
+        ):
+            raise MigrationError(
+                "Owner profile contains an invalid fact key",
+                schema_name=SCHEMA_OWNER_PROFILE,
+                status="invalid_store_data",
+            )
+        if not isinstance(entry, dict):
+            raise MigrationError(
+                "Owner profile fact must be an object",
+                schema_name=SCHEMA_OWNER_PROFILE,
+                status="invalid_store_data",
+            )
+        if set(entry) != {"value", "updated_at"}:
+            raise MigrationError(
+                "Owner profile fact contains unsupported durable fields",
+                schema_name=SCHEMA_OWNER_PROFILE,
+                status="invalid_store_data",
+            )
+        value = entry.get("value")
+        if (
+            not isinstance(value, str)
+            or not value
+            or len(value) > 256
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        ):
+            raise MigrationError(
+                "Owner profile fact requires a value",
+                schema_name=SCHEMA_OWNER_PROFILE,
+                status="invalid_store_data",
+            )
+        if not isinstance(entry.get("updated_at"), str) or not entry.get("updated_at"):
+            raise MigrationError(
+                "Owner profile fact requires updated_at",
+                schema_name=SCHEMA_OWNER_PROFILE,
+                status="invalid_store_data",
+            )
+
+
 def _validate_notes_data(data: Any) -> None:
     _validate_list_data(data, item_label="Notes")
     for index, entry in enumerate(data):
@@ -1008,6 +1083,7 @@ def _test_fixture_migration_v1_to_v2(envelope: SchemaEnvelope) -> SchemaEnvelope
 def _build_default_registry() -> MigrationRegistry:
     registry = MigrationRegistry()
     registry.register_schema(SCHEMA_USER_PROFILE, SCHEMA_VERSION_1, _validate_profile_data, _legacy_profile)
+    registry.register_schema(SCHEMA_OWNER_PROFILE, SCHEMA_VERSION_1, _validate_owner_profile_data)
     registry.register_schema(SCHEMA_GOALS, SCHEMA_VERSION_1, _validate_goals_data, _legacy_goals)
     registry.register_schema(SCHEMA_NOTES, SCHEMA_VERSION_1, _validate_notes_data, _legacy_notes)
     registry.register_schema(SCHEMA_TASKS, SCHEMA_VERSION_1, _validate_tasks_data, _legacy_tasks)

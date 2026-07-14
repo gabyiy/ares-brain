@@ -27,6 +27,7 @@ class StepResult:
     returned_data: Dict[str, Any] = field(default_factory=dict)
     error_message: str = ""
     recoverable: bool = True
+    redact_operational_events: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -73,6 +74,9 @@ class ExecutionResult:
             "rollback_error": self.rollback_error,
             "pending_confirmation": dict(self.pending_confirmation),
         }
+
+    def to_event_dict(self) -> Dict[str, Any]:
+        return _execution_event_payload(self)
 
     def format(self) -> str:
         if not self.step_results:
@@ -188,7 +192,7 @@ class ExecutionPipeline:
             rollback_error=rollback_error,
             pending_confirmation=pending_confirmation,
         )
-        self._publish("execution.completed", execution.to_dict())
+        self._publish("execution.completed", _execution_event_payload(execution))
         self.logger.info("Execution completed: success=%s stopped=%s", execution.success, execution.stopped)
         return execution
 
@@ -497,9 +501,10 @@ class ExecutionPipeline:
             returned_data=returned_data,
             error_message=error_message,
             recoverable=recoverable,
+            redact_operational_events=step.redact_operational_events,
         )
         event_name = "execution.step_completed" if success else "execution.step_failed"
-        self._publish(event_name, result.to_dict())
+        self._publish(event_name, _step_event_payload(result))
 
         if success:
             self.logger.info("Execution step completed: %s.%s", step.target, step.action)
@@ -514,8 +519,8 @@ class ExecutionPipeline:
         self._publish(
             "execution.rollback_requested",
             {
-                "completed_steps": [step.to_dict() for step in completed_steps],
-                "failed_step": failed_step.to_dict(),
+                "completed_steps": [_step_event_payload(step) for step in completed_steps],
+                "failed_step": _step_event_payload(failed_step),
             },
         )
         try:
@@ -523,7 +528,10 @@ class ExecutionPipeline:
         except Exception as error:
             self.logger.exception("Execution rollback hook failed")
             message = f"{type(error).__name__}: {error}"
-            self._publish("execution.rollback_failed", {"error": message, "failed_step": failed_step.to_dict()})
+            self._publish(
+                "execution.rollback_failed",
+                {"error": message, "failed_step": _step_event_payload(failed_step)},
+            )
             return True, message
         return True, ""
 
@@ -540,6 +548,43 @@ def _response_to_data(response: Any, default_skill: str) -> Dict[str, Any]:
         "skill": getattr(response, "skill", default_skill),
         "metadata": dict(getattr(response, "metadata", {}) or {}),
     }
+
+
+def _step_event_payload(result: StepResult) -> Dict[str, Any]:
+    if not result.redact_operational_events:
+        return result.to_dict()
+    metadata = dict(result.returned_data.get("metadata", {}) or {})
+    return {
+        "order": result.order,
+        "target": result.target,
+        "action": result.action,
+        "input_text": "[REDACTED]",
+        "start_time": result.start_time,
+        "end_time": result.end_time,
+        "duration": result.duration,
+        "success": result.success,
+        "failure": not result.success,
+        "returned_data": {
+            "skill": result.returned_data.get("skill", result.target),
+            "metadata": {
+                "redacted": True,
+                "memory_action": metadata.get("memory_action", result.action),
+                "normalized_fact_key": metadata.get("normalized_fact_key", ""),
+                "storage_status": metadata.get("storage_status", ""),
+            },
+        },
+        "error_message": result.error_message,
+        "recoverable": result.recoverable,
+    }
+
+
+def _execution_event_payload(execution: ExecutionResult) -> Dict[str, Any]:
+    payload = execution.to_dict()
+    payload["step_results"] = [
+        _step_event_payload(result)
+        for result in execution.step_results
+    ]
+    return payload
 
 
 def _response_error(returned_data: Dict[str, Any]) -> str:
@@ -573,6 +618,7 @@ def _context_with_intent(context: Any, intent: Intent) -> Any:
         event_bus=getattr(context, "event_bus", None),
         memory_store=getattr(context, "memory_store", None),
         profile_store=getattr(context, "profile_store", None),
+        owner_profile_store=getattr(context, "owner_profile_store", None),
         notes_store=getattr(context, "notes_store", None),
         tasks_store=getattr(context, "tasks_store", None),
         goals_store=getattr(context, "goals_store", None),

@@ -13,6 +13,7 @@ from core.intents.news import NewsIntent
 from core.intents.knowledge import KnowledgeIntent
 from core.intents.stocks import StockIntent
 from events import get_global_bus
+from core.OwnerMemory import owner_memory_uses_explicit_store, parse_owner_memory_command
 
 
 class IntentRouter:
@@ -40,9 +41,10 @@ class IntentRouter:
 
     def handle(self, text: str) -> str:
         q = (text or "").strip()
+        redact_operational = self._redact_owner_memory_events(q)
         self._publish_many(
             ("user_message_received", "input.received"),
-            {"text": q},
+            self._safe_text_payload(q, redact_operational),
         )
 
         if not q:
@@ -51,7 +53,11 @@ class IntentRouter:
             self._publish_response(response=response, text=q)
             return response
 
-        priority_skill_response = self._handle_skill(q, run_before_intents=True)
+        priority_skill_response = self._handle_skill(
+            q,
+            run_before_intents=True,
+            redact_operational=redact_operational,
+        )
         if priority_skill_response:
             return priority_skill_response
 
@@ -66,7 +72,11 @@ class IntentRouter:
                 self._publish_response(response=response, text=q, intent=intent_name)
                 return response
 
-        skill_response = self._handle_skill(q, run_before_intents=False)
+        skill_response = self._handle_skill(
+            q,
+            run_before_intents=False,
+            redact_operational=redact_operational,
+        )
         if skill_response:
             return skill_response
 
@@ -79,15 +89,20 @@ class IntentRouter:
         for event_name in event_names:
             self.events.publish(event_name, dict(payload), source="intent_router")
 
-    def _publish_response(self, response: str, text: str, intent=None):
+    def _publish_response(self, response: str, text: str, intent=None, redact=False):
         payload = {
             "intent": intent,
-            "response": response,
-            "text": text,
+            "response": "[REDACTED]" if redact else response,
+            **self._safe_text_payload(text, redact),
         }
         self._publish_many(("response_generated", "intent.response"), payload)
 
-    def _handle_skill(self, text: str, run_before_intents=False):
+    def _handle_skill(
+        self,
+        text: str,
+        run_before_intents=False,
+        redact_operational=False,
+    ):
         if not self.skill_manager:
             return None
 
@@ -99,7 +114,29 @@ class IntentRouter:
         response_text = getattr(response, "text", str(response))
         self._publish_many(
             ("intent_detected", "intent.matched"),
-            {"intent": skill_name, "kind": "skill", "text": text},
+            {
+                "intent": skill_name,
+                "kind": "skill",
+                **self._safe_text_payload(text, redact_operational),
+            },
         )
-        self._publish_response(response=response_text, text=text, intent=skill_name)
+        self._publish_response(
+            response=response_text,
+            text=text,
+            intent=skill_name,
+            redact=redact_operational,
+        )
         return response_text
+
+    def _redact_owner_memory_events(self, text: str) -> bool:
+        return owner_memory_uses_explicit_store(parse_owner_memory_command(text))
+
+    @staticmethod
+    def _safe_text_payload(text: str, redact: bool):
+        if not redact:
+            return {"text": text}
+        return {
+            "text": "[REDACTED]",
+            "text_length": len(text),
+            "value_redacted": True,
+        }

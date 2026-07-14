@@ -4,6 +4,7 @@ from typing import Callable, Iterable, List, Optional
 
 from core.DeviceAction import DANGER_SAFE, classify_device_action
 from core.Intent import Intent
+from core.OwnerMemory import owner_memory_uses_explicit_store, parse_owner_memory_command
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class IntentRule:
 class IntentParser:
     def __init__(self, rules: Optional[Iterable[IntentRule]] = None):
         self.rules = list(rules) if rules is not None else [
+            IntentRule("owner_memory", self._parse_owner_memory),
             IntentRule("goal", self._parse_goal),
             IntentRule("note", self._parse_note),
             IntentRule("task", self._parse_task),
@@ -67,6 +69,17 @@ class IntentParser:
                 return intent
 
         return self._unknown(parsed.raw_text)
+
+    def _parse_owner_memory(self, text: ParsedText) -> Optional[Intent]:
+        command = parse_owner_memory_command(text.raw_text)
+        if not owner_memory_uses_explicit_store(command):
+            return None
+        return self._intent(
+            "owner_memory",
+            0.98,
+            command.safe_raw_text,
+            **command.to_entities(),
+        )
 
     def _parse_goal(self, text: ParsedText) -> Optional[Intent]:
         if _is_next_goal_question(text.normalized):

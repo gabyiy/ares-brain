@@ -1,6 +1,7 @@
 from skills.base import Skill, SkillContext, SkillResponse
 from skills.EventHistorySkill import EventHistorySkill
 from skills.manager import SkillManager
+from skills.builtin.owner_memory import OwnerMemorySkill
 from skills.plugin import SkillPlugin
 from skills.registry import SkillRegistry
 from skills.runtime import create_builtin_skill_manager
@@ -12,6 +13,7 @@ __all__ = [
     "EventHistorySkill",
     "SkillContext",
     "SkillManager",
+    "OwnerMemorySkill",
     "SkillPlugin",
     "SkillRegistry",
     "SkillResponse",

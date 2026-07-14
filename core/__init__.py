@@ -254,6 +254,19 @@ from core.ResourceBudget import (
 )
 from core.Intent import Intent
 from core.IntentParser import IntentParser
+from core.OwnerMemory import (
+    OWNER_MEMORY_FORGET,
+    OWNER_MEMORY_RECALL,
+    OWNER_MEMORY_REJECT,
+    OWNER_MEMORY_SAVE,
+    OwnerMemoryCommand,
+    OwnerMemoryValidationError,
+    is_protected_owner_fact_key,
+    normalize_owner_fact_key,
+    normalize_owner_fact_value,
+    owner_memory_uses_explicit_store,
+    parse_owner_memory_command,
+)
 from core.Microphone import (
     AudioChunk,
     MicrophoneAdapter,
@@ -622,6 +635,17 @@ __all__ = [
     "AdapterSelectionResult",
     "Intent",
     "IntentParser",
+    "OWNER_MEMORY_FORGET",
+    "OWNER_MEMORY_RECALL",
+    "OWNER_MEMORY_REJECT",
+    "OWNER_MEMORY_SAVE",
+    "OwnerMemoryCommand",
+    "OwnerMemoryValidationError",
+    "is_protected_owner_fact_key",
+    "normalize_owner_fact_key",
+    "normalize_owner_fact_value",
+    "owner_memory_uses_explicit_store",
+    "parse_owner_memory_command",
     "MultiStepPlan",
     "PCCapabilities",
     "PCService",

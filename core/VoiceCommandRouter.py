@@ -267,19 +267,28 @@ class VoiceCommandRouter:
                 correlation_id=correlation_id,
             )
 
+        redact_input = _command_result_requests_input_redaction(command_result)
+        safe_transcription = (
+            _redacted_transcription_payload(transcription_data)
+            if redact_input
+            else transcription_data
+        )
+        safe_request = _contract_payload(command_request)
+        if redact_input:
+            safe_request = _redacted_voice_request_payload(safe_request)
         result = VoiceCommandRoutingResult(
             success=True,
             status="routed",
             text=str(command_result.get("text") or "Voice command routed."),
-            input_text=command_text,
+            input_text="[REDACTED]" if redact_input else command_text,
             response_text=str(command_result.get("response_text") or ""),
             confidence=transcription.confidence,
             route=self.route_capability,
             correlation_id=correlation_id,
             session_id=session_id,
             data={
-                "transcription": transcription_data,
-                "request": _contract_payload(command_request),
+                "transcription": safe_transcription,
+                "request": safe_request,
                 "route_result": route_result.data,
                 "command_result": command_result,
             },
@@ -287,6 +296,7 @@ class VoiceCommandRouter:
                 "safe": True,
                 "source": "voice_command_router",
                 "confidence_threshold": self.confidence_threshold,
+                "input_redacted": redact_input,
             },
         )
         self._increment(routed=1)
@@ -465,6 +475,30 @@ def _handler_response_to_data(response: Any) -> Dict[str, Any]:
         "skill": getattr(response, "skill", ""),
         "metadata": dict(getattr(response, "metadata", {}) or {}),
     }
+
+
+def _command_result_requests_input_redaction(command_result: Dict[str, Any]) -> bool:
+    handler_response = dict(command_result.get("handler_response") or {})
+    metadata = dict(handler_response.get("metadata") or {})
+    return bool(metadata.get("redact_transcript"))
+
+
+def _redacted_transcription_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    safe = dict(payload or {})
+    safe["text"] = "[REDACTED]"
+    safe["data"] = {"redacted": True}
+    safe["metadata"] = {"redacted": True}
+    return safe
+
+
+def _redacted_voice_request_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    safe = dict(payload or {})
+    safe["text"] = "[REDACTED]"
+    safe["transcription"] = _redacted_transcription_payload(
+        dict(safe.get("transcription") or {})
+    )
+    safe["metadata"] = {"redacted": True}
+    return safe
 
 
 def _clamp_confidence(confidence: float) -> float:

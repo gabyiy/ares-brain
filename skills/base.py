@@ -8,6 +8,7 @@ class SkillContext:
     event_bus: Any = None
     memory_store: Any = None
     profile_store: Any = None
+    owner_profile_store: Any = None
     notes_store: Any = None
     tasks_store: Any = None
     goals_store: Any = None
@@ -40,6 +41,7 @@ class Skill(ABC):
     selection_keywords: Tuple[str, ...] = ()
     selection_priority = 0.0
     capabilities: Tuple[str, ...] = ()
+    redact_operational_events = False
 
     def metadata(self) -> Dict[str, Any]:
         return {
@@ -52,6 +54,7 @@ class Skill(ABC):
             "selection_keywords": list(self.selection_keywords),
             "selection_priority": self.selection_priority,
             "capabilities": list(self.capabilities),
+            "redact_operational_events": self.redact_operational_events,
         }
 
     def can_handle(self, text: str) -> bool:

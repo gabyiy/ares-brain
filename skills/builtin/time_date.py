@@ -9,6 +9,7 @@ from skills.builtin.goals import GoalsSkill
 from skills.builtin.market import MarketSkill
 from skills.builtin.memory_recall import MemoryRecallSkill
 from skills.builtin.notes import NotesSkill
+from skills.builtin.owner_memory import OwnerMemorySkill
 from skills.builtin.tasks import TasksSkill
 from skills.builtin.weather import WeatherSkill
 from skills.plugin import SkillPlugin
@@ -56,6 +57,7 @@ def create_builtin_plugin() -> SkillPlugin:
         version="0.1",
         description="Built-in ARES skills.",
         skills=[
+            OwnerMemorySkill(),
             MemoryRecallSkill(),
             CalculatorSkill(),
             CalendarSkill(),

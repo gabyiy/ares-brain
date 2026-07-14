@@ -4,7 +4,7 @@ from core.Confirmation import ConfirmationManager
 from core.ConversationContext import ConversationContextManager
 from core.DeviceAction import LocalDeviceActionAdapter
 from core.ExecutionPipeline import ExecutionPipeline
-from core.Intent import Intent
+from core.Intent import Intent, redact_sensitive_entities
 from core.IntentParser import IntentParser
 from core.Planner import Plan
 from core.ToolAdapter import MockCalendarAdapter, MockMarketAdapter, MockWeatherAdapter, ToolAdapterRegistry
@@ -22,6 +22,7 @@ class SkillManager:
         event_bus=None,
         memory_store=None,
         profile_store=None,
+        owner_profile_store=None,
         notes_store=None,
         tasks_store=None,
         goals_store=None,
@@ -37,6 +38,7 @@ class SkillManager:
         self.event_bus = event_bus or get_global_bus()
         self.memory_store = memory_store
         self.profile_store = profile_store
+        self.owner_profile_store = owner_profile_store
         self.notes_store = notes_store
         self.tasks_store = tasks_store
         self.goals_store = goals_store
@@ -171,11 +173,7 @@ class SkillManager:
                 assistant_response=response.text,
                 detected_skill=response.skill,
             )
-            self.event_bus.publish(
-                "skill.response_generated",
-                {"skill": response.skill, "response": response.text},
-                source="skill_manager",
-            )
+            self._publish_response_generated(response)
             return response
 
         if not selection:
@@ -195,11 +193,7 @@ class SkillManager:
             detected_skill=skill.name,
         )
 
-        self.event_bus.publish(
-            "skill.response_generated",
-            {"skill": skill.name, "response": response.text},
-            source="skill_manager",
-        )
+        self._publish_response_generated(response)
         return response
 
     def format_last_plan(self) -> str:
@@ -223,6 +217,7 @@ class SkillManager:
             event_bus=self.event_bus,
             memory_store=self.memory_store,
             profile_store=self.profile_store,
+            owner_profile_store=self.owner_profile_store,
             notes_store=self.notes_store,
             tasks_store=self.tasks_store,
             goals_store=self.goals_store,
@@ -241,6 +236,7 @@ class SkillManager:
             event_bus=context.event_bus,
             memory_store=context.memory_store,
             profile_store=context.profile_store,
+            owner_profile_store=context.owner_profile_store,
             notes_store=context.notes_store,
             tasks_store=context.tasks_store,
             goals_store=context.goals_store,
@@ -281,8 +277,11 @@ class SkillManager:
         self.last_execution = execution
 
         response_skill = "planner"
+        operation_metadata: Dict[str, Any] = {}
         if execution and len(execution.step_results) == 1:
-            response_skill = execution.step_results[0].returned_data.get("skill") or "planner"
+            returned_data = execution.step_results[0].returned_data
+            response_skill = returned_data.get("skill") or "planner"
+            operation_metadata = dict(returned_data.get("metadata") or {})
         elif not execution:
             response_skill = "tool_chain"
 
@@ -290,6 +289,7 @@ class SkillManager:
             text=chain.format_response_text(),
             skill=response_skill,
             metadata={
+                **operation_metadata,
                 "plan": plan.to_dict(),
                 "chain": chain.to_dict(),
                 "execution": execution.to_dict() if execution else None,
@@ -358,16 +358,64 @@ class SkillManager:
         )
 
     def _publish_skill_detected(self, selection, intent: Intent, plan) -> None:
+        redact = bool(getattr(selection.skill, "redact_operational_events", False))
+        payload = {
+            "skill": selection.skill.name,
+            "intent": intent.intent_name,
+            "entities": redact_sensitive_entities(intent.extracted_entities),
+            "confidence": selection.confidence,
+            "reason": selection.reason,
+            "plan": plan.to_dict() if plan else None,
+        }
+        if redact:
+            payload.update(
+                {
+                    "text": "[REDACTED]",
+                    "text_length": len(intent.raw_text),
+                    "value_redacted": True,
+                }
+            )
+        else:
+            payload["text"] = intent.raw_text
         self.event_bus.publish(
             "skill.detected",
-            {
-                "skill": selection.skill.name,
-                "text": intent.raw_text,
-                "intent": intent.intent_name,
-                "entities": dict(intent.extracted_entities),
-                "confidence": selection.confidence,
-                "reason": selection.reason,
-                "plan": plan.to_dict() if plan else None,
-            },
+            payload,
             source="skill_manager",
         )
+
+    def _publish_response_generated(self, response: SkillResponse) -> None:
+        skill = self.registry.get(response.skill)
+        redact = bool(getattr(skill, "redact_operational_events", False))
+        if redact:
+            metadata = _response_operation_metadata(response)
+            payload = {
+                "skill": response.skill,
+                "response": "[REDACTED]",
+                "response_length": len(response.text),
+                "memory_action": metadata.get("memory_action", ""),
+                "normalized_fact_key": metadata.get("normalized_fact_key", ""),
+                "storage_status": metadata.get("storage_status", ""),
+                "value_redacted": True,
+            }
+        else:
+            payload = {"skill": response.skill, "response": response.text}
+        self.event_bus.publish(
+            "skill.response_generated",
+            payload,
+            source="skill_manager",
+        )
+
+
+def _response_operation_metadata(response: SkillResponse) -> Dict[str, Any]:
+    metadata = dict(response.metadata or {})
+    if metadata.get("memory_action"):
+        return metadata
+    results = list(metadata.get("results") or [])
+    if not results:
+        return metadata
+    first = results[0] if isinstance(results[0], dict) else {}
+    returned_data = dict(first.get("returned_data") or {})
+    return {
+        **metadata,
+        **dict(returned_data.get("metadata") or {}),
+    }
