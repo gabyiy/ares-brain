@@ -1060,11 +1060,22 @@ Phase 84: Production-Style Single-Turn Voice Launcher
 - Set verified Raspberry Pi defaults for `plughw:2,0`, `plughw:CARD=Device,DEV=0`, base English Whisper, `en_US-hfc_male-medium`, automatic end-of-speech, response playback, and a 300-second limit.
 - Kept diagnostic routing, intermediate-file retention, and captured-stage playback independent and disabled by default. Normal startup cannot enable microphone monitoring or replay microphone audio.
 - Added deterministic tests for repository-relative paths, defaults and overrides, preflight failure before capture, delegation, cleanup policy, response playback, diagnostic opt-in, exit codes, and the absence of duplicated speech-stage logic.
-- Current pytest collection is 1180 tests.
+- The owner verified the complete launcher on Raspberry Pi with `How much is 2 + 2` and heard the Piper response `Result: 4`.
+- Historical Phase 84 pytest collection was 1180 tests.
+
+Phase 85: Explicit Persistent Owner Memory
+
+- Added `OwnerProfileStore` for explicit bounded owner facts at `data/memory/owner_profile.json`.
+- Registered `ares.owner_profile` v1 with the centralized schema migration, validation, backup, lock, and atomic-write framework.
+- Added deterministic save, recall, update, forget, and missing-fact phrases through VoiceCommandRouter, CoreService, SkillManager, IntentParser, Planner, ExecutionPipeline, and registered OwnerMemorySkill.
+- Added normalized key aliases such as `favorite colour`/`favorite color`, bounded key/value validation, path/control-character rejection, and protected credential/recovery-key rejection.
+- Kept transcripts, recordings, complete conversations, inferred facts, and protected values out of the profile and normal operational events.
+- Added a hardware-free production-path script and a six-process isolated persistence verifier.
+- Current pytest collection is 1245 tests.
 
 Current State
 
-ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, the short production-style single-turn launcher, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, and safe anchored natural-language calculator routing. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control.
+ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, the short production-style single-turn launcher, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and explicit local owner-fact persistence. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control. Owner facts are written only by explicit bounded memory commands; ordinary transcripts and recordings are not persisted.
 
 The current active interface is:
 
@@ -1074,18 +1085,19 @@ The current active interface is:
 The current deterministic answer paths are:
 
 - Intent modules for weather, news, knowledge, stocks, greetings, and goodbye
-- `IntentParser` plus `ToolSelector` for time/date, memory recall, calculator arithmetic, goals, notes, tasks, weather, market, calendar, event-history queries, voice-session starts, and voice-session status queries
+- `IntentParser` plus `ToolSelector` for time/date, legacy memory recall, explicit owner-memory operations, calculator arithmetic, goals, notes, tasks, weather, market, calendar, event-history queries, voice-session starts, and voice-session status queries
 - `Planner`, `MultiStepPlan`, `ConfirmationManager`, `ToolChain`, `ExecutionPipeline`, and `SkillManager` for local goals, notes, tasks, calculator, weather, market, calendar, voice sessions, voice-session status, context responses, confirmations, and conversation memory plan execution
 - `ToolAdapterRegistry`, `ExternalAdapterConfig`, `SecretsGuard`, `RealWeatherAdapter`, and `RealMarketAdapter` plus explicit `tool_adapter` PlanSteps for future adapter execution infrastructure
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1180 tests.
+The current pytest collection is 1245 tests.
 
 The current memory paths are:
 
 - `MemoryStore` for conversation-style memory
 - `UserProfileStore` for persistent user facts
+- `OwnerProfileStore` for explicit bounded owner facts in `data/memory/owner_profile.json`
 - `GoalsStore` for persistent long-term goals
 - `NotesStore` for persistent local notes
 - `TasksStore` for persistent offline tasks
@@ -1138,10 +1150,12 @@ Phase 3 Real Voice Integration
 17. Preserve complete VAD utterances across repeated pause/resume transitions and reject unexplained normalized-duration loss. Completed in CI with deterministic PCM.
 18. Verify raw/assembled/normalized duration preservation on Raspberry Pi. Completed by owner: `7.060s` raw and `5.400s` assembled/normalized/Whisper input with `duration_consistent`.
 19. Confirm `How much is two plus two?` selects CalculatorSkill and speaks `Result: 4` while normal playback does not replay the microphone. Completed by owner.
-20. Add the production-style one-command launcher with verified Raspberry Pi defaults. Completed in deterministic CI; hardware run remains owner verification.
-21. Pull `main` and run `python scripts/run_ares_voice.py` on Raspberry Pi.
-22. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
-23. Only later consider wake-word/background listening.
+20. Add the production-style one-command launcher with verified Raspberry Pi defaults. Completed in deterministic CI.
+21. Verify the one-command launcher on Raspberry Pi. Completed by owner with calculator result and audible male Piper response.
+22. Add explicit bounded owner-fact persistence through the real production skill route. Completed in deterministic CI.
+23. Pull `main` and verify save/recall/update/forget across fresh Raspberry Pi voice processes.
+24. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
+25. Only later consider wake-word/background listening.
 
 What Must Not Be Started Yet
 
@@ -1152,7 +1166,7 @@ What Must Not Be Started Yet
 - No calendar integration.
 - No Raspberry Pi deployment automation beyond existing owner-run Whisper/Piper setup and verification scripts.
 - No Vosk, wake word, daemon/service installation, internet access, unbounded conversation loop, background listening, automatic boot-time microphone activation, GPT, or cloud TTS fallback.
-- No new skills before the roadmap and architecture decision is approved.
+- No new skills beyond explicitly approved, bounded checkpoints such as the current owner-memory skill.
 - No AI parser or regex-only parser rewrite.
 - No robotics or movement integration.
 - No vision integration.

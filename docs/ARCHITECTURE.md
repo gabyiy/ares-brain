@@ -1115,13 +1115,48 @@ Current registered manifest coverage includes PCService, Voice City, mock microp
 
 Future modules must register manifests through the central registry before activation. A future V2 contract must be introduced by registering its new contract version and updating manifests explicitly; unknown versions must be rejected rather than reinterpreted.
 
+# Explicit Persistent Owner Memory
+
+ARES now has one narrow owner-controlled durable fact path. The production route is:
+
+```text
+Whisper transcript or typed text
+  |
+  v
+VoiceCommandRouter / CoreService
+  |
+  v
+SkillManager -> IntentParser -> Planner -> ExecutionPipeline
+  |
+  v
+OwnerMemorySkill
+  |
+  v
+OwnerProfileStore
+  |
+  v
+memory.schema_migrations -> data/memory/owner_profile.json
+```
+
+The voice launcher and Brain do not call the repository directly. `OwnerMemorySkill` receives an injected `OwnerProfileStore` through `SkillContext`, and the same built-in skill construction is used by typed verification and the production single-turn voice path. The skill manifest declares `memory.owner_fact.save`, `memory.owner_fact.recall`, and `memory.owner_fact.forget` capabilities.
+
+`core.OwnerMemory` recognizes only explicit bounded forms: `remember [that] my <key> is <value>`, `what is/what's my <key>`, `do you remember my <key>`, and `forget my <key>`. It normalizes Unicode, whitespace, punctuation, and approved key aliases such as `favorite colour` to `favorite_color`. It does not perform semantic extraction, fuzzy matching, or inference from ordinary conversation. Ambiguous input fails closed.
+
+Protected key categories include passwords, passcodes, PINs, API keys, tokens, private keys, recovery/seed phrases, and bounded bank/card identifiers. Those requests are rejected before storage. Supplied protected values are removed from serialized intent, plan, execution, lifecycle, routing, and operational-event data; event payloads contain only bounded operation/status metadata.
+
+`OwnerProfileStore` uses the shared `ares.owner_profile` v1 schema envelope. Its data contains `owner_id: primary_owner` and normalized fact entries with readable values and UTC `updated_at` timestamps. Keys are limited to 64 normalized characters, values to 256 characters, and control characters and path-like keys are rejected. `list_facts()` is an internal diagnostic API and is not exposed as a general voice command.
+
+The default path is repository-relative `data/memory/owner_profile.json`; `ARES_OWNER_PROFILE_PATH` is an explicit local override for tests and owner-run isolated checks. Writes use the centralized migration lock, backup-before-replacement, deterministic UTF-8 JSON, temporary-file flush, atomic replacement where practical, final reload validation, and temporary-file cleanup on failure. Missing files load as an empty profile. Malformed JSON, unsupported future versions, wrong schemas, invalid durable fields, read failures, and write failures do not become empty memory and do not overwrite the existing file.
+
+Owner memory deliberately excludes transcripts, microphone audio, complete conversations, inferred facts, semantic search, embeddings, vectors, GPT memory, cloud synchronization, and autonomous learning. Short-term `ConversationContextManager`, legacy `UserProfileStore`, general `MemoryStore`, operational `EventHistoryStore`, and the explicit owner profile remain distinct stores with distinct purposes.
+
 # Memory Schema Migrations
 
 `memory.schema_migrations` is the centralized migration framework for active JSON-backed persistent stores. Store modules call this shared layer instead of implementing ad hoc version checks.
 
 Durable data classes:
 
-- Durable identity/memory: `UserProfileStore`, `MemoryStore` short-term memory, `MemoryStore` long-term memory, `GoalsStore`, `NotesStore`, and `TasksStore`.
+- Durable identity/memory: `UserProfileStore`, explicit `OwnerProfileStore`, `MemoryStore` short-term memory, `MemoryStore` long-term memory, `GoalsStore`, `NotesStore`, and `TasksStore`.
 - Operational history: `EventHistoryStore`.
 - Derived state: `ReminderScheduler` reads tasks and has no separate persisted file.
 - Voice-session history: stored as event-history records; no separate voice-session store exists.
@@ -1132,6 +1167,7 @@ Durable data classes:
 Current active schemas:
 
 - `ares.user_profile`
+- `ares.owner_profile`
 - `ares.goals`
 - `ares.notes`
 - `ares.tasks`
@@ -1390,6 +1426,10 @@ The Brain remains unchanged because identity, memory, personality, goals, reason
 - Capability interfaces are explicit.
 - Every ARES ability must be independently installable, replaceable, disableable, health-checkable, version-compatible, and testable without modifying the Brain.
 - Dangerous actions require confirmation.
+- Owner facts are persisted only after an explicit bounded owner-memory command.
+- Transcripts, microphone recordings, and complete conversations are not owner-profile data.
+- Protected credentials and recovery material must never enter owner memory or operational diagnostics.
+- A failed owner-profile load must never be interpreted as an empty profile or overwrite recovery evidence.
 - Secrets are never stored in committed config.
 - Real API integrations stay gated by config and environment variables.
 - Tests must pass before merge.

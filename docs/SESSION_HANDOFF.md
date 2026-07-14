@@ -4,13 +4,13 @@ Last Updated: 2026-07-14
 
 Current Version
 
-ARES v1.88 - Production-Style Single-Turn Voice Launcher
+ARES v1.89 - Explicit Persistent Owner Memory
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, a production-style one-command single-turn launcher, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, and production-factory-verified natural-language calculator routing.
+ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, a production-style one-command single-turn launcher, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production-factory-verified natural-language calculator routing, and explicit local owner-fact persistence through the real skill pipeline.
 
 Checkpoint root causes and fixes:
 
@@ -30,6 +30,9 @@ Checkpoint root causes and fixes:
 - The registry now recognizes explicit `how much`, `what does ... equal`, nested `tell me how much ... is`, answer/result, polite, first-person, and optional ARES-address forms. It records the extracted expression and never treats `much` as an arithmetic token or removes arbitrary middle words.
 - The previous manual command explicitly selected all capture stages with `--playback-debug-stages`, which is why the owner heard raw, assembled, and normalized speech. Normal `--playback` now has one documented purpose: play the generated Piper response. Preservation and each diagnostic stage are independently owner-controlled.
 - `scripts/run_ares_voice.py` now supplies the verified Raspberry Pi defaults and delegates to the existing production factory and `SingleTurnVoicePipeline`. It performs lifecycle/component health preflight before capture, resolves repository-relative Whisper paths from the script location, reads the default Piper profile from `config/voice_profiles.json`, plays only the generated response by default, and exits after one turn.
+- `OwnerProfileStore` now persists only explicit bounded owner facts under `data/memory/owner_profile.json`. The production path is `VoiceCommandRouter -> CoreService -> SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> OwnerMemorySkill -> OwnerProfileStore`; neither the launcher nor Brain accesses the file directly.
+- The `ares.owner_profile` v1 schema uses the shared migration validator, write lock, backup-before-replacement, deterministic UTF-8 JSON, temporary-file flush, atomic replacement, final reload validation, and fail-closed corruption behavior. A failed load is never interpreted as an empty profile.
+- Protected credentials and recovery material are rejected before storage, supplied values are redacted from operational diagnostics, and ordinary transcripts, recordings, complete conversations, and inferred facts are not written to this store.
 
 Confirmed Phase 3 foundation:
 
@@ -100,11 +103,14 @@ Confirmed Phase 3 foundation:
 - Versioned extracted-calculator-expression routing diagnostics
 - Independent diagnostic preservation, per-stage capture playback, and response playback controls
 - Production-style `scripts/run_ares_voice.py` owner launcher with health preflight, repository-root path resolution, verified Raspberry Pi defaults, and response-only playback
+- Explicit `OwnerProfileStore` with `ares.owner_profile` v1 persistence, atomic writes, backups, bounded validation, protected-key rejection, and isolated path override
+- Registered `OwnerMemorySkill` through the production IntentParser, Planner, ExecutionPipeline, and SkillManager route
+- Hardware-free owner-memory command verifier and six-fresh-process persistence verifier
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1180 tests.
+Current pytest collection: 1245 tests.
 
-The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, centralized canonical WAV conversion through `core.WavAudio`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, its `scripts/run_ares_voice.py` owner launcher, and the bounded multi-turn session. Adaptive calibration remains inside the VAD boundary; transcript normalization and routing diagnostics remain between STT and `VoiceCommandRouter`/SkillManager. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, conversion, VAD, Whisper, Piper, or normalization internals. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
+The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, centralized canonical WAV conversion through `core.WavAudio`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, its `scripts/run_ares_voice.py` owner launcher, and the bounded multi-turn session. Adaptive calibration remains inside the VAD boundary; transcript normalization and routing diagnostics remain between STT and `VoiceCommandRouter`/SkillManager. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, conversion, VAD, Whisper, Piper, or normalization internals. Owner memory is a separate explicit skill/store boundary and does not turn transcript handling into automatic persistence. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
 
 `skills.VoiceSessionSkill` now starts a bounded mock voice session from text commands: "start voice session", "start mock voice", and "run voice test". It uses only `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop`, returns a transcript summary, and is wired through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path.
 
@@ -768,8 +774,8 @@ Migration behavior:
 - New models: `SchemaEnvelope`, `MigrationResult`, `StoreInspectionReport`, and `MigrationError`.
 - New registry: `MigrationRegistry`.
 - Every active durable JSON store now uses an envelope with `schema_name`, `schema_version`, `created_at`, `updated_at`, `data`, and optional `metadata`.
-- Active durable schemas are `ares.user_profile`, `ares.goals`, `ares.notes`, `ares.tasks`, `ares.memory.short`, `ares.memory.long`, and `ares.event_history`.
-- Durable identity/memory stores are user profile, short/long memory, goals, notes, and tasks.
+- Active durable schemas are `ares.user_profile`, `ares.owner_profile`, `ares.goals`, `ares.notes`, `ares.tasks`, `ares.memory.short`, `ares.memory.long`, and `ares.event_history`.
+- Durable identity/memory stores are user profile, explicit owner profile, short/long memory, goals, notes, and tasks.
 - Operational history is event history.
 - `ReminderScheduler` has no separate persistence; it derives due/upcoming reminders from tasks.
 - Voice session persistence is event-history based; there is no separate voice-session store.
@@ -933,7 +939,7 @@ Selection behavior:
 
 - Scores local skills instead of relying on first registered match only.
 - Supports exact trigger matches, contained trigger phrases, token overlap, optional `selection_keywords`, optional `selection_priority`, and `run_before_intents` filtering.
-- Currently routes `TimeDateSkill`, `MemoryRecallSkill`, `CalculatorSkill`, `GoalsSkill`, `NotesSkill`, `TasksSkill`, `WeatherSkill`, `MarketSkill`, `CalendarSkill`, and `DeviceActionSkill`.
+- Currently routes `TimeDateSkill`, `MemoryRecallSkill`, `OwnerMemorySkill`, `CalculatorSkill`, `GoalsSkill`, `NotesSkill`, `TasksSkill`, `WeatherSkill`, `MarketSkill`, `CalendarSkill`, and `DeviceActionSkill`.
 
 Phase 4 CalculatorSkill has been added as the first real local tool.
 
@@ -2068,8 +2074,8 @@ Each intent owns its own logic and communicates with its corresponding provider.
 
 MemoryStore v1 is separate from the legacy `memory_manager.py` API so existing scripts keep working.
 
-The built-in skill plugin currently registers `MemoryRecallSkill`, `CalculatorSkill`, `CalendarSkill`, `DeviceActionSkill`, `GoalsSkill`, `MarketSkill`, `NotesSkill`, `TasksSkill`, `WeatherSkill`, and `TimeDateSkill`.
-The REPL priority skill path currently covers profile memory recall, calculator arithmetic, goal commands, note commands, task commands, weather commands, stock/market commands, calendar/schedule commands, and safe device action commands.
+The built-in skill plugin currently registers `MemoryRecallSkill`, `OwnerMemorySkill`, `CalculatorSkill`, `CalendarSkill`, `DeviceActionSkill`, `GoalsSkill`, `MarketSkill`, `NotesSkill`, `TasksSkill`, `WeatherSkill`, and `TimeDateSkill`.
+The REPL priority skill path currently covers legacy profile recall, explicit bounded owner-memory commands, calculator arithmetic, goal commands, note commands, task commands, weather commands, stock/market commands, calendar/schedule commands, and safe device action commands.
 `SkillManager` parses text into `core.Intent` before `ToolSelector` selects a local skill.
 `ToolSelector` builds a `core.Plan` or `core.MultiStepPlan` before selection, and its Planner can use safe injected store interfaces for local context.
 `SkillManager` owns a `CoreService` for local/external service registration and capability aggregation where practical.
@@ -2104,18 +2110,17 @@ Text REPL
 
 Immediate Next Milestone
 
-Pull the calculator-wrapper/playback-isolation checkpoint on Raspberry Pi and run the documented answer-only command. Say `How much is two plus two?`; confirm the extracted expression is `two plus two`, CalculatorSkill is selected, the response is `Result: 4`, and only the generated Piper response is audible. Preserve intermediate WAVs separately if evidence is needed. Do not add wake words, background listening, or an unbounded conversation service without separate approval.
+Pull the explicit owner-memory checkpoint on Raspberry Pi and prove persistence across separate `python scripts/run_ares_voice.py` processes. Save blue, recall blue, update to red, recall red, forget the fact, and confirm a final fresh process reports the fact missing. Do not manually edit the profile during the sequence, and do not add automatic transcript memory, wake words, background listening, or an unbounded conversation service.
 
 Next technical choices:
 
-- Pull latest `main`, run the single-turn script with `--auto-stop`, `plughw:2,0`, `plughw:CARD=Device,DEV=0`, `ggml-base.en.bin`, the configured male profile, `--diagnostic-routing`, explicit response `--playback`, and no diagnostic-stage playback flags.
+- Pull latest `main`, run `python scripts/verify_owner_memory_persistence.py --verbose`, then use fresh production launcher processes for the spoken owner-memory sequence.
+- Inspect `data/memory/owner_profile.json` read-only with `python -m json.tool`; malformed or unsupported data must fail closed rather than be reset.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
-- Measure bounded turns on real hardware and tune thresholds only from observed results.
 - Only later add wake-word/background listening.
-- Add profile acknowledgement responses if desired; current fact statements are stored even when the response is generic.
-- Keep voice, GPT, embeddings, external weather/stocks/calendar APIs, real scheduling, notifications, and Raspberry Pi deployment out of scope until explicitly approved.
+- Keep GPT, embeddings, semantic/vector search, autonomous fact extraction, external weather/stocks/calendar APIs, real scheduling, and notifications out of scope until explicitly approved.
 - Keep additional real microphone behavior, alternate STT engines, Vosk, wake word, internet-backed adapters, notifications, and automatic PC actions out of scope until each real-audio step is explicitly approved.
-- Connect selected daily reflection scripts and future providers to MemoryStore v1 only after the memory contract is documented.
+- Keep explicit owner facts distinct from legacy `UserProfileStore`, general `MemoryStore`, operational event history, and RAM-only conversation context.
 
 ---
 
@@ -2130,22 +2135,24 @@ Future Roadmap
 7. Anchored natural-language calculator wrapper extraction completed in CI
 8. Canonical ALSA/WAV normalization before VAD and Whisper completed in CI
 9. Complete ordered post-VAD assembly and duration-safe Whisper handoff in CI
-10. Pull and verify `Hello Ares, what is two plus two?` with raw/assembled/normalized diagnostics on Raspberry Pi
-11. Only later add wake-word/background listening
-12. GPT fallback integration
-13. Raspberry Pi deployment
-14. Robot body / sensors
-15. Vision
-16. Robotics
-17. Jetson Orin migration
-18. Autonomous ARES
+10. Production voice calculator and short launcher verified by owner on Raspberry Pi
+11. Explicit bounded owner-memory persistence completed in deterministic tests
+12. Verify owner-memory persistence across fresh Raspberry Pi voice processes
+13. Only later add wake-word/background listening
+14. GPT fallback integration
+15. Raspberry Pi deployment
+16. Robot body / sensors
+17. Vision
+18. Robotics
+19. Jetson Orin migration
+20. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1180 tests.
+- Current pytest collection: 1245 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2207,6 +2214,7 @@ Verification Notes
 - Transcript normalization tests cover raw/cleaned/normalized preservation, number words zero through one thousand, negatives, decimals, spoken operators and parentheses, anchored direct/polite/question/first-person/vocative wrappers, contraction and punctuation handling, ambiguity and multiple-expression rejection, conservative Whisper-loop cleanup, versioned round trips, no `eval()`, and real Brain/CalculatorSkill routing to `Result: 4`.
 - Production voice calculator tests cover the shared runtime registry, exact script factory, `I'll calculate 2 plus 2.`, `What is two plus two?`, all approved wrapper categories, unsafe and ambiguous input rejection, bounded lengths, empty transcript/audio, safe unknown handling, cleanup/candidate/manifest diagnostics, Planner/ExecutionPipeline evidence, V1 round trips, TTS handoff, and lifecycle/resource cleanup without a mock calculator or GPT fallback.
 - Production launcher tests cover verified Raspberry Pi defaults, repository-root path resolution, delegation to the existing factory and single-turn pipeline, versioned request metadata, automatic/fixed capture selection, response-only playback, diagnostic opt-in, dependency and construction failures before capture, stable exit codes, and the absence of duplicated microphone/Whisper/Piper/speaker implementation.
+- Owner-memory tests cover empty profiles, create/recall/update/forget/missing operations, normalized aliases, bounds, protected-key redaction, malformed/future-schema rejection, read/write failures, atomic-write cleanup, six fresh-process persistence turns, production IntentParser/Planner/ExecutionPipeline/OwnerMemorySkill routing, calculator and unknown-command regressions, TTS handoff, and isolation from transcript/audio persistence.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Example configuration now documents bounded transcript-routing defaults and keeps diagnostic output disabled unless explicitly requested.
@@ -2222,8 +2230,31 @@ python scripts/run_ares_voice.py
 
 Say `How much is two plus two?` The expected route selects the registered calculator, returns `Result: 4`, speaks only that Piper response through `plughw:CARD=Device,DEV=0`, and exits. Add `--diagnostic-routing --retain-diagnostic-audio` to preserve files and print bounded routing fields without replaying capture. Captured-stage playback remains a separate explicit `--play-diagnostic-audio` action.
 
+Explicit Owner Memory Check
+
+Implementation and Windows/hardware-free checks are complete. Raspberry Pi voice persistence must still be verified by the owner after pulling; this handoff does not claim that hardware result.
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+python scripts/verify_owner_memory_persistence.py --verbose
+python scripts/run_ares_voice.py
+```
+
+Say `Remember that my favorite color is blue.` and let the one-turn process exit. Start `python scripts/run_ares_voice.py` again and say `What is my favorite color?`; expect `Your favorite color is blue.` Repeat with red to verify update, then say `Forget my favorite color.` in a fresh process and verify a later process answers `I do not know your favorite color yet.`
+
+Inspect the versioned UTF-8 JSON without editing it:
+
+```bash
+python -m json.tool data/memory/owner_profile.json
+```
+
+For an isolated typed check through the production skill route, use `python scripts/manual_verify_owner_memory.py --profile-path /tmp/ares_owner_profile.json --text "remember that my favorite color is blue"`. The separate-process verifier always uses its own temporary directory and never touches the real profile.
+
 Latest Commits
 
+- `14ddf38` Add explicit persistent owner memory
 - `1f3294d` Add production single-turn voice launcher
 - `e9103d3` Document calculator wrappers and playback isolation
 - `bfdcff7` Harden spoken calculator routing and playback isolation
@@ -2343,9 +2374,10 @@ Latest Commits
 Next Planned Step
 
 - Architecture hardening before real hardware/adapters is complete: lifecycle, contracts, manifests, migrations, health/fallback, and measured resource budgets are implemented.
-- Phase 3 now includes verified owner-run ALSA, Whisper, Piper, speaker, voice-profile, single-turn, bounded multi-turn, adaptive VAD, deterministic spoken-calculator routing, and a short production-style one-turn launcher.
-- Pull `main` on Raspberry Pi and run `python scripts/run_ares_voice.py`; record only observed stop reason, timing, routing, generated response playback, and cleanup behavior.
+- Phase 3 now includes verified owner-run ALSA, Whisper, Piper, speaker, voice-profile, single-turn, bounded multi-turn, adaptive VAD, deterministic spoken-calculator routing, a short production-style one-turn launcher, and deterministic explicit owner-memory persistence in Windows/hardware-free verification.
+- Pull `main` on Raspberry Pi and verify save, recall, update, forget, and missing recall across fresh `python scripts/run_ares_voice.py` processes. Do not edit the profile manually during the test.
+- Record the observed spoken responses and confirm `data/memory/owner_profile.json` survives process exit; do not claim broader conversational memory.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not enable default real weather/market API behavior, Google Calendar integration, GPT, embeddings, vision, scheduling, notifications, or background automation yet.
-- Do not add wake word detection, boot startup, background listening, cloud speech, an unbounded loop, or automatic transcript memory writes yet.
+- Do not add wake word detection, boot startup, background listening, cloud speech, an unbounded loop, automatic transcript memory writes, semantic/vector memory, or autonomous fact extraction yet.

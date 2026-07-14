@@ -44,6 +44,19 @@
     "calculator_wrapper_policy": "anchored_allowlist_v1",
     "diagnostic_routing": false
   },
+  "owner_memory": {
+    "profile_path": "data/memory/owner_profile.json",
+    "profile_path_environment_override": "ARES_OWNER_PROFILE_PATH",
+    "schema_name": "ares.owner_profile",
+    "schema_version": 1,
+    "owner_id": "primary_owner",
+    "explicit_commands_only": true,
+    "maximum_key_length": 64,
+    "maximum_value_length": 256,
+    "persist_transcripts": false,
+    "persist_microphone_audio": false,
+    "persist_complete_conversations": false
+  },
   "enabled_modules": {
     "voice": true,
     "mock_microphone_adapter": true,
@@ -57,7 +70,8 @@
     "single_turn_voice_pipeline": true,
     "multi_turn_voice_session": true,
     "voice_command_router": true,
-    "voice_session_skill": true
+    "voice_session_skill": true,
+    "owner_memory": true
   },
   "preferred_providers": {
     "voice.capture": "mock_microphone_adapter",
@@ -69,7 +83,10 @@
     "voice.single_turn": "single_turn_voice_pipeline",
     "voice.conversation_session": "multi_turn_voice_session",
     "voice.command_route": "voice_command_router",
-    "voice.session": "voice_session_skill"
+    "voice.session": "voice_session_skill",
+    "memory.owner_fact.save": "owner_memory",
+    "memory.owner_fact.recall": "owner_memory",
+    "memory.owner_fact.forget": "owner_memory"
   },
   "allowed_permissions": [
     "microphone.read",

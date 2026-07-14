@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.88 - Production-Style Single-Turn Voice Launcher
+ARES v1.89 - Explicit Persistent Owner Memory
 
 ---
 
@@ -53,6 +53,8 @@ Raspberry Pi speech-input verification is now hardened for real recordings. The 
 `core.SingleTurnVoicePipeline` now performs one bounded owner-triggered voice turn and exits. It composes the existing microphone, STT, VoiceCommandRouter/CoreService, SkillManager text path, TTS, and speaker boundaries; lifecycle and resource managers gate execution, `VoiceStageCoordinator` prevents capture/playback and Whisper/Piper overlap, and versioned V1 contracts report every stage. The recognized text reaches the same `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path used by existing local text execution. No wake word, continuous loop, background service, GPT, cloud call, or automatic transcript memory write was added.
 
 `scripts/run_ares_voice.py` is the production-style owner entry point for exactly one real voice turn. It resolves repository-relative Whisper paths from the script location, reads the default Piper profile through the existing voice-profile registry, performs lifecycle/component health preflight before capture, then delegates to the existing `SingleTurnVoicePipeline`. Its Raspberry Pi defaults are `plughw:2,0`, `plughw:CARD=Device,DEV=0`, English, `external/whisper.cpp/build/bin/whisper-cli`, `models/whisper/ggml-base.en.bin`, `en_US-hfc_male-medium`, auto-stop capture, response playback enabled, diagnostic retention/playback disabled, and a 300-second timeout. It does not contain ALSA, Whisper, Piper, routing, calculator, or playback implementation code.
+
+`memory.OwnerProfileStore` and `skills.builtin.OwnerMemorySkill` now provide explicit, bounded owner-fact persistence through the same production skill route. Commands such as `remember that my favorite color is blue`, `what is my favorite color`, and `forget my favorite color` pass through `VoiceCommandRouter -> CoreService -> SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> OwnerMemorySkill`; the voice launcher never calls the store directly. Facts persist in `data/memory/owner_profile.json` under the `ares.owner_profile` v1 schema, and `ARES_OWNER_PROFILE_PATH` provides an explicit local path override for isolated verification. This feature does not save arbitrary transcripts, recordings, conversations, or inferred facts.
 
 `core.MultiTurnVoiceSession` now provides an explicitly owner-started, bounded conversation session by repeatedly invoking `SingleTurnVoicePipeline`. `MultiTurnVoiceSessionRequestV1` and `MultiTurnVoiceSessionResultV1` define limits, stop phrases, per-turn correlation IDs, summaries, cleanup state, and structured failure data. An exact normalized stop-phrase gate runs after transcription and before Brain routing. Local greeting and closing phrases use the existing TTS/speaker path without asking the Brain to generate them. The session defaults to five turns, 180 seconds, three consecutive failures, five-second captures, a 0.75-second inter-turn delay, and playback disabled. It remains a foreground owner-run process with no wake word, background listener, boot service, GPT, cloud dependency, or automatic transcript persistence.
 
@@ -114,9 +116,9 @@ Permanent execution-safety rule: a confirmed destructive action must execute at 
 
 Recovery order for routed work is: validate request, resolve capability, validate interface version, validate manifest, check health, reserve capacity, activate the selected module, execute once, produce a structured result, release the task slot, retain or unload according to lifecycle policy, and record a bounded operational outcome. Fallback may occur only before destructive execution, only across compatible providers, only when policy and resource capacity allow it, and only while preserving the original failure.
 
-Memory schema migrations now protect active JSON-backed durable stores. The current envelope fields are `schema_name`, `schema_version`, `created_at`, `updated_at`, `data`, and optional `metadata`. The current active schemas are `ares.user_profile`, `ares.goals`, `ares.notes`, `ares.tasks`, `ares.memory.short`, `ares.memory.long`, and `ares.event_history`. `ReminderScheduler` derives from tasks and has no separate file. Voice-session history is stored through `EventHistoryStore`; there is no separate voice-session store. Legacy `memory_manager.py` remains a separate script API over legacy files and is documented as legacy/disconnected from the active store path.
+Memory schema migrations now protect active JSON-backed durable stores. The current envelope fields are `schema_name`, `schema_version`, `created_at`, `updated_at`, `data`, and optional `metadata`. The current active schemas are `ares.user_profile`, `ares.owner_profile`, `ares.goals`, `ares.notes`, `ares.tasks`, `ares.memory.short`, `ares.memory.long`, and `ares.event_history`. `ReminderScheduler` derives from tasks and has no separate file. Voice-session history is stored through `EventHistoryStore`; there is no separate voice-session store. Legacy `memory_manager.py` remains a separate script API over legacy files and is documented as legacy/disconnected from the active store path.
 
-Durable identity and memory stores are user profile, short/long memory, goals, notes, and tasks. Operational history is event history. Disposable caches are not treated as identity data. Configuration files such as app allowlists and adapter examples are configuration-backed durable state, not owner memory, and are not migrated as identity stores.
+Durable identity and memory stores are user profile, the explicit owner profile, short/long memory, goals, notes, and tasks. Operational history is event history. Disposable caches are not treated as identity data. Configuration files such as app allowlists and adapter examples are configuration-backed durable state, not owner memory, and are not migrated as identity stores.
 
 Legacy unversioned formats are imported only when they match known store structures. Unknown future versions, malformed envelopes, invalid JSON, truncated files, wrong root types, wrong schema names, missing migration paths, post-migration validation failures, and concurrent writes fail closed without resetting memories. Migrations create local backups under `.migration_backups`, write temporary files, atomically replace where practical, and verify the final file can be loaded.
 
@@ -536,6 +538,8 @@ Implemented Features
 - Built-in device action skill backed by `LocalDeviceActionAdapter`
 - Built-in time/date skill
 - Built-in memory recall skill for saved profile facts
+- Built-in owner-memory skill for explicit bounded save, recall, update, and forget operations
+- Versioned `OwnerProfileStore` with protected-key rejection, atomic writes, and fail-closed corruption handling
 - Built-in calculator skill for safe local arithmetic
 - Built-in notes skill for persistent local notes
 - Built-in tasks skill for offline reminders/tasks
@@ -543,7 +547,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 1180 tests across current core modules
+- Pytest automated coverage for 1245 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -562,7 +566,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1180 tests`.
+Current pytest collection: `1245 tests`.
 
 Manual Calculator Launch Verification
 
@@ -858,6 +862,48 @@ python scripts/run_ares_voice.py \
 ```
 
 Only `--play-diagnostic-audio` plays the retained raw, assembled, and normalized capture stages. `--playback` is the default response-only behavior; `--no-playback` disables the generated response. Use `--fixed-duration --record-seconds 5` only for the preserved fixed-duration fallback.
+
+Explicit Persistent Owner Memory
+
+Owner memory accepts only deliberate, bounded commands. It does not infer facts from normal conversation:
+
+```text
+Remember that my favorite color is blue. -> I will remember that your favorite color is blue.
+What is my favorite color?               -> Your favorite color is blue.
+Remember that my favorite color is red.  -> I updated your favorite color to red.
+Forget my favorite color.                -> I forgot your favorite color.
+What is my favorite color?               -> I do not know your favorite color yet.
+```
+
+Supported deterministic forms are `remember [that] my <key> is <value>`, `what is/what's my <key>`, `do you remember my <key>`, and `forget my <key>`. Keys are normalized, so `favorite colour` and `favorite color` both resolve to `favorite_color`. Keys and values are length-bounded, control characters and path-like keys are rejected, and ambiguous commands fail without guessing.
+
+Passwords, passcodes, PINs, API keys, tokens, private keys, recovery or seed phrases, and bounded bank/card identifiers are protected keys. ARES refuses to store or recall them and redacts supplied values from operational events and routing/lifecycle diagnostics. Normal event records contain operation/status metadata only.
+
+The default file is `data/memory/owner_profile.json`. It uses the shared schema envelope with `schema_name: ares.owner_profile`, integer `schema_version: 1`, timestamps, structured fact data, and bounded metadata. Writes validate data, create a backup when replacing an existing file, write and flush a temporary file, atomically replace the active file where practical, and verify the result. Malformed JSON, unsupported future versions, invalid envelopes, or failed writes fail closed; ARES does not reset the profile to empty or overwrite recovery evidence.
+
+`config/modules.example.json` documents the owner-memory policy and capability provider. The runtime path is the repository default unless `ARES_OWNER_PROFILE_PATH` is explicitly set; normal runtime never installs providers or loads arbitrary classes from this example file.
+
+Run one hardware-free command through the real SkillManager/Planner/ExecutionPipeline path with an isolated profile:
+
+```bash
+python scripts/manual_verify_owner_memory.py \
+  --profile-path /tmp/ares_owner_profile.json \
+  --text "remember that my favorite color is blue"
+```
+
+Prove save, recall, update, forget, and missing recall across six separate Python processes without touching the real profile:
+
+```bash
+python scripts/verify_owner_memory_persistence.py --verbose
+```
+
+On Raspberry Pi, each `python scripts/run_ares_voice.py` invocation remains one fresh process. Say the save phrase, let the process exit, start it again, and say the recall phrase. Inspect the persisted JSON without editing it with:
+
+```bash
+python -m json.tool data/memory/owner_profile.json
+```
+
+This is not general conversational memory, semantic memory, autonomous learning, transcript persistence, a vector database, or GPT memory. Microphone WAVs and complete conversations are never written to the owner profile.
 
 Controlled Single-Turn Voice Verification
 
@@ -2107,22 +2153,30 @@ Phase 84
 - Reused the existing versioned single-turn request, production factory, lifecycle health preflight, Brain/skill route, Piper adapter, and ALSA speaker adapter
 - Configured verified Raspberry Pi defaults with response-only playback and diagnostics disabled
 - Added deterministic dependency, path-resolution, delegation, option, cleanup-policy, and exit-code tests
-- Current pytest collection is 1180 tests
+- Historical Phase 84 pytest collection was 1180 tests
 
 Phase 85
+
+- Added explicit bounded owner-fact save, recall, update, and forget through the production skill path
+- Added `OwnerProfileStore` at `data/memory/owner_profile.json` with the `ares.owner_profile` v1 schema, validation, backups, atomic replacement, and corruption rejection
+- Added protected-key rejection and operational event/diagnostic redaction without automatic transcript, recording, or conversation persistence
+- Added hardware-free command verification plus six fresh-process persistence checks against an isolated temporary profile
+- Current pytest collection is 1245 tests
+
+Phase 86
 
 - Future voice expansion only after separate approval
 - Wake word
 - Bounded background-listening design
 
-Phase 86
+Phase 87
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 86
+Phase 88
 
 - Robotics
 - ROS2
