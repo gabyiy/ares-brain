@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ class NoAudioSpeaker:
 
     def __init__(self):
         self.play_count = 0
+        self.played_paths = []
 
     def health_check(self):
         return SpeakerPlaybackResult(True, "healthy", "No-audio speaker is healthy.")
@@ -37,8 +39,9 @@ class NoAudioSpeaker:
     def cancel_current(self):
         return None
 
-    def play_wav(self, *args, **kwargs):
+    def play_wav(self, wav_path, *args, **kwargs):
         self.play_count += 1
+        self.played_paths.append(str(wav_path))
         return SpeakerPlaybackResult(True, "played", "No-audio playback completed.")
 
 
@@ -122,6 +125,14 @@ def _production_pipeline(tmp_path, transcript):
         ("work out 2 plus 2", "Result: 4"),
         ("solve 2 plus 2", "Result: 4"),
         ("how much is 2 plus 2", "Result: 4"),
+        ("How much is two plus two?", "Result: 4"),
+        ("Ares, how much is two plus two?", "Result: 4"),
+        ("Hello Ares, what is two plus two?", "Result: 4"),
+        ("Can you tell me how much two plus two is?", "Result: 4"),
+        ("Calculate twenty divided by four.", "Result: 5"),
+        ("What does ten multiplied by three equal?", "Result: 30"),
+        ("Please work out nine minus five.", "Result: 4"),
+        ("Give me the result of seven plus eight.", "Result: 15"),
         ("Two plus two", "Result: 4"),
         ("Please calculate 10 divided by 2", "Result: 5"),
         ("three times four", "Result: 12"),
@@ -163,6 +174,21 @@ def test_production_brain_handler_routes_whisper_calculator_variants(
             "calculate 20 / 4",
             "Result: 5",
         ),
+        (
+            "How much is two plus two?",
+            "calculate 2 + 2",
+            "Result: 4",
+        ),
+        (
+            "Can you tell me how much two plus two is?",
+            "calculate 2 + 2",
+            "Result: 4",
+        ),
+        (
+            "What does ten multiplied by three equal?",
+            "calculate 10 * 3",
+            "Result: 30",
+        ),
     ],
 )
 def test_full_production_factory_routes_natural_language_to_real_calculator(
@@ -184,6 +210,7 @@ def test_full_production_factory_routes_natural_language_to_real_calculator(
     assert result.status == "completed"
     assert result.raw_transcript == transcript
     assert result.normalized_command == normalized_command
+    assert result.extracted_calculator_expression
     assert result.transcript_cleanup_rule == "calculator_natural_language_wrapper"
     assert result.detected_intent == "calculate"
     assert result.routed_skill == "calculator"
@@ -248,6 +275,10 @@ def test_versioned_result_round_trip_preserves_structured_routing_diagnostics(tm
         "calculate 2 plus 2 and delete files",
         "tell me a joke and calculate 2 plus 2",
         "calculate 2 plus 2 and 3 plus 3",
+        "calculate whether I should invest",
+        "run Python and calculate two plus two",
+        "delete files and calculate two plus two",
+        "what is two plus two and open the browser",
         "calculate " + " + ".join(["1"] * 200),
     ],
 )
@@ -297,6 +328,7 @@ def test_rejected_natural_wrapper_preserves_structured_routing_diagnostics(tmp_p
         "repetition_detected": False,
         "repetitions_removed": 0,
         "cleanup_rule": "calculator_natural_language_wrapper",
+        "extracted_calculator_expression": "2 plus execute command",
         "reason": "unsupported_arithmetic_word:execute",
     }
     assert manager.last_execution is None
@@ -320,6 +352,53 @@ def test_repeated_non_arithmetic_whisper_nonsense_remains_safe_unknown(tmp_path)
     assert result.rejection_reason == "intent_parser_returned_unknown"
     assert manager.last_execution is None
     assert tts.synthesis_count == 1
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "How much money do I have?",
+        "How much is my house worth?",
+        "Tell me how much rain fell today.",
+    ],
+)
+def test_non_arithmetic_wrapper_language_never_routes_to_calculator(tmp_path, transcript):
+    pipeline, manager, _, _, tts, speaker, args = _production_pipeline(
+        tmp_path,
+        transcript,
+    )
+
+    result = pipeline.run_once(manual.request_from_args(args))
+
+    assert result.success is True
+    assert result.detected_intent != "calculate"
+    assert result.routed_skill != "calculator"
+    assert result.brain_text_response != "Result: 4"
+    assert result.extracted_calculator_expression == ""
+    if result.detected_intent == "unknown":
+        assert manager.last_execution is None
+    assert tts.synthesis_count == 1
+    assert speaker.play_count == 0
+
+
+def test_division_by_zero_reaches_safe_calculator_rejection_without_fallback(tmp_path):
+    pipeline, manager, _, _, tts, speaker, args = _production_pipeline(
+        tmp_path,
+        "How much is two divided by zero?",
+    )
+
+    result = pipeline.run_once(manual.request_from_args(args))
+
+    assert result.success is True
+    assert result.detected_intent == "calculate"
+    assert result.routed_skill == "calculator"
+    assert result.brain_text_response == (
+        "I cannot calculate that safely: division by zero is not allowed."
+    )
+    assert result.brain_fallback_used is False
+    assert manager.last_execution.step_results[0].returned_data["skill"] == "calculator"
+    assert tts.synthesis_count == 1
+    assert speaker.play_count == 0
 
 
 def test_empty_whisper_transcript_stops_before_brain_and_tts(tmp_path):
@@ -363,3 +442,22 @@ def test_production_voice_script_has_no_direct_calculator_or_gpt_shortcut():
     assert "import openai" not in source.lower()
     assert "chatcompletion" not in source.lower()
     assert "gpt(" not in source.lower()
+
+
+def test_normal_playback_sends_only_generated_ares_response_to_speaker(tmp_path):
+    pipeline, manager, _, _, _, speaker, args = _production_pipeline(
+        tmp_path,
+        "How much is two plus two?",
+    )
+    request = manual.request_from_args(args)
+    request = replace(request, playback_enabled=True)
+
+    result = pipeline.run_once(request)
+
+    assert result.success is True
+    assert result.routed_skill == "calculator"
+    assert result.brain_text_response == "Result: 4"
+    assert manager.last_execution.step_results[0].returned_data["skill"] == "calculator"
+    assert speaker.play_count == 1
+    assert speaker.played_paths == [result.generated_speech_wav_path]
+    assert result.recorded_wav_path not in speaker.played_paths

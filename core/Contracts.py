@@ -452,6 +452,7 @@ class TranscriptNormalizationResultV1(VersionedContract):
     raw_transcript: str = ""
     cleaned_transcript: str = ""
     normalized_command: str = ""
+    extracted_calculator_expression: str = ""
     arithmetic_candidate: bool = False
     repetition_detected: bool = False
     repetitions_removed: int = 0
@@ -652,6 +653,7 @@ class SingleTurnVoiceResultV1(VersionedContract):
     raw_transcript: str = ""
     cleaned_transcript: str = ""
     normalized_command: str = ""
+    extracted_calculator_expression: str = ""
     repetition_detected: bool = False
     repetitions_removed: int = 0
     transcript_cleanup_rule: str = "none"

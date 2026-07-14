@@ -52,6 +52,11 @@ def test_spoken_arithmetic_is_normalized_strictly(spoken, normalized):
         ("Please, calculate two plus two!", "calculate 2 + 2"),
         ("Could you calculate three times four?", "calculate 3 * 4"),
         ("Can you work out ten divided by two?", "calculate 10 / 2"),
+        ("How much is two plus two?", "calculate 2 + 2"),
+        ("Can you tell me how much two plus two is?", "calculate 2 + 2"),
+        ("What does ten multiplied by three equal?", "calculate 10 * 3"),
+        ("Tell me the answer to seven plus eight.", "calculate 7 + 8"),
+        ("Give me the result of nine minus five.", "calculate 9 - 5"),
         ("Tell me two over two.", "calculate 2 / 2"),
         ("  CALCULATE   TWO   PLUS   TWO.  ", "calculate 2 + 2"),
     ],
@@ -89,6 +94,19 @@ def test_whisper_style_calculator_variants_are_bounded_and_deterministic(
         "work out 2 plus 2",
         "solve 2 plus 2",
         "how much is 2 plus 2",
+        "How much is two plus two?",
+        "Ares, how much is two plus two?",
+        "Hello Ares, what is two plus two?",
+        "Hey Ares, how much is two plus two?",
+        "Hi Ares, how much is two plus two?",
+        "Can you tell me how much two plus two is?",
+        "What does two plus two equal?",
+        "Tell me the answer to two plus two.",
+        "Give me the result of two plus two.",
+        "the result of two plus two",
+        "two plus two is",
+        "two plus two equal",
+        "two plus two equals",
     ],
 )
 def test_approved_natural_language_calculator_wrappers_are_extracted(spoken):
@@ -98,7 +116,52 @@ def test_approved_natural_language_calculator_wrappers_are_extracted(spoken):
     assert result.normalized_command == "calculate 2 + 2"
     assert result.arithmetic_candidate is True
     assert result.cleanup_rule == "calculator_natural_language_wrapper"
+    assert result.extracted_calculator_expression in {"two plus two", "2 plus 2"}
     assert result.rejection_reason == ""
+
+
+@pytest.mark.parametrize(
+    ("spoken", "normalized", "expression", "cleanup_rule"),
+    [
+        (
+            "Calculate twenty divided by four.",
+            "calculate 20 / 4",
+            "twenty divided by four",
+            "calculator_natural_language_wrapper",
+        ),
+        (
+            "What does ten multiplied by three equal?",
+            "calculate 10 * 3",
+            "ten multiplied by three",
+            "calculator_natural_language_wrapper",
+        ),
+        (
+            "Please work out nine minus five.",
+            "calculate 9 - 5",
+            "nine minus five",
+            "calculator_natural_language_wrapper",
+        ),
+        (
+            "Give me the result of seven plus eight.",
+            "calculate 7 + 8",
+            "seven plus eight",
+            "calculator_natural_language_wrapper",
+        ),
+        ("one added to two", "calculate 1 + 2", "one added to two", "none"),
+    ],
+)
+def test_explicit_wrapper_and_operator_variants_preserve_extracted_expression(
+    spoken,
+    normalized,
+    expression,
+    cleanup_rule,
+):
+    result = normalize_transcript(spoken)
+
+    assert result.success is True
+    assert result.normalized_command == normalized
+    assert result.extracted_calculator_expression == expression
+    assert result.cleanup_rule == cleanup_rule
 
 
 @pytest.mark.parametrize(
@@ -132,6 +195,10 @@ def test_calculator_wrapper_extraction_handles_bounded_whisper_formatting(spoken
         "calculate 2 plus 2 and 3 plus 3",
         "calculate 2 plus 2, then calculate 3 plus 3",
         "I'll calculate __import__('os') plus 2",
+        "calculate whether I should invest",
+        "run Python and calculate two plus two",
+        "delete files and calculate two plus two",
+        "what is two plus two and open the browser",
     ],
 )
 def test_natural_language_calculator_extraction_rejects_ambiguity_and_code(spoken):
@@ -158,12 +225,30 @@ def test_non_calculator_natural_language_is_not_forced_into_arithmetic(spoken):
     assert not result.normalized_command.startswith("calculate ")
 
 
+@pytest.mark.parametrize(
+    "spoken",
+    [
+        "How much money do I have?",
+        "How much is my house worth?",
+        "Tell me how much rain fell today.",
+    ],
+)
+def test_calculator_wrapper_words_are_not_globally_deleted(spoken):
+    result = normalize_transcript(spoken)
+
+    assert result.success is True
+    assert result.arithmetic_candidate is False
+    assert result.extracted_calculator_expression == ""
+    assert not result.normalized_command.startswith("calculate ")
+
+
 def test_raw_cleaned_and_normalized_transcripts_are_preserved():
     result = normalize_transcript("  What is two plus two?!  ", correlation_id="corr-1")
 
     assert result.raw_transcript == "  What is two plus two?!  "
     assert result.cleaned_transcript == "What is two plus two"
     assert result.normalized_command == "calculate 2 + 2"
+    assert result.extracted_calculator_expression == "two plus two"
     assert result.correlation_id == "corr-1"
 
 

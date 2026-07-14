@@ -53,6 +53,7 @@ _OPERATORS = {"plus": "+", "add": "+", "minus": "-", "subtract": "-", "times": "
 _SYMBOLS = frozenset({"+", "-", "*", "/", "(", ")"})
 CALCULATOR_NATURAL_LANGUAGE_WRAPPER = "calculator_natural_language_wrapper"
 _MULTIWORD_REPLACEMENTS = (
+    (r"\badded\s+to\b", " + "),
     (r"\bmultiplied\s+by\b", " * "),
     (r"\bdivided\s+by\b", " / "),
     (r"\bopen\s+parenthes(?:is|es)\b", " ( "),
@@ -69,7 +70,7 @@ MAX_ARITHMETIC_SOURCE_LENGTH = 256
 class _CalculatorWrapperRule:
     prefix: str
     explicit_calculator_request: bool = True
-    allow_trailing_is: bool = False
+    allowed_trailing_suffixes: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,30 @@ class _CalculatorWrapperExtraction:
 
 
 _CALCULATOR_WRAPPER_RULES = (
+    _CalculatorWrapperRule(
+        "can you tell me how much",
+        explicit_calculator_request=False,
+        allowed_trailing_suffixes=("is", "equal", "equals"),
+    ),
+    _CalculatorWrapperRule(
+        "tell me how much",
+        explicit_calculator_request=False,
+        allowed_trailing_suffixes=("is", "equal", "equals"),
+    ),
+    _CalculatorWrapperRule(
+        "how much does",
+        explicit_calculator_request=False,
+        allowed_trailing_suffixes=("equal", "equals"),
+    ),
+    _CalculatorWrapperRule(
+        "what does",
+        explicit_calculator_request=False,
+        allowed_trailing_suffixes=("equal", "equals"),
+    ),
+    _CalculatorWrapperRule("tell me the answer to", explicit_calculator_request=False),
+    _CalculatorWrapperRule("tell me the result of", explicit_calculator_request=False),
+    _CalculatorWrapperRule("give me the result of", explicit_calculator_request=False),
+    _CalculatorWrapperRule("the result of", explicit_calculator_request=False),
     _CalculatorWrapperRule("could you please calculate"),
     _CalculatorWrapperRule("would you please calculate"),
     _CalculatorWrapperRule("can you please calculate"),
@@ -93,13 +118,13 @@ _CALCULATOR_WRAPPER_RULES = (
     _CalculatorWrapperRule(
         "can you tell me what",
         explicit_calculator_request=False,
-        allow_trailing_is=True,
+        allowed_trailing_suffixes=("is", "equal", "equals"),
     ),
     _CalculatorWrapperRule("tell me what is", explicit_calculator_request=False),
     _CalculatorWrapperRule(
         "tell me what",
         explicit_calculator_request=False,
-        allow_trailing_is=True,
+        allowed_trailing_suffixes=("is", "equal", "equals"),
     ),
     _CalculatorWrapperRule("how much is", explicit_calculator_request=False),
     _CalculatorWrapperRule("what's", explicit_calculator_request=False),
@@ -154,6 +179,7 @@ class TranscriptNormalizer:
                     if initial_extraction.applied
                     else "none"
                 ),
+                extracted_calculator_expression=initial_extraction.source,
             )
         cleaned, detected, removed, cleanup_rule = _collapse_repetition_loops(
             cleaned_base,
@@ -187,6 +213,7 @@ class TranscriptNormalizer:
                     repetition_detected=detected,
                     repetitions_removed=removed,
                     cleanup_rule=cleanup_rule,
+                    extracted_calculator_expression=extraction.source,
                 )
             normalized = f"calculate {expression}"
         else:
@@ -197,6 +224,9 @@ class TranscriptNormalizer:
             raw_transcript=raw,
             cleaned_transcript=cleaned,
             normalized_command=normalized,
+            extracted_calculator_expression=(
+                extraction.source if arithmetic_candidate else ""
+            ),
             arithmetic_candidate=arithmetic_candidate,
             repetition_detected=detected,
             repetitions_removed=removed,
@@ -216,11 +246,13 @@ class TranscriptNormalizer:
         repetition_detected: bool = False,
         repetitions_removed: int = 0,
         cleanup_rule: str = "none",
+        extracted_calculator_expression: str = "",
     ) -> TranscriptNormalizationResultV1:
         return TranscriptNormalizationResultV1(
             success=False,
             raw_transcript=request.raw_transcript if request else "",
             cleaned_transcript=cleaned_transcript,
+            extracted_calculator_expression=extracted_calculator_expression,
             arithmetic_candidate=arithmetic_candidate,
             repetition_detected=repetition_detected,
             repetitions_removed=repetitions_removed,
@@ -313,7 +345,10 @@ def _is_arithmetic_candidate(
     if re.search(r"\d\s*(?:[+*/-]|\b(?:plus|minus|times|over)\b)", lowered):
         return True
     number_pattern = "|".join(sorted((_NUMBER_WORDS - {"and"}), key=len, reverse=True))
-    operator_pattern = r"plus|add|minus|subtract|times|multiplied\s+by|divided\s+by|over"
+    operator_pattern = (
+        r"plus|add|added\s+to|minus|subtract|times|"
+        r"multiplied\s+by|divided\s+by|over"
+    )
     return bool(
         re.search(rf"\b(?:{number_pattern})\b", lowered)
         and re.search(rf"\b(?:{operator_pattern})\b", lowered)
@@ -387,7 +422,15 @@ def _spoken_arithmetic_expression(text: str) -> Tuple[str, str]:
 def _extract_calculator_wrapper(source: str) -> _CalculatorWrapperExtraction:
     original = source
     working = source
-    for vocative in ("hello, ares", "hello ares", "ares"):
+    for vocative in (
+        "hello, ares",
+        "hello ares",
+        "hey, ares",
+        "hey ares",
+        "hi, ares",
+        "hi ares",
+        "ares",
+    ):
         candidate, matched = _strip_anchored_prefix(working, vocative)
         if matched:
             working = candidate
@@ -403,11 +446,25 @@ def _extract_calculator_wrapper(source: str) -> _CalculatorWrapperExtraction:
             )
 
     if match is None:
+        for suffix in ("equals", "equal", "is"):
+            remainder, matched = _strip_anchored_suffix(working, suffix)
+            if not matched:
+                continue
+            probe = _CalculatorWrapperExtraction(source=remainder)
+            if _is_arithmetic_candidate(remainder, probe):
+                return _CalculatorWrapperExtraction(
+                    source=remainder,
+                    applied=True,
+                    explicit_calculator_request=False,
+                )
         return _CalculatorWrapperExtraction(source=original)
 
     remainder, rule = match
-    if rule.allow_trailing_is:
-        remainder, _ = _strip_anchored_suffix(remainder, "is")
+    for suffix in rule.allowed_trailing_suffixes:
+        candidate, matched = _strip_anchored_suffix(remainder, suffix)
+        if matched:
+            remainder = candidate
+            break
     return _CalculatorWrapperExtraction(
         source=remainder,
         applied=True,

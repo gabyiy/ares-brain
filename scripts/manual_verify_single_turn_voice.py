@@ -133,13 +133,34 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_REQUIRED_SILENCE_FRAMES,
     )
     parser.add_argument("--frame-debug", action="store_true")
-    parser.add_argument("--diagnostic-audio", action="store_true")
+    parser.add_argument(
+        "--preserve-diagnostic-audio",
+        action="store_true",
+        help="retain raw, assembled, and normalized capture files without playing them",
+    )
+    parser.add_argument(
+        "--diagnostic-audio",
+        action="store_true",
+        help="legacy alias for --preserve-diagnostic-audio",
+    )
     parser.add_argument(
         "--duration-loss-tolerance",
         type=float,
         default=DEFAULT_DURATION_LOSS_TOLERANCE_SECONDS,
     )
-    parser.add_argument("--playback-debug-stages", action="store_true")
+    parser.add_argument("--play-diagnostic-capture", action="store_true")
+    parser.add_argument("--play-diagnostic-assembled", action="store_true")
+    parser.add_argument("--play-diagnostic-normalized", action="store_true")
+    parser.add_argument(
+        "--play-diagnostic-audio",
+        action="store_true",
+        help="play all retained microphone diagnostic stages after the turn",
+    )
+    parser.add_argument(
+        "--playback-debug-stages",
+        action="store_true",
+        help="legacy alias for --play-diagnostic-audio",
+    )
     parser.add_argument("--diagnostic-routing", action="store_true")
     parser.add_argument("--playback", action="store_true")
     parser.add_argument("--keep-audio", action="store_true")
@@ -344,6 +365,7 @@ def create_pipeline(
 
 def request_from_args(args: argparse.Namespace) -> SingleTurnVoiceRequestV1:
     timeout = float(args.timeout)
+    diagnostic_audio = _diagnostic_audio_requested(args)
     return SingleTurnVoiceRequestV1(
         microphone_device=args.microphone_device,
         recording_duration_seconds=args.record_seconds,
@@ -368,7 +390,7 @@ def request_from_args(args: argparse.Namespace) -> SingleTurnVoiceRequestV1:
         frame_duration_ms=args.frame_ms,
         duration_loss_tolerance_seconds=args.duration_loss_tolerance,
         frame_debug_enabled=bool(args.frame_debug),
-        diagnostic_audio=bool(args.diagnostic_audio),
+        diagnostic_audio=diagnostic_audio,
         tts_voice_profile=args.voice_profile,
         speaker_device=args.speaker_device,
         playback_enabled=bool(args.playback),
@@ -379,7 +401,7 @@ def request_from_args(args: argparse.Namespace) -> SingleTurnVoiceRequestV1:
         synthesis_timeout_seconds=timeout,
         playback_timeout_seconds=timeout,
         cleanup_policy=(
-            "keep" if args.keep_audio or args.diagnostic_audio else "delete_on_success"
+            "keep" if args.keep_audio or diagnostic_audio else "delete_on_success"
         ),
         text_input=args.text_input,
         metadata={
@@ -396,9 +418,8 @@ def run_manual_verification(
 ) -> int:
     args = build_parser().parse_args(argv)
     output_func(WARNING)
-    if args.playback_debug_stages and not args.diagnostic_audio:
-        output_func("FAIL: --playback-debug-stages requires --diagnostic-audio.")
-        return 2
+    diagnostic_audio = _diagnostic_audio_requested(args)
+    diagnostic_playback_stages = _selected_diagnostic_playback_stages(args)
     if not args.playback:
         output_func("Speaker playback is disabled. Add --playback to hear the response.")
     request = request_from_args(args)
@@ -433,23 +454,24 @@ def run_manual_verification(
         result,
         output_func,
         frame_debug=bool(args.frame_debug or args.verbose),
-        diagnostic_audio=bool(args.diagnostic_audio),
+        diagnostic_audio=diagnostic_audio,
     )
     transcript_output_path = ""
-    if args.diagnostic_audio:
+    if diagnostic_audio:
         transcript_output_path = _write_diagnostic_transcript(result)
         output_func(
             "Whisper transcript output path: "
             f"{transcript_output_path or '(not written)'}"
         )
     playback_debug_success = True
-    if args.playback_debug_stages:
+    if diagnostic_playback_stages:
         playback_debug_success = _play_diagnostic_audio_stages(
             active_pipeline,
             result,
             args.speaker_device,
             args.timeout,
             output_func,
+            diagnostic_playback_stages,
         )
     if result.error_reason:
         output_func(f"Failure stage: {result.error_stage}")
@@ -493,6 +515,10 @@ def _print_routing_diagnostics(
     output_func(f"Raw transcript: {result.raw_transcript or '(none)'}")
     output_func(f"Cleaned transcript: {result.cleaned_transcript or '(none)'}")
     output_func(f"Normalized command: {result.normalized_command or '(none)'}")
+    output_func(
+        "Extracted calculator expression: "
+        f"{result.extracted_calculator_expression or '(none)'}"
+    )
     output_func(
         f"Transcript cleanup rule: {result.transcript_cleanup_rule or 'none'}"
     )
@@ -661,6 +687,33 @@ def _diagnostic_audio_paths(result: Any) -> dict[str, str]:
     }
 
 
+def _diagnostic_audio_requested(args: argparse.Namespace) -> bool:
+    return bool(
+        getattr(args, "preserve_diagnostic_audio", False)
+        or getattr(args, "diagnostic_audio", False)
+        or _selected_diagnostic_playback_stages(args)
+    )
+
+
+def _selected_diagnostic_playback_stages(
+    args: argparse.Namespace,
+) -> tuple[str, ...]:
+    ordered = (
+        ("raw capture", "play_diagnostic_capture"),
+        ("assembled utterance", "play_diagnostic_assembled"),
+        ("normalized Whisper input", "play_diagnostic_normalized"),
+    )
+    play_all = bool(
+        getattr(args, "play_diagnostic_audio", False)
+        or getattr(args, "playback_debug_stages", False)
+    )
+    return tuple(
+        label
+        for label, attribute in ordered
+        if play_all or getattr(args, attribute, False)
+    )
+
+
 def _write_diagnostic_transcript(result: Any) -> str:
     normalized_path = _diagnostic_audio_paths(result)["normalized Whisper input"]
     transcript = str(result.raw_transcript or result.recognized_text or "")
@@ -688,14 +741,23 @@ def _play_diagnostic_audio_stages(
     speaker_device: str,
     timeout_seconds: float,
     output_func: Callable[[str], None],
+    selected_stages: Sequence[str],
 ) -> bool:
     speaker = getattr(pipeline, "speaker_adapter", None)
     if speaker is None:
         output_func("FAIL: diagnostic playback speaker adapter is unavailable.")
         return False
     paths = _diagnostic_audio_paths(result)
-    if any(not path or not Path(path).expanduser().exists() for path in paths.values()):
-        output_func("FAIL: one or more diagnostic audio stages are unavailable.")
+    selected_paths = {
+        label: paths[label]
+        for label in selected_stages
+        if label in paths
+    }
+    if len(selected_paths) != len(selected_stages) or any(
+        not path or not Path(path).expanduser().exists()
+        for path in selected_paths.values()
+    ):
+        output_func("FAIL: one or more selected diagnostic audio stages are unavailable.")
         return False
     started = speaker.start()
     if not getattr(started, "success", False):
@@ -703,7 +765,7 @@ def _play_diagnostic_audio_stages(
         return False
     success = True
     try:
-        for label, path in paths.items():
+        for label, path in selected_paths.items():
             output_func(f"Playing diagnostic {label}: {path}")
             playback = speaker.play_wav(
                 path,

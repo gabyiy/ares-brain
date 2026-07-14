@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from core import SingleTurnVoiceResultV1, SpeakerPlaybackResult
 from core.Intent import Intent
 from scripts import manual_verify_single_turn_voice as manual
@@ -51,6 +53,33 @@ def _success_result():
     )
 
 
+def _diagnostic_result(tmp_path, success=True, status="completed"):
+    raw = tmp_path / "raw_capture.wav"
+    assembled = tmp_path / "assembled_utterance.wav"
+    normalized = tmp_path / "normalized_whisper_input.wav"
+    for path in (raw, assembled, normalized):
+        path.write_bytes(b"diagnostic-audio")
+    result = SingleTurnVoiceResultV1(
+        success=success,
+        status=status,
+        raw_transcript="Hello Ares, what is two plus two?",
+        recorded_wav_path=str(normalized),
+        data={
+            "recording": {
+                "success": True,
+                "status": "completed_after_silence",
+                "data": {
+                    "raw_wav_path": str(raw),
+                    "assembled_wav_path": str(assembled),
+                    "normalized_wav_path": str(normalized),
+                    "final_whisper_input_path": str(normalized),
+                },
+            }
+        },
+    )
+    return result, raw, assembled, normalized
+
+
 def test_manual_script_import_is_safe_and_defaults_are_hardware_specific_only_as_config():
     parser = manual.build_parser()
     args = parser.parse_args([])
@@ -60,7 +89,12 @@ def test_manual_script_import_is_safe_and_defaults_are_hardware_specific_only_as
     assert args.speaker_device == "plughw:CARD=Device,DEV=0"
     assert args.whisper_model == "models/whisper/ggml-base.en.bin"
     assert args.playback is False
+    assert args.preserve_diagnostic_audio is False
     assert args.diagnostic_audio is False
+    assert args.play_diagnostic_capture is False
+    assert args.play_diagnostic_assembled is False
+    assert args.play_diagnostic_normalized is False
+    assert args.play_diagnostic_audio is False
     assert args.playback_debug_stages is False
     assert args.diagnostic_routing is False
     assert args.duration_loss_tolerance == 0.05
@@ -97,6 +131,7 @@ def test_diagnostic_routing_flag_prints_bounded_structured_report():
             raw_transcript="Calculate 2 plus 2.",
             cleaned_transcript="Calculate 2 plus 2",
             normalized_command="calculate 2 + 2",
+            extracted_calculator_expression="2 plus 2",
             transcript_cleanup_rule="calculator_natural_language_wrapper",
             detected_intent="calculate",
             candidate_skills=[
@@ -127,6 +162,7 @@ def test_diagnostic_routing_flag_prints_bounded_structured_report():
     assert "Raw transcript: Calculate 2 plus 2." in outputs
     assert "Cleaned transcript: Calculate 2 plus 2" in outputs
     assert "Normalized command: calculate 2 + 2" in outputs
+    assert "Extracted calculator expression: 2 plus 2" in outputs
     assert (
         "Transcript cleanup rule: calculator_natural_language_wrapper" in outputs
     )
@@ -183,45 +219,19 @@ def test_diagnostic_audio_prints_requested_actual_and_normalized_formats():
     assert "Final Whisper input path: normalized.wav" in outputs
 
 
-def test_debug_stage_playback_requires_explicit_diagnostic_audio():
-    pipeline = StubPipeline(_success_result())
-    outputs = []
+def test_legacy_debug_stage_alias_implies_diagnostic_preservation():
+    args = manual.build_parser().parse_args(["--playback-debug-stages"])
 
-    code = manual.run_manual_verification(
-        ["--text-input", "status", "--playback-debug-stages"],
-        output_func=outputs.append,
-        pipeline=pipeline,
+    assert manual._diagnostic_audio_requested(args) is True
+    assert manual._selected_diagnostic_playback_stages(args) == (
+        "raw capture",
+        "assembled utterance",
+        "normalized Whisper input",
     )
-
-    assert code == 2
-    assert pipeline.requests == []
-    assert "requires --diagnostic-audio" in "\n".join(outputs)
 
 
 def test_diagnostic_audio_preserves_transcript_and_plays_stages_in_order(tmp_path):
-    raw = tmp_path / "raw_capture.wav"
-    assembled = tmp_path / "assembled_utterance.wav"
-    normalized = tmp_path / "normalized_whisper_input.wav"
-    for path in (raw, assembled, normalized):
-        path.write_bytes(b"diagnostic-audio")
-    result = SingleTurnVoiceResultV1(
-        success=True,
-        status="completed",
-        raw_transcript="Hello Ares, what is two plus two?",
-        recorded_wav_path=str(normalized),
-        data={
-            "recording": {
-                "success": True,
-                "status": "completed_after_silence",
-                "data": {
-                    "raw_wav_path": str(raw),
-                    "assembled_wav_path": str(assembled),
-                    "normalized_wav_path": str(normalized),
-                    "final_whisper_input_path": str(normalized),
-                },
-            }
-        },
-    )
+    result, raw, assembled, normalized = _diagnostic_result(tmp_path)
     speaker = FakeSpeaker()
     pipeline = StubPipeline(result, speaker_adapter=speaker)
     outputs = []
@@ -230,8 +240,8 @@ def test_diagnostic_audio_preserves_transcript_and_plays_stages_in_order(tmp_pat
         [
             "--text-input",
             "status",
-            "--diagnostic-audio",
-            "--playback-debug-stages",
+            "--preserve-diagnostic-audio",
+            "--play-diagnostic-audio",
             "--speaker-device",
             "plughw:CARD=Device,DEV=0",
             "--timeout",
@@ -254,6 +264,116 @@ def test_diagnostic_audio_preserves_transcript_and_plays_stages_in_order(tmp_pat
         "Hello Ares, what is two plus two?\n"
     )
     assert "Whisper transcript output path: " + str(transcript_path) in outputs
+
+
+def test_preserving_diagnostic_audio_never_implies_playback(tmp_path):
+    result, _, _, normalized = _diagnostic_result(tmp_path)
+    speaker = FakeSpeaker()
+    pipeline = StubPipeline(result, speaker_adapter=speaker)
+
+    code = manual.run_manual_verification(
+        ["--text-input", "status", "--preserve-diagnostic-audio"],
+        output_func=lambda _: None,
+        pipeline=pipeline,
+    )
+
+    assert code == 0
+    assert pipeline.requests[0].diagnostic_audio is True
+    assert pipeline.requests[0].cleanup_policy == "keep"
+    assert speaker.calls == []
+    assert (normalized.parent / "whisper_transcript.txt").exists()
+
+
+@pytest.mark.parametrize(
+    ("flag", "label", "path_index"),
+    [
+        ("--play-diagnostic-capture", "raw capture", 0),
+        ("--play-diagnostic-assembled", "assembled utterance", 1),
+        ("--play-diagnostic-normalized", "normalized Whisper input", 2),
+    ],
+)
+def test_individual_diagnostic_playback_flags_play_only_selected_stage(
+    tmp_path,
+    flag,
+    label,
+    path_index,
+):
+    result, raw, assembled, normalized = _diagnostic_result(tmp_path)
+    paths = (raw, assembled, normalized)
+    speaker = FakeSpeaker()
+    outputs = []
+
+    code = manual.run_manual_verification(
+        ["--text-input", "status", flag],
+        output_func=outputs.append,
+        pipeline=StubPipeline(result, speaker_adapter=speaker),
+    )
+
+    assert code == 0
+    assert speaker.calls == [
+        "start",
+        ("play", str(paths[path_index]), manual.DEFAULT_SPEAKER_DEVICE, 300.0),
+        "stop",
+    ]
+    assert f"Playing diagnostic {label}: {paths[path_index]}" in outputs
+
+
+def test_all_diagnostic_playback_deduplicates_individual_flags(tmp_path):
+    result, raw, assembled, normalized = _diagnostic_result(tmp_path)
+    speaker = FakeSpeaker()
+
+    code = manual.run_manual_verification(
+        [
+            "--text-input",
+            "status",
+            "--play-diagnostic-audio",
+            "--play-diagnostic-capture",
+        ],
+        output_func=lambda _: None,
+        pipeline=StubPipeline(result, speaker_adapter=speaker),
+    )
+
+    assert code == 0
+    assert [call[1] for call in speaker.calls if isinstance(call, tuple)] == [
+        str(raw),
+        str(assembled),
+        str(normalized),
+    ]
+
+
+def test_response_playback_flag_does_not_replay_microphone_diagnostics(tmp_path):
+    result, _, _, _ = _diagnostic_result(tmp_path)
+    speaker = FakeSpeaker()
+    pipeline = StubPipeline(result, speaker_adapter=speaker)
+
+    code = manual.run_manual_verification(
+        ["--text-input", "status", "--playback"],
+        output_func=lambda _: None,
+        pipeline=pipeline,
+    )
+
+    assert code == 0
+    assert pipeline.requests[0].playback_enabled is True
+    assert pipeline.requests[0].diagnostic_audio is False
+    assert speaker.calls == []
+
+
+def test_failure_does_not_replay_capture_without_explicit_diagnostic_flag(tmp_path):
+    result, _, _, _ = _diagnostic_result(
+        tmp_path,
+        success=False,
+        status="transcript_rejected",
+    )
+    speaker = FakeSpeaker()
+
+    code = manual.run_manual_verification(
+        ["--text-input", "unsupported"],
+        output_func=lambda _: None,
+        pipeline=StubPipeline(result, speaker_adapter=speaker),
+    )
+
+    assert code == 2
+    assert speaker.calls == []
 
 
 def test_manual_real_arguments_are_forwarded_to_versioned_request():

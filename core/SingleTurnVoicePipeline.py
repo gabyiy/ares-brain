@@ -668,6 +668,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
             raw_transcript=state.raw_transcript,
             cleaned_transcript=state.cleaned_transcript,
             normalized_command=state.normalized_command,
+            extracted_calculator_expression=state.extracted_calculator_expression,
             repetition_detected=state.repetition_detected,
             repetitions_removed=state.repetitions_removed,
             transcript_cleanup_rule=state.transcript_cleanup_rule,

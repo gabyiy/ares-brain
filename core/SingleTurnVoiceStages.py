@@ -328,6 +328,9 @@ class SingleTurnVoiceStageMixin:
         state.raw_transcript = normalization.raw_transcript
         state.cleaned_transcript = normalization.cleaned_transcript
         state.normalized_command = normalization.normalized_command
+        state.extracted_calculator_expression = (
+            normalization.extracted_calculator_expression
+        )
         state.recognized_text = normalization.cleaned_transcript
         state.repetition_detected = normalization.repetition_detected
         state.repetitions_removed = normalization.repetitions_removed
@@ -341,6 +344,9 @@ class SingleTurnVoiceStageMixin:
                 "repetition_detected": normalization.repetition_detected,
                 "repetitions_removed": normalization.repetitions_removed,
                 "cleanup_rule": normalization.cleanup_rule,
+                "extracted_calculator_expression": (
+                    normalization.extracted_calculator_expression
+                ),
                 "reason": normalization_reason,
             },
             "stages": [
