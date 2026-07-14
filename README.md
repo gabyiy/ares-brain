@@ -54,7 +54,7 @@ Raspberry Pi speech-input verification is now hardened for real recordings. The 
 
 `scripts/run_ares_voice.py` is the production-style owner entry point for exactly one real voice turn. It resolves repository-relative Whisper paths from the script location, reads the default Piper profile through the existing voice-profile registry, performs lifecycle/component health preflight before capture, then delegates to the existing `SingleTurnVoicePipeline`. Its Raspberry Pi defaults are `plughw:2,0`, `plughw:CARD=Device,DEV=0`, English, `external/whisper.cpp/build/bin/whisper-cli`, `models/whisper/ggml-base.en.bin`, `en_US-hfc_male-medium`, auto-stop capture, response playback enabled, diagnostic retention/playback disabled, and a 300-second timeout. It does not contain ALSA, Whisper, Piper, routing, calculator, or playback implementation code.
 
-`memory.OwnerProfileStore` and `skills.builtin.OwnerMemorySkill` now provide explicit, bounded owner-fact persistence through the same production skill route. Commands such as `remember that my favorite color is blue`, `what is my favorite color`, and `forget my favorite color` pass through `VoiceCommandRouter -> CoreService -> SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> OwnerMemorySkill`; the voice launcher never calls the store directly. Facts persist in `data/memory/owner_profile.json` under the `ares.owner_profile` v1 schema, and `ARES_OWNER_PROFILE_PATH` provides an explicit local path override for isolated verification. This feature does not save arbitrary transcripts, recordings, conversations, or inferred facts.
+`memory.OwnerProfileStore` and `skills.builtin.OwnerMemorySkill` provide explicit, bounded owner-fact persistence through the same production skill route. Owner-memory parsing runs before generic task/reminder parsing, so `remember that my favorite color is blue` selects `OwnerMemorySkill`, while `remember to buy milk` remains a task. Save, update, recall, delete/forget, and the approved `my favorite color is ...` declaration pass through `VoiceCommandRouter -> CoreService -> SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> OwnerMemorySkill`; the voice launcher never calls the store directly. The canonical file is resolved from the repository root as `data/memory/owner_profile.json` under the `ares.owner_profile` v1 schema, independent of the process working directory. `ARES_OWNER_PROFILE_PATH` remains an explicit local override for isolated verification. This feature does not save arbitrary transcripts, recordings, conversations, or inferred facts.
 
 `core.MultiTurnVoiceSession` now provides an explicitly owner-started, bounded conversation session by repeatedly invoking `SingleTurnVoicePipeline`. `MultiTurnVoiceSessionRequestV1` and `MultiTurnVoiceSessionResultV1` define limits, stop phrases, per-turn correlation IDs, summaries, cleanup state, and structured failure data. An exact normalized stop-phrase gate runs after transcription and before Brain routing. Local greeting and closing phrases use the existing TTS/speaker path without asking the Brain to generate them. The session defaults to five turns, 180 seconds, three consecutive failures, five-second captures, a 0.75-second inter-turn delay, and playback disabled. It remains a foreground owner-run process with no wake word, background listener, boot service, GPT, cloud dependency, or automatic transcript persistence.
 
@@ -547,7 +547,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 1245 tests across current core modules
+- Pytest automated coverage for 1280 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -566,7 +566,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1245 tests`.
+Current pytest collection: `1280 tests`.
 
 Manual Calculator Launch Verification
 
@@ -875,11 +875,13 @@ Forget my favorite color.                -> I forgot your favorite color.
 What is my favorite color?               -> I do not know your favorite color yet.
 ```
 
-Supported deterministic forms are `remember [that] my <key> is <value>`, `what is/what's my <key>`, `do you remember my <key>`, and `forget my <key>`. Keys are normalized, so `favorite colour` and `favorite color` both resolve to `favorite_color`. Keys and values are length-bounded, control characters and path-like keys are rejected, and ambiguous commands fail without guessing.
+Supported deterministic forms are `remember [that] my <key> is <value>`, `update my <key> to <value>`, `what is/what's my <key>`, `do you remember my <key>`, and `forget/delete my <key>`. The declaration `my favorite color is <value>` is also approved; broad declarative facts remain with the legacy profile path. Keys are normalized, so `favorite colour` and `favorite color` both resolve to `favorite_color`. A narrow exact alias handles the observed local Whisper substitution `remember that modified white color is ...`; no fuzzy matching or arbitrary word replacement is performed. Keys and values are length-bounded, control characters and path-like keys are rejected, and ambiguous commands fail without guessing.
+
+Owner-memory intent is evaluated before task/reminder intent. `remember that my favorite color is blue` is an owner-profile operation; `remember to buy milk`, `remind me to buy milk`, and other ordinary reminders remain task operations. Malformed owner-memory syntax is rejected instead of falling through and creating a task.
 
 Passwords, passcodes, PINs, API keys, tokens, private keys, recovery or seed phrases, and bounded bank/card identifiers are protected keys. ARES refuses to store or recall them and redacts supplied values from operational events and routing/lifecycle diagnostics. Normal event records contain operation/status metadata only.
 
-The default file is `data/memory/owner_profile.json`. It uses the shared schema envelope with `schema_name: ares.owner_profile`, integer `schema_version: 1`, timestamps, structured fact data, and bounded metadata. Writes validate data, create a backup when replacing an existing file, write and flush a temporary file, atomically replace the active file where practical, and verify the result. Malformed JSON, unsupported future versions, invalid envelopes, or failed writes fail closed; ARES does not reset the profile to empty or overwrite recovery evidence.
+The default file is `data/memory/owner_profile.json`, resolved from the repository root rather than the current working directory. It uses the shared schema envelope with `schema_name: ares.owner_profile`, integer `schema_version: 1`, timestamps, structured fact data, and bounded metadata. Writes create missing parent directories, validate data, create a backup when replacing an existing file, write and flush a temporary file, atomically replace the active file where practical, and verify the result. Malformed JSON, unsupported future versions, invalid envelopes, or failed writes fail closed; ARES does not reset the profile to empty or overwrite recovery evidence.
 
 `config/modules.example.json` documents the owner-memory policy and capability provider. The runtime path is the repository default unless `ARES_OWNER_PROFILE_PATH` is explicitly set; normal runtime never installs providers or loads arbitrary classes from this example file.
 
@@ -891,17 +893,24 @@ python scripts/manual_verify_owner_memory.py \
   --text "remember that my favorite color is blue"
 ```
 
-Prove save, recall, update, forget, and missing recall across six separate Python processes without touching the real profile:
+Prove routing priority plus save, recall, update, forget, and missing recall across fresh Python processes without touching the real profile:
 
 ```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
 python scripts/verify_owner_memory_persistence.py --verbose
+python scripts/run_ares_voice.py
 ```
 
 On Raspberry Pi, each `python scripts/run_ares_voice.py` invocation remains one fresh process. Say the save phrase, let the process exit, start it again, and say the recall phrase. Inspect the persisted JSON without editing it with:
 
 ```bash
-python -m json.tool data/memory/owner_profile.json
+find ~/ares-brain -name owner_profile.json -print
+python -m json.tool ~/ares-brain/data/memory/owner_profile.json
 ```
+
+With `--diagnostic-routing`, the single-turn report includes the raw, cleaned, and normalized transcript; parsed owner-memory action; normalized key; bounded extracted value; candidate confidence/reason; selected skill; resolved profile path; prior file-existence state; operation result; and rejection reason. Protected values remain redacted.
 
 This is not general conversational memory, semantic memory, autonomous learning, transcript persistence, a vector database, or GPT memory. Microphone WAVs and complete conversations are never written to the owner profile.
 
@@ -2161,13 +2170,15 @@ Phase 85
 - Added `OwnerProfileStore` at `data/memory/owner_profile.json` with the `ares.owner_profile` v1 schema, validation, backups, atomic replacement, and corruption rejection
 - Added protected-key rejection and operational event/diagnostic redaction without automatic transcript, recording, or conversation persistence
 - Added hardware-free command verification plus six fresh-process persistence checks against an isolated temporary profile
-- Current pytest collection is 1245 tests
+- Historical Phase 85 pytest collection was 1245 tests
 
 Phase 86
 
-- Future voice expansion only after separate approval
-- Wake word
-- Bounded background-listening design
+- Hardened owner-memory priority ahead of generic tasks and device deletion parsing
+- Added bounded normalization for the exact observed Whisper favorite-color substitution
+- Added explicit declaration, update, delete, routing diagnostics, canonical repository-root path resolution, and isolated fresh-process routing checks
+- Preserved legacy profile declarations and ordinary `remember to` reminders
+- Current pytest collection is 1280 tests
 
 Phase 87
 

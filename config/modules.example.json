@@ -85,6 +85,7 @@
     "voice.command_route": "voice_command_router",
     "voice.session": "voice_session_skill",
     "memory.owner_fact.save": "owner_memory",
+    "memory.owner_fact.update": "owner_memory",
     "memory.owner_fact.recall": "owner_memory",
     "memory.owner_fact.forget": "owner_memory"
   },

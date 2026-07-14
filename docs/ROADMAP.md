@@ -1071,7 +1071,17 @@ Phase 85: Explicit Persistent Owner Memory
 - Added normalized key aliases such as `favorite colour`/`favorite color`, bounded key/value validation, path/control-character rejection, and protected credential/recovery-key rejection.
 - Kept transcripts, recordings, complete conversations, inferred facts, and protected values out of the profile and normal operational events.
 - Added a hardware-free production-path script and a six-process isolated persistence verifier.
-- Current pytest collection is 1245 tests.
+- Historical Phase 85 pytest collection was 1245 tests.
+
+Phase 86: Owner-Memory Routing and Persistence Hardening
+
+- Fixed the production fall-through where an unrecognized explicit owner phrase beginning with `remember` could be accepted by the generic task rule.
+- Owner-memory candidates now normalize and route before tasks; malformed candidates fail closed rather than creating tasks.
+- Added declaration, explicit update, delete/forget, and bounded punctuation forms while preserving `remember to buy milk` and ordinary reminders as tasks.
+- Added one exact owner-command-only alias for the observed local Whisper substitution `modified white color`; unrelated speech is not coerced into memory.
+- Canonicalized the production profile path to repository-root `data/memory/owner_profile.json` independent of current working directory.
+- Extended isolated fresh-process verification, owner-operation diagnostics, task-priority regression checks, and legacy profile compatibility coverage.
+- Current pytest collection is 1280 tests.
 
 Current State
 
@@ -1091,7 +1101,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1245 tests.
+The current pytest collection is 1280 tests.
 
 The current memory paths are:
 
@@ -1153,7 +1163,7 @@ Phase 3 Real Voice Integration
 20. Add the production-style one-command launcher with verified Raspberry Pi defaults. Completed in deterministic CI.
 21. Verify the one-command launcher on Raspberry Pi. Completed by owner with calculator result and audible male Piper response.
 22. Add explicit bounded owner-fact persistence through the real production skill route. Completed in deterministic CI.
-23. Pull `main` and verify save/recall/update/forget across fresh Raspberry Pi voice processes.
+23. Pull `main` and verify owner-memory priority plus save/recall/update/forget across fresh Raspberry Pi voice processes.
 24. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
 25. Only later consider wake-word/background listening.
 

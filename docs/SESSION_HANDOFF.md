@@ -4,7 +4,7 @@ Last Updated: 2026-07-14
 
 Current Version
 
-ARES v1.89 - Explicit Persistent Owner Memory
+ARES v1.90 - Owner-Memory Routing and Persistence Hardening
 
 ---
 
@@ -33,6 +33,10 @@ Checkpoint root causes and fixes:
 - `OwnerProfileStore` now persists only explicit bounded owner facts under `data/memory/owner_profile.json`. The production path is `VoiceCommandRouter -> CoreService -> SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> OwnerMemorySkill -> OwnerProfileStore`; neither the launcher nor Brain accesses the file directly.
 - The `ares.owner_profile` v1 schema uses the shared migration validator, write lock, backup-before-replacement, deterministic UTF-8 JSON, temporary-file flush, atomic replacement, final reload validation, and fail-closed corruption behavior. A failed load is never interpreted as an empty profile.
 - Protected credentials and recovery material are rejected before storage, supplied values are redacted from operational diagnostics, and ordinary transcripts, recordings, complete conversations, and inferred facts are not written to this store.
+- Raspberry Pi exposed that `Remember that modified white color is blue.` did not match the narrow owner parser and then fell through to the generic `remember` task rule. The task store ran, so no owner profile was created.
+- Owner-memory candidates now run before generic task/device rules, and recognized malformed candidates cannot fall through. A narrow exact alias handles that observed favorite-color Whisper substitution; no fuzzy or broad semantic matching was added.
+- Explicit save, update, recall, delete/forget, and the approved favorite-color declaration share the production owner-memory route. `remember to buy milk` remains a task, while legacy declarations such as `My name is Gabi` and `My favorite tank is Leopard 2` remain with `UserProfileStore`.
+- The canonical owner profile resolves from the repository root to `data/memory/owner_profile.json`, regardless of current working directory. Routing diagnostics now report action, key, candidate reason, selected skill, resolved path, prior file state, operation result, and bounded rejection details.
 
 Confirmed Phase 3 foundation:
 
@@ -108,7 +112,7 @@ Confirmed Phase 3 foundation:
 - Hardware-free owner-memory command verifier and six-fresh-process persistence verifier
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1245 tests.
+Current pytest collection: 1280 tests.
 
 The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, centralized canonical WAV conversion through `core.WavAudio`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, its `scripts/run_ares_voice.py` owner launcher, and the bounded multi-turn session. Adaptive calibration remains inside the VAD boundary; transcript normalization and routing diagnostics remain between STT and `VoiceCommandRouter`/SkillManager. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, conversion, VAD, Whisper, Piper, or normalization internals. Owner memory is a separate explicit skill/store boundary and does not turn transcript handling into automatic persistence. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
 
@@ -2152,7 +2156,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1245 tests.
+- Current pytest collection: 1280 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2242,18 +2246,20 @@ python scripts/verify_owner_memory_persistence.py --verbose
 python scripts/run_ares_voice.py
 ```
 
-Say `Remember that my favorite color is blue.` and let the one-turn process exit. Start `python scripts/run_ares_voice.py` again and say `What is my favorite color?`; expect `Your favorite color is blue.` Repeat with red to verify update, then say `Forget my favorite color.` in a fresh process and verify a later process answers `I do not know your favorite color yet.`
+Say `Remember that my favorite color is blue.` and let the one-turn process exit. Start `python scripts/run_ares_voice.py` again and say `What is my favorite color?`; expect `Your favorite color is blue.` Repeat with red to verify update, then say `Forget my favorite color.` in a fresh process and verify a later process answers `I do not know your favorite color yet.` The phrase `remember to buy milk` must still create a task, not an owner fact.
 
 Inspect the versioned UTF-8 JSON without editing it:
 
 ```bash
-python -m json.tool data/memory/owner_profile.json
+find ~/ares-brain -name owner_profile.json -print
+python -m json.tool ~/ares-brain/data/memory/owner_profile.json
 ```
 
 For an isolated typed check through the production skill route, use `python scripts/manual_verify_owner_memory.py --profile-path /tmp/ares_owner_profile.json --text "remember that my favorite color is blue"`. The separate-process verifier always uses its own temporary directory and never touches the real profile.
 
 Latest Commits
 
+- `d006422` Harden owner memory routing and persistence
 - `14ddf38` Add explicit persistent owner memory
 - `1f3294d` Add production single-turn voice launcher
 - `e9103d3` Document calculator wrappers and playback isolation
