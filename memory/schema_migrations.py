@@ -906,7 +906,7 @@ def _validate_profile_data(data: Any) -> None:
         raise MigrationError("Profile facts must be an object", schema_name=SCHEMA_USER_PROFILE, status="invalid_store_data")
 
 
-def _validate_owner_profile_data(data: Any) -> None:
+def _validate_owner_profile_v1_data(data: Any) -> None:
     if not isinstance(data, dict):
         raise MigrationError(
             "Owner profile data must be an object",
@@ -973,6 +973,134 @@ def _validate_owner_profile_data(data: Any) -> None:
                 schema_name=SCHEMA_OWNER_PROFILE,
                 status="invalid_store_data",
             )
+
+
+def _validate_owner_profile_data(data: Any) -> None:
+    if not isinstance(data, dict):
+        raise MigrationError(
+            "Owner profile data must be an object",
+            schema_name=SCHEMA_OWNER_PROFILE,
+            status="invalid_store_data",
+        )
+    if set(data) != {"owner_id", "facts"} or data.get("owner_id") != "primary_owner":
+        raise MigrationError(
+            "Owner profile requires owner_id and facts",
+            schema_name=SCHEMA_OWNER_PROFILE,
+            status="invalid_store_data",
+        )
+    facts = data.get("facts")
+    if not isinstance(facts, dict) or len(facts) > 100:
+        raise MigrationError(
+            "Owner profile facts must be a bounded object",
+            schema_name=SCHEMA_OWNER_PROFILE,
+            status="invalid_store_data",
+        )
+    for key, entry in facts.items():
+        if not isinstance(key, str) or not re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+)*", key) or len(key) > 64:
+            raise MigrationError(
+                "Owner profile contains an invalid fact key",
+                schema_name=SCHEMA_OWNER_PROFILE,
+                status="invalid_store_data",
+            )
+        if not isinstance(entry, dict) or set(entry) != {
+            "value",
+            "display_key",
+            "normalized_key",
+            "created_at",
+            "updated_at",
+            "source",
+        }:
+            raise MigrationError(
+                "Owner profile fact has an invalid v2 shape",
+                schema_name=SCHEMA_OWNER_PROFILE,
+                status="invalid_store_data",
+            )
+        if entry.get("normalized_key") != key:
+            raise MigrationError(
+                "Owner profile fact key does not match its normalized key",
+                schema_name=SCHEMA_OWNER_PROFILE,
+                status="invalid_store_data",
+            )
+        display_key = entry.get("display_key")
+        if not isinstance(display_key, str) or not display_key or len(display_key) > 120:
+            raise MigrationError(
+                "Owner profile fact requires a bounded display key",
+                schema_name=SCHEMA_OWNER_PROFILE,
+                status="invalid_store_data",
+            )
+        _validate_owner_profile_value(entry.get("value"))
+        for timestamp_name in ("created_at", "updated_at"):
+            if not isinstance(entry.get(timestamp_name), str) or not entry.get(timestamp_name):
+                raise MigrationError(
+                    f"Owner profile fact requires {timestamp_name}",
+                    schema_name=SCHEMA_OWNER_PROFILE,
+                    status="invalid_store_data",
+                )
+        if entry.get("source") != "explicit_owner_statement":
+            raise MigrationError(
+                "Owner profile fact has an unsupported source",
+                schema_name=SCHEMA_OWNER_PROFILE,
+                status="invalid_store_data",
+            )
+    serialized_size = len(json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    if serialized_size > 65536:
+        raise MigrationError(
+            "Owner profile exceeds its bounded serialized size",
+            schema_name=SCHEMA_OWNER_PROFILE,
+            status="invalid_store_data",
+        )
+
+
+def _validate_owner_profile_value(value: Any) -> None:
+    if isinstance(value, bool):
+        return
+    if isinstance(value, int) and not isinstance(value, bool):
+        if abs(value) <= 10**15:
+            return
+    elif isinstance(value, float):
+        if value == value and value not in (float("inf"), float("-inf")) and abs(value) <= 10**15:
+            return
+    elif isinstance(value, str):
+        if value and len(value) <= 256 and not any(ord(character) < 32 or ord(character) == 127 for character in value):
+            return
+    elif isinstance(value, list) and 0 < len(value) <= 10:
+        for item in value:
+            if isinstance(item, (list, dict)) or item is None:
+                break
+            try:
+                _validate_owner_profile_value(item)
+            except MigrationError:
+                break
+        else:
+            return
+    raise MigrationError(
+        "Owner profile fact has an unsupported or unbounded value",
+        schema_name=SCHEMA_OWNER_PROFILE,
+        status="invalid_store_data",
+    )
+
+
+def _owner_profile_migration_v1_to_v2(envelope: SchemaEnvelope) -> SchemaEnvelope:
+    _validate_owner_profile_v1_data(envelope.data)
+    migrated_facts: Dict[str, Any] = {}
+    for key, raw_entry in sorted(dict(envelope.data.get("facts") or {}).items()):
+        entry = dict(raw_entry)
+        timestamp = str(entry.get("updated_at") or envelope.updated_at)
+        migrated_facts[key] = {
+            "value": entry.get("value"),
+            "display_key": key.replace("_", " "),
+            "normalized_key": key,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "source": "explicit_owner_statement",
+        }
+    metadata = dict(envelope.metadata)
+    metadata["owner_profile_migrated_from"] = 1
+    return envelope.with_data(
+        {"owner_id": "primary_owner", "facts": migrated_facts},
+        SCHEMA_VERSION_2,
+        metadata=metadata,
+    )
 
 
 def _validate_notes_data(data: Any) -> None:
@@ -1083,7 +1211,15 @@ def _test_fixture_migration_v1_to_v2(envelope: SchemaEnvelope) -> SchemaEnvelope
 def _build_default_registry() -> MigrationRegistry:
     registry = MigrationRegistry()
     registry.register_schema(SCHEMA_USER_PROFILE, SCHEMA_VERSION_1, _validate_profile_data, _legacy_profile)
-    registry.register_schema(SCHEMA_OWNER_PROFILE, SCHEMA_VERSION_1, _validate_owner_profile_data)
+    registry.register_schema(
+        SCHEMA_OWNER_PROFILE,
+        SCHEMA_VERSION_2,
+        _validate_owner_profile_data,
+        validators={
+            SCHEMA_VERSION_1: _validate_owner_profile_v1_data,
+            SCHEMA_VERSION_2: _validate_owner_profile_data,
+        },
+    )
     registry.register_schema(SCHEMA_GOALS, SCHEMA_VERSION_1, _validate_goals_data, _legacy_goals)
     registry.register_schema(SCHEMA_NOTES, SCHEMA_VERSION_1, _validate_notes_data, _legacy_notes)
     registry.register_schema(SCHEMA_TASKS, SCHEMA_VERSION_1, _validate_tasks_data, _legacy_tasks)
@@ -1100,6 +1236,12 @@ def _build_default_registry() -> MigrationRegistry:
         },
     )
     registry.register_migration(SCHEMA_TEST_FIXTURE, SCHEMA_VERSION_1, SCHEMA_VERSION_2, _test_fixture_migration_v1_to_v2)
+    registry.register_migration(
+        SCHEMA_OWNER_PROFILE,
+        SCHEMA_VERSION_1,
+        SCHEMA_VERSION_2,
+        _owner_profile_migration_v1_to_v2,
+    )
     return registry
 
 

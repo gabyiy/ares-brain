@@ -178,7 +178,29 @@ class IntentParser:
             task_id = _first_word(text.after("delete task"))
             return self._intent("task", 0.94, text.raw_text, action="delete", task_id=task_id)
 
-        for phrase in ("add task", "remind me to", "remind me about", "remember"):
+        natural_reminder = re.fullmatch(
+            r"remind\s+me\s+(?P<due>today|tomorrow|tonight)\s+to\s+(?P<task>.+)",
+            text.raw_text.strip(),
+            flags=re.IGNORECASE,
+        )
+        if natural_reminder:
+            return self._intent(
+                "task",
+                0.92,
+                text.raw_text,
+                action="add",
+                text=_clean_text(natural_reminder.group("task")),
+                due=natural_reminder.group("due").lower(),
+            )
+
+        for phrase in (
+            "add task",
+            "save a task",
+            "save task",
+            "remind me to",
+            "remind me about",
+            "remember",
+        ):
             if text.starts_with(phrase):
                 task_text, due = _split_due_text(_strip_leading_task_marker(text.after(phrase)))
                 return self._intent("task", 0.9, text.raw_text, action="add", text=task_text, due=due)

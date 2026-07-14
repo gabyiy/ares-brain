@@ -207,7 +207,6 @@ class TranscriptNormalizer:
         owner_command = parse_owner_memory_command(cleaned)
         if owner_memory_uses_explicit_store(owner_command):
             normalized = owner_command.routing_text or cleaned.casefold()
-            normalized = normalized.casefold()
             if normalized != cleaned.casefold():
                 cleanup_rule = _merge_cleanup_rules(
                     cleanup_rule,

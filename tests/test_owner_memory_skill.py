@@ -2,14 +2,14 @@ import json
 
 import pytest
 
-from core import IntentParser, Planner
+from core import CoreService, IntentParser, Planner
 from core.OwnerMemory import (
     OWNER_MEMORY_REJECT,
     owner_memory_uses_explicit_store,
     parse_owner_memory_command,
 )
 from events import EventBus
-from memory import OwnerProfileStore
+from memory import OwnerMemoryResultV1, OwnerProfileStore
 from skills import create_builtin_skill_manager
 from skills.builtin.owner_memory import OwnerMemorySkill
 
@@ -168,7 +168,23 @@ def test_new_manager_instance_recalls_persisted_fact(tmp_path):
 
 
 def test_missing_store_fails_safely_through_execution_pipeline():
-    manager = create_builtin_skill_manager(event_bus=EventBus(), owner_profile_store=None)
+    class UnavailableOwnerMemory:
+        def execute(self, request):
+            return OwnerMemoryResultV1(
+                False,
+                "storage_failed",
+                request.action,
+                error_code="owner_memory_unavailable",
+                error_message="Owner memory is unavailable.",
+            )
+
+        def inspect(self, include_values=False):
+            return {"validation_state": "invalid"}
+
+    manager = create_builtin_skill_manager(
+        event_bus=EventBus(),
+        core_service=CoreService(owner_memory_service=UnavailableOwnerMemory()),
+    )
 
     response = manager.handle(
         "remember that my favorite color is blue",
@@ -176,9 +192,9 @@ def test_missing_store_fails_safely_through_execution_pipeline():
     )
 
     assert response.skill == "owner_memory"
-    assert response.text == "Owner memory storage is not available."
+    assert response.text == "I could not update owner memory safely."
     assert manager.last_execution.success is False
-    assert manager.last_execution.step_results[0].error_message == "missing_owner_profile_store"
+    assert manager.last_execution.step_results[0].error_message == "owner_memory_unavailable"
 
 
 def test_protected_key_returns_safe_response_and_redacts_all_events(tmp_path):
@@ -233,6 +249,7 @@ def test_owner_memory_skill_manifest_is_registered_with_explicit_capabilities(tm
         "memory.owner_fact.update",
         "memory.owner_fact.recall",
         "memory.owner_fact.forget",
+        "memory.owner_fact.list",
     }
 
 
@@ -257,10 +274,11 @@ def test_owner_memory_response_exposes_bounded_operation_diagnostics(tmp_path):
     }
 
 
-def test_legacy_profile_birthday_route_remains_compatible():
+def test_birthday_recall_routes_to_central_owner_memory():
     intent = IntentParser().parse("what is my birthday")
 
-    assert intent.intent_name == "memory_recall"
+    assert intent.intent_name == "owner_memory"
+    assert intent.extracted_entities["normalized_key"] == "birthday"
 
 
 def test_calculator_and_unknown_command_regressions_remain_safe(tmp_path):

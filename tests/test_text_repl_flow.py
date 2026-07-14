@@ -58,7 +58,7 @@ def test_text_repl_records_turns_and_recalls_profile(monkeypatch, tmp_path, caps
     assert profile.get_value("name") == "Gabi"
     assert profile.get_value("location") == "Madrid"
     assert profile.get_favorite("tank") == "Leopard 2"
-    assert len(turns) == 8
+    assert len(turns) == 5
     assert "user_message_received" in events
     assert "response_generated" in events
     assert "profile.fact_saved" in events

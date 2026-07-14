@@ -11,6 +11,8 @@ class TasksSkill(Skill):
     run_before_intents = True
     triggers = (
         "add task",
+        "save a task",
+        "save task",
         "remind me to",
         "list tasks",
         "show tasks",
@@ -96,6 +98,7 @@ class TasksSkill(Skill):
 
         for pattern in (
             r"^add\s+task\s*(.*)$",
+            r"^save\s+(?:a\s+)?task\s*(.*)$",
             r"^remind\s+me\s+to\s*(.*)$",
         ):
             match = re.match(pattern, raw, flags=re.IGNORECASE)

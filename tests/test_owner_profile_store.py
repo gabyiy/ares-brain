@@ -36,6 +36,7 @@ def test_missing_profile_is_empty_without_creating_a_file(tmp_path):
 
 
 def test_default_profile_path_is_canonical_and_not_cwd_relative(tmp_path, monkeypatch):
+    monkeypatch.delenv("ARES_OWNER_PROFILE_PATH", raising=False)
     monkeypatch.chdir(tmp_path)
 
     store = OwnerProfileStore(event_bus=EventBus())
@@ -80,11 +81,15 @@ def test_save_creates_parent_and_versioned_utf8_profile_atomically(tmp_path):
 
     assert result.status == "created"
     assert payload["schema_name"] == SCHEMA_OWNER_PROFILE
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["data"] == {
         "owner_id": "primary_owner",
         "facts": {
             "favorite_color": {
+                "created_at": "2026-07-14T10:00:00Z",
+                "display_key": "favorite color",
+                "normalized_key": "favorite_color",
+                "source": "explicit_owner_statement",
                 "updated_at": "2026-07-14T10:00:00Z",
                 "value": "blå",
             }

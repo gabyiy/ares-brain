@@ -12,7 +12,7 @@ from memory import (
     GoalsStore,
     MemoryStore,
     NotesStore,
-    OwnerProfileStore,
+    OwnerMemoryService,
     TasksStore,
     UserProfileStore,
 )
@@ -57,7 +57,9 @@ class NoAudioSpeaker:
 
 def _run_voice_turn(tmp_path, profile_path, text, *, playback=True, turn=1):
     event_bus = EventBus(max_history=500)
-    core_service = CoreService()
+    core_service = CoreService(
+        owner_memory_service=OwnerMemoryService(profile_path, event_bus=event_bus)
+    )
     manager = manual.create_skill_manager(
         core_service,
         event_history_store=EventHistoryStore(tmp_path / f"manager_events_{turn}.json"),
@@ -68,7 +70,6 @@ def _run_voice_turn(tmp_path, profile_path, text, *, playback=True, turn=1):
             event_bus=event_bus,
         ),
         profile_store=UserProfileStore(tmp_path / "profile.json", event_bus=event_bus),
-        owner_profile_store=OwnerProfileStore(profile_path, event_bus=event_bus),
         goals_store=GoalsStore(tmp_path / "goals.json", event_bus=event_bus),
         notes_store=NotesStore(tmp_path / "notes.json", event_bus=event_bus),
         tasks_store=TasksStore(tmp_path / "tasks.json", event_bus=event_bus),
@@ -182,6 +183,33 @@ def test_save_then_fresh_production_manager_recalls_persisted_value(tmp_path):
     assert recalled.brain_text_response == "Your favorite color is blue."
 
 
+def test_general_owner_fact_uses_mock_voice_transport_and_central_brain_service(tmp_path):
+    profile_path = tmp_path / "memory" / "owner_profile.json"
+    saved, saved_manager, *_ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "Remember that my birthday is June 8.",
+        playback=False,
+        turn=1,
+    )
+    recalled, recalled_manager, *_ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "When is my birthday?",
+        playback=False,
+        turn=2,
+    )
+
+    assert saved.routed_skill == "owner_memory"
+    assert saved.brain_text_response == "I will remember that your birthday is June 8."
+    assert recalled.routed_skill == "owner_memory"
+    assert recalled.brain_text_response == "Your birthday is June 8."
+    assert saved_manager.last_plan.steps[0].target == "owner_memory"
+    assert recalled_manager.last_plan.steps[0].target == "owner_memory"
+    assert saved_manager.owner_memory_service is saved_manager.core_service.owner_memory_service
+    assert recalled_manager.owner_memory_service is recalled_manager.core_service.owner_memory_service
+
+
 def test_imperfect_whisper_owner_phrase_outranks_tasks_in_production_route(tmp_path):
     profile_path = tmp_path / "memory" / "owner_profile.json"
 
@@ -228,7 +256,7 @@ def test_declarative_update_and_delete_forms_use_owner_memory_pipeline(tmp_path)
         ),
         (
             "Update my favorite color to red.",
-            "I updated your favorite color to red.",
+            "I updated your favorite color from blue to red.",
             "updated",
         ),
         (

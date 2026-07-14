@@ -23,6 +23,7 @@ class SkillManager:
         memory_store=None,
         profile_store=None,
         owner_profile_store=None,
+        owner_memory_service=None,
         notes_store=None,
         tasks_store=None,
         goals_store=None,
@@ -50,6 +51,15 @@ class SkillManager:
         )
         self.event_history_store = event_history_store
         self.core_service = getattr(self.device_action_adapter, "core_service", core_service)
+        if owner_memory_service is not None:
+            self.core_service.set_owner_memory_service(owner_memory_service)
+        elif owner_profile_store is not None:
+            from memory.owner_memory_service import OwnerMemoryService
+
+            self.core_service.set_owner_memory_service(
+                OwnerMemoryService(store=owner_profile_store)
+            )
+        self.owner_memory_service = self.core_service.owner_memory_service
         self.conversation_context = conversation_context or ConversationContextManager()
         self.intent_parser = intent_parser or IntentParser()
         self.confirmation_manager = confirmation_manager or ConfirmationManager()
@@ -218,6 +228,7 @@ class SkillManager:
             memory_store=self.memory_store,
             profile_store=self.profile_store,
             owner_profile_store=self.owner_profile_store,
+            owner_memory_service=self.owner_memory_service,
             notes_store=self.notes_store,
             tasks_store=self.tasks_store,
             goals_store=self.goals_store,
@@ -237,6 +248,7 @@ class SkillManager:
             memory_store=context.memory_store,
             profile_store=context.profile_store,
             owner_profile_store=context.owner_profile_store,
+            owner_memory_service=context.owner_memory_service,
             notes_store=context.notes_store,
             tasks_store=context.tasks_store,
             goals_store=context.goals_store,

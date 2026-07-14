@@ -9,6 +9,7 @@ class SkillContext:
     memory_store: Any = None
     profile_store: Any = None
     owner_profile_store: Any = None
+    owner_memory_service: Any = None
     notes_store: Any = None
     tasks_store: Any = None
     goals_store: Any = None

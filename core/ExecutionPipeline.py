@@ -619,6 +619,7 @@ def _context_with_intent(context: Any, intent: Intent) -> Any:
         memory_store=getattr(context, "memory_store", None),
         profile_store=getattr(context, "profile_store", None),
         owner_profile_store=getattr(context, "owner_profile_store", None),
+        owner_memory_service=getattr(context, "owner_memory_service", None),
         notes_store=getattr(context, "notes_store", None),
         tasks_store=getattr(context, "tasks_store", None),
         goals_store=getattr(context, "goals_store", None),

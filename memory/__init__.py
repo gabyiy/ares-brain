@@ -3,11 +3,27 @@ from memory.goals import GoalRecord, GoalsStore
 from memory.notes import NoteRecord, NotesStore
 from memory.owner_profile import (
     DEFAULT_OWNER_PROFILE_PATH,
+    MAX_OWNER_FACTS,
+    MAX_OWNER_PROFILE_BYTES,
     OWNER_PROFILE_ID,
+    OWNER_PROFILE_SCHEMA_VERSION,
     OwnerProfileResultV1,
     OwnerProfileStore,
     resolve_owner_profile_path,
 )
+from memory.owner_memory_contracts import (
+    OWNER_MEMORY_ACTION_FORGET,
+    OWNER_MEMORY_ACTION_LIST,
+    OWNER_MEMORY_ACTION_RECALL,
+    OWNER_MEMORY_ACTION_REMEMBER,
+    OWNER_MEMORY_ACTION_UPDATE,
+    OWNER_MEMORY_CONTRACT_VERSION,
+    OWNER_MEMORY_REQUEST_CONTRACT,
+    OWNER_MEMORY_RESULT_CONTRACT,
+    OwnerMemoryRequestV1,
+    OwnerMemoryResultV1,
+)
+from memory.owner_memory_service import OwnerMemoryService
 from memory.profile import ProfileFact, UserProfileStore, detect_profile_facts
 from memory.reminder_scheduler import ReminderScheduler, parse_due_text
 from memory.schema_migrations import (
@@ -38,7 +54,21 @@ __all__ = [
     "NoteRecord",
     "NotesStore",
     "DEFAULT_OWNER_PROFILE_PATH",
+    "MAX_OWNER_FACTS",
+    "MAX_OWNER_PROFILE_BYTES",
+    "OWNER_MEMORY_ACTION_FORGET",
+    "OWNER_MEMORY_ACTION_LIST",
+    "OWNER_MEMORY_ACTION_RECALL",
+    "OWNER_MEMORY_ACTION_REMEMBER",
+    "OWNER_MEMORY_ACTION_UPDATE",
+    "OWNER_MEMORY_CONTRACT_VERSION",
+    "OWNER_MEMORY_REQUEST_CONTRACT",
+    "OWNER_MEMORY_RESULT_CONTRACT",
     "OWNER_PROFILE_ID",
+    "OWNER_PROFILE_SCHEMA_VERSION",
+    "OwnerMemoryRequestV1",
+    "OwnerMemoryResultV1",
+    "OwnerMemoryService",
     "OwnerProfileResultV1",
     "OwnerProfileStore",
     "resolve_owner_profile_path",

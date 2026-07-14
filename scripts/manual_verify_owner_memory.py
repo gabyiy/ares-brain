@@ -17,7 +17,7 @@ from memory import (  # noqa: E402
     GoalsStore,
     MemoryStore,
     NotesStore,
-    OwnerProfileStore,
+    OwnerMemoryService,
     TasksStore,
     UserProfileStore,
     resolve_owner_profile_path,
@@ -49,8 +49,9 @@ def run_owner_memory_text(text: str, profile_path: Path) -> dict[str, Any]:
     path = resolve_owner_profile_path(profile_path)
     support_dir = path.parent / ".owner_memory_verification"
     event_bus = EventBus()
-    core_service = CoreService()
-    owner_store = OwnerProfileStore(path=path, event_bus=event_bus)
+    core_service = CoreService(
+        owner_memory_service=OwnerMemoryService(path, event_bus=event_bus)
+    )
     manager = single_turn.create_skill_manager(
         core_service,
         event_history_store=EventHistoryStore(support_dir / "events.json"),
@@ -61,7 +62,6 @@ def run_owner_memory_text(text: str, profile_path: Path) -> dict[str, Any]:
             event_bus=event_bus,
         ),
         profile_store=UserProfileStore(support_dir / "user_profile.json", event_bus=event_bus),
-        owner_profile_store=owner_store,
         goals_store=GoalsStore(support_dir / "goals.json", event_bus=event_bus),
         notes_store=NotesStore(support_dir / "notes.json", event_bus=event_bus),
         tasks_store=TasksStore(support_dir / "tasks.json", event_bus=event_bus),

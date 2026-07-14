@@ -206,7 +206,7 @@ class Planner:
     ) -> PlanStep:
         action = str(entities.get("action") or "reject")
         normalized_key = str(entities.get("normalized_key") or "")
-        can_execute = action == "reject" or bool(normalized_key)
+        can_execute = action in {"reject", "list"} or bool(normalized_key)
         return PlanStep(
             order=0,
             target="owner_memory",
@@ -587,6 +587,10 @@ class Planner:
             task_text = _strip_prefix(text, "create a task")
         elif lowered.startswith("add task"):
             task_text = _strip_prefix(text, "add task")
+        elif lowered.startswith("save a task"):
+            task_text = _strip_prefix(text, "save a task")
+        elif lowered.startswith("save task"):
+            task_text = _strip_prefix(text, "save task")
         elif lowered.startswith("remind me to"):
             task_text = _strip_prefix(text, "remind me to")
         elif lowered.startswith("remind me about"):
@@ -1110,7 +1114,15 @@ def _strip_note_prefix(text: str) -> str:
 
 
 def _strip_task_prefix(text: str) -> str:
-    for prefix in ("create a task", "add task", "remind me to", "remember to", "remember"):
+    for prefix in (
+        "create a task",
+        "add task",
+        "save a task",
+        "save task",
+        "remind me to",
+        "remember to",
+        "remember",
+    ):
         if text.lower().startswith(prefix):
             return _strip_prefix(text, prefix)
     return _clean_clause(text)

@@ -28,7 +28,6 @@ from memory import (  # noqa: E402
     GoalsStore,
     MemoryStore,
     NotesStore,
-    OwnerProfileStore,
     TasksStore,
     UserProfileStore,
 )
@@ -184,7 +183,6 @@ def create_skill_manager(
     event_bus: Any = None,
     memory_store: Any = None,
     profile_store: Any = None,
-    owner_profile_store: Any = None,
     goals_store: Any = None,
     notes_store: Any = None,
     tasks_store: Any = None,
@@ -195,7 +193,6 @@ def create_skill_manager(
         event_bus=bus,
         memory_store=memory_store or MemoryStore(event_bus=bus),
         profile_store=profile_store or UserProfileStore(event_bus=bus),
-        owner_profile_store=owner_profile_store or OwnerProfileStore(event_bus=bus),
         goals_store=goals_store or GoalsStore(event_bus=bus),
         notes_store=notes_store or NotesStore(event_bus=bus),
         tasks_store=tasks_store or TasksStore(event_bus=bus),
@@ -344,7 +341,11 @@ def create_pipeline(
     text_to_speech_adapter: Any = None,
     speaker_adapter: Any = None,
 ) -> SingleTurnVoicePipeline:
-    core_service = skill_manager.core_service if skill_manager is not None else CoreService()
+    core_service = (
+        skill_manager.core_service
+        if skill_manager is not None
+        else CoreService(register_default_pc=False)
+    )
     history = event_history_store or EventHistoryStore()
     manager = skill_manager or create_skill_manager(core_service, history)
     speaker = speaker_adapter or LinuxAlsaSpeakerAdapter(

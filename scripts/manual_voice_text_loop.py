@@ -7,6 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from core import (  # noqa: E402
+    CoreService,
     MockVoiceInputAdapter,
     NullVoiceInput,
     NullVoiceOutput,
@@ -15,7 +16,7 @@ from core import (  # noqa: E402
     get_global_conversation_context,
 )
 from events import get_global_bus  # noqa: E402
-from memory import GoalsStore, MemoryStore, NotesStore, OwnerProfileStore, TasksStore, UserProfileStore  # noqa: E402
+from memory import GoalsStore, MemoryStore, NotesStore, TasksStore, UserProfileStore  # noqa: E402
 from skills import SkillManager, create_builtin_skill_manager  # noqa: E402
 
 
@@ -37,15 +38,16 @@ class TypedTextVoiceInput(NullVoiceInput):
 
 def create_skill_manager(event_bus=None) -> SkillManager:
     bus = event_bus or get_global_bus()
+    core_service = CoreService(register_default_pc=False)
     return create_builtin_skill_manager(
         event_bus=bus,
         memory_store=MemoryStore(event_bus=bus),
         profile_store=UserProfileStore(event_bus=bus),
-        owner_profile_store=OwnerProfileStore(event_bus=bus),
         goals_store=GoalsStore(event_bus=bus),
         notes_store=NotesStore(event_bus=bus),
         tasks_store=TasksStore(event_bus=bus),
         conversation_context=get_global_conversation_context(),
+        core_service=core_service,
     )
 
 

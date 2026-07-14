@@ -20,7 +20,7 @@ from skills.builtin.time_date import TimeDateSkill
         ("what is 12 * 8", "calculate"),
         ("calculate 2 + 2", "calculate"),
         ("what time is it", "time_date"),
-        ("what is my birthday", "memory_recall"),
+        ("what is my birthday", "owner_memory"),
         ("show my notes", "note"),
         ("list tasks", "task"),
         ("delete note 2", "note"),
@@ -40,7 +40,7 @@ def test_intent_parser_detects_supported_intents():
     assert parser.parse("calculate 15*8").intent_name == "calculate"
     assert parser.parse("show my notes").intent_name == "note"
     assert parser.parse("remember buy milk tomorrow").intent_name == "task"
-    assert parser.parse("what did I tell you about my job").intent_name == "memory_recall"
+    assert parser.parse("what did I tell you about my job").intent_name == "owner_memory"
     assert parser.parse("what time is it").intent_name == "time_date"
 
 
@@ -113,7 +113,7 @@ def test_intent_parser_extracts_useful_entities_for_other_intents():
     assert parser.parse("calculate 15*8").extracted_entities["expression"] == "15*8"
     assert parser.parse("show my notes").extracted_entities["action"] == "list"
     assert parser.parse("what time is it").extracted_entities["query_type"] == "time"
-    assert parser.parse("what did I tell you about my job").extracted_entities["topic"] == "my job"
+    assert parser.parse("what did I tell you about my job").extracted_entities["normalized_key"] == "job"
 
 
 def test_intent_parser_unknown_intent():

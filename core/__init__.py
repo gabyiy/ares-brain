@@ -256,6 +256,7 @@ from core.Intent import Intent
 from core.IntentParser import IntentParser
 from core.OwnerMemory import (
     OWNER_MEMORY_FORGET,
+    OWNER_MEMORY_LIST,
     OWNER_MEMORY_RECALL,
     OWNER_MEMORY_REJECT,
     OWNER_MEMORY_SAVE,
@@ -637,6 +638,7 @@ __all__ = [
     "Intent",
     "IntentParser",
     "OWNER_MEMORY_FORGET",
+    "OWNER_MEMORY_LIST",
     "OWNER_MEMORY_RECALL",
     "OWNER_MEMORY_REJECT",
     "OWNER_MEMORY_SAVE",

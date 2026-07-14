@@ -130,6 +130,7 @@ class CoreService:
         manifest_policy: Optional[ManifestPolicy] = None,
         resource_manager: Optional[ResourceManager] = None,
         resource_policy: Optional[ResourcePolicy] = None,
+        owner_memory_service: Any = None,
         register_default_pc: bool = True,
         register_default_voice: bool = True,
     ):
@@ -146,6 +147,11 @@ class CoreService:
             policy=resource_policy,
             event_history_store=event_history_store,
         )
+        if owner_memory_service is None:
+            from memory.owner_memory_service import OwnerMemoryService
+
+            owner_memory_service = OwnerMemoryService()
+        self.owner_memory_service = owner_memory_service
         if register_default_voice or voice_service is not None:
             register_default_voice_manifests(self.manifest_registry)
         for name, service in (services or {}).items():
@@ -180,6 +186,22 @@ class CoreService:
                 capabilities=_default_voice_capabilities(),
                 manifest=build_voice_city_manifest(_default_voice_capabilities()),
             )
+
+    def set_owner_memory_service(self, service: Any) -> Any:
+        if service is None or not callable(getattr(service, "execute", None)):
+            raise ValueError("Owner memory service must implement execute(request)")
+        self.owner_memory_service = service
+        return service
+
+    def execute_owner_memory(self, request: Any) -> Any:
+        """Execute a versioned owner-memory request through the central service."""
+
+        return self.owner_memory_service.execute(request)
+
+    def inspect_owner_memory(self, *, include_values: bool = False) -> Dict[str, Any]:
+        """Return a bounded read-only report without involving an input adapter."""
+
+        return self.owner_memory_service.inspect(include_values=include_values)
 
     def register_service(
         self,
