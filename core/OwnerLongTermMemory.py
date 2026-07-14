@@ -66,16 +66,20 @@ _TEMPORARY_MARKERS = re.compile(
     re.IGNORECASE,
 )
 
+_MEMORY_TRIGGER_CONTEXT = re.compile(
+    r"^(?:i\s+want\s+you\s+to\s+remember|remember(?:ing)?|save|store|keep|add|"
+    r"do\s+not\s+forget|yes\s+delete|forget|delete|remove|update|change|make|note)\b",
+    re.IGNORECASE,
+)
 _LONG_TERM_VARIANTS = (
     re.compile(
-        r"(?:in|on|for|to)\s+(?:the\s+|your\s+)?(?:long[\s-]*(?:term|time)|longtime|long)\s+memory",
+        r"(?:(?:in|on|for|to)\s+)?(?:(?:a|the|your)\s+)?"
+        r"(?:long[\s-]*(?:term|time|turn)|longtime|long|lock(?:ed)?[\s-]*term|"
+        r"lifetime|permanent|persistent)\s+memory\b",
         re.IGNORECASE,
     ),
-    re.compile(r"(?:long[\s-]*(?:term|time)|longtime)\s+memory", re.IGNORECASE),
-    re.compile(r"(?:permanent|persistent)\s+memory", re.IGNORECASE),
     re.compile(r"\bpermanently\b", re.IGNORECASE),
-    re.compile(r"(?:for\s+(?:the\s+)?)?long[\s-]*term", re.IGNORECASE),
-    re.compile(r"long[\s-]*time", re.IGNORECASE),
+    re.compile(r"(?:for\s+(?:the\s+)?)?long[\s-]*(?:term|time)\b", re.IGNORECASE),
 )
 
 _SAVE_TRIGGER_PATTERNS = (
@@ -83,7 +87,7 @@ _SAVE_TRIGGER_PATTERNS = (
     re.compile(r"^remember(?:\s+this)?(?:\s+longterm)?(?:\s+that)?\s+(?P<fact>.+)$", re.IGNORECASE),
     re.compile(r"^do\s+not\s+forget(?:\s+that)?\s+(?P<fact>.+)$", re.IGNORECASE),
     re.compile(r"^(?:save|store|keep|add)(?:\s+this)?(?:\s+(?:to|in))?(?:\s+longterm)(?:\s+that)?\s+(?P<fact>.+)$", re.IGNORECASE),
-    re.compile(r"^make\s+a\s+longterm(?:\s+memory)?(?:\s+that)?\s+(?P<fact>.+)$", re.IGNORECASE),
+    re.compile(r"^make\s+(?:a\s+)?longterm(?:\s+memory)?(?:\s+that)?\s+(?P<fact>.+)$", re.IGNORECASE),
     re.compile(r"^note\s+longterm(?:\s+that)?\s+(?P<fact>.+)$", re.IGNORECASE),
 )
 
@@ -125,6 +129,8 @@ class GeneralMemoryParse:
     clarification_reason: str = ""
     protected: bool = False
     confirmation_required: bool = False
+    normalized_trigger: str = ""
+    routing_reason: str = ""
 
 
 def parse_general_owner_memory(text: str) -> GeneralMemoryParse:
@@ -181,6 +187,8 @@ def parse_general_owner_memory(text: str) -> GeneralMemoryParse:
 
     if re.match(r"^remember\s+to\b", source, flags=re.IGNORECASE):
         return GeneralMemoryParse(False)
+    if re.match(r"^remember\s+(?:my\s+)?task\b", source, flags=re.IGNORECASE):
+        return GeneralMemoryParse(False)
 
     for pattern in _SAVE_TRIGGER_PATTERNS:
         match = pattern.fullmatch(source)
@@ -225,6 +233,8 @@ def parse_general_owner_memory(text: str) -> GeneralMemoryParse:
             fact_text=fact_text,
             extracted_phrase=fact_text,
             parser_rule=GENERAL_MEMORY_RULE,
+            normalized_trigger=_normalized_save_trigger(source, match.start("fact")),
+            routing_reason="explicit_owner_memory_storage_request",
         )
 
     if _looks_like_general_memory_prefix(source):
@@ -239,11 +249,51 @@ def normalize_general_memory_source(text: str) -> str:
         return source
     source = re.sub(r"^(?:(?:hello|hey|hi)\s+)?ares\s*[,;:]?\s+", "", source, flags=re.IGNORECASE)
     source = re.sub(r"^actually\s*[,;:]?\s+", "actually ", source, flags=re.IGNORECASE)
-    for pattern in _LONG_TERM_VARIANTS:
-        source = pattern.sub(" longterm ", source)
-    source = re.sub(r"\blong\s+memory\b", " longterm ", source, flags=re.IGNORECASE)
+    source = _normalize_long_term_trigger(source)
+    source = re.sub(r"^remembering\b", "remember", source, flags=re.IGNORECASE)
+    source = re.sub(r"^remember\s+this\s+that\b", "remember that", source, flags=re.IGNORECASE)
+    source = re.sub(
+        r"^(save|store|keep|add)\s+this\s+(?:in|to)\s+memory(?:\s+that)?\b",
+        r"\1 longterm that",
+        source,
+        flags=re.IGNORECASE,
+    )
+    source = re.sub(
+        r"^remember\s+(?:this\s+)?(?:a\s+)?longterm\b",
+        "remember longterm",
+        source,
+        flags=re.IGNORECASE,
+    )
+    source = re.sub(
+        r"^(save|store|keep|add)\s+(?:this\s+)?(?:a\s+)?longterm\b",
+        r"\1 longterm",
+        source,
+        flags=re.IGNORECASE,
+    )
     source = re.sub(r"\s*[,;]\s*", " ", source)
     return " ".join(source.strip().split()).rstrip(" ?!.")
+
+
+def _normalize_long_term_trigger(source: str) -> str:
+    context = _MEMORY_TRIGGER_CONTEXT.match(source)
+    if context is None:
+        return source
+    for pattern in _LONG_TERM_VARIANTS:
+        for match in pattern.finditer(source):
+            between = source[context.end():match.start()]
+            if len(between) > 64 or re.search(r"\bthat\b", between, flags=re.IGNORECASE):
+                continue
+            return f"{source[:match.start()]} longterm {source[match.end():]}"
+    return source
+
+
+def _normalized_save_trigger(source: str, fact_start: int) -> str:
+    trigger = _clean_fragment(source[:fact_start]).casefold()
+    if "longterm" in trigger:
+        return "remember longterm that"
+    if trigger.startswith("do not forget"):
+        return "do not forget that"
+    return "remember that"
 
 
 def classify_general_memory(fact_text: str) -> Dict[str, Any]:
@@ -761,11 +811,16 @@ def _identifier(value: str) -> str:
 def _semantic_tokens(value: str, *, include_equivalents: bool = True) -> Tuple[str, ...]:
     tokens = []
     for raw in re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKC", str(value or "")).casefold()):
-        token = _stem_semantic_token(raw)
-        if token in _STOP_WORDS or len(token) < 2:
-            continue
-        if token not in tokens:
-            tokens.append(token)
+        candidates = [_stem_semantic_token(raw)]
+        if include_equivalents and raw.endswith("ing"):
+            root = raw[:-3]
+            if len(root) == 3:
+                candidates.append(f"{root}e")
+        for token in candidates:
+            if token in _STOP_WORDS or len(token) < 2:
+                continue
+            if token not in tokens:
+                tokens.append(token)
     return tuple(tokens)
 
 

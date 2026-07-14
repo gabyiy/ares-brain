@@ -234,6 +234,11 @@ class TranscriptNormalizer:
                     "owner_memory_type": str(owner_command.memory.get("memory_type") or ""),
                     "owner_memory_persistence": owner_command.persistence,
                     "owner_memory_explicit": owner_command.explicit,
+                    "owner_memory_normalized_trigger": owner_command.normalized_memory_trigger,
+                    "owner_memory_extracted_fact": (
+                        "[REDACTED]" if owner_command.protected else owner_command.fact_text
+                    ),
+                    "owner_memory_routing_reason": owner_command.routing_reason,
                 },
                 metadata={**dict(request.metadata or {}), "safe": True},
             )

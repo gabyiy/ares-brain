@@ -279,7 +279,10 @@ def test_owner_memory_response_exposes_bounded_operation_diagnostics(tmp_path):
         "operation_result": "created",
         "rejection_reason": "",
         "extracted_memory_phrase": "",
+        "extracted_fact_text": "",
         "fact_text_length": 0,
+        "normalized_memory_trigger": "",
+        "routing_reason": "",
         "memory_id": "",
     }
 

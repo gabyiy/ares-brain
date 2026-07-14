@@ -360,6 +360,15 @@ class SingleTurnVoiceStageMixin:
                 "parser_rule": str(
                     normalization.data.get("owner_memory_parser_rule") or ""
                 ),
+                "normalized_memory_trigger": str(
+                    normalization.data.get("owner_memory_normalized_trigger") or ""
+                ),
+                "extracted_fact_text": str(
+                    normalization.data.get("owner_memory_extracted_fact") or ""
+                ),
+                "routing_reason": str(
+                    normalization.data.get("owner_memory_routing_reason") or ""
+                ),
             }
         state.routing_diagnostics = {
             "normalization": normalization_diagnostics,

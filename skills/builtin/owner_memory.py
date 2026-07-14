@@ -310,6 +310,8 @@ class OwnerMemorySkill(Skill):
             fact_text=str(entities.get("fact_text") or ""),
             clarification_reason=str(entities.get("clarification_reason") or ""),
             confirmation_required=bool(entities.get("confirmation_required")),
+            normalized_memory_trigger=str(entities.get("normalized_memory_trigger") or ""),
+            routing_reason=str(entities.get("routing_reason") or ""),
         )
 
     def _response(self, text: str, command: OwnerMemoryCommand, *, result: Any = None, **metadata: Any) -> SkillResponse:
@@ -338,7 +340,10 @@ class OwnerMemorySkill(Skill):
             "operation_result": str(getattr(result, "status", "") or fallback_status),
             "rejection_reason": str(command.rejection_reason or getattr(result, "error_code", "") or ""),
             "extracted_memory_phrase": command.extracted_memory_phrase,
+            "extracted_fact_text": "[REDACTED]" if command.protected else command.fact_text,
             "fact_text_length": len(command.fact_text),
+            "normalized_memory_trigger": command.normalized_memory_trigger,
+            "routing_reason": command.routing_reason,
             "memory_id": str(getattr(result, "memory", {}).get("memory_id") or ""),
         }
 

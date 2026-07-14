@@ -88,6 +88,9 @@ def run_owner_memory_text(text: str, profile_path: Path) -> dict[str, Any]:
         "memory_id": str(diagnostics.get("memory_id") or ""),
         "persistence": str(diagnostics.get("persistence") or ""),
         "extracted_memory_phrase": str(diagnostics.get("extracted_memory_phrase") or ""),
+        "extracted_fact_text": str(diagnostics.get("extracted_fact_text") or ""),
+        "normalized_memory_trigger": str(diagnostics.get("normalized_memory_trigger") or ""),
+        "routing_reason": str(diagnostics.get("routing_reason") or ""),
         "storage_status": str(
             metadata.get("storage_status") or storage_result.get("status") or ""
         ),
@@ -118,6 +121,9 @@ def run_manual_verification(
         output_func(f"Fact key: {result['normalized_fact_key'] or '(rejected)'}")
         output_func(f"Memory kind: {result['memory_kind'] or '(none)'}")
         output_func(f"Memory type: {result['memory_type'] or '(none)'}")
+        output_func(f"Normalized memory trigger: {result['normalized_memory_trigger'] or '(none)'}")
+        output_func(f"Extracted fact: {result['extracted_fact_text'] or '(none)'}")
+        output_func(f"Routing reason: {result['routing_reason'] or '(none)'}")
         output_func(f"Storage status: {result['storage_status'] or '(none)'}")
         output_func(f"ARES: {result['response']}")
     return 0 if result["success"] else 2

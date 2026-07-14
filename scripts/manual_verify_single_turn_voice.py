@@ -560,6 +560,18 @@ def _print_routing_diagnostics(
         f"{owner_memory.get('extracted_memory_phrase') or '(none)'}"
     )
     output_func(
+        "Normalized memory trigger: "
+        f"{owner_memory.get('normalized_memory_trigger') or '(none)'}"
+    )
+    output_func(
+        "Extracted owner-memory fact: "
+        f"{owner_memory.get('extracted_fact_text') or '(none)'}"
+    )
+    output_func(
+        "Owner-memory routing reason: "
+        f"{owner_memory.get('routing_reason') or '(none)'}"
+    )
+    output_func(
         "Owner-memory type: "
         f"{owner_memory.get('memory_type') or '(none)'}"
     )

@@ -261,6 +261,87 @@ def test_general_long_term_memory_uses_production_voice_route_and_fresh_central_
         assert "single_turn_voice_pipeline" not in usage["reservation_names"]
 
 
+def test_real_whisper_memory_variants_use_production_route_and_preserve_keyed_facts(tmp_path):
+    profile_path = tmp_path / "memory" / "owner_profile.json"
+    bootstrap = OwnerMemoryService(profile_path)
+    expected_facts = {
+        "birthday": "June 8th",
+        "city": "Madrid",
+        "favorite_color": "red",
+        "favorite_game": "EVE Online",
+    }
+    for key, value in expected_facts.items():
+        bootstrap._store.save_fact(key, value)
+    assert bootstrap.inspect(include_values=True)["memory_count"] == 0
+
+    gym, gym_manager, *_ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "Remember in your locked term memory that I love going to the gym",
+        playback=False,
+        turn=1,
+    )
+    games, games_manager, *_ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "Remembering a long term memory that I like video games",
+        playback=False,
+        turn=2,
+    )
+    recalled, *_ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "What do I like?",
+        playback=False,
+        turn=3,
+    )
+    gym_duplicate, *_ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "Remember in your locked term memory that I love going to the gym",
+        playback=False,
+        turn=4,
+    )
+    games_duplicate, *_ = _run_voice_turn(
+        tmp_path,
+        profile_path,
+        "Remembering a long term memory that I like video games",
+        playback=False,
+        turn=5,
+    )
+
+    assert gym.raw_transcript == "Remember in your locked term memory that I love going to the gym"
+    assert gym.normalized_command == "remember longterm that I love going to the gym"
+    assert gym.detected_intent == gym.routed_skill == "owner_memory"
+    assert gym.brain_text_response == "I will remember that you love going to the gym."
+    assert gym_manager.last_plan.steps[0].target == "owner_memory"
+    assert not (tmp_path / "tasks.json").exists()
+    task_candidate = next(candidate for candidate in gym.candidate_skills if candidate["skill"] == "tasks")
+    assert task_candidate["selected"] is False
+    gym_diagnostics = gym.routing_diagnostics["owner_memory"]
+    assert gym_diagnostics["normalized_memory_trigger"] == "remember longterm that"
+    assert gym_diagnostics["extracted_fact_text"] == "I love going to the gym"
+    assert gym_diagnostics["routing_reason"] == "explicit_owner_memory_storage_request"
+
+    assert games.raw_transcript == "Remembering a long term memory that I like video games"
+    assert games.normalized_command == "remember longterm that I like video games"
+    assert games.detected_intent == games.routed_skill == "owner_memory"
+    assert games.brain_text_response == "I will remember that you like video games."
+    assert games_manager.last_plan.steps[0].target == "owner_memory"
+    assert "going to the gym" in recalled.brain_text_response
+    assert "video games" in recalled.brain_text_response
+    assert gym_duplicate.routing_diagnostics["owner_memory"]["operation_result"] == "duplicate"
+    assert games_duplicate.routing_diagnostics["owner_memory"]["operation_result"] == "duplicate"
+
+    report = OwnerMemoryService(profile_path).inspect(include_values=True)
+    facts = {fact["normalized_key"]: fact["value"] for fact in report["facts"]}
+    active = [memory for memory in report["memories"] if memory["status"] == "active"]
+    assert report["memory_count"] == 2
+    assert len(active) == 2
+    assert {memory["object"] for memory in active} == {"going to the gym", "video games"}
+    assert facts == expected_facts
+
+
 def test_ordinary_voice_statement_does_not_persist_general_owner_memory(tmp_path):
     profile_path = tmp_path / "memory" / "owner_profile.json"
 

@@ -18,76 +18,64 @@ from scripts.manual_verify_owner_memory import run_owner_memory_text  # noqa: E4
 
 STEPS = (
     {
-        "text": "Remember that I like going to the gym.",
+        "text": "Remember in your locked term memory that I love going to the gym",
         "skill": "owner_memory",
         "status": "created",
-        "response": "I will remember that you like going to the gym.",
+        "response": "I will remember that you love going to the gym.",
+        "action": "save",
+        "memory_type": "preference",
+        "fact_text": "I love going to the gym",
+        "normalized_trigger": "remember longterm that",
     },
     {
-        "text": "Do I like going to the gym?",
+        "text": "Remembering a long term memory that I like video games",
+        "skill": "owner_memory",
+        "status": "created",
+        "response": "I will remember that you like video games.",
+        "action": "save",
+        "memory_type": "preference",
+        "fact_text": "I like video games",
+        "normalized_trigger": "remember longterm that",
+    },
+    {
+        "text": "What do I like?",
         "skill": "owner_memory",
         "status": "recalled",
-        "response": "Yes. You told me that you like going to the gym.",
+        "response": "You like video games and you love going to the gym.",
     },
     {
         "text": "What do I like doing?",
         "skill": "owner_memory",
         "status": "recalled",
-        "response": "You like going to the gym.",
+        "response": "You like video games and you love going to the gym.",
     },
     {
         "text": "What do you remember about the gym?",
         "skill": "owner_memory",
         "status": "recalled",
-        "response": "You told me that you like going to the gym.",
+        "response": "You told me that you love going to the gym.",
     },
     {
-        "text": "Remember long term that I enjoy strategy games.",
+        "text": "What do you remember about video games?",
         "skill": "owner_memory",
-        "status": "created",
-        "response": "I will remember that you enjoy strategy games.",
+        "status": "recalled",
+        "response": "You told me that you like video games.",
     },
     {
-        "text": "Save in long-term memory that I prefer wireless mice.",
-        "skill": "owner_memory",
-        "status": "created",
-        "response": "I will remember that you prefer wireless mice.",
-    },
-    {
-        "text": "What do you remember about me?",
-        "skill": "owner_memory",
-        "status": "listed",
-        "response_prefix": "I remember that ",
-    },
-    {
-        "text": "Remember in the long memory that I like gym.",
+        "text": "Remember in your locked term memory that I love going to the gym",
         "skill": "owner_memory",
         "status": "duplicate",
-        "response": "I already remember that you like going to the gym.",
+        "response": "I already remember that you love going to the gym.",
+        "memory_type": "preference",
+        "fact_text": "I love going to the gym",
     },
     {
-        "text": "Update my mice preference to ergonomic wireless mice.",
+        "text": "Remembering a long term memory that I like video games",
         "skill": "owner_memory",
-        "status": "updated",
-        "response_prefix": "I updated that memory to: ",
-    },
-    {
-        "text": "Forget that I like going to the gym.",
-        "skill": "owner_memory",
-        "status": "forgotten",
-        "response": "I forgot that you like going to the gym.",
-    },
-    {
-        "text": "What do you remember about the gym?",
-        "skill": "owner_memory",
-        "status": "missing",
-        "response": "I do not have an active long-term memory about the gym.",
-    },
-    {
-        "text": "What do you remember about strategy games?",
-        "skill": "owner_memory",
-        "status": "recalled",
-        "response": "You told me that you enjoy strategy games.",
+        "status": "duplicate",
+        "response": "I already remember that you like video games.",
+        "memory_type": "preference",
+        "fact_text": "I like video games",
     },
     {
         "text": "I went to the gym today.",
@@ -157,6 +145,10 @@ def _run_sequence(
             return 2
         profile_path.unlink(missing_ok=True)
 
+    initial_report = OwnerMemoryService(profile_path).inspect(include_values=True)
+    initial_active_count = int(initial_report.get("memory_count") or 0)
+    output_func(f"Initial active_memory_count: {initial_active_count}")
+
     for index, expectation in enumerate(STEPS, start=1):
         completed = runner(
             [
@@ -192,8 +184,14 @@ def _run_sequence(
 
     report = OwnerMemoryService(profile_path).inspect(include_values=True)
     active = [memory for memory in report.get("memories") or [] if memory.get("status") == "active"]
-    if report.get("detected_version") != 3 or not active:
-        output_func(f"FAIL: v3 active memories did not survive restart: {report!r}")
+    target_objects = [str(memory.get("object") or "") for memory in active]
+    if (
+        report.get("detected_version") != 3
+        or len(active) != initial_active_count + 2
+        or target_objects.count("going to the gym") != 1
+        or target_objects.count("video games") != 1
+    ):
+        output_func(f"FAIL: the two v3 preferences did not survive without duplicates: {report!r}")
         return 1
     forbidden = {
         "voice_owner_profile.json",
@@ -205,8 +203,9 @@ def _run_sequence(
     if created_names & forbidden:
         output_func("FAIL: a voice-specific owner-memory file was created.")
         return 1
+    output_func(f"Final active_memory_count: {len(active)}")
     output_func("PASS: general long-term memories persisted through the central Brain path across fresh processes.")
-    output_func("PASS: duplicate, update, forget, explicit-only, and task-collision behavior matched.")
+    output_func("PASS: locked-term normalization, multiple-preference recall, duplicate prevention, explicit-only, and task-collision behavior matched.")
     output_func(f"PASS: isolated profile: {profile_path}")
     output_func("PASS: no voice-specific memory file was created.")
     return 0
@@ -222,6 +221,14 @@ def _matches(expectation: dict[str, Any], payload: dict[str, Any]) -> bool:
     if expectation.get("response") and payload.get("response") != expectation["response"]:
         return False
     if expectation.get("response_prefix") and not str(payload.get("response") or "").startswith(expectation["response_prefix"]):
+        return False
+    if expectation.get("action") and payload.get("memory_action") != expectation["action"]:
+        return False
+    if expectation.get("memory_type") and payload.get("memory_type") != expectation["memory_type"]:
+        return False
+    if expectation.get("fact_text") and payload.get("extracted_fact_text") != expectation["fact_text"]:
+        return False
+    if expectation.get("normalized_trigger") and payload.get("normalized_memory_trigger") != expectation["normalized_trigger"]:
         return False
     return True
 

@@ -301,9 +301,56 @@ def test_explicit_owner_memory_transcripts_are_normalized_before_task_routing(
 
 
 @pytest.mark.parametrize(
+    ("spoken", "fact"),
+    [
+        (
+            "Remember in your locked term memory that I love going to the gym",
+            "I love going to the gym",
+        ),
+        (
+            "Remembering a long term memory that I like video games",
+            "I like video games",
+        ),
+    ],
+)
+def test_real_whisper_memory_triggers_normalize_before_routing_and_preserve_raw(
+    spoken,
+    fact,
+):
+    result = normalize_transcript(spoken)
+
+    assert result.success is True
+    assert result.raw_transcript == spoken
+    assert result.cleaned_transcript == spoken
+    assert result.normalized_command == f"remember longterm that {fact}"
+    assert result.cleanup_rule == "owner_general_long_term_memory_v1"
+    assert result.data["owner_memory_candidate"] is True
+    assert result.data["owner_memory_action"] == "save"
+    assert result.data["owner_memory_kind"] == "general"
+    assert result.data["owner_memory_type"] == "preference"
+    assert result.data["owner_memory_normalized_trigger"] == "remember longterm that"
+    assert result.data["owner_memory_extracted_fact"] == fact
+    assert result.data["owner_memory_routing_reason"] == "explicit_owner_memory_storage_request"
+
+
+def test_locked_term_words_inside_a_fact_are_not_rewritten_as_a_trigger():
+    result = normalize_transcript(
+        "Remember that I prefer a locked term memory label"
+    )
+
+    assert result.normalized_command == (
+        "remember that I prefer a locked term memory label"
+    )
+    assert result.data["owner_memory_extracted_fact"] == (
+        "I prefer a locked term memory label"
+    )
+
+
+@pytest.mark.parametrize(
     "spoken",
     [
         "remember to buy milk",
+        "remember my task to buy a video game",
         "remember the modified white wall",
         "what is the weather forecast",
     ],

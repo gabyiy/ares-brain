@@ -237,6 +237,8 @@ class OwnerMemoryCommand:
     fact_text: str = ""
     clarification_reason: str = ""
     confirmation_required: bool = False
+    normalized_memory_trigger: str = ""
+    routing_reason: str = ""
 
     @property
     def safe_raw_text(self) -> str:
@@ -250,8 +252,9 @@ class OwnerMemoryCommand:
         if not self.recognized or self.action == OWNER_MEMORY_REJECT:
             return ""
         if self.memory_kind == "general":
-            # Preserve the cleaned explicit phrase through transcript normalization;
-            # the synthetic safe_raw_text is only for internal plan/event metadata.
+            if self.action == OWNER_MEMORY_SAVE and self.fact_text:
+                trigger = self.normalized_memory_trigger or "remember longterm that"
+                return f"{trigger} {self.fact_text}".strip()
             return ""
         key = self.display_key or owner_fact_display_name(self.normalized_key)
         if self.action == OWNER_MEMORY_SAVE:
@@ -286,6 +289,8 @@ class OwnerMemoryCommand:
             "fact_text": self.fact_text,
             "clarification_reason": self.clarification_reason,
             "confirmation_required": self.confirmation_required,
+            "normalized_memory_trigger": self.normalized_memory_trigger,
+            "routing_reason": self.routing_reason,
         }
         if self.rejection_reason:
             entities["rejection_reason"] = self.rejection_reason
@@ -307,6 +312,8 @@ def parse_owner_memory_command(text: str) -> OwnerMemoryCommand:
     clean = _strip_owner_address(_normalize_command_punctuation(source))
     clean = clean.rstrip(" \t\r\n?!.,;:").strip()
     lowered = clean.casefold()
+    if re.match(r"^remember\s+(?:my\s+)?task\b", clean, flags=re.IGNORECASE):
+        return OwnerMemoryCommand(False)
     if lowered in _LIST_PHRASES:
         return OwnerMemoryCommand(
             True,
@@ -536,6 +543,8 @@ def _general_command(parsed: GeneralMemoryParse) -> OwnerMemoryCommand:
         fact_text=parsed.fact_text,
         clarification_reason=parsed.clarification_reason,
         confirmation_required=parsed.confirmation_required,
+        normalized_memory_trigger=parsed.normalized_trigger,
+        routing_reason=parsed.routing_reason,
     )
 
 

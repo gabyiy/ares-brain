@@ -74,6 +74,25 @@ def test_inspection_script_filters_general_memories_without_modifying_profile(tm
     assert path.read_bytes() == before
 
 
+def test_inspection_topic_gaming_matches_video_games_without_modifying_profile(tmp_path):
+    path = tmp_path / "owner_profile.json"
+    service = OwnerMemoryService(path, event_bus=EventBus())
+    from core.OwnerLongTermMemory import classify_general_memory
+
+    service._store.save_memory(classify_general_memory("I like video games"))
+    before = path.read_bytes()
+    output = []
+
+    code = inspect_owner_memory.run_inspection(
+        ["--profile", str(path), "--memories", "--topic", "gaming"],
+        output.append,
+    )
+
+    assert code == 0
+    assert any("The owner likes video games." in line for line in output)
+    assert path.read_bytes() == before
+
+
 def test_inspection_json_reports_v3_general_memory_metadata(tmp_path):
     path = tmp_path / "owner_profile.json"
     service = OwnerMemoryService(path, event_bus=EventBus())
@@ -157,11 +176,16 @@ def test_general_long_term_manual_verifier_uses_fresh_central_brain_processes(tm
 
     assert completed.returncode == 0, completed.stderr
     assert "general long-term memories persisted through the central Brain path" in completed.stdout
+    assert "Initial active_memory_count: 0" in completed.stdout
+    assert "Final active_memory_count: 2" in completed.stdout
+    assert "locked-term normalization" in completed.stdout
     assert "no voice-specific memory file was created" in completed.stdout
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 3
     assert payload["data"]["facts"] == {}
-    assert any(memory["status"] == "active" for memory in payload["data"]["memories"])
+    active = [memory for memory in payload["data"]["memories"] if memory["status"] == "active"]
+    assert len(active) == 2
+    assert {memory["object"] for memory in active} == {"going to the gym", "video games"}
 
 
 def test_general_long_term_verifier_refuses_to_reset_canonical_profile(monkeypatch, tmp_path):

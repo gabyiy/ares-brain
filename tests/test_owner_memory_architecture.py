@@ -1,7 +1,7 @@
 import ast
 from pathlib import Path
 
-from core import CoreService
+from core import CoreService, IntentParser
 from events import EventBus
 from memory import OwnerMemoryService
 from scripts import manual_verify_single_turn_voice as single_turn
@@ -58,6 +58,36 @@ def test_production_voice_launcher_does_not_write_owner_json_directly():
     assert ".write_bytes(" not in source
     assert "owner_profile.json" not in source
     assert "OwnerProfileStore" not in source
+
+
+def test_owner_memory_routing_precedes_tasks_and_tasks_do_not_own_profile_storage():
+    rule_names = [rule.name for rule in IntentParser().rules]
+    tasks_source = (REPO_ROOT / "skills/builtin/tasks.py").read_text(encoding="utf-8")
+
+    assert rule_names.index("owner_memory") < rule_names.index("task")
+    assert "OwnerMemoryService" not in tasks_source
+    assert "OwnerProfileStore" not in tasks_source
+    assert "owner_profile.json" not in tasks_source
+
+
+def test_single_turn_pipeline_normalizes_transcript_before_brain_routing():
+    tree = ast.parse(
+        (REPO_ROOT / "core/SingleTurnVoiceStages.py").read_text(encoding="utf-8")
+    )
+    run_stages = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_run_stages"
+    )
+    calls = {
+        node.func.attr: node.lineno
+        for node in ast.walk(run_stages)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"_normalize_transcription", "_brain_stage"}
+    }
+
+    assert calls["_normalize_transcription"] < calls["_brain_stage"]
 
 
 def test_audio_adapters_do_not_import_or_write_owner_memory():

@@ -8,6 +8,7 @@ from core.OwnerLongTermMemory import (
     GeneralMemoryValidationError,
     classify_general_memory,
     general_memory_signature,
+    normalize_general_memory_source,
 )
 from core.OwnerMemory import parse_owner_memory_command
 from events import EventBus
@@ -77,6 +78,16 @@ def test_explicit_long_term_trigger_variants_route_to_general_owner_memory(text)
         "Remember that I like going gym.",
         "Remember I like gym.",
         "Remember that going gym helps me feel better.",
+        "Remember in your locked term memory that I love going to the gym.",
+        "Remember in your lock term memory that I like going to the gym.",
+        "Remember in locked-term memory that I like going to the gym.",
+        "Remember in long turn memory that I like going to the gym.",
+        "Remember in lifetime memory that I like going to the gym.",
+        "Remembering a long term memory that I like video games.",
+        "Remembering in long term memory that I like video games.",
+        "Remembering that I like video games.",
+        "Remember this that I like video games.",
+        "Save this in memory that I like video games.",
     ],
 )
 def test_bounded_whisper_long_term_variants_are_normalized_without_guessing(text):
@@ -85,6 +96,76 @@ def test_bounded_whisper_long_term_variants_are_normalized_without_guessing(text
     assert command.memory_kind == "general"
     assert command.action == "save"
     assert command.memory["persistence"] == "long_term"
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "long term memory",
+        "long-term memory",
+        "long time memory",
+        "long memory",
+        "permanent memory",
+        "persistent memory",
+        "locked term memory",
+        "lock term memory",
+        "locked-term memory",
+        "long turn memory",
+        "lifetime memory",
+        "longtime memory",
+    ],
+)
+def test_memory_trigger_variants_are_bounded_to_the_leading_storage_request(variant):
+    source = normalize_general_memory_source(
+        f"Remember in your {variant} that I prefer a locked term memory label"
+    )
+    command = parse_owner_memory_command(source)
+
+    assert source == "remember longterm that I prefer a locked term memory label"
+    assert command.fact_text == "I prefer a locked term memory label"
+    assert command.memory["object"] == "a locked term memory label"
+
+
+@pytest.mark.parametrize(
+    ("text", "fact", "predicate", "object_value", "canonical"),
+    [
+        (
+            "Remember in your locked term memory that I love going to the gym",
+            "I love going to the gym",
+            "loves",
+            "going to the gym",
+            "The owner loves going to the gym.",
+        ),
+        (
+            "Remembering a long term memory that I like video games",
+            "I like video games",
+            "likes",
+            "video games",
+            "The owner likes video games.",
+        ),
+    ],
+)
+def test_real_whisper_transcripts_extract_only_the_owner_fact(
+    text,
+    fact,
+    predicate,
+    object_value,
+    canonical,
+):
+    command = parse_owner_memory_command(text)
+
+    assert command.action == "save"
+    assert command.memory_kind == "general"
+    assert command.fact_text == fact
+    assert command.extracted_memory_phrase == fact
+    assert command.normalized_memory_trigger == "remember longterm that"
+    assert command.routing_reason == "explicit_owner_memory_storage_request"
+    assert command.memory["memory_type"] == "preference"
+    assert command.memory["subject"] == "owner"
+    assert command.memory["predicate"] == predicate
+    assert command.memory["object"] == object_value
+    assert command.memory["canonical_text"] == canonical
+    assert "longterm" not in command.memory["owner_spoken_text"].casefold()
 
 
 @pytest.mark.parametrize(
@@ -133,6 +214,62 @@ def test_general_memory_create_recall_list_duplicate_and_forget(tmp_path):
     report = service.inspect(include_values=True)
     assert report["memory_count"] == 0
     assert report["stored_memory_count"] == 1
+
+
+def test_real_whisper_preferences_persist_recall_and_do_not_duplicate(tmp_path):
+    manager, service, _ = _manager(tmp_path)
+    for key, value in {
+        "birthday": "June 8th",
+        "city": "Madrid",
+        "favorite_color": "red",
+        "favorite_game": "EVE Online",
+    }.items():
+        service._store.save_fact(key, value)
+    before = service.inspect(include_values=True)
+
+    gym = manager.handle(
+        "Remember in your locked term memory that I love going to the gym",
+        run_before_intents=True,
+    )
+    games = manager.handle(
+        "Remembering a long term memory that I like video games",
+        run_before_intents=True,
+    )
+    preferences = manager.handle("What do I like?", run_before_intents=True)
+    gym_topic = manager.handle("What do you remember about the gym?", run_before_intents=True)
+    games_topic = manager.handle("What do you remember about video games?", run_before_intents=True)
+    gaming_topic = manager.handle("What do you remember about gaming?", run_before_intents=True)
+    gym_duplicate = manager.handle(
+        "Remember in your locked term memory that I love going to the gym",
+        run_before_intents=True,
+    )
+    games_duplicate = manager.handle(
+        "Remembering a long term memory that I like video games",
+        run_before_intents=True,
+    )
+
+    after = service.inspect(include_values=True)
+    facts = {fact["normalized_key"]: fact["value"] for fact in after["facts"]}
+    active = [memory for memory in after["memories"] if memory["status"] == "active"]
+    assert before["memory_count"] == 0
+    assert gym.text == "I will remember that you love going to the gym."
+    assert games.text == "I will remember that you like video games."
+    assert "going to the gym" in preferences.text
+    assert "video games" in preferences.text
+    assert gym_topic.text == "You told me that you love going to the gym."
+    assert games_topic.text == "You told me that you like video games."
+    assert gaming_topic.text == "You told me that you like video games."
+    assert gym_duplicate.metadata["storage_status"] == "duplicate"
+    assert games_duplicate.metadata["storage_status"] == "duplicate"
+    assert after["memory_count"] == 2
+    assert len(active) == 2
+    assert {memory["object"] for memory in active} == {"going to the gym", "video games"}
+    assert facts == {
+        "birthday": "June 8th",
+        "city": "Madrid",
+        "favorite_color": "red",
+        "favorite_game": "EVE Online",
+    }
 
 
 def test_duplicate_signatures_are_bounded_semantic_aliases_not_unrestricted_matching():
@@ -227,9 +364,14 @@ def test_broad_delete_requires_persisted_exact_confirmation(tmp_path):
         ("Remind me to go to the gym tomorrow.", "task"),
         ("Create a task to go to the gym.", "task"),
         ("Remember to call the doctor tomorrow.", "task"),
+        ("Remember to play video games tonight.", "task"),
+        ("Remember my task to buy a video game.", "task"),
         ("Remember buy milk tomorrow.", "task"),
         ("I went to the gym.", "unknown"),
         ("Remember that my doctor is named Smith.", "owner_memory"),
+        ("Remember that video games help me relax.", "owner_memory"),
+        ("Remember in your locked term memory that I love going to the gym.", "owner_memory"),
+        ("Remembering a long term memory that I like video games.", "owner_memory"),
         ("Save note buy gym shoes", "note"),
     ],
 )
