@@ -1,10 +1,10 @@
 ARES Session Handoff
 
-Last Updated: 2026-07-13
+Last Updated: 2026-07-14
 
 Current Version
 
-ARES v1.86 - Complete VAD Utterance Assembly
+ARES v1.87 - Safe Calculator Questions and Playback Isolation
 
 ---
 
@@ -25,6 +25,10 @@ Checkpoint root causes and fixes:
 - Auto-stop now resolves numeric raw devices through `plughw`, fixed capture reads the actual WAV header, and both routes enforce one centralized 16 kHz mono signed 16-bit PCM boundary before VAD/Whisper. No raw PCM bytes are relabeled at another rate.
 - The owner then proved a separate post-capture defect: ALSA/VAD processed 3.42 seconds through frame 171, but the normalized Whisper input contained exactly 1.0 second. `POSSIBLE_SILENCE` used total pending-buffer length to satisfy hangover, required only the smaller consecutive-low-frame count, and discarded the whole pending block at completion. Low-energy words and internal pauses could therefore disappear together.
 - The VAD now preserves one persistent ordered utterance, appends each resumed pending block exactly once, requires the full configured consecutive terminal-silence duration, and trims only that suffix. Canonical normalization is lossless for already-canonical PCM, and a 0.05-second duration invariant blocks Whisper when unexplained truncation occurs.
+- The owner verified the correction on Raspberry Pi: raw capture `7.060s`, assembled/normalized/Whisper input `5.400s`, `duration_consistent`, and `completed_after_silence`. This checkpoint does not alter the now-correct VAD/audio-duration path.
+- The next failure, `unsupported_arithmetic_word:much`, occurred when an arithmetic candidate used a natural question shape not represented by the finite anchored wrapper/suffix table. Strict token validation was correct; the extraction registry was incomplete.
+- The registry now recognizes explicit `how much`, `what does ... equal`, nested `tell me how much ... is`, answer/result, polite, first-person, and optional ARES-address forms. It records the extracted expression and never treats `much` as an arithmetic token or removes arbitrary middle words.
+- The previous manual command explicitly selected all capture stages with `--playback-debug-stages`, which is why the owner heard raw, assembled, and normalized speech. Normal `--playback` now has one documented purpose: play the generated Piper response. Preservation and each diagnostic stage are independently owner-controlled.
 
 Confirmed Phase 3 foundation:
 
@@ -90,11 +94,13 @@ Confirmed Phase 3 foundation:
 - Anchored natural-language calculator wrapper extraction with one-expression-only safety
 - ALSA raw-device resolution to `plughw` for canonical streaming capture
 - Actual-header WAV normalization before VAD/Whisper with atomic finalization
-- Distinct per-turn raw/assembled/normalized WAV diagnostics plus transcript output through owner-requested `--diagnostic-audio`
+- Distinct per-turn raw/assembled/normalized WAV diagnostics plus transcript output through owner-requested `--preserve-diagnostic-audio`
 - Pre-Whisper assembled/normalized duration invariant with fail-closed truncation handling
+- Versioned extracted-calculator-expression routing diagnostics
+- Independent diagnostic preservation, per-stage capture playback, and response playback controls
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1105 tests.
+Current pytest collection: 1162 tests.
 
 The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, centralized canonical WAV conversion through `core.WavAudio`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, and the bounded multi-turn session. Adaptive calibration remains inside the VAD boundary; transcript normalization and routing diagnostics remain between STT and `VoiceCommandRouter`/SkillManager. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, conversion, VAD, Whisper, Piper, or normalization internals. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
 
@@ -396,14 +402,14 @@ python scripts/manual_verify_single_turn_voice.py \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --whisper-model models/whisper/ggml-base.en.bin \
   --voice-profile en_US-hfc_male-medium \
-  --diagnostic-audio \
   --diagnostic-routing \
-  --playback-debug-stages \
   --timeout 300 \
   --playback
 ```
 
-Say `Hello Ares, what is two plus two?` The expected trace is normalized command `calculate 2 + 2`, cleanup rule `calculator_natural_language_wrapper`, intent `calculate`, selected registered skill `calculator`, planner target `calculator`, execution `success`, response `Result: 4`, and no rejection reason. The automated Windows production-factory test produced this result through CoreService, SkillManager, IntentParser, Planner, ExecutionPipeline, and the real CalculatorSkill. `--diagnostic-audio` retains unique `raw_capture.wav`, `assembled_utterance.wav`, `normalized_whisper_input.wav`, and `whisper_transcript.txt` files. `--playback-debug-stages` explicitly plays the three WAV stages only after capture/pipeline completion. Final Raspberry Pi execution after pulling this checkpoint remains owner-run verification.
+Say `How much is two plus two?` The expected trace is cleaned transcript `how much is two plus two`, extracted expression `two plus two`, normalized command `calculate 2 + 2`, cleanup rule `calculator_natural_language_wrapper`, intent `calculate`, selected registered skill `calculator`, planner target `calculator`, execution `success`, response `Result: 4`, and no rejection reason. The automated Windows production-factory test produced this result through CoreService, SkillManager, IntentParser, Planner, ExecutionPipeline, and the real CalculatorSkill. With `--playback`, only the generated Piper response WAV is sent to the speaker.
+
+To preserve unique `raw_capture.wav`, `assembled_utterance.wav`, `normalized_whisper_input.wav`, and `whisper_transcript.txt` files without playing them, use the same command without `--playback` and add `--preserve-diagnostic-audio`. To hear captured stages explicitly, add one of `--play-diagnostic-capture`, `--play-diagnostic-assembled`, or `--play-diagnostic-normalized`; `--play-diagnostic-audio` selects all three once. These flags never enable live microphone monitoring. Final Raspberry Pi execution after pulling this checkpoint remains owner-run verification.
 
 Controlled bounded multi-turn voice session has been added.
 
@@ -2096,11 +2102,11 @@ Text REPL
 
 Immediate Next Milestone
 
-Pull the format-safe capture checkpoint on Raspberry Pi, run calibration with `plughw:2,0` and `--diagnostic-audio`, then confirm the reported actual and final formats are canonical before testing the calculator turn. Record only observed format, segmentation, timing, transcript, routing, and cleanup results. Do not add wake words, background listening, or an unbounded conversation service without separate approval.
+Pull the calculator-wrapper/playback-isolation checkpoint on Raspberry Pi and run the documented answer-only command. Say `How much is two plus two?`; confirm the extracted expression is `two plus two`, CalculatorSkill is selected, the response is `Result: 4`, and only the generated Piper response is audible. Preserve intermediate WAVs separately if evidence is needed. Do not add wake words, background listening, or an unbounded conversation service without separate approval.
 
 Next technical choices:
 
-- Pull latest `main`, run `scripts/manual_verify_voice_activity_capture.py`, then run the single-turn and multi-turn scripts with `--auto-stop`, `plughw:2,0`, `plughw:CARD=Device,DEV=0`, `ggml-base.en.bin`, `--diagnostic-audio`, the configured male profile, explicit playback, and the documented limits.
+- Pull latest `main`, run the single-turn script with `--auto-stop`, `plughw:2,0`, `plughw:CARD=Device,DEV=0`, `ggml-base.en.bin`, the configured male profile, `--diagnostic-routing`, explicit response `--playback`, and no diagnostic-stage playback flags.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
 - Measure bounded turns on real hardware and tune thresholds only from observed results.
 - Only later add wake-word/background listening.
@@ -2137,7 +2143,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1105 tests.
+- Current pytest collection: 1162 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.

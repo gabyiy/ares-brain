@@ -29,13 +29,19 @@
     "maximum_silence_rms": 600,
     "duration_loss_tolerance_seconds": 0.05,
     "frame_debug_enabled": false,
-    "diagnostic_audio": false
+    "diagnostic_audio": false,
+    "diagnostic_audio_playback": {
+      "raw_capture": false,
+      "assembled_utterance": false,
+      "normalized_whisper_input": false
+    }
   },
   "voice_command_routing": {
     "transcript_normalization_enabled": true,
     "maximum_transcript_length": 1024,
     "maximum_arithmetic_source_length": 256,
     "repetition_limit": 2,
+    "calculator_wrapper_policy": "anchored_allowlist_v1",
     "diagnostic_routing": false
   },
   "enabled_modules": {

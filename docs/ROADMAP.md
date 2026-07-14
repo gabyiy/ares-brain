@@ -1029,7 +1029,7 @@ Phase 81: Format-Safe Raspberry Pi Microphone Capture
 - Production auto-stop resolves raw numeric hardware IDs to ALSA `plughw` conversion and requests canonical 16 kHz mono signed 16-bit PCM before framing or RMS analysis.
 - Fixed-duration capture reads the actual WAV header and uses the centralized `core.WavAudio` boundary to downmix/resample supported PCM into a separately finalized canonical WAV.
 - VAD and Whisper reject noncanonical, missing, empty, corrupt, truncated, or unsupported WAV input instead of reinterpreting bytes.
-- Single-turn and bounded multi-turn requests propagate explicit `diagnostic_audio`; owner scripts expose `--diagnostic-audio` and report raw/assembled/normalized paths plus requested, actual, and canonical formats.
+- Single-turn and bounded multi-turn requests propagate explicit diagnostic preservation; owner scripts report raw/assembled/normalized paths plus requested, actual, and canonical formats without implying playback.
 - The fixed-duration fallback remains available, microphone monitoring remains disabled, and Brain/CoreService remain free of ALSA/resampling code.
 - Historical checkpoint collection was 1079 tests.
 
@@ -1042,7 +1042,16 @@ Phase 82: Complete VAD Utterance Assembly and Duration-Safe Whisper Handoff
 - Unique per-turn raw capture, assembled utterance, normalized Whisper input, and transcript diagnostic paths prevent stale-file and preview-file handoff.
 - A configurable duration invariant fails before Whisper when normalized audio loses unexplained duration relative to the assembled utterance.
 - Manual diagnostics report frame/sample/byte counts, intentional trim durations, stage paths, and the exact Whisper input duration. Stage playback is owner opt-in and occurs only after capture stops.
-- Current pytest collection is 1105 tests.
+- Historical Phase 82 pytest collection was 1105 tests.
+
+Phase 83: Safe Natural Calculator Questions and Playback Isolation
+
+- Extended the finite anchored calculator wrapper registry for approved `how much`, `what does ... equal`, answer/result, first-person, polite, and optional ARES-address forms.
+- Added the exact extracted arithmetic expression to V1 normalization, single-turn results, and bounded routing diagnostics.
+- Preserved strict full-token arithmetic parsing and the existing CalculatorSkill AST evaluator; ambiguous text, trailing instructions, code-like input, malformed arithmetic, and limits still fail closed.
+- Split intermediate-audio preservation from raw/assembled/normalized stage playback. Normal `--playback` now has one documented meaning: play the generated ARES response only.
+- Retained old diagnostic flags as compatibility aliases without allowing preservation to imply playback.
+- Current pytest collection is 1162 tests.
 
 Current State
 
@@ -1061,7 +1070,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1105 tests.
+The current pytest collection is 1162 tests.
 
 The current memory paths are:
 
@@ -1117,10 +1126,11 @@ Phase 3 Real Voice Integration
 15. Add bounded anchored natural-language calculator wrapper extraction. Completed.
 16. Add canonical ALSA device resolution and validated 16 kHz mono PCM normalization before VAD/Whisper. Completed.
 17. Preserve complete VAD utterances across repeated pause/resume transitions and reject unexplained normalized-duration loss. Completed in CI with deterministic PCM.
-18. Pull this checkpoint and verify raw/assembled/normalized durations with `plughw:2,0`, `--diagnostic-audio`, and the owner-opt-in stage playback flag on Raspberry Pi.
-19. Confirm `Hello Ares, what is two plus two?` reaches Whisper intact and returns and speaks `Result: 4` from the normalized real-audio route.
-20. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
-21. Only later consider wake-word/background listening.
+18. Verify raw/assembled/normalized duration preservation on Raspberry Pi. Completed by owner: `7.060s` raw and `5.400s` assembled/normalized/Whisper input with `duration_consistent`.
+19. Pull the safe-wrapper/playback-isolation checkpoint and confirm `How much is two plus two?` selects CalculatorSkill and speaks only `Result: 4` through normal `--playback`.
+20. Use `--preserve-diagnostic-audio` without stage-playback flags when retaining capture evidence; use explicit per-stage flags only for owner-requested audio debugging.
+21. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, and transcription quality from real results.
+22. Only later consider wake-word/background listening.
 
 What Must Not Be Started Yet
 

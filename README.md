@@ -60,7 +60,9 @@ Raspberry Pi speech-input verification is now hardened for real recordings. The 
 
 The production voice calculator route is now assembled through the shared `create_builtin_skill_manager()` factory used by the text REPL, typed voice simulation, and real single-turn script. The prior integration tests manually registered `CalculatorSkill`, so they did not verify the same registry construction used on Raspberry Pi and could not explain a live `unknown` result. Production-factory integration now proves `Whisper transcript -> TranscriptNormalization -> VoiceCommandRouter -> CoreService -> SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> registered CalculatorSkill`. `SingleTurnVoiceResultV1` carries bounded candidate-skill and per-stage routing diagnostics, and `--diagnostic-routing` prints them without dumping memory, secrets, or unrestricted internal objects.
 
-Real Raspberry Pi transcription subsequently produced `I'll calculate 2 plus 2.`. The old arithmetic-candidate detector recognized the numbers and operator, but its wrapper table did not remove the anchored `I'll calculate` phrase; the remaining apostrophe and letters therefore failed the strict arithmetic-source grammar as `unsupported_arithmetic_text`. The shared normalizer now applies `calculator_natural_language_wrapper` only to an explicit finite set of leading forms: calculator verbs (`calculate`, `compute`, `solve`, `work out`), bounded polite requests (`please`, `can/could/would you`), question forms (`what is`, `what's`, `how much is`), `tell me what ... is`, first-person `I'll/I will calculate`, and an optional leading `Ares` vocative. Only the approved trailing `is` form is removed at the end. Any remaining word, second expression, code/import syntax, assignment, path, shell punctuation, unsupported operator, or oversized expression still fails before IntentParser; CalculatorSkill validation is unchanged.
+Real Raspberry Pi transcription first produced `I'll calculate 2 plus 2.`. The old arithmetic-candidate detector recognized the numbers and operator, but its wrapper table did not remove that anchored phrase; strict parsing therefore rejected the remaining words. A later complete-audio run reached `unsupported_arithmetic_word:much`. Exact `how much is <expression>` was already supported, but nested question/result forms and their exact trailing `is/equal/equals` suffixes were not represented. When one of those finite wrappers did not match, arithmetic candidate detection still ran and correctly rejected the unextracted wrapper token.
+
+The shared normalizer now applies `calculator_natural_language_wrapper` only through an explicit anchored prefix/suffix registry. It supports calculator verbs (`calculate`, `compute`, `solve`, `work out`), bounded polite requests, exact `what is` / `how much is` / `what does ... equal` / `tell me how much ... is` forms, answer/result forms, first-person requests, and optional `Ares`, `Hello Ares`, `Hey Ares`, or `Hi Ares` address prefixes. It records the exact extracted expression separately from the raw, cleaned, and normalized text. `much` is not part of the arithmetic vocabulary and is never deleted outside an approved wrapper. Any remaining word, second instruction, code/import syntax, assignment, path, shell punctuation, unsupported operator, malformed number, or oversized expression still fails before IntentParser; CalculatorSkill validation is unchanged.
 
 `core.VoiceCommandRouter` now routes `TranscriptionResult` objects into Voice City without any speech engine dependency. It validates a configurable confidence threshold, ignores empty transcriptions safely, propagates transcription failures, routes valid text through CoreService's `voice.text_loop` capability, handles unknown commands with structured safe results, and records local routed/rejected metrics plus `voice_command.routed` and `voice_command.rejected` events.
 
@@ -539,7 +541,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 1105 tests across current core modules
+- Pytest automated coverage for 1162 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -558,7 +560,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1105 tests`.
+Current pytest collection: `1162 tests`.
 
 Manual Calculator Launch Verification
 
@@ -842,7 +844,7 @@ python scripts/manual_verify_single_turn_voice.py \
   --text-input "calculate 2 + 2"
 ```
 
-Run one real Raspberry Pi turn with automatic end-of-speech capture, the stronger local base English Whisper model, configured male voice, and explicit playback:
+Run one real Raspberry Pi turn with automatic end-of-speech capture, the local base English Whisper model, configured male voice, and answer-only playback:
 
 ```bash
 python scripts/manual_verify_single_turn_voice.py \
@@ -864,16 +866,48 @@ python scripts/manual_verify_single_turn_voice.py \
   --whisper-command external/whisper.cpp/build/bin/whisper-cli \
   --whisper-model models/whisper/ggml-base.en.bin \
   --voice-profile en_US-hfc_male-medium \
-  --diagnostic-audio \
   --diagnostic-routing \
-  --playback-debug-stages \
   --timeout 300 \
   --playback
 ```
 
-Say `Hello Ares, what is two plus two?` The expected normalized command is `calculate 2 + 2`, cleanup rule is `calculator_natural_language_wrapper`, parsed intent is `calculate`, selected registered skill is `calculator`, and execution response is `Result: 4`. `--diagnostic-routing` prints raw/cleaned/normalized text, cleanup rule, candidate scores and reasons, selected skill, planner decision, execution status, and the first rejection reason when a stage fails. `--diagnostic-audio` keeps unique per-turn `raw_capture.wav`, `assembled_utterance.wav`, and `normalized_whisper_input.wav` files plus `whisper_transcript.txt`. `--playback-debug-stages` explicitly plays those three WAVs in that order after the turn; it is rejected unless diagnostic audio is enabled and never enables live microphone monitoring. Use `--fixed-duration --record-seconds 5` for the existing fallback capture, `--keep-audio` to retain successful input/response WAVs, and `--verbose` for the full structured V1 result. Failures preserve useful diagnostic audio automatically. Operational events store stage/status metadata, not transcript or audio contents.
+Say `How much is two plus two?` The expected extracted expression is `two plus two`, normalized command is `calculate 2 + 2`, cleanup rule is `calculator_natural_language_wrapper`, parsed intent is `calculate`, selected registered skill is `calculator`, and execution response is the established `Result: 4`. `--diagnostic-routing` prints raw, cleaned, extracted, and normalized text plus candidate, planner, execution, and rejection fields. With only `--playback`, the speaker receives exactly the generated Piper response WAV; it does not replay microphone capture or enable monitoring.
 
-For the observed frame-171 Raspberry Pi case, raw capture should remain about `3.42` seconds. The assembled duration is expected to be shorter only by calibration/waiting frames outside retained pre-roll and the explicitly trimmed terminal-silence suffix; it must not be forced to `1.00` second. Normalized duration and Whisper input duration must match the assembled duration within `0.05` seconds, and canonical input normally matches exactly.
+Preserve all intermediate WAVs without playing any capture stage by adding:
+
+```bash
+python scripts/manual_verify_single_turn_voice.py \
+  --microphone-device plughw:2,0 \
+  --speaker-device plughw:CARD=Device,DEV=0 \
+  --auto-stop \
+  --language en \
+  --whisper-command external/whisper.cpp/build/bin/whisper-cli \
+  --whisper-model models/whisper/ggml-base.en.bin \
+  --voice-profile en_US-hfc_male-medium \
+  --preserve-diagnostic-audio \
+  --diagnostic-routing \
+  --timeout 300
+```
+
+Capture-stage playback is a separate debug action. `--play-diagnostic-capture`, `--play-diagnostic-assembled`, and `--play-diagnostic-normalized` select one stage; `--play-diagnostic-audio` selects all three once, in order. For example, the following plays the three captured stages but does not play the generated ARES response because `--playback` is absent:
+
+```bash
+python scripts/manual_verify_single_turn_voice.py \
+  --microphone-device plughw:2,0 \
+  --speaker-device plughw:CARD=Device,DEV=0 \
+  --auto-stop \
+  --language en \
+  --whisper-command external/whisper.cpp/build/bin/whisper-cli \
+  --whisper-model models/whisper/ggml-base.en.bin \
+  --voice-profile en_US-hfc_male-medium \
+  --play-diagnostic-audio \
+  --diagnostic-routing \
+  --timeout 300
+```
+
+`--diagnostic-audio` remains a compatibility alias for `--preserve-diagnostic-audio`, and `--playback-debug-stages` remains a compatibility alias for `--play-diagnostic-audio`. Saving diagnostics never implies playback. Use `--fixed-duration --record-seconds 5` for the existing fallback capture, `--keep-audio` to retain successful input/response WAVs, and `--verbose` for the full structured V1 result. Operational events store stage/status metadata, not transcript or audio contents.
+
+Real Raspberry Pi verification after the assembly fix reported raw duration `7.060` seconds, assembled duration `5.400` seconds, normalized duration `5.400` seconds, Whisper input duration `5.400` seconds, `duration_consistent`, and `completed_after_silence`. The Windows suite verifies the new routing/playback behavior with injected hardware adapters; it does not claim a post-pull Raspberry Pi result for this checkpoint.
 
 Controlled Multi-Turn Voice Session
 
@@ -2030,22 +2064,30 @@ Phase 82
 - Trim only the confirmed consecutive terminal-silence suffix
 - Retain unique raw, assembled, normalized, and transcript diagnostics on explicit owner request
 - Fail closed before Whisper when normalized duration loses more than the configured tolerance
-- Current pytest collection is 1105 tests
+- Historical Phase 82 pytest collection was 1105 tests
 
 Phase 83
+
+- Expanded the anchored calculator wrapper registry for bounded `how much`, `what does ... equal`, answer/result, and optional ARES-address forms
+- Added `extracted_calculator_expression` to versioned normalization and single-turn diagnostics
+- Kept unsupported words, trailing commands, unsafe syntax, limits, and CalculatorSkill AST validation fail closed
+- Separated intermediate-audio preservation, per-stage diagnostic playback, and normal Piper response playback
+- Current pytest collection is 1162 tests
+
+Phase 84
 
 - Future voice expansion only after separate approval
 - Wake word
 - Bounded background-listening design
 
-Phase 84
+Phase 85
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 85
+Phase 86
 
 - Robotics
 - ROS2
