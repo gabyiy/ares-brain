@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.89 - Explicit Persistent Owner Memory
+ARES v1.91 - Central General Owner Memory
 
 ---
 
@@ -54,7 +54,7 @@ Raspberry Pi speech-input verification is now hardened for real recordings. The 
 
 `scripts/run_ares_voice.py` is the production-style owner entry point for exactly one real voice turn. It resolves repository-relative Whisper paths from the script location, reads the default Piper profile through the existing voice-profile registry, performs lifecycle/component health preflight before capture, then delegates to the existing `SingleTurnVoicePipeline`. Its Raspberry Pi defaults are `plughw:2,0`, `plughw:CARD=Device,DEV=0`, English, `external/whisper.cpp/build/bin/whisper-cli`, `models/whisper/ggml-base.en.bin`, `en_US-hfc_male-medium`, auto-stop capture, response playback enabled, diagnostic retention/playback disabled, and a 300-second timeout. It does not contain ALSA, Whisper, Piper, routing, calculator, or playback implementation code.
 
-`memory.OwnerProfileStore` and `skills.builtin.OwnerMemorySkill` provide explicit, bounded owner-fact persistence through the same production skill route. Owner-memory parsing runs before generic task/reminder parsing, so `remember that my favorite color is blue` selects `OwnerMemorySkill`, while `remember to buy milk` remains a task. Save, update, recall, delete/forget, and the approved `my favorite color is ...` declaration pass through `VoiceCommandRouter -> CoreService -> SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> OwnerMemorySkill`; the voice launcher never calls the store directly. The canonical file is resolved from the repository root as `data/memory/owner_profile.json` under the `ares.owner_profile` v1 schema, independent of the process working directory. `ARES_OWNER_PROFILE_PATH` remains an explicit local override for isolated verification. This feature does not save arbitrary transcripts, recordings, conversations, or inferred facts.
+Central owner memory is now a Brain/CoreService capability rather than a voice-owned store. `CoreService` owns `memory.OwnerMemoryService`; `OwnerMemorySkill` sends versioned requests through `CoreService.execute_owner_memory()`, and only the service knows the concrete `OwnerProfileStore`. Voice, typed text, and future interfaces therefore share the same canonical `data/memory/owner_profile.json`. The `ares.owner_profile` v2 schema supports explicit bounded general facts, list/recall/update/forget operations, deterministic aliases, migration of every existing v1 fact, one retained last-known-good backup, transaction/write locks, and atomic validated replacement. Voice launchers do not import or instantiate the JSON store, and no transcript, recording, complete conversation, or inferred fact becomes owner memory automatically.
 
 `core.MultiTurnVoiceSession` now provides an explicitly owner-started, bounded conversation session by repeatedly invoking `SingleTurnVoicePipeline`. `MultiTurnVoiceSessionRequestV1` and `MultiTurnVoiceSessionResultV1` define limits, stop phrases, per-turn correlation IDs, summaries, cleanup state, and structured failure data. An exact normalized stop-phrase gate runs after transcription and before Brain routing. Local greeting and closing phrases use the existing TTS/speaker path without asking the Brain to generate them. The session defaults to five turns, 180 seconds, three consecutive failures, five-second captures, a 0.75-second inter-turn delay, and playback disabled. It remains a foreground owner-run process with no wake word, background listener, boot service, GPT, cloud dependency, or automatic transcript persistence.
 
@@ -108,6 +108,8 @@ Capability manifests now describe ARES modules before activation. Each manifest 
 
 Permanent memory rules: durable ARES data may never be rewritten without validation and backup; unknown future schema versions must never be silently downgraded; a failed load must never be interpreted as empty memory; hardware-specific paths must not become part of the durable memory schema.
 
+Permanent owner-memory rule: owner facts belong to the central Brain/CoreService memory boundary. Input/output adapters may submit text and render responses, but they may not own, duplicate, cache as authority, or directly mutate persistent owner memory. Facts are persisted only after explicit bounded owner requests.
+
 Permanent health/fallback rules: the Brain never selects concrete adapters; automatic fallback is allowed only for explicitly retry-safe operations; a failed adapter must never cause unrelated Cities to activate; fallback must never hide the original failure; disabled or circuit-open adapters must not be selected; health checks must not perform destructive actions.
 
 Permanent resource rules: the Brain never manages RAM, CPU, adapters, or hardware; CoreService controls activation and resource reservations; no module activates before capacity is reserved; no failed operation may leak a reservation or task slot; declared estimates must never be represented as exact measurements; resource inspection must not activate inactive Cities; dangerous actions must never be repeated because of eviction, retry, or cancellation.
@@ -137,6 +139,8 @@ Current V1 contracts:
 - `VoicePipelineRequestV1`
 - `VoicePipelineResultV1`
 - `EventPublicationEnvelopeV1`
+- `OwnerMemoryRequestV1`
+- `OwnerMemoryResultV1`
 
 Every public contract exposes `contract_name`, `contract_version`, `correlation_id`, optional `session_id`, `created_at`, and `metadata`. Runtime compatibility currently uses integer major versions such as `v1`; unsupported versions are rejected, not reinterpreted. Future V2 contracts must be registered alongside V1, validated centrally, and introduced without changing the Brain.
 
@@ -547,7 +551,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 1280 tests across current core modules
+- Pytest automated coverage for 1350 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -566,7 +570,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1280 tests`.
+Current pytest collection: `1350 tests`.
 
 Manual Calculator Launch Verification
 
@@ -863,56 +867,53 @@ python scripts/run_ares_voice.py \
 
 Only `--play-diagnostic-audio` plays the retained raw, assembled, and normalized capture stages. `--playback` is the default response-only behavior; `--no-playback` disables the generated response. Use `--fixed-duration --record-seconds 5` only for the preserved fixed-duration fallback.
 
-Explicit Persistent Owner Memory
+Central General Owner Memory
 
-Owner memory accepts only deliberate, bounded commands. It does not infer facts from normal conversation:
+Owner memory belongs to the Brain/CoreService layer. Every transport follows the same boundary:
 
 ```text
-Remember that my favorite color is blue. -> I will remember that your favorite color is blue.
-What is my favorite color?               -> Your favorite color is blue.
-Remember that my favorite color is red.  -> I updated your favorite color to red.
-Forget my favorite color.                -> I forgot your favorite color.
-What is my favorite color?               -> I do not know your favorite color yet.
+input adapter -> CoreService / Brain routing -> OwnerMemoryService
+              -> OwnerProfileStore -> structured response -> optional output adapter
 ```
 
-Supported deterministic forms are `remember [that] my <key> is <value>`, `update my <key> to <value>`, `what is/what's my <key>`, `do you remember my <key>`, and `forget/delete my <key>`. The declaration `my favorite color is <value>` is also approved; broad declarative facts remain with the legacy profile path. Keys are normalized, so `favorite colour` and `favorite color` both resolve to `favorite_color`. A narrow exact alias handles the observed local Whisper substitution `remember that modified white color is ...`; no fuzzy matching or arbitrary word replacement is performed. Keys and values are length-bounded, control characters and path-like keys are rejected, and ambiguous commands fail without guessing.
+`OwnerMemorySkill` never opens JSON. It creates `OwnerMemoryRequestV1` and calls `CoreService.execute_owner_memory()`. Voice scripts do not import the concrete store, and no voice-specific profile exists. The canonical repository-root path is `data/memory/owner_profile.json`; `ARES_OWNER_PROFILE_PATH` is only an explicit local override for isolated tests and owner-run verification.
 
-Owner-memory intent is evaluated before task/reminder intent. `remember that my favorite color is blue` is an owner-profile operation; `remember to buy milk`, `remind me to buy milk`, and other ordinary reminders remain task operations. Malformed owner-memory syntax is rejected instead of falling through and creating a task.
+Memory changes require an explicit owner verb. Supported bounded forms include `remember/save/store/note that my <key> is <value>`, `remember that I live in <value>`, `remember that I work <value>`, `change/update my <key> to <value>`, `what/when is my <key>`, `where do I live`, `forget/delete/remove my <key>`, and `what do you remember about me`. Normal conversation is not persisted. `remember to buy milk`, `remind me tomorrow to buy food`, and `save a task to buy food` remain task operations.
 
-Passwords, passcodes, PINs, API keys, tokens, private keys, recovery or seed phrases, and bounded bank/card identifiers are protected keys. ARES refuses to store or recall them and redacts supplied values from operational events and routing/lifecycle diagnostics. Normal event records contain operation/status metadata only.
+Aliases are finite and data-driven: color/colour spellings map to `favorite_color`, birthday/birth date/date of birth map to `birthday`, town/home city map to `city`, favorite videogame maps to `favorite_game`, and dog's name maps to `dog_name`. Safe custom keys normalize to lowercase underscore identifiers. Keys cannot be paths, URLs, commands, or nested JSON paths.
 
-The default file is `data/memory/owner_profile.json`, resolved from the repository root rather than the current working directory. It uses the shared schema envelope with `schema_name: ares.owner_profile`, integer `schema_version: 1`, timestamps, structured fact data, and bounded metadata. Writes create missing parent directories, validate data, create a backup when replacing an existing file, write and flush a temporary file, atomically replace the active file where practical, and verify the result. Malformed JSON, unsupported future versions, invalid envelopes, or failed writes fail closed; ARES does not reset the profile to empty or overwrite recovery evidence.
+Values may be a string of at most 256 characters, an integer, a finite float, a boolean, or a list of at most 10 simple scalar values. The profile allows at most 100 facts and 65,536 serialized data bytes. Passwords, passcodes, PINs, API keys, tokens, private keys, recovery/seed phrases, bank/card identifiers, executable content, control characters, and attempts to persist system instructions are rejected. Operational events store status and normalized keys, never fact values.
 
-`config/modules.example.json` documents the owner-memory policy and capability provider. The runtime path is the repository default unless `ARES_OWNER_PROFILE_PATH` is explicitly set; normal runtime never installs providers or loads arbitrary classes from this example file.
+The `ares.owner_profile` v2 envelope records owner id, normalized/display keys, simple values, creation/update timestamps, and `source: explicit_owner_statement`. Loading a v1 favorite-color profile runs the registered v1-to-v2 migration and preserves every fact. Missing files mean an empty profile; malformed JSON, future versions, invalid fields, failed validation, and failed writes fail closed. Mutations use an owner transaction lock, the shared write lock, deterministic UTF-8 JSON, one retained last-known-good backup under `.migration_backups`, a flushed temporary file, atomic replacement, and final reload validation. Recovery is never automatic: validate the active file and candidate backup with the inspection tool before explicitly restoring it.
 
-Run one hardware-free command through the real SkillManager/Planner/ExecutionPipeline path with an isolated profile:
+Run the complete hardware-free, fresh-process central-memory check without touching real owner data:
 
 ```bash
-python scripts/manual_verify_owner_memory.py \
-  --profile-path /tmp/ares_owner_profile.json \
-  --text "remember that my favorite color is blue"
+python scripts/manual_verify_general_owner_memory.py \
+  --profile /tmp/ares_owner_memory_manual.json \
+  --reset --verbose
 ```
 
-Prove routing priority plus save, recall, update, forget, and missing recall across fresh Python processes without touching the real profile:
+Inspect the canonical profile read-only:
+
+```bash
+python scripts/inspect_owner_memory.py
+python scripts/inspect_owner_memory.py --key favorite_color
+python scripts/inspect_owner_memory.py --json
+```
+
+On Raspberry Pi, pull once, then start a fresh one-turn process for each spoken phrase:
 
 ```bash
 cd ~/ares-brain
 source venv/bin/activate
 git pull --ff-only origin main
-python scripts/verify_owner_memory_persistence.py --verbose
 python scripts/run_ares_voice.py
 ```
 
-On Raspberry Pi, each `python scripts/run_ares_voice.py` invocation remains one fresh process. Say the save phrase, let the process exit, start it again, and say the recall phrase. Inspect the persisted JSON without editing it with:
+Test `Remember that my birthday is June 8.`, `When is my birthday?`, `Remember that I live in Madrid.`, `Where do I live?`, `Remember that my favorite game is EVE Online.`, `What is my favorite game?`, and `What do you remember about me?`. Then run `python scripts/inspect_owner_memory.py`; all facts must come from the same canonical profile.
 
-```bash
-find ~/ares-brain -name owner_profile.json -print
-python -m json.tool ~/ares-brain/data/memory/owner_profile.json
-```
-
-With `--diagnostic-routing`, the single-turn report includes the raw, cleaned, and normalized transcript; parsed owner-memory action; normalized key; bounded extracted value; candidate confidence/reason; selected skill; resolved profile path; prior file-existence state; operation result; and rejection reason. Protected values remain redacted.
-
-This is not general conversational memory, semantic memory, autonomous learning, transcript persistence, a vector database, or GPT memory. Microphone WAVs and complete conversations are never written to the owner profile.
+This remains explicit bounded profile memory, not semantic or episodic memory, autonomous learning, embeddings, vector search, GPT memory, transcript persistence, cloud synchronization, or background listening.
 
 Controlled Single-Turn Voice Verification
 
@@ -2178,16 +2179,24 @@ Phase 86
 - Added bounded normalization for the exact observed Whisper favorite-color substitution
 - Added explicit declaration, update, delete, routing diagnostics, canonical repository-root path resolution, and isolated fresh-process routing checks
 - Preserved legacy profile declarations and ordinary `remember to` reminders
-- Current pytest collection is 1280 tests
+- Historical Phase 86 pytest collection was 1280 tests
 
 Phase 87
+
+- Centralized general owner memory behind CoreService-owned `OwnerMemoryService`
+- Added versioned remember/update/recall/forget/list contracts, deterministic aliases, bounded custom keys/simple values, and explicit-only persistence
+- Migrated `ares.owner_profile` v1 to v2 without losing facts, with validated atomic writes, one retained backup, transaction/write locks, and fail-closed corruption handling
+- Added text/voice/fresh-process parity tests, static architecture guards, a read-only inspector, and an isolated fresh-process verifier
+- Current pytest collection is 1350 tests
+
+Phase 88
 
 - Future vision
 - Camera understanding
 - Face recognition
 - Object recognition
 
-Phase 88
+Phase 89
 
 - Robotics
 - ROS2

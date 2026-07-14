@@ -1115,44 +1115,39 @@ Current registered manifest coverage includes PCService, Voice City, mock microp
 
 Future modules must register manifests through the central registry before activation. A future V2 contract must be introduced by registering its new contract version and updating manifests explicitly; unknown versions must be rejected rather than reinterpreted.
 
-# Explicit Persistent Owner Memory
+# Central General Owner Memory
 
-ARES now has one narrow owner-controlled durable fact path. The production route is:
+Persistent owner memory is a central Brain/CoreService capability. Voice is only one transport:
 
 ```text
-Whisper transcript or typed text
-  |
-  v
-VoiceCommandRouter / CoreService
-  |
-  v
-SkillManager -> IntentParser -> Planner -> ExecutionPipeline
-  |
-  v
-OwnerMemorySkill
-  |
-  v
-OwnerProfileStore
-  |
-  v
-memory.schema_migrations -> data/memory/owner_profile.json
+voice / text / future client
+  -> CoreService / Brain routing
+  -> SkillManager -> IntentParser -> Planner -> ExecutionPipeline
+  -> OwnerMemorySkill
+  -> CoreService.execute_owner_memory(OwnerMemoryRequestV1)
+  -> OwnerMemoryService
+  -> OwnerProfileStore
+  -> memory.schema_migrations
+  -> data/memory/owner_profile.json
 ```
 
-The voice launcher and Brain do not call the repository directly. `OwnerMemorySkill` receives an injected `OwnerProfileStore` through `SkillContext`, and the same built-in skill construction is used by typed verification and the production single-turn voice path. The skill manifest declares `memory.owner_fact.save`, `memory.owner_fact.update`, `memory.owner_fact.recall`, and `memory.owner_fact.forget` capabilities.
+`CoreService` owns one `OwnerMemoryService`. `OwnerMemorySkill` consumes the versioned public service contract and does not open JSON. `OwnerMemoryService` is the only domain boundary that owns `OwnerProfileStore`. Voice launchers and voice pipeline modules neither import nor instantiate the store, and the memory package imports no ALSA, microphone, Whisper, Piper, or speaker implementation. Static architecture tests enforce those boundaries and reject a second voice-specific profile name.
 
-`core.OwnerMemory` recognizes only explicit bounded forms: `remember [that] my <key> is <value>`, `update my <key> to <value>`, `what is/what's my <key>`, `do you remember my <key>`, and `forget/delete my <key>`. The declaration `my favorite color is <value>` is intentionally supported without claiming every legacy `my <key> is <value>` profile phrase. It normalizes Unicode, whitespace, punctuation, and approved key aliases such as `favorite colour` to `favorite_color`. An exact allowlisted correction maps the observed owner-command-only Whisper phrase `modified white color` to `favorite_color`; there is no fuzzy or semantic matching.
+The skill manifest declares save, update, recall, forget, and list capabilities. `IntentParser` evaluates explicit owner-memory patterns before note/task/reminder rules. `remember that my birthday is June 8`, `save that my city is Madrid`, and `note that my dog's name is Max` select owner memory; `remember to buy milk`, `remind me tomorrow to buy food`, and `save a task to buy food` remain task operations. Ordinary statements without an explicit memory action do not enter the central owner profile. The old favorite-color declaration remains only as a narrow compatibility form.
 
-`IntentParser` evaluates owner memory before generic task and device-action rules. A recognized owner-memory candidate cannot fall through to the generic `remember` task rule. Consequently, `remember that my favorite color is blue` selects `OwnerMemorySkill`, while `remember to buy milk` and ordinary reminders still select `TasksSkill`. `OwnerMemorySkill.can_handle()` applies the same explicit-store policy, so legacy declarations such as `My name is Gabi` and `My favorite tank is Leopard 2` remain outside this store.
+`core.OwnerMemory` performs deterministic parsing and normalization. It supports explicit remember/save/store/note, update/change/replace, recall, forget/delete/remove, and list forms; special bounded forms cover residence and work schedule. A finite alias table canonicalizes color/colour, birthday/date of birth, town/city, favorite game/videogame, dog name, and similar variations. Custom keys become lowercase underscore identifiers. Keys are at most 64 normalized characters and cannot contain paths, URLs, commands, or arbitrary nested JSON paths.
 
-Protected key categories include passwords, passcodes, PINs, API keys, tokens, private keys, recovery/seed phrases, and bounded bank/card identifiers. Those requests are rejected before storage. Supplied protected values are removed from serialized intent, plan, execution, lifecycle, routing, and operational-event data; event payloads contain only bounded operation/status metadata.
+Values are simple JSON-safe facts only: strings up to 256 characters, bounded integers, finite floats, booleans, and lists of at most 10 simple scalars. Nested objects, binary content, control characters, executable/import syntax, system-instruction text, and protected credential/recovery categories fail before storage. A profile contains at most 100 facts and 65,536 serialized data bytes. Operational events contain action, key, status, and error code, with values redacted.
 
-`OwnerProfileStore` uses the shared `ares.owner_profile` v1 schema envelope. Its data contains `owner_id: primary_owner` and normalized fact entries with readable values and UTC `updated_at` timestamps. Keys are limited to 64 normalized characters, values to 256 characters, and control characters and path-like keys are rejected. `list_facts()` is an internal diagnostic API and is not exposed as a general voice command.
+The public boundary uses `OwnerMemoryRequestV1` and `OwnerMemoryResultV1`. Correlation/session IDs survive execution. The service returns structured created, updated, recalled, forgotten, missing, listed, rejected, or storage-failed outcomes. Spoken formatting remains in `OwnerMemorySkill`; the store never owns interface-specific wording.
 
-The canonical default path is `data/memory/owner_profile.json`, resolved from the repository root rather than the launch working directory; `ARES_OWNER_PROFILE_PATH` is an explicit local override for tests and owner-run isolated checks. Writes create missing parent directories and use the centralized migration lock, backup-before-replacement, deterministic UTF-8 JSON, temporary-file flush, atomic replacement where practical, final reload validation, and temporary-file cleanup on failure. Missing files load as an empty profile. Malformed JSON, unsupported future versions, wrong schemas, invalid durable fields, read failures, and write failures do not become empty memory and do not overwrite the existing file.
+`OwnerProfileStore` uses `ares.owner_profile` schema v2. Each fact records value, display key, normalized key, created/updated timestamps, and `source: explicit_owner_statement`. The registered v1-to-v2 migration converts the previous `{value, updated_at}` entries sequentially and preserves every existing fact. Migration and normal writes validate before replacement. Unknown future versions and malformed/corrupt stores fail closed and are never interpreted as empty memory.
 
-The versioned transcript normalizer identifies explicit owner-memory candidates before arithmetic handling and emits a canonical owner command. The production routing report merges normalization fields with bounded skill/store diagnostics: action, normalized key, safely extracted value, candidate confidence/reason, selected skill, resolved profile path, whether the file existed before the operation, operation status, and rejection reason. Protected values and unrelated profile contents are never included.
+The canonical path is defined once in production code as repository-root `data/memory/owner_profile.json`; `ARES_OWNER_PROFILE_PATH` is an explicit test/manual override. Mutations acquire a per-profile transaction lock, then use the shared migration write lock, deterministic UTF-8 JSON, one retained last-known-good backup, a flushed temporary file, atomic replacement, and final reload validation. A failed mutation preserves the old file and cleans incomplete temporary output. Recovery is explicit: `scripts/inspect_owner_memory.py` validates either the active path or an explicitly supplied backup before an owner restores anything; ARES never auto-restores or overwrites corruption evidence.
 
-Owner memory deliberately excludes transcripts, microphone audio, complete conversations, inferred facts, semantic search, embeddings, vectors, GPT memory, cloud synchronization, and autonomous learning. Short-term `ConversationContextManager`, legacy `UserProfileStore`, general `MemoryStore`, operational `EventHistoryStore`, and the explicit owner profile remain distinct stores with distinct purposes.
+`scripts/inspect_owner_memory.py` is read-only and reports path, schema/version, validation state, fact count, last backup, and sanitized facts. `scripts/manual_verify_general_owner_memory.py` uses isolated storage and fresh Python processes to prove create, recall, update, list, forget, missing recall, and restart persistence through the real Brain/skill route.
+
+Owner memory excludes inferred facts, automatic transcript storage, microphone audio, complete conversations, semantic or episodic search, embeddings, vectors, GPT memory, autonomous learning, and cloud synchronization. `ConversationContextManager`, legacy `UserProfileStore`, general `MemoryStore`, operational `EventHistoryStore`, and central owner profile retain distinct responsibilities.
 
 # Memory Schema Migrations
 
@@ -1192,7 +1187,7 @@ Every active durable JSON store uses this envelope:
 }
 ```
 
-Schema versions are integer major versions. Missing schema versions are accepted only by explicit legacy importers for known structures. Unknown future versions fail closed. Downgrades are rejected. Migrations must be sequential; a future v1 -> v3 migration must run v1 -> v2 and then v2 -> v3. Current production schemas remain v1. A test fixture demonstrates v1 -> v2 behavior without inventing a production schema change.
+Schema versions are integer major versions. Missing schema versions are accepted only by explicit legacy importers for known structures. Unknown future versions fail closed. Downgrades are rejected. Migrations must be sequential; a v1 -> v3 migration must run v1 -> v2 and then v2 -> v3. `ares.owner_profile` is the first active production schema at v2; its registered v1 -> v2 migration preserves existing facts. Other current production schemas remain at v1, and a separate test fixture demonstrates generic multi-step migration behavior.
 
 `MigrationRegistry` supports:
 
