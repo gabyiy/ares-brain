@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.92 - General Explicit Long-Term Owner Memory
+ARES v1.93 - Whisper-Tolerant Explicit Owner Memory Routing
 
 ---
 
@@ -551,7 +551,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 1427 tests across current core modules
+- Pytest automated coverage for 1465 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -570,7 +570,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1427 tests`.
+Current pytest collection: `1465 tests`.
 
 Manual Calculator Launch Verification
 
@@ -880,7 +880,9 @@ input adapter -> CoreService / Brain routing -> OwnerMemoryService
 
 The v3 profile contains both the existing normalized keyed `facts` map and a `memories` collection. A general memory records a deterministic id, one of the supported memory types (`preference`, `dislike`, `routine`, `personal_fact`, `relationship`, `possession`, `goal`, `biographical_fact`, or `instruction_preference`), subject, predicate, object, canonical text, owner-spoken text, bounded topics, source, confidence, timestamps, and active/superseded status. The service stores only the validated structure, not raw Whisper diagnostics.
 
-General persistence is explicit-only. Bounded triggers include `remember that ...`, `remember long term that ...`, `remember in your long-term memory that ...`, `save/store/keep/add this to long-term memory ...`, `do not forget that ...`, and `I want you to remember ...`. Conservative cleanup accepts documented `long time memory` / `long memory` speech variants without guessing unrelated intent. Ordinary statements such as `I went to the gym today` are not persisted, while `remember to buy milk` and `remind me tomorrow to buy food` remain task/reminder operations. Clearly temporary requests such as `remember permanently that I am hungry right now` return clarification instead of becoming durable profile facts.
+General persistence is explicit-only. Bounded triggers include `remember that ...`, `remember long term that ...`, `remember in your long-term memory that ...`, `save/store/keep/add this to long-term memory ...`, `do not forget that ...`, and `I want you to remember ...`. Trigger cleanup also accepts the observed Whisper forms `locked term memory` and `remembering a long term memory that ...`, plus bounded `lock term`, `long turn`, `long time`, `long memory`, `lifetime`, `permanent`, and `persistent` variants. Rewriting is anchored near an explicit memory verb and stops before the fact clause; it never changes arbitrary uses of `locked` inside the fact.
+
+Owner-memory recognition runs before the generic task rule. `remember ... memory ... that I love going to the gym` becomes the canonical route command `remember longterm that I love going to the gym`, and only `I love going to the gym` reaches structured extraction and storage. In contrast, `remember to buy milk`, `remember my task to buy a video game`, and `remind me tomorrow to buy food` remain task/reminder operations. Ordinary statements such as `I went to the gym today` are not persisted. Clearly temporary requests such as `remember permanently that I am hungry right now` return clarification instead of becoming durable profile facts.
 
 The deterministic classifier handles bounded owner statements such as `I like`, `I prefer`, `I dislike`, `I usually`, `I normally`, `I own`, `I have`, `I live in`, `I am from`, `my goal is`, and `I prefer that you`. Recall supports exact statements, type questions, and bounded topic/token overlap across both keyed facts and general memories. It does not use embeddings, fuzzy semantic inference, or an LLM. Exact normalized signatures prevent duplicate records; explicit corrections can supersede matching active records, and only a bounded inactive history is retained.
 
@@ -897,6 +899,8 @@ python scripts/manual_verify_general_long_term_memory.py \
   --verbose
 ```
 
+This isolated verifier runs the two real failure transcripts through fresh Brain/service processes, confirms an initial active-memory count of zero becomes exactly two, recalls both preferences with `What do I like?`, proves repeat submissions are duplicates, and confirms task-shaped speech still routes to tasks. It never opens the production owner profile.
+
 Inspect the canonical profile read-only:
 
 ```bash
@@ -906,7 +910,26 @@ python scripts/inspect_owner_memory.py --type preference
 python scripts/inspect_owner_memory.py --json
 ```
 
-On Raspberry Pi, pull once and start a fresh `python scripts/run_ares_voice.py` process for each phrase: `Remember in your long-term memory that I like going to the gym.`, `What do you remember about the gym?`, `What do I like doing?`, `Remember long term that I enjoy strategy games.`, `What are some things I like?`, `Forget that I like going to the gym.`, and `What do you remember about the gym?`. The expected final response is `I do not have an active long-term memory about the gym.` Inspection must show all remaining data in the same canonical Brain-owned profile.
+On Raspberry Pi, pull and inspect before testing:
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+python scripts/inspect_owner_memory.py --memories
+```
+
+Start a fresh `python scripts/run_ares_voice.py` process for each phrase: `Remember in your long-term memory that I love going to the gym.`, `Remember in long-term memory that I like playing video games.`, `What do I like?`, `What do you remember about the gym?`, and `What do you remember about video games?`. If Whisper emits `locked term memory` or `Remembering a long term memory that ...`, the bounded trigger normalizer must still select `owner_memory`, never `tasks`. Afterward, inspect the one canonical profile:
+
+```bash
+python scripts/inspect_owner_memory.py --memories
+python scripts/inspect_owner_memory.py --type preference
+python scripts/inspect_owner_memory.py --topic gym
+python scripts/inspect_owner_memory.py --topic gaming
+python scripts/inspect_owner_memory.py --json
+```
+
+The expected result is one active gym preference and one active video-games preference, with existing keyed facts unchanged. This post-pull hardware verification remains owner-run; Windows tests use deterministic injected transcripts and isolated profiles.
 
 This is deterministic explicit owner memory, not semantic or episodic memory, autonomous learning, embeddings, vector search, GPT memory, automatic transcript persistence, cloud synchronization, or background listening.
 
@@ -1251,9 +1274,9 @@ Completed:
 
 Next:
 
-1. Pull this checkpoint and verify explicit general long-term memory through fresh Raspberry Pi voice processes
-2. Confirm schema v2 migrates once to v3 without losing birthday, city, favorite-color, or favorite-game facts
-3. Verify preference save, topic recall, duplicate prevention, forget, and read-only inspection against the canonical profile
+1. Pull this checkpoint and verify the observed `locked term memory` and `remembering ... memory that` transcripts through fresh Raspberry Pi voice processes
+2. Confirm gym and video-games preferences are added to v3 without changing birthday, city, favorite-color, or favorite-game facts
+3. Verify combined recall, topic recall, duplicate prevention, and read-only inspection against the canonical profile
 4. Continue measuring per-turn timing, segmentation, stop recognition, and cleanup from real results
 5. Only later consider wake-word/background listening
 6. GPT fallback integration
@@ -2190,21 +2213,17 @@ Phase 88
 - Migrated `ares.owner_profile` v2 to v3 while preserving all keyed facts and adding structured memories plus confirmed broad-deletion state
 - Added deterministic trigger parsing, memory typing, lexical topic retrieval, duplicate control, superseding updates, and exact-confirmation broad deletion
 - Added fresh-process verification, read-only memory/topic/type inspection, voice/text parity, and architecture guards against voice-owned storage
-- Current pytest collection is 1427 tests
+- Historical Phase 88 pytest collection was 1427 tests
 
 Phase 89
 
-- Future vision
-- Camera understanding
-- Face recognition
-- Object recognition
+- Added bounded normalization for the real Whisper substitutions `locked term memory`, `lock term memory`, `long turn memory`, and `remembering a long term memory that ...`
+- Kept explicit owner-memory recognition ahead of generic task routing while preserving `remember to ...` and explicit task forms
+- Added canonical trigger/fact/routing diagnostics without storing malformed trigger text in owner memory
+- Proved the two observed transcripts create exactly two central v3 preferences, survive fresh processes, deduplicate, recall together, and preserve all keyed facts
+- Current pytest collection is 1465 tests
 
-Phase 90
-
-- Robotics
-- ROS2
-- Jetson Orin migration
-- Autonomous navigation
+Future phases retain camera understanding, face/object recognition, ROS2, Jetson Orin migration, and autonomous navigation as unimplemented plans.
 
 ---
 

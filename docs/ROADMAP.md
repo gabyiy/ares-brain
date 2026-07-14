@@ -1101,7 +1101,16 @@ Phase 88: General Explicit Long-Term Owner Memory
 - Added explicit long-term trigger cleanup, a finite memory-type classifier, deterministic topic/token retrieval, exact-signature duplicate prevention, explicit superseding updates, and bounded forget/list behavior.
 - Added a two-step exact confirmation for deleting all long-term owner memory; ambiguous or single-turn broad deletion fails closed.
 - Added read-only memory/topic/type inspection, a fresh-process general-memory verifier, production voice/text parity, and static guards against voice-owned or hardware-coupled memory.
-- Current pytest collection is 1427 tests.
+- Historical Phase 88 pytest collection was 1427 tests.
+
+Phase 89: Whisper-Tolerant Explicit Owner Memory Routing
+
+- Fixed the production fallthrough where an unrecognized explicit memory transcript could be consumed by the generic task rule.
+- Added bounded, anchored normalization for `locked term memory`, `lock term memory`, `long turn memory`, and leading `remembering ... memory that` Whisper output without globally rewriting fact text.
+- Preserved the structural split: `remember ... memory ... that <owner fact>` selects owner memory, while `remember to <action>` and `remember my task ...` remain task/reminder routes.
+- Added canonical-trigger, extracted-fact, action, and routing-reason diagnostics before the existing central `OwnerMemoryService` write.
+- Added fresh-process and production-factory regressions proving the two observed transcripts create two preferences, deduplicate, recall together, preserve keyed facts, and never create a tasks file.
+- Current pytest collection is 1465 tests.
 
 Current State
 
@@ -1121,7 +1130,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1427 tests.
+The current pytest collection is 1465 tests.
 
 The current memory paths are:
 
@@ -1186,9 +1195,10 @@ Phase 3 Real Voice Integration
 23. Harden owner-memory routing priority and the canonical repository-root profile path. Completed.
 24. Centralize general owner facts behind CoreService, migrate the profile to v2, and add inspection/fresh-process verification. Completed in deterministic CI; Raspberry Pi voice verification remains owner-run.
 25. Add bounded general explicit long-term memories, migrate the profile from v2 to v3, and verify one central Brain-owned route for text and voice. Completed in deterministic CI; Raspberry Pi voice verification remains owner-run.
-26. Verify preference save, topic recall, duplicate prevention, forget, and inspection through fresh Raspberry Pi `run_ares_voice.py` processes.
-27. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, transcription quality, and explicit owner-memory phrasing from real results.
-28. Only later consider wake-word/background listening.
+26. Harden explicit-memory routing for the real `locked term memory` and `remembering a long term memory that ...` Whisper transcripts. Completed in deterministic CI; post-pull Raspberry Pi verification remains owner-run.
+27. Verify the gym and video-games preferences, combined recall, topic recall, duplicate prevention, and keyed-fact preservation through fresh Raspberry Pi `run_ares_voice.py` processes.
+28. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, transcription quality, and explicit owner-memory phrasing from real results.
+29. Only later consider wake-word/background listening.
 
 What Must Not Be Started Yet
 

@@ -52,6 +52,18 @@
     "owner_id": "primary_owner",
     "owner": "core_service",
     "explicit_commands_only": true,
+    "routing_priority": "before_tasks",
+    "task_structure_guard": "remember_to_action",
+    "trigger_normalization_policy": "anchored_memory_context_v2",
+    "bounded_whisper_trigger_variants": [
+      "locked term memory",
+      "lock term memory",
+      "long turn memory",
+      "long time memory",
+      "long memory",
+      "lifetime memory",
+      "remembering a long term memory that"
+    ],
     "allowed_value_types": ["string", "integer", "finite_float", "boolean", "short_scalar_list"],
     "maximum_facts": 100,
     "maximum_general_memories": 100,

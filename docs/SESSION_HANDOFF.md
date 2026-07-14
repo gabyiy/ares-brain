@@ -4,7 +4,7 @@ Last Updated: 2026-07-14
 
 Current Version
 
-ARES v1.92 - General Explicit Long-Term Owner Memory
+ARES v1.93 - Whisper-Tolerant Explicit Owner Memory Routing
 
 ---
 
@@ -42,6 +42,10 @@ Checkpoint root causes and fixes:
 - The canonical owner profile resolves from the repository root regardless of current working directory. Routing diagnostics report action, normalized key, candidate reason, selected skill, path, prior file state, operation result, and bounded rejection details without exposing protected values.
 - Explicit general-memory triggers now pass through `IntentParser -> Planner -> OwnerMemorySkill -> CoreService.execute_owner_memory() -> OwnerMemoryService`; `run_ares_voice.py` remains a transport and contains no persistence code.
 - Bounded triggers cover remember/do-not-forget and explicit long-term save/store/keep/add/note forms, including conservative `long time memory` / `long memory` Whisper variants. Ordinary conversation and `remember to` task language remain non-owner-memory paths.
+- Real Raspberry Pi transcripts then exposed a second routing gap. Whisper emitted `Remember in your locked term memory that I love going to the gym`, which was not recognized as owner memory and fell through to the generic `remember` task rule. It also emitted `Remembering a long term memory that I like video games`, which no save pattern accepted and therefore routed unknown. Schema v3 was healthy; the write route never ran.
+- Trigger normalization now recognizes bounded `locked term`, `lock term`, `locked-term`, `long turn`, `long time`, `long memory`, `lifetime`, `permanent`, and `persistent` variants only near an explicit leading memory verb and before the fact clause. Leading `remembering ... memory that` is canonicalized to `remember longterm that`. Arbitrary `locked` text inside a fact is not rewritten.
+- IntentParser already evaluates owner memory before tasks; canonicalizing these candidates before routing makes that priority effective. `remember ... memory ... that <fact>` selects owner memory, while `remember to <action>`, `remember my task ...`, and reminder time/action structures remain tasks. Diagnostics preserve raw and cleaned transcripts while adding canonical trigger, extracted fact, selected action, and routing reason.
+- Deterministic production-factory tests seed birthday, city, favorite color, and favorite game, then prove the two observed transcripts add exactly two active preferences, combined `What do I like?` recall returns both, repeats are duplicates, the keyed facts remain byte-for-byte equivalent at the value boundary, and no task store is created. Post-pull Raspberry Pi verification remains owner-run.
 - General records use one of nine finite types, deterministic subject/predicate/object extraction, bounded topics, exact normalized duplicate signatures, lexical retrieval, explicit superseding updates, and active/superseded state. No embeddings, vector database, GPT, or autonomous extraction was added.
 - Broad profile deletion now requires the exact second phrase `Yes, delete all my long-term owner memory`; the first request only creates a short-lived pending confirmation.
 
@@ -118,9 +122,21 @@ Confirmed Phase 3 foundation:
 - `ares.owner_profile` v3 keyed-fact plus structured general-memory persistence with sequential v1 -> v2 -> v3 migration, atomic writes, one retained backup, bounded validation, protected-key rejection, and isolated path override
 - Registered `OwnerMemorySkill` through CoreService, IntentParser, Planner, ExecutionPipeline, and SkillManager
 - Hardware-free keyed-fact verifier, general long-term fresh-process verifier, six-fresh-process compatibility verifier, and read-only fact/topic/type inspection tool
+- Bounded Whisper-trigger normalization and owner-memory-before-task production regressions for the observed `locked term` and `remembering ... memory` transcripts
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1427 tests.
+Current pytest collection: 1465 tests.
+
+Raspberry Pi post-pull verification:
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+python scripts/inspect_owner_memory.py --memories
+```
+
+Run a fresh `python scripts/run_ares_voice.py` process for each of these phrases: `Remember in your long-term memory that I love going to the gym.`, `Remember in long-term memory that I like playing video games.`, `What do I like?`, `What do you remember about the gym?`, and `What do you remember about video games?`. Then inspect with `python scripts/inspect_owner_memory.py --memories`, `--type preference`, `--topic gym`, `--topic gaming`, and `--json`. Existing keyed facts must remain and repeats must not increase the active general-memory count. This has not been claimed as post-fix Raspberry Pi verification from Windows.
 
 The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, centralized canonical WAV conversion through `core.WavAudio`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, its `scripts/run_ares_voice.py` owner launcher, and the bounded multi-turn session. Adaptive calibration remains inside the VAD boundary; transcript normalization and routing diagnostics remain between STT and `VoiceCommandRouter`/SkillManager. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, conversion, VAD, Whisper, Piper, or normalization internals. Owner memory is a separate central service boundary reached through the normal skill route and does not turn transcript handling into automatic persistence. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
 
@@ -2151,22 +2167,23 @@ Future Roadmap
 11. Explicit favorite-color owner-memory persistence completed and owner-verified across fresh Raspberry Pi voice processes
 12. Central general owner facts, v1-to-v2 migration, inspection, and fresh-process verification completed in deterministic tests
 13. General explicit long-term owner memory, v2-to-v3 migration, lexical retrieval, confirmation-gated broad deletion, and fresh-process verification completed in deterministic tests
-14. Verify general preference/topic/forget flows across fresh Raspberry Pi voice processes
-15. Only later add wake-word/background listening
-16. GPT fallback integration
-17. Raspberry Pi deployment
-18. Robot body / sensors
-19. Vision
-20. Robotics
-21. Jetson Orin migration
-22. Autonomous ARES
+14. Whisper-tolerant explicit-memory routing for `locked term memory` and `remembering ... memory that` completed in deterministic production-path tests
+15. Verify the two observed preference writes and combined recall across fresh Raspberry Pi voice processes
+16. Only later add wake-word/background listening
+17. GPT fallback integration
+18. Raspberry Pi deployment
+19. Robot body / sensors
+20. Vision
+21. Robotics
+22. Jetson Orin migration
+23. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1427 tests.
+- Current pytest collection: 1465 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
