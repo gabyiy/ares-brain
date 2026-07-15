@@ -1,16 +1,16 @@
 ARES Session Handoff
 
-Last Updated: 2026-07-14
+Last Updated: 2026-07-15
 
 Current Version
 
-ARES v1.93 - Whisper-Tolerant Explicit Owner Memory Routing
+ARES v1.94 - Safe Central Owner Memory Management
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, a production-style one-command single-turn launcher, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production-factory-verified natural-language calculator routing, and central general explicit long-term owner memory shared by text and voice through CoreService.
+ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, a production-style one-command single-turn launcher, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production-factory-verified natural-language calculator routing, and central general explicit long-term owner memory with confirmation-gated voice CRUD shared by text and voice through CoreService.
 
 Checkpoint root causes and fixes:
 
@@ -32,7 +32,7 @@ Checkpoint root causes and fixes:
 - `scripts/run_ares_voice.py` now supplies the verified Raspberry Pi defaults and delegates to the existing production factory and `SingleTurnVoicePipeline`. It performs lifecycle/component health preflight before capture, resolves repository-relative Whisper paths from the script location, reads the default Piper profile from `config/voice_profiles.json`, plays only the generated response by default, and exits after one turn.
 - Owner memory is now a central Brain/CoreService capability. The production path is `input -> CoreService -> SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> OwnerMemorySkill -> CoreService.execute_owner_memory() -> OwnerMemoryService -> OwnerProfileStore`; voice code neither imports nor instantiates the JSON store.
 - `OwnerMemoryRequestV1` and `OwnerMemoryResultV1` carry explicit remember, update, recall, forget, and list actions across the skill/CoreService boundary. The same service is used by direct text, injected voice transcripts, and fresh Python processes.
-- The canonical `ares.owner_profile` schema is now v3 at repository-root-relative `data/memory/owner_profile.json`. Registered sequential migration runs v1 -> v2 -> v3, preserves every keyed fact, and adds structured general memories plus bounded broad-deletion confirmation state.
+- The canonical `ares.owner_profile` schema is now v3 at repository-root-relative `data/memory/owner_profile.json`. Registered sequential migration runs v1 -> v2 -> v3, preserves every keyed fact, and adds structured general memories. Current destructive confirmation state is transient and separate from authoritative owner memory.
 - Mutations use an owner transaction lock plus the shared store-write lock, bounded schema/value validation, one retained last-known-good backup, deterministic UTF-8 JSON, a flushed temporary file, atomic replacement, and final reload validation. Corrupt or future-version data fails closed and is never replaced by an empty profile.
 - Facts may be bounded strings, integers, finite floats, booleans, or short scalar lists. Protected credentials, executable/instruction content, unsafe keys, control characters, excessive counts/sizes, and recovery material are rejected; ordinary transcripts, recordings, complete conversations, and inferred facts are not persisted.
 - Raspberry Pi exposed that `Remember that modified white color is blue.` did not match the narrow owner parser and then fell through to the generic `remember` task rule. The task store ran, so no owner profile was created.
@@ -47,7 +47,10 @@ Checkpoint root causes and fixes:
 - IntentParser already evaluates owner memory before tasks; canonicalizing these candidates before routing makes that priority effective. `remember ... memory ... that <fact>` selects owner memory, while `remember to <action>`, `remember my task ...`, and reminder time/action structures remain tasks. Diagnostics preserve raw and cleaned transcripts while adding canonical trigger, extracted fact, selected action, and routing reason.
 - Deterministic production-factory tests seed birthday, city, favorite color, and favorite game, then prove the two observed transcripts add exactly two active preferences, combined `What do I like?` recall returns both, repeats are duplicates, the keyed facts remain byte-for-byte equivalent at the value boundary, and no task store is created. Post-pull Raspberry Pi verification remains owner-run.
 - General records use one of nine finite types, deterministic subject/predicate/object extraction, bounded topics, exact normalized duplicate signatures, lexical retrieval, explicit superseding updates, and active/superseded state. No embeddings, vector database, GPT, or autonomous extraction was added.
-- Broad profile deletion now requires the exact second phrase `Yes, delete all my long-term owner memory`; the first request only creates a short-lived pending confirmation.
+- Owner-memory list, inspect, count, specific deletion, topic deletion, all-general deletion, keyed-fact deletion, confirmation, and cancellation now share the central CoreService route. Nothing destructive mutates the profile on the first request.
+- Cross-process confirmation uses one atomic `ares.pending_owner_memory_action` v1 record at `data/runtime/pending_owner_memory_action.json`, not the owner profile. It expires after 60 seconds by default, contains only bounded targets and normalized request metadata, and stores no raw transcript or audio.
+- Specific deletion requires exactly one high-confidence match. Topic and all-general operations snapshot only general-memory ids and preserve keyed facts. Keyed-fact confirmation binds the key and a revision digest. Expired, corrupt, changed-target, ambiguous, or missing pending state cannot execute.
+- Valid pending state survives the one-turn voice process and unrelated commands until expiry. Confirmation or cancellation is considered before ordinary routing only while central pending state exists; a new destructive request replaces the old one.
 
 Confirmed Phase 3 foundation:
 
@@ -123,9 +126,11 @@ Confirmed Phase 3 foundation:
 - Registered `OwnerMemorySkill` through CoreService, IntentParser, Planner, ExecutionPipeline, and SkillManager
 - Hardware-free keyed-fact verifier, general long-term fresh-process verifier, six-fresh-process compatibility verifier, and read-only fact/topic/type inspection tool
 - Bounded Whisper-trigger normalization and owner-memory-before-task production regressions for the observed `locked term` and `remembering ... memory` transcripts
+- Central owner-memory list/count/inspect and confirmation-gated specific/topic/all-general/keyed deletion
+- Atomic cross-process `ares.pending_owner_memory_action` v1 state with expiry, cancellation, corruption rejection, and exact-target snapshots
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1465 tests.
+Current pytest collection: 1506 tests.
 
 Raspberry Pi post-pull verification:
 
@@ -2138,12 +2143,12 @@ Text REPL
 
 Immediate Next Milestone
 
-Pull the explicit owner-memory checkpoint on Raspberry Pi and prove persistence across separate `python scripts/run_ares_voice.py` processes. Save blue, recall blue, update to red, recall red, forget the fact, and confirm a final fresh process reports the fact missing. Do not manually edit the profile during the sequence, and do not add automatic transcript memory, wake words, background listening, or an unbounded conversation service.
+Pull the safe owner-memory management checkpoint on Raspberry Pi and verify request/confirm/cancel across fresh `python scripts/run_ares_voice.py` processes. Confirm that a specific deletion does not mutate memory until the second turn, topic deletion preserves keyed facts, cancellation retains the target, and list/count inspection remains read-only. Do not manually edit either JSON file during the sequence, and do not add automatic transcript memory, wake words, background listening, or an unbounded conversation service.
 
 Next technical choices:
 
-- Pull latest `main`, run `python scripts/verify_owner_memory_persistence.py --verbose`, then use fresh production launcher processes for the spoken owner-memory sequence.
-- Inspect `data/memory/owner_profile.json` read-only with `python -m json.tool`; malformed or unsupported data must fail closed rather than be reset.
+- Pull latest `main`, run both isolated owner-memory verifiers, then use fresh production launcher processes for the spoken request/confirmation/cancellation sequence.
+- Inspect owner state only through `python scripts/inspect_owner_memory.py --summary --pending` or its focused flags; malformed durable or transient data must fail closed rather than be reset and executed.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
 - Only later add wake-word/background listening.
 - Keep GPT, embeddings, semantic/vector search, autonomous fact extraction, external weather/stocks/calendar APIs, real scheduling, and notifications out of scope until explicitly approved.
@@ -2168,22 +2173,23 @@ Future Roadmap
 12. Central general owner facts, v1-to-v2 migration, inspection, and fresh-process verification completed in deterministic tests
 13. General explicit long-term owner memory, v2-to-v3 migration, lexical retrieval, confirmation-gated broad deletion, and fresh-process verification completed in deterministic tests
 14. Whisper-tolerant explicit-memory routing for `locked term memory` and `remembering ... memory that` completed in deterministic production-path tests
-15. Verify the two observed preference writes and combined recall across fresh Raspberry Pi voice processes
-16. Only later add wake-word/background listening
-17. GPT fallback integration
-18. Raspberry Pi deployment
-19. Robot body / sensors
-20. Vision
-21. Robotics
-22. Jetson Orin migration
-23. Autonomous ARES
+15. Safe central list/count/inspect and confirmation-gated specific/topic/all-general/keyed deletion completed in deterministic production-path tests
+16. Verify cross-process owner-memory request/confirm/cancel and keyed/general separation on Raspberry Pi
+17. Only later add wake-word/background listening
+18. GPT fallback integration
+19. Raspberry Pi deployment
+20. Robot body / sensors
+21. Vision
+22. Robotics
+23. Jetson Orin migration
+24. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1465 tests.
+- Current pytest collection: 1506 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2245,7 +2251,7 @@ Verification Notes
 - Transcript normalization tests cover raw/cleaned/normalized preservation, number words zero through one thousand, negatives, decimals, spoken operators and parentheses, anchored direct/polite/question/first-person/vocative wrappers, contraction and punctuation handling, ambiguity and multiple-expression rejection, conservative Whisper-loop cleanup, versioned round trips, no `eval()`, and real Brain/CalculatorSkill routing to `Result: 4`.
 - Production voice calculator tests cover the shared runtime registry, exact script factory, `I'll calculate 2 plus 2.`, `What is two plus two?`, all approved wrapper categories, unsafe and ambiguous input rejection, bounded lengths, empty transcript/audio, safe unknown handling, cleanup/candidate/manifest diagnostics, Planner/ExecutionPipeline evidence, V1 round trips, TTS handoff, and lifecycle/resource cleanup without a mock calculator or GPT fallback.
 - Production launcher tests cover verified Raspberry Pi defaults, repository-root path resolution, delegation to the existing factory and single-turn pipeline, versioned request metadata, automatic/fixed capture selection, response-only playback, diagnostic opt-in, dependency and construction failures before capture, stable exit codes, and the absence of duplicated microphone/Whisper/Piper/speaker implementation.
-- Owner-memory tests cover v2-to-v3 migration, existing-fact preservation, structured preference/dislike/routine/goal/personal/instruction memories, explicit trigger variants, ordinary-conversation non-persistence, exact/topic/type recall, duplicate control, explicit superseding updates, exact/topic forget, confirmed broad deletion, normalized aliases, limits, protected-key redaction, malformed-profile rejection, backup/atomic failure handling, fresh-process persistence, production IntentParser/Planner/ExecutionPipeline/OwnerMemorySkill routing, calculator/task/note collisions, voice/text parity, and isolation from transcript/audio persistence.
+- Owner-memory tests cover v2-to-v3 migration, existing-fact preservation, structured preference/dislike/routine/goal/personal/instruction memories, explicit trigger variants, ordinary-conversation non-persistence, exact/topic/type recall, duplicate control, explicit superseding updates, list/count/inspect, confirmation-gated exact/topic/all-general/keyed deletion, cancellation, expiry, corrupt transient state, normalized aliases, limits, protected-key redaction, malformed-profile rejection, backup/atomic failure handling, fresh-process persistence, production IntentParser/Planner/ExecutionPipeline/OwnerMemorySkill routing, calculator/task/note collisions, voice/text parity, and isolation from transcript/audio persistence.
 - `git diff --check` passed after the automated test changes.
 - Runtime Python checks may not be available in some Windows sessions if `python`/`py` are not installed, only Microsoft Store aliases are present.
 - Example configuration now documents bounded transcript-routing defaults and keeps diagnostic output disabled unless explicitly requested.
@@ -2263,7 +2269,7 @@ Say `How much is two plus two?` The expected route selects the registered calcul
 
 General Explicit Long-Term Owner Memory Check
 
-Implementation and Windows/hardware-free checks are complete. Existing keyed facts are preserved and the general long-term flows still require owner-run Raspberry Pi verification after pulling. Do not describe CI mocks as hardware verification.
+Implementation and Windows/hardware-free checks are complete. Existing keyed facts are preserved and the management flows still require owner-run Raspberry Pi verification after pulling. Do not describe CI mocks as hardware verification.
 
 ```bash
 cd ~/ares-brain
@@ -2273,36 +2279,48 @@ python scripts/manual_verify_general_long_term_memory.py \
   --profile /tmp/ares_general_long_term_memory.json \
   --reset \
   --verbose
-python scripts/inspect_owner_memory.py --memories
+python scripts/manual_verify_owner_memory_management.py \
+  --profile /tmp/ares_owner_memory_management.json \
+  --pending-state /tmp/ares_pending_owner_memory_action.json \
+  --reset \
+  --verbose
+python scripts/inspect_owner_memory.py --summary --pending
 ```
 
-The isolated verifier creates a fresh child process for every save, exact recall, preference recall, topic recall, list, duplicate, update, forget, missing recall, restart, non-memory statement, and reminder collision. It never modifies the production owner profile and fails if a voice-specific memory file appears or if the route bypasses the central Brain service.
+The general-memory verifier creates fresh child processes for save, recall, list, duplicate, update, persistence, non-memory, and reminder collision checks. The management verifier separately proves no mutation before confirmation, cross-process exact confirmation, ambiguity refusal, topic deletion, cancellation, expiry, all-general/keyed separation, and corrupt transient-state refusal. Both use isolated files, never modify the production profile, and fail if a voice-specific memory file appears or if the route bypasses the central Brain service.
 
-For real voice verification, run `python scripts/run_ares_voice.py` separately for each phrase so every recall proves process-independent persistence:
+For real voice verification, run `python scripts/run_ares_voice.py` separately for every phrase. A request and its confirmation are separate foreground processes:
 
-1. Say `Remember in your long-term memory that I like going to the gym.` Expect `I will remember that you like going to the gym.`
-2. Say `What do you remember about the gym?` Expect `You told me that you like going to the gym.`
-3. Say `What do I like doing?` Expect `You like going to the gym.`
-4. Say `Remember long term that I enjoy strategy games.` Expect `I will remember that you enjoy strategy games.`
-5. Say `What are some things I like?` Expect a bounded response containing gym and strategy games.
-6. Say `Forget that I like going to the gym.` Expect `I forgot that you like going to the gym.`
-7. Say `What do you remember about the gym?` Expect `I do not have an active long-term memory about the gym.`
+1. Say `What do I like?` and note the existing preferences.
+2. Say `Forget that I like going on works.` Expect a candidate prompt, with no deletion yet.
+3. Say `No, cancel.` Expect `Deletion cancelled. I kept the memory.`
+4. Ask `What do I like?` and confirm the incorrectly transcribed memory remains.
+5. Repeat `Forget that I like going on works.`, then in a fresh process say `Yes, delete it.` Expect the exact memory to be deleted while gym/video-game memories remain.
+6. Say `Forget that I love video games.`, then `Yes, delete it.` Confirm no unrelated memory is removed.
+7. Say `Remember in your long-term memory that I like playing video games.` and confirm a repeat does not duplicate it.
+8. Ask `How many memories do you have about me?`, `List my general long-term memories.`, and `List my saved facts.`
+9. Say `Forget everything about gaming.`, then `Never mind.` Confirm no gaming memory or keyed favorite-game fact is removed.
 
-The phrase `remember to buy milk` must still create a task, not owner memory. `I went to the gym today` must not persist anything. Explicit temporary statements return clarification rather than silently becoming durable facts.
+The phrase `remember to buy milk` remains a task, not owner memory. `Remind me to delete the file tomorrow` remains a task. `I went to the gym today` persists nothing. `Forget it`, `delete my memory`, and `remove everything` are too vague to create a pending deletion. Explicit temporary statements return clarification rather than silently becoming durable facts.
 
 Inspect the versioned UTF-8 JSON without editing it:
 
 ```bash
+python scripts/inspect_owner_memory.py --summary
+python scripts/inspect_owner_memory.py --facts
 python scripts/inspect_owner_memory.py --memories
 python scripts/inspect_owner_memory.py --topic gym
 python scripts/inspect_owner_memory.py --type preference
+python scripts/inspect_owner_memory.py --count
+python scripts/inspect_owner_memory.py --pending
 python scripts/inspect_owner_memory.py --json
 ```
 
-The inspector is read-only and exits nonzero for corrupt or unsupported state. It reports schema v3, keyed facts, general memory ids/types/canonical text/topics/timestamps/status, and the centrally resolved path. Recovery is explicit: validate the active file and retained backup before replacing anything; ARES never silently resets or auto-restores owner memory.
+The inspector is read-only and exits nonzero for corrupt or unsupported state. It reports schema v3, keyed facts, general memory ids/types/canonical text/topics/timestamps/status, the centrally resolved profile path, and bounded transient pending metadata. It never confirms, cancels, deletes, or repairs state. Recovery is explicit: validate the active file and retained backup before replacing anything; ARES never silently resets or auto-restores owner memory.
 
 Latest Commits
 
+- `1744506` Implement safe owner memory management
 - `f63385d` Implement general explicit owner memory
 - `2e8a9fb` Implement central general owner memory
 - `d006422` Harden owner memory routing and persistence
@@ -2426,9 +2444,9 @@ Latest Commits
 Next Planned Step
 
 - Architecture hardening before real hardware/adapters is complete: lifecycle, contracts, manifests, migrations, health/fallback, and measured resource budgets are implemented.
-- Phase 3 now includes verified owner-run ALSA, Whisper, Piper, speaker, voice-profile, single-turn, bounded multi-turn, adaptive VAD, deterministic spoken-calculator routing, a short production-style one-turn launcher, and one central bounded general explicit long-term owner-memory service in Windows/hardware-free verification.
-- Pull `main` on Raspberry Pi and verify gym preference save, topic/preference recall, duplicate prevention, strategy-game preference, forget, and missing recall across fresh `python scripts/run_ares_voice.py` processes. Do not edit the profile manually during the test.
-- Confirm the existing v2 keyed facts survive the one-time v3 migration, then inspect `data/memory/owner_profile.json` with the read-only tool. Do not claim semantic, episodic, inferred, autonomous, or unrestricted conversational memory.
+- Phase 3 now includes verified owner-run ALSA, Whisper, Piper, speaker, voice-profile, single-turn, bounded multi-turn, adaptive VAD, deterministic spoken-calculator routing, a short production-style one-turn launcher, and one central bounded general explicit long-term owner-memory service with confirmation-gated CRUD in Windows/hardware-free verification.
+- Pull `main` on Raspberry Pi and verify specific-delete cancellation/confirmation, topic cancellation, list/count, and keyed/general separation across fresh `python scripts/run_ares_voice.py` processes. Do not edit either JSON file manually during the test.
+- Confirm existing keyed facts remain after general deletion, then inspect the profile and transient pending record through the read-only tool. Do not claim semantic, episodic, inferred, autonomous, or unrestricted conversational memory.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not enable default real weather/market API behavior, Google Calendar integration, GPT, embeddings, vision, scheduling, notifications, or background automation yet.

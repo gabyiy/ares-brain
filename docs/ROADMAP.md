@@ -1097,7 +1097,7 @@ Phase 87: Central General Owner Memory
 Phase 88: General Explicit Long-Term Owner Memory
 
 - Kept authoritative owner memory behind `CoreService -> OwnerMemorySkill -> OwnerMemoryService -> OwnerProfileStore`; voice remains an adapter and has no store or parser authority.
-- Migrated `ares.owner_profile` v2 to v3 sequentially while preserving every keyed fact and adding structured `memories` plus bounded broad-deletion confirmation state.
+- Migrated `ares.owner_profile` v2 to v3 sequentially while preserving every keyed fact and adding structured `memories` plus the legacy bounded broad-confirmation field; Phase 90 moved current CRUD confirmation authority into separate transient state.
 - Added explicit long-term trigger cleanup, a finite memory-type classifier, deterministic topic/token retrieval, exact-signature duplicate prevention, explicit superseding updates, and bounded forget/list behavior.
 - Added a two-step exact confirmation for deleting all long-term owner memory; ambiguous or single-turn broad deletion fails closed.
 - Added read-only memory/topic/type inspection, a fresh-process general-memory verifier, production voice/text parity, and static guards against voice-owned or hardware-coupled memory.
@@ -1110,11 +1110,20 @@ Phase 89: Whisper-Tolerant Explicit Owner Memory Routing
 - Preserved the structural split: `remember ... memory ... that <owner fact>` selects owner memory, while `remember to <action>` and `remember my task ...` remain task/reminder routes.
 - Added canonical-trigger, extracted-fact, action, and routing-reason diagnostics before the existing central `OwnerMemoryService` write.
 - Added fresh-process and production-factory regressions proving the two observed transcripts create two preferences, deduplicate, recall together, preserve keyed facts, and never create a tasks file.
-- Current pytest collection is 1465 tests.
+- Historical Phase 89 pytest collection was 1465 tests.
+
+Phase 90: Safe Central Owner-Memory Management
+
+- Added central list, inspect, count, specific-delete, topic-delete, all-general-delete, keyed-fact-delete, confirmation, and cancellation actions through the existing CoreService/OwnerMemorySkill route.
+- Added one versioned transient `ares.pending_owner_memory_action` v1 record at `data/runtime/pending_owner_memory_action.json`, with atomic writes, a 60-second default TTL, bounded target data, and cross-process confirmation for the one-turn production launcher.
+- Specific deletion requires exactly one high-confidence match. Topic and all-general requests snapshot only general-memory ids; keyed-fact deletion binds a normalized key and revision digest. Nothing is deleted before confirmation.
+- Preserved pending state across unrelated commands until expiry, replaced it on a new destructive request, and failed closed on expiry, corruption, target changes, write errors, or ambiguous/vague deletion language.
+- Extended read-only inspection and added isolated fresh-process management verification plus production voice-route, task-collision, event-redaction, keyed/general separation, and architecture regressions.
+- Current pytest collection is 1506 tests.
 
 Current State
 
-ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, the short production-style single-turn launcher, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and CoreService-owned general explicit long-term owner memory. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control. Owner facts and general memories are written only by explicit bounded memory commands; ordinary transcripts and recordings are not persisted.
+ARES is currently at the completed Architecture Hardening foundation plus explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, the short production-style single-turn launcher, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and CoreService-owned general explicit long-term owner memory with confirmation-gated CRUD. The assistant remains deterministic and offline. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control. Owner facts and general memories are written only by explicit bounded memory commands; ordinary transcripts and recordings are not persisted. Voice submits memory-management text through the same Brain route and never edits the durable or transient JSON state directly.
 
 The current active interface is:
 
@@ -1196,9 +1205,10 @@ Phase 3 Real Voice Integration
 24. Centralize general owner facts behind CoreService, migrate the profile to v2, and add inspection/fresh-process verification. Completed in deterministic CI; Raspberry Pi voice verification remains owner-run.
 25. Add bounded general explicit long-term memories, migrate the profile from v2 to v3, and verify one central Brain-owned route for text and voice. Completed in deterministic CI; Raspberry Pi voice verification remains owner-run.
 26. Harden explicit-memory routing for the real `locked term memory` and `remembering a long term memory that ...` Whisper transcripts. Completed in deterministic CI; post-pull Raspberry Pi verification remains owner-run.
-27. Verify the gym and video-games preferences, combined recall, topic recall, duplicate prevention, and keyed-fact preservation through fresh Raspberry Pi `run_ares_voice.py` processes.
-28. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, transcription quality, and explicit owner-memory phrasing from real results.
-29. Only later consider wake-word/background listening.
+27. Add complete central list/count/inspect and confirmation-gated specific/topic/all-general/keyed deletion with cross-process transient state. Completed in deterministic CI; post-pull Raspberry Pi verification remains owner-run.
+28. Verify specific-delete cancellation/confirmation, topic cancellation, list/count, and keyed/general separation through fresh Raspberry Pi `run_ares_voice.py` processes.
+29. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, transcription quality, and explicit owner-memory phrasing from real results.
+30. Only later consider wake-word/background listening.
 
 What Must Not Be Started Yet
 
