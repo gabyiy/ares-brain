@@ -25,6 +25,7 @@ from core.Contracts import (
     CONTRACT_SPEECH_TO_TEXT_RESULT,
     CONTRACT_SINGLE_TURN_VOICE_REQUEST,
     CONTRACT_SINGLE_TURN_VOICE_RESULT,
+    CONTRACT_STANDBY_LISTEN_RESULT,
     CONTRACT_TEXT_TO_SPEECH_REQUEST,
     CONTRACT_TEXT_TO_SPEECH_RESULT,
     CONTRACT_VERSION_V1,
@@ -32,6 +33,10 @@ from core.Contracts import (
     CONTRACT_VOICE_COMMAND_RESULT,
     CONTRACT_VOICE_PIPELINE_REQUEST,
     CONTRACT_VOICE_PIPELINE_RESULT,
+    CONTRACT_WAKE_DETECTION_RESULT,
+    CONTRACT_WAKE_LISTENER_REQUEST,
+    CONTRACT_WAKE_LISTENER_RESULT,
+    CONTRACT_WAKE_LISTENER_SNAPSHOT,
     DEFAULT_CONTRACT_REGISTRY,
     ContractRegistry,
     is_valid_contract_version,
@@ -1051,6 +1056,67 @@ def build_single_turn_voice_pipeline_manifest() -> CapabilityManifest:
     )
 
 
+def build_standby_wake_listener_manifest() -> CapabilityManifest:
+    return CapabilityManifest(
+        module_name="linux_standby_wake_listener",
+        module_type=MODULE_TYPE_ADAPTER,
+        module_version=CONTRACT_VERSION_V1,
+        manifest_version=MANIFEST_VERSION_V1,
+        description="Bounded ALSA/VAD candidate capture with offline Whisper wake confirmation.",
+        provider="ares",
+        enabled_by_default=False,
+        capabilities=["voice.standby_wake"],
+        consumed_contracts={
+            CONTRACT_WAKE_LISTENER_REQUEST: [CONTRACT_VERSION_V1],
+            CONTRACT_VOICE_ACTIVITY_CAPTURE_RESULT: [CONTRACT_VERSION_V1],
+            CONTRACT_SPEECH_TO_TEXT_RESULT: [CONTRACT_VERSION_V1],
+        },
+        produced_contracts={
+            CONTRACT_WAKE_LISTENER_RESULT: [CONTRACT_VERSION_V1],
+            CONTRACT_WAKE_DETECTION_RESULT: [CONTRACT_VERSION_V1],
+            CONTRACT_WAKE_LISTENER_SNAPSHOT: [CONTRACT_VERSION_V1],
+            CONTRACT_STANDBY_LISTEN_RESULT: [CONTRACT_VERSION_V1],
+            CONTRACT_EVENT_PUBLICATION_ENVELOPE: [CONTRACT_VERSION_V1],
+        },
+        dependencies=ManifestDependencies(
+            required_capabilities=["voice.capture.activity", "voice.transcribe"],
+        ),
+        platform=PlatformCompatibility(
+            supported_operating_systems=["linux"],
+            hardware_requirements={"microphone_required": True},
+        ),
+        permissions=[
+            PERMISSION_MICROPHONE_READ,
+            PERMISSION_FILESYSTEM_READ,
+            PERMISSION_FILESYSTEM_WRITE,
+            PERMISSION_PROCESS_LAUNCH,
+        ],
+        lifecycle_support=[
+            LIFECYCLE_OPERATION_START,
+            LIFECYCLE_OPERATION_HEALTH_CHECK,
+            LIFECYCLE_OPERATION_EXECUTE,
+            LIFECYCLE_OPERATION_STOP,
+        ],
+        resources=ResourceDeclaration(
+            estimated_ram_mb=24,
+            estimated_cpu_weight=CPU_WEIGHT_TINY,
+            startup_cost=STARTUP_COST_LIGHT,
+            heavy_module=False,
+            persistent_module=True,
+            maximum_concurrent_tasks=1,
+            inactivity_timeout_seconds=0,
+        ),
+        metadata={
+            "owner": "capital_core_brain_runtime",
+            "foreground_serialized": True,
+            "candidate_detection": "adaptive_pcm_frame_rms_hysteresis",
+            "wake_confirmation": "offline_whisper_bounded_utterance",
+            "continuous_whisper": False,
+            "background_thread": False,
+        },
+    )
+
+
 def build_multi_turn_voice_session_manifest() -> CapabilityManifest:
     return CapabilityManifest(
         module_name="multi_turn_voice_session",
@@ -1099,6 +1165,7 @@ def default_voice_related_manifests() -> List[CapabilityManifest]:
     return [
         build_single_turn_voice_pipeline_manifest(),
         build_multi_turn_voice_session_manifest(),
+        build_standby_wake_listener_manifest(),
         CapabilityManifest(
             module_name="mock_microphone_adapter",
             module_type=MODULE_TYPE_ADAPTER,

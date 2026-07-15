@@ -39,6 +39,11 @@ CONTRACT_BRAIN_RUNTIME_RESULT = "brain.runtime.result"
 CONTRACT_BRAIN_RUNTIME_SNAPSHOT = "brain.runtime.snapshot"
 CONTRACT_BRAIN_RUNTIME_COMMAND_CLASSIFICATION = "brain.runtime.command_classification"
 CONTRACT_BRAIN_RUNTIME_LOOP_RESULT = "brain.runtime.loop_result"
+CONTRACT_WAKE_LISTENER_REQUEST = "brain.standby_wake.request"
+CONTRACT_WAKE_LISTENER_RESULT = "brain.standby_wake.listener_result"
+CONTRACT_WAKE_DETECTION_RESULT = "brain.standby_wake.detection_result"
+CONTRACT_WAKE_LISTENER_SNAPSHOT = "brain.standby_wake.snapshot"
+CONTRACT_STANDBY_LISTEN_RESULT = "brain.standby_wake.listen_result"
 CONTRACT_EVENT_PUBLICATION_ENVELOPE = "event.publication.envelope"
 
 CONTRACT_REQUIRED_FIELDS = (
@@ -890,6 +895,99 @@ class BrainRuntimeLoopResultV1(VersionedContract):
     timestamp: str = field(default_factory=utc_contract_timestamp)
 
 
+@dataclass(frozen=True)
+class WakeListenerRequestV1(VersionedContract):
+    contract_name: str = CONTRACT_WAKE_LISTENER_REQUEST
+    runtime_id: str = ""
+    lifecycle_state: str = "STANDBY"
+    listener_timeout_seconds: float = 3.0
+    microphone_device: str = ""
+    language: str = "en"
+    wake_phrases: List[str] = field(default_factory=list)
+    standby_phrases: List[str] = field(default_factory=list)
+    shutdown_phrases: List[str] = field(default_factory=list)
+    retain_diagnostic_audio: bool = False
+
+
+@dataclass(frozen=True)
+class WakeListenerResultV1(VersionedContract):
+    contract_name: str = CONTRACT_WAKE_LISTENER_RESULT
+    success: bool = False
+    status: str = ""
+    runtime_id: str = ""
+    lifecycle_state: str = "STANDBY"
+    listener_state: str = "stopped"
+    error_code: str = ""
+    error_message: str = ""
+    cleanup_status: str = "not_required"
+    timestamp: str = field(default_factory=utc_contract_timestamp)
+    data: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WakeDetectionResultV1(VersionedContract):
+    contract_name: str = CONTRACT_WAKE_DETECTION_RESULT
+    success: bool = True
+    status: str = "not_detected"
+    runtime_id: str = ""
+    lifecycle_state: str = "STANDBY"
+    speech_detected: bool = False
+    wake_detected: bool = False
+    command_category: str = "non_wake"
+    normalized_wake_phrase: str = ""
+    matched_phrase: str = ""
+    transcript_length: int = 0
+    error_code: str = ""
+    error_message: str = ""
+    timestamp: str = field(default_factory=utc_contract_timestamp)
+
+
+@dataclass(frozen=True)
+class WakeListenerSnapshotV1(VersionedContract):
+    contract_name: str = CONTRACT_WAKE_LISTENER_SNAPSHOT
+    success: bool = True
+    status: str = "current"
+    runtime_id: str = ""
+    lifecycle_state: str = "STANDBY"
+    listener_state: str = "stopped"
+    started: bool = False
+    listening: bool = False
+    cancelled: bool = False
+    listen_count: int = 0
+    speech_candidate_count: int = 0
+    wake_detection_count: int = 0
+    consecutive_failure_count: int = 0
+    last_stop_reason: str = ""
+    timestamp: str = field(default_factory=utc_contract_timestamp)
+
+
+@dataclass(frozen=True)
+class StandbyListenResultV1(VersionedContract):
+    contract_name: str = CONTRACT_STANDBY_LISTEN_RESULT
+    success: bool = True
+    status: str = "no_speech"
+    runtime_id: str = ""
+    lifecycle_state: str = "STANDBY"
+    listener_state: str = "ready"
+    speech_detected: bool = False
+    wake_detected: bool = False
+    command_category: str = "non_wake"
+    normalized_wake_phrase: str = ""
+    matched_phrase: str = ""
+    stop_reason: str = ""
+    duration_seconds: float = 0.0
+    sample_rate_hz: int = 0
+    channels: int = 0
+    sample_width_bytes: int = 0
+    capture_stop_reason: str = ""
+    cleanup_status: str = "not_required"
+    error_code: str = ""
+    error_message: str = ""
+    timestamp: str = field(default_factory=utc_contract_timestamp)
+    audio_metadata: Dict[str, Any] = field(default_factory=dict)
+    data: Dict[str, Any] = field(default_factory=dict)
+
+
 def build_default_contract_registry() -> ContractRegistry:
     registry = ContractRegistry()
     registry.register(
@@ -1007,6 +1105,26 @@ def build_default_contract_registry() -> ContractRegistry:
     registry.register(
         CONTRACT_BRAIN_RUNTIME_LOOP_RESULT,
         consumers=["BrainRuntime"],
+    )
+    registry.register(
+        CONTRACT_WAKE_LISTENER_REQUEST,
+        consumers=["BrainRuntime", "StandbyWakeListener"],
+    )
+    registry.register(
+        CONTRACT_WAKE_LISTENER_RESULT,
+        consumers=["BrainRuntime", "StandbyWakeListener"],
+    )
+    registry.register(
+        CONTRACT_WAKE_DETECTION_RESULT,
+        consumers=["StandbyWakeListener", "BrainRuntime"],
+    )
+    registry.register(
+        CONTRACT_WAKE_LISTENER_SNAPSHOT,
+        consumers=["BrainRuntime", "StandbyWakeListener"],
+    )
+    registry.register(
+        CONTRACT_STANDBY_LISTEN_RESULT,
+        consumers=["BrainRuntime", "StandbyWakeListener"],
     )
     registry.register(
         CONTRACT_EVENT_PUBLICATION_ENVELOPE,

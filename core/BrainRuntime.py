@@ -38,11 +38,21 @@ from core.Contracts import (
     BrainRuntimeRequestV1,
     BrainRuntimeResultV1,
     BrainRuntimeSnapshotV1,
+    StandbyListenResultV1,
+    WakeListenerRequestV1,
     new_correlation_id,
     validate_contract,
 )
 from core.CoreService import CoreService
 from core.EventBus import PRIORITY_CRITICAL, PRIORITY_NORMAL, Event, EventBus
+from core.StandbyWakeListener import (
+    WAKE_CATEGORY_ACTIVATION,
+    WAKE_CATEGORY_SHUTDOWN,
+    WAKE_CATEGORY_STANDBY,
+    WAKE_STATUS_CANCELLED,
+    StandbyWakeListener,
+    validate_wake_control_phrases,
+)
 
 
 RUNTIME_COMMAND_ACTIVATION = "activation"
@@ -63,6 +73,12 @@ EVENT_RUNTIME_INACTIVITY_EXPIRED = "brain_runtime_inactivity_expired"
 EVENT_RUNTIME_STANDBY_REQUESTED = "brain_runtime_standby_requested"
 EVENT_RUNTIME_SHUTDOWN_REQUESTED = "brain_runtime_shutdown_requested"
 EVENT_RUNTIME_STOPPED = "brain_runtime_stopped"
+EVENT_RUNTIME_STANDBY_LISTENED = "brain_runtime_standby_listened"
+EVENT_WAKE_CANDIDATE_DETECTED = "brain_wake_candidate_detected"
+EVENT_WAKE_DETECTED = "brain_wake_detected"
+EVENT_WAKE_REJECTED = "brain_wake_rejected"
+EVENT_WAKE_LISTENER_FAILED = "brain_wake_listener_failed"
+EVENT_WAKE_LISTENER_STOPPED = "brain_wake_listener_stopped"
 
 DEFAULT_ACTIVATION_PHRASES = ("ares", "hey ares", "hello ares", "wake up ares")
 DEFAULT_STANDBY_PHRASES = (
@@ -234,6 +250,7 @@ class BrainRuntime:
         event_history_store: Any = None,
         clock: Optional[Callable[[], datetime]] = None,
         runtime_id_factory: Optional[Callable[[], str]] = None,
+        standby_wake_listener: Optional[StandbyWakeListener] = None,
     ) -> None:
         if not isinstance(core_service, CoreService):
             raise ValueError("core_service must be a CoreService")
@@ -253,6 +270,24 @@ class BrainRuntime:
         self.command_handler = command_handler
         self.input_adapter = input_adapter
         self.output_adapter = output_adapter
+        if standby_wake_listener is not None:
+            required_wake_methods = ("start", "listen_once", "cancel", "stop", "snapshot", "health")
+            missing_wake_methods = [
+                name for name in required_wake_methods if not callable(getattr(standby_wake_listener, name, None))
+            ]
+            if missing_wake_methods:
+                raise ValueError(
+                    "standby_wake_listener is missing methods: " + ", ".join(missing_wake_methods)
+                )
+            wake_config = getattr(standby_wake_listener, "config", None)
+            if wake_config is None:
+                raise ValueError("standby_wake_listener must expose validated config")
+            validate_wake_control_phrases(
+                wake_config.wake_phrases,
+                self.config.standby_phrases,
+                self.config.shutdown_phrases,
+            )
+        self.standby_wake_listener = standby_wake_listener
         self._event_bus = event_bus or EventBus(max_history=300)
         self._event_history_store = event_history_store
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -270,6 +305,7 @@ class BrainRuntime:
         self._failure_count = 0
         self._output_count = 0
         self._last_stop_reason = ""
+        self._wake_listener_failure_count = 0
         self._event_history_failures: list[Dict[str, str]] = []
 
     def start(self, *, correlation_id: str = "") -> BrainRuntimeResultV1:
@@ -294,6 +330,25 @@ class BrainRuntime:
                 result = transition(correlation_id=correlation, reason=reason)
                 if not result.success:
                     return self._lifecycle_failure(result, correlation, "runtime_start_failed")
+            if self.standby_wake_listener is not None:
+                wake_started = self.standby_wake_listener.start(runtime_id=self.runtime_id)
+                if not bool(getattr(wake_started, "success", False)):
+                    self.shutdown(correlation_id=correlation, reason="wake_listener_start_failed")
+                    return self._result(
+                        False,
+                        "wake_listener_start_failed",
+                        correlation_id=correlation,
+                        stop_reason="wake_listener_start_failed",
+                        error_code=str(
+                            getattr(wake_started, "error_code", "")
+                            or "wake_listener_start_failed"
+                        ),
+                        error_message=str(
+                            getattr(wake_started, "error_message", "")
+                            or getattr(wake_started, "status", "")
+                            or "standby wake listener failed to start"
+                        )[:160],
+                    )
             self._publish(
                 EVENT_RUNTIME_STARTED,
                 correlation,
@@ -490,6 +545,11 @@ class BrainRuntime:
                 started = self.start()
                 if not started.success:
                     return started
+            if (
+                self.session_manager.state == BRAIN_STANDBY
+                and self.standby_wake_listener is not None
+            ):
+                return self._poll_standby_wake()
             try:
                 input_result = self.input_adapter.wait_for_input(
                     self.config.input_polling_interval_seconds
@@ -904,6 +964,7 @@ class BrainRuntime:
             return self._lifecycle_failure(standby, correlation, reason)
         self._standby_return_count += 1
         self._last_stop_reason = reason
+        self._release_active_transport_resources()
         if response_text:
             output = self._write_output("standby", response_text, correlation)
             if not output.success:
@@ -1136,7 +1197,24 @@ class BrainRuntime:
     def _close_resources(self) -> None:
         if self._resources_closed:
             return
-        for adapter in (self.input_adapter, self.output_adapter):
+        resources = [self.input_adapter, self.output_adapter]
+        if self.standby_wake_listener is not None:
+            try:
+                self.standby_wake_listener.cancel("runtime_shutdown")
+                stopped = self.standby_wake_listener.stop("runtime_shutdown")
+                self._publish(
+                    EVENT_WAKE_LISTENER_STOPPED,
+                    new_correlation_id("wake-stop"),
+                    {
+                        "status": str(getattr(stopped, "status", "stopped")),
+                        "cleanup_status": str(
+                            getattr(stopped, "cleanup_status", "unknown")
+                        ),
+                    },
+                )
+            except (OSError, RuntimeError, TypeError, ValueError):
+                self._failure_count += 1
+        for adapter in resources:
             close = getattr(adapter, "close", None)
             if callable(close):
                 try:
@@ -1144,6 +1222,168 @@ class BrainRuntime:
                 except (OSError, RuntimeError, TypeError, ValueError):
                     self._failure_count += 1
         self._resources_closed = True
+
+    def _poll_standby_wake(self) -> BrainRuntimeResultV1:
+        assert self.standby_wake_listener is not None
+        correlation = new_correlation_id("standby-wake")
+        wake_config = self.standby_wake_listener.config
+        request = WakeListenerRequestV1(
+            runtime_id=self.runtime_id,
+            lifecycle_state=BRAIN_STANDBY,
+            listener_timeout_seconds=wake_config.speech_wait_timeout_seconds,
+            language=wake_config.language,
+            wake_phrases=list(wake_config.wake_phrases),
+            standby_phrases=list(self.config.standby_phrases),
+            shutdown_phrases=list(self.config.shutdown_phrases),
+            retain_diagnostic_audio=wake_config.retain_diagnostic_audio,
+            correlation_id=correlation,
+            metadata={"safe": True, "contains_transcript": False, "contains_audio": False},
+        )
+        try:
+            listened = self.standby_wake_listener.listen_once(request)
+        except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
+            return self._handle_wake_listener_failure(
+                correlation,
+                "wake_listener_exception",
+                f"{error.__class__.__name__}:{str(error)[:120]}",
+            )
+        if not isinstance(listened, StandbyListenResultV1):
+            return self._handle_wake_listener_failure(
+                correlation,
+                "malformed_wake_listener_result",
+                "wake listener did not return StandbyListenResultV1",
+            )
+        if listened.speech_detected or not listened.success:
+            self._publish(
+                EVENT_RUNTIME_STANDBY_LISTENED,
+                correlation,
+                {
+                    "status": listened.status,
+                    "speech_detected": listened.speech_detected,
+                    "wake_detected": listened.wake_detected,
+                    "command_category": listened.command_category,
+                    "capture_stop_reason": listened.capture_stop_reason,
+                    "duration_ms": round(listened.duration_seconds * 1000.0, 3),
+                },
+            )
+        if listened.status == WAKE_STATUS_CANCELLED:
+            self.shutdown(correlation_id=correlation, reason="wake_listener_cancelled")
+            return self._result(
+                False,
+                "cancelled",
+                correlation_id=correlation,
+                stop_reason="wake_listener_cancelled",
+                error_code="wake_listener_cancelled",
+                error_message="standby wake listening was cancelled",
+            )
+        if not listened.success:
+            return self._handle_wake_listener_failure(
+                correlation,
+                listened.error_code or "wake_listener_failed",
+                listened.error_message or listened.status,
+            )
+        self._wake_listener_failure_count = 0
+        if listened.speech_detected:
+            self._publish(
+                EVENT_WAKE_CANDIDATE_DETECTED,
+                correlation,
+                {
+                    "status": listened.status,
+                    "command_category": listened.command_category,
+                    "wake_detected": listened.wake_detected,
+                    "sample_rate_hz": listened.sample_rate_hz,
+                    "duration_ms": round(listened.duration_seconds * 1000.0, 3),
+                },
+            )
+        if listened.command_category == WAKE_CATEGORY_ACTIVATION and listened.wake_detected:
+            phrase = listened.normalized_wake_phrase or listened.matched_phrase
+            self._publish(
+                EVENT_WAKE_DETECTED,
+                correlation,
+                {"status": "verified", "matched_phrase": phrase},
+            )
+            return self.handle_text(phrase, correlation_id=correlation)
+        if listened.command_category in {WAKE_CATEGORY_SHUTDOWN, WAKE_CATEGORY_STANDBY}:
+            return self.handle_text(listened.matched_phrase, correlation_id=correlation)
+        if listened.speech_detected:
+            self._publish(
+                EVENT_WAKE_REJECTED,
+                correlation,
+                {"status": "non_wake_speech", "reason": "exact_phrase_not_matched"},
+            )
+        return self._result(
+            True,
+            "standby_listening",
+            correlation_id=correlation,
+            stop_reason=listened.stop_reason or "standby_poll_complete",
+            data={
+                "speech_detected": listened.speech_detected,
+                "wake_detected": False,
+                "capture_stop_reason": listened.capture_stop_reason,
+                "sample_rate_hz": listened.sample_rate_hz,
+                "channels": listened.channels,
+                "sample_width_bytes": listened.sample_width_bytes,
+                "duration_seconds": listened.duration_seconds,
+            },
+        )
+
+    def _handle_wake_listener_failure(
+        self,
+        correlation: str,
+        error_code: str,
+        error_message: str,
+    ) -> BrainRuntimeResultV1:
+        self._failure_count += 1
+        self._wake_listener_failure_count += 1
+        failure_limit = min(
+            self.config.maximum_consecutive_failures,
+            int(self.standby_wake_listener.config.consecutive_failure_limit)
+            if self.standby_wake_listener is not None
+            else self.config.maximum_consecutive_failures,
+        )
+        self._publish(
+            EVENT_WAKE_LISTENER_FAILED,
+            correlation,
+            {
+                "state": self.session_manager.state,
+                "error_code": error_code,
+                "consecutive_failure_count": self._wake_listener_failure_count,
+                "failure_limit": failure_limit,
+            },
+            priority=PRIORITY_CRITICAL,
+        )
+        if self._wake_listener_failure_count >= failure_limit:
+            self.session_manager.report_failure(
+                correlation_id=correlation,
+                reason="wake_listener_failure_limit",
+                unrecoverable=True,
+            )
+            self.shutdown(correlation_id=correlation, reason="wake_listener_failure_limit")
+            return self._result(
+                False,
+                "maximum_failures_reached",
+                correlation_id=correlation,
+                stop_reason="wake_listener_failure_limit",
+                error_code=error_code,
+                error_message=error_message,
+            )
+        return self._result(
+            False,
+            "wake_listener_failed",
+            correlation_id=correlation,
+            stop_reason="wake_listener_retry_allowed",
+            error_code=error_code,
+            error_message=error_message,
+        )
+
+    def _release_active_transport_resources(self) -> None:
+        for adapter in (self.input_adapter, self.output_adapter):
+            release = getattr(adapter, "release_active_resources", None)
+            if callable(release):
+                try:
+                    release()
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    self._failure_count += 1
 
     def _publish(
         self,
