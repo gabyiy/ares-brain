@@ -235,25 +235,28 @@ BrainRuntime (STANDBY)
   -> LinuxStandbyWakeListener
   -> LinuxAlsaMicrophoneAdapter calibrated RMS candidate capture
   -> canonical 16 kHz mono signed 16-bit WAV
-  -> LinuxWhisperSpeechToTextAdapter with bounded tiny English model
-  -> exact normalized wake classification
-  -> bounded wake-only repetition classification when exact matching fails
+  -> WakeRecognizer interface
+  -> VoskWakeRecognizer with a constrained local grammar and word confidence
+  -> exact complete-phrase classification
   -> BrainSessionManager (ACTIVE)
   -> one "Yes Gabi." acknowledgement
   -> existing SingleTurnVoicePipeline transport
+  -> LinuxWhisperSpeechToTextAdapter with the base English command model
   -> CoreService / SkillManager / IntentParser / Planner / ExecutionPipeline / Skill
   -> existing Piper and ALSA response output
 ```
 
-Standby VAD waits up to three seconds per foreground poll, retains 0.25 seconds of pre-roll, uses 20 ms frames with two consecutive speech-start/continue frames, limits active wake speech to two seconds, and confirms terminal silence after 0.7 seconds. Ambient calibration is bounded to 0.75 seconds. Wake-specific calibrated continue/silence floors are 160/120 RMS; the full-command VAD profile remains unchanged. Threshold validation enforces start greater than continue and continue greater than or equal to silence, with independent minimum and maximum clamps. The existing ALSA normalization boundary prevents 44.1 kHz hardware data from being relabeled as 16 kHz. Before Whisper, the listener validates the canonical WAV header and enforces separate hard limits for the assembled/normalized candidate and for the raw stream's calibration, speech-wait, and utterance phases. Candidate audio duration, raw duration, and processing wall time are distinct fields. A maximum-duration candidate is still classified when it remains inside those hard audio bounds.
+Standby VAD waits up to three seconds per foreground poll, retains 0.25 seconds of pre-roll, uses 20 ms frames with two consecutive speech-start/continue frames, limits active wake speech to two seconds, and confirms terminal silence after 0.7 seconds. Ambient calibration is bounded to 0.75 seconds. Wake-specific calibrated continue/silence floors are 160/120 RMS; the full-command VAD profile remains unchanged. Threshold validation enforces start greater than continue and continue greater than or equal to silence, with independent minimum and maximum clamps. The existing ALSA normalization boundary prevents 44.1 kHz hardware data from being relabeled as 16 kHz. Before recognition, the listener validates the canonical WAV header and enforces separate hard limits for the assembled/normalized candidate and for the raw stream's calibration, speech-wait, and utterance phases. Candidate audio duration, raw duration, and processing wall time are distinct fields.
 
-Whisper does not run continuously. No-speech polls and non-wake speech stay in `STANDBY`, create no session, invoke no skill, produce no spoken error, and do not count as command failures. Candidate speech invokes local Whisper once. The validated alias set defaults to `ares` and the observed Whisper rendering `aris`; bounded prefixes generate `ares`, `aris`, `hey ...`, `hello ...`, and `wake up ...` forms. `ok` and `okay` remain optional exact fillers.
+Whisper is not used in `STANDBY`. Real Raspberry Pi recordings showed that tiny Whisper could force a single spoken `Ares` into unrelated outputs such as `Alrighty`, `Okay`, or `Bye`; accepting those outputs as aliases would create dangerous false activations. `VoskWakeRecognizer` instead loads one local small English model at listener startup and constructs a constrained grammar containing `ares`, `aries`, `hey ares`, `hey aries`, `okay ares`, `okay aries`, exact configured standby/shutdown controls, and `[unk]`. The model remains loaded across bounded foreground polls and is not reloaded after launcher health preflight. No model is downloaded at runtime. The capability manifest declares a 320 MB RAM estimate, normal recognition CPU weight, medium startup cost, serialized execution, and persistent model lifetime.
 
-Wake classification has two ordered paths. The primary path compares the complete normalized candidate with the finite exact phrase set. Only after that fails, `analyze_bounded_wake_repetition()` tokenizes the candidate and accepts it when every token is a configured alias or configured wake-prefix token, an alias is present, total tokens do not exceed eight, alias tokens do not exceed four, and no individual prefix token occurs more than three times. The observed `aris aris hello aris` therefore resolves to canonical `ares`. Unknown words are represented only as `<unknown>` in the privacy-safe contract diagnostic; the original normalized value remains available solely in explicit owner-terminal diagnostics. Shutdown and standby phrases are classified before this fallback. No substring check, edit distance, global transcript rewrite, or arbitrary fuzzy correction is used, so `Where is Ares?`, `I spoke to Aris yesterday`, `calculate two plus two Ares`, `Harris`, `Paris`, and `Aries` remain non-wake speech.
+Wake recognition fails closed. Vosk word output is enabled, the minimum confidence across all returned words must meet the configured threshold (0.8 by default), and missing/invalid confidence or `[unk]` rejects the candidate. The complete punctuation/case/whitespace-normalized result must equal one configured grammar phrase. There is no substring check, repetition fallback, edit distance, learned alias, global transcript rewrite, or arbitrary fuzzy correction. `okay`, `bye`, `alrighty`, `areas`, `air`, partial words, and ordinary sentences containing Ares are non-wake speech. Exact configured standby and shutdown controls use the same confidence rule and remain separate command categories.
+
+`WakeRecognizerRequestV1` and `WakeRecognizerResultV1` form the recognizer boundary. `LinuxStandbyWakeListener` depends on that protocol, not Vosk directly, and has no Whisper import or transcript parser. Result contracts expose classification, confidence availability, selected alias, status, timing, and safe metadata but no transcript or audio bytes. `WakeRecognizerLocalDiagnostics` can retain the raw Vosk JSON only in process for an explicitly enabled owner-terminal callback.
 
 `core.BrainRuntimeVoiceAdapters` reuses `SingleTurnVoicePipeline` as the active microphone/STT transport and as the TTS/speaker output boundary; it does not duplicate those subprocess paths. A shared `VoiceRuntimeGate` serializes capture and playback and applies a 0.35-second post-playback settling delay. Therefore standby capture and command capture cannot run during acknowledgement or response playback, and ARES cannot transcribe its own output as a wake or command. Normal operation never plays captured owner audio.
 
-The wake contracts are `WakeListenerRequestV1`, `WakeListenerResultV1`, `WakeDetectionResultV1`, `WakeListenerSnapshotV1`, and `StandbyListenResultV1`. Events contain state, status, classification, lengths, safe audio metadata, and correlation/session identifiers only. They exclude transcripts, owner-memory values, raw audio, file contents, and secrets. `WakeLocalDiagnostics` is deliberately ephemeral and may be sent only to an owner-injected terminal callback under `--diagnostic-wake`; it is never an event or persistence contract. Temporary candidate directories are unique and removed by default. Retention requires both `--diagnostic-wake` and `--retain-diagnostic-audio`, is bounded to the latest candidate by default, and only prints a manual playback command.
+The listener contracts are `WakeListenerRequestV1`, `WakeListenerResultV1`, `WakeDetectionResultV1`, `WakeListenerSnapshotV1`, and `StandbyListenResultV1`. Events contain state, status, classification, lengths, safe audio metadata, and correlation/session identifiers only. They exclude recognition text, owner-memory values, raw audio, file contents, and secrets. `WakeLocalDiagnostics` is deliberately ephemeral and may be sent only to an owner-injected terminal callback under `--diagnostic-wake`; it is never an event or persistence contract. Temporary candidate directories are unique and removed by default. Retention requires both `--diagnostic-wake` and `--retain-diagnostic-audio`, is bounded to the latest candidate by default, and only prints a manual playback command.
 
 Foreground Raspberry Pi verification:
 
@@ -261,12 +264,17 @@ Foreground Raspberry Pi verification:
 cd ~/ares-brain
 source venv/bin/activate
 git pull --ff-only origin main
-python scripts/manual_diagnose_wake_word.py --diagnostic-wake
+python -m pip install -r requirements.txt
+mkdir -p models/vosk
+curl -fL https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip -o /tmp/vosk-model-small-en-us-0.15.zip
+unzip -q /tmp/vosk-model-small-en-us-0.15.zip -d models/vosk
+rm /tmp/vosk-model-small-en-us-0.15.zip
+python scripts/manual_diagnose_wake_word.py --diagnostic-wake --vosk-model models/vosk/vosk-model-small-en-us-0.15
 python scripts/manual_verify_standby_wake_hardware.py --diagnostic-wake
 python scripts/run_ares_standby_voice.py
 ```
 
-`scripts/manual_diagnose_wake_word.py` captures exactly one candidate and exits. The hardware verifier runs seven named stages with at most three attempts each by default and fails nonzero when a stage does not reach its required lifecycle state. `scripts/run_ares_standby_voice.py` intentionally remains in the foreground until `shutdown Ares` or Ctrl+C. Neither installs a service or starts at boot. Raspberry Pi wake reliability remains owner-run hardware verification after pulling this checkpoint.
+`scripts/manual_diagnose_wake_word.py` captures exactly one candidate and exits. The hardware verifier runs six named stages with at most three attempts each by default and fails nonzero when a stage does not reach its required lifecycle state. `scripts/run_ares_standby_voice.py` intentionally remains in the foreground until `shutdown Ares` or Ctrl+C. A missing Vosk package or model fails before microphone capture and reports the expected path, recommended Raspberry Pi model family, and installation command. Neither script installs a service or starts at boot. Raspberry Pi wake reliability remains owner-run hardware verification after pulling this checkpoint.
 
 The example listener configuration is enabled within its explicit configuration block but `enabled_modules.linux_standby_wake_listener` remains `false`. This prevents generic module loading from starting capture. The foreground script opts in by constructing the adapter directly under `BrainRuntime` ownership.
 
@@ -383,7 +391,7 @@ Current voice loop foundation:
 - The loop does not own routing, planning, or skill execution logic.
 - The loop does not start background listening, wake word detection, microphone access, speaker access, GPT, or internet access.
 
-VoiceService remains the boundary. The current real-audio surface is limited to explicit Linux ALSA capture through `LinuxAlsaMicrophoneAdapter`, offline Whisper transcription through `LinuxWhisperSpeechToTextAdapter`, offline Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA playback through `LinuxAlsaSpeakerAdapter`, the controlled single-turn pipeline, its production-style owner launcher, and a bounded owner-triggered multi-turn session. All real providers remain replaceable and outside autonomous startup paths. Real Vosk, wake word, background listeners, GPT, internet, and unbounded conversation integrations come later.
+VoiceService remains the boundary. The current real-audio surface includes explicit Linux ALSA capture through `LinuxAlsaMicrophoneAdapter`, constrained standby recognition through `VoskWakeRecognizer`, offline active-command transcription through `LinuxWhisperSpeechToTextAdapter`, offline Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA playback through `LinuxAlsaSpeakerAdapter`, controlled single-turn and bounded multi-turn pipelines, and the explicit foreground standby runtime. All providers remain replaceable and outside Brain business logic. Daemon/systemd startup, boot-time activation, GPT, cloud speech, and autonomous City activation remain later work.
 
 # Linux ALSA Microphone Adapter
 

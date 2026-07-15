@@ -1166,11 +1166,20 @@ Phase 95: Bounded Wake-Only Whisper Repetition Hardening
 - Local diagnostics now distinguish `exact` from `bounded_repetition`, show a collapsed wake-only representation and bounded counts, and explain unknown-token or limit rejection. Original transcripts remain terminal-only and absent from events and memory.
 - Wake-only capture now uses 0.25-second pre-roll, 0.7-second terminal silence, two-frame speech evidence, calibrated 160/120 continue/silence RMS floors, and a two-second active cap. Full-command VAD remains unchanged.
 - Deterministic runtime verification proves the repeated wake transcript creates one session and one acknowledgement, never reaches CoreService as a command, and is followed by normal calculator, standby, reactivation, and shutdown behavior.
-- Current pytest collection is 1828 tests.
+- Historical Phase 95 pytest collection was 1828 tests.
+
+Phase 96: Constrained-Grammar Vosk Standby Wake Recognition
+
+- Real Raspberry Pi verification showed that tiny Whisper forced isolated `Ares` audio into unrelated outputs including `Alrighty`, `Okay`, and `Bye`. Those words are deliberately not aliases because accepting them would cause false activation.
+- Added an injected `WakeRecognizer` boundary and `VoskWakeRecognizer`. Standby recognition now loads the local `vosk-model-small-en-us-0.15` once and supplies only six configured wake phrases plus `[unk]` as its grammar.
+- Wake activation requires an exact complete normalized phrase and usable confidence for every returned word. The conservative default minimum is 0.8. `[unk]`, missing confidence, low confidence, extra words, partial words, and unrelated sentences reject activation.
+- Active full-sentence commands remain on the existing base-English Whisper route. BrainRuntime lifecycle ownership, ALSA/VAD/canonical WAV capture, capture/playback exclusion, skills, memory, Piper, speaker output, inactivity, standby, shutdown, and cleanup are unchanged.
+- Added explicit `vosk==0.3.45` dependency management, local-model configuration/preflight, actionable missing-model guidance, bounded owner diagnostics, six-stage hardware verification, and transcript-free contracts/events.
+- Current pytest collection is 1847 tests.
 
 Current State
 
-ARES is currently at the completed Architecture Hardening foundation plus a central deterministic Brain session state machine and persistent foreground runtime, explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and CoreService-owned general explicit long-term owner memory with confirmation-gated CRUD. The assistant remains deterministic and offline. The foreground runtime can poll one bounded Raspberry Pi standby wake adapter, activate through exact phrase matching or strict wake-only repetition matching, process multiple serial voice commands under one session ID, return to standby on inactivity or an owner stop phrase, and stop on an explicit shutdown phrase. It still does not activate Cities. Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, and subprocess details; those remain injected adapters. Owner facts and general memories are written only by explicit bounded memory commands, and ordinary transcripts/recordings are not persisted.
+ARES is currently at the completed Architecture Hardening foundation plus a central deterministic Brain session state machine and persistent foreground runtime, explicit ALSA microphone/speaker adapters, constrained Vosk standby recognition, offline Whisper active-command STT, Piper TTS, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and CoreService-owned general explicit long-term owner memory with confirmation-gated CRUD. The assistant remains deterministic and offline. The foreground runtime can poll one bounded Raspberry Pi standby wake adapter, activate only from a complete high-confidence constrained-grammar result, process multiple serial Whisper-transcribed voice commands under one session ID, return to standby on inactivity or an owner stop phrase, and stop on an explicit shutdown phrase. It still does not activate Cities. Brain/CoreService remain free of ALSA, audio conversion, VAD, Vosk, Whisper, Piper, model paths, and subprocess details; those remain injected adapters. Owner facts and general memories are written only by explicit bounded memory commands, and ordinary transcripts/recordings are not persisted.
 
 The current active interface is:
 
@@ -1188,7 +1197,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1828 tests.
+The current pytest collection is 1847 tests.
 
 The current memory paths are:
 
@@ -1221,7 +1230,7 @@ Core Services City is a shared infrastructure city for scheduler, permissions, l
 
 Codex City is a future maintenance city. It should check the ARES GitHub repository, pull latest code, run tests, check compile, check docs freshness, report problems, and suggest fixes. Codex City must never auto-edit without owner approval.
 
-This roadmap entry documents the current safe VoiceService skeleton, explicit microphone/STT/TTS/speaker adapters, validated Piper voice profiles, Raspberry Pi setup/verification scripts, versioned RMS VAD capture, VoiceCommandRouter, simulated VoicePipeline, controlled single-turn and bounded multi-turn orchestration, and completed Architecture Hardening foundation. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, internet runtime access, real APIs, notifications, daemon installation, background timers, threads, wake word, unbounded conversation loops, background listening, or cloud TTS fallback.
+This roadmap entry documents the current safe VoiceService skeleton, explicit microphone/STT/TTS/speaker adapters, constrained foreground Vosk wake recognition, validated Piper voice profiles, Raspberry Pi setup/verification scripts, versioned RMS VAD capture, VoiceCommandRouter, simulated VoicePipeline, controlled single-turn and bounded multi-turn orchestration, and completed Architecture Hardening foundation. It does not start scheduler implementation, GitHub API integration, self-modifying behavior, GPT, internet runtime access, real APIs, notifications, daemon installation, boot-time activation, unbounded hidden loops, unrestricted background listening, or cloud TTS fallback.
 
 Next Priorities
 
@@ -1259,7 +1268,7 @@ Phase 3 Real Voice Integration
 29. Add the central persistent foreground Brain Runtime with deterministic text activation, multi-command sessions, manager-owned inactivity standby, and explicit shutdown. Completed in deterministic CI.
 30. Verify the hardware-free Brain Runtime scripts after pulling on Raspberry Pi. Pending owner run.
 31. Add one bounded real microphone wake activation adapter without moving runtime ownership out of Capital/Core. Completed in deterministic CI; real Raspberry Pi wake verification remains owner-run.
-32. Run the one-attempt wake diagnostic, then the bounded standby-wake hardware helper and foreground runtime on Raspberry Pi. Confirm the exact `Ares`/`Aris` classification, acknowledgement, command response, standby, second activation, and shutdown before recording hardware proof.
+32. Install the local small English Vosk model, then run the one-attempt diagnostic, bounded standby-wake hardware helper, and foreground runtime on Raspberry Pi. Confirm exact `Ares`/`Aries` classification, confidence, acknowledgement, active Whisper command response, standby, second activation, and shutdown before recording hardware proof.
 33. Only after stable hardware proof consider a separately reviewed systemd/boot-startup checkpoint. Wider background listening and autonomous City activation remain out of scope.
 
 What Must Not Be Started Yet
@@ -1270,7 +1279,7 @@ What Must Not Be Started Yet
 - No notification scheduling or delivery.
 - No calendar integration.
 - No Raspberry Pi deployment automation beyond existing owner-run Whisper/Piper setup and verification scripts.
-- No Vosk, daemon/service installation, internet access, unbounded hidden conversation loop, automatic boot-time microphone activation, GPT, or cloud TTS fallback. Standby wake capture exists only inside the explicit foreground runtime.
+- No daemon/service installation, runtime model download, internet-dependent speech path, unbounded hidden conversation loop, automatic boot-time microphone activation, GPT, or cloud TTS fallback. Constrained Vosk standby capture exists only inside the explicit owner-started foreground runtime.
 - No new skills beyond explicitly approved, bounded checkpoints such as the current owner-memory skill.
 - No AI parser or regex-only parser rewrite.
 - No robotics or movement integration.
