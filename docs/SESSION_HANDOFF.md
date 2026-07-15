@@ -4,13 +4,13 @@ Last Updated: 2026-07-15
 
 Current Version
 
-ARES v1.98 - Exact Standby Wake Aliases and Diagnostics
+ARES v1.99 - Bounded Wake-Only Repetition Hardening
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, persistent foreground runtime, and injected staged Raspberry Pi standby wake listener. Verified components already include ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production natural-language calculator routing, and central general explicit long-term owner memory with confirmation-gated CRUD shared by text and voice through CoreService. Real Raspberry Pi evidence confirms standby capture/VAD/normalization/cleanup remain alive; the observed blocker was exact classification after Whisper rendered the name as `Aris`. The alias/classifier/diagnostic fix is fully verified with deterministic injected adapters on Windows, while post-fix Raspberry Pi wake activation remains owner-run.
+ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, persistent foreground runtime, and injected staged Raspberry Pi standby wake listener. Verified components already include ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production natural-language calculator routing, and central general explicit long-term owner memory with confirmation-gated CRUD shared by text and voice through CoreService. Real Raspberry Pi evidence confirms standby capture/VAD/normalization/cleanup and tiny-model Whisper work; the latest captured wake transcript was `Aris, Aris, hello, Aris.`. Exact matching rejected that repeated wake-only output. The bounded repetition fix is verified with deterministic injected adapters on Windows, while post-fix Raspberry Pi activation remains owner-run.
 
 Checkpoint root causes and fixes:
 
@@ -21,6 +21,9 @@ Checkpoint root causes and fixes:
 - Checkpoint 3 adds one injected `StandbyWakeListener` to the Capital-owned runtime. Linux standby uses calibrated RMS VAD as the low-cost first stage, canonical 16 kHz mono PCM, and tiny English Whisper only for a bounded candidate. Exact normalized wake classification activates the existing manager; non-wake speech remains silent in standby and never reaches CoreService.
 - Active voice input/output reuse `SingleTurnVoicePipeline`. A shared capture/playback gate and post-playback delay prevent simultaneous input/output and self-wake. Candidate files are unique and removed by default, events contain no transcript/audio content, and shutdown cancels adapters without hidden worker threads. No City activation, systemd, boot hook, daemon, GPT, cloud, network listener, or barge-in was added.
 - Wake aliases now default to exact `ares` and `aris` names combined with bounded `hey`, `hello`, and `wake up` prefixes. An accepted `Aris` transcript becomes the corresponding canonical `Ares` activation, but unrelated sentences, `Harris`, `Paris`, and `Aries` remain rejected because matching covers the complete normalized candidate.
+- Tiny Whisper may repeat a short isolated wake name. Exact classification remains the primary path; only after exact rejection may the wake-only analyzer accept a candidate containing exclusively configured alias/prefix tokens, with at most eight total tokens, four alias tokens, and three repetitions of any prefix token. `Aris, Aris, hello, Aris.` resolves to canonical `ares`; any unrelated, command, arithmetic, standby, or shutdown word rejects activation.
+- The collapsed wake representation and classification path are diagnostic metadata only. Unknown words cross the listener result boundary as `<unknown>`, while raw/cleaned/normalized transcripts remain available only in explicit local `--diagnostic-wake` output and never enter events or owner memory.
+- Wake capture now uses 0.25-second pre-roll, 0.7-second terminal silence, two-frame speech evidence, calibrated 160/120 continue/silence RMS floors, and a two-second active candidate cap. This explains and removes the previous 3.3-second output shape of three seconds plus 0.3-second pre-roll. Full-command VAD defaults remain unchanged.
 - `--diagnostic-wake` exposes the local raw/cleaned/normalized transcript and classification only in the owner foreground terminal. Operational events, contracts, owner memory, and normal output remain transcript-free. Retention additionally requires `--retain-diagnostic-audio`, keeps one latest candidate by default, and never plays it automatically.
 - Wake candidate duration now comes from the finalized canonical WAV rather than total listener wall time. Raw stream, assembled, normalized, Whisper-input, Whisper-processing, and overall processing durations are reported separately, and an over-limit or noncanonical WAV is rejected before Whisper.
 
@@ -148,7 +151,7 @@ Confirmed Phase 3 foundation:
 - Foreground `scripts/run_ares_standby_voice.py`, deterministic wake verifier, and bounded per-stage Raspberry Pi wake hardware helper
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1800 tests.
+Current pytest collection: 1828 tests.
 
 Hardware-free Raspberry Pi verification after pulling:
 
@@ -2244,7 +2247,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1800 tests.
+- Current pytest collection: 1828 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2256,7 +2259,7 @@ Verification Notes
   - `py scripts\manual_verify_brain_session_manager.py`
   - `py scripts\manual_verify_brain_runtime.py`
   - `py scripts\manual_verify_standby_wake_runtime.py`
-- Standby-wake tests cover versioned contracts, alias/prefix normalization and bounds, shutdown/standby collisions, exact `Ares`/`Aris` matching, false-positive rejection, queued/Linux listener lifecycle, VAD/canonical-WAV delegation, actual-header duration guards, candidate-only Whisper, terminal-only diagnostics, bounded latest-candidate retention, cleanup/cancellation/failures, capability metadata, runtime activation, acknowledgement/session reuse, calculator and owner-memory routing, standby/inactivity/shutdown, self-wake exclusion, output isolation, event privacy, CLI defaults, one-attempt diagnosis, and bounded hardware verification.
+- Standby-wake tests cover versioned contracts, alias/prefix normalization and bounds, shutdown/standby collisions, exact `Ares`/`Aris` matching, strict wake-only repetition limits, unknown/command-token rejection, false-positive rejection, queued/Linux listener lifecycle, wake-only and unchanged command VAD profiles, actual-header duration guards, capped-candidate classification, candidate-only Whisper, terminal-only diagnostics, bounded latest-candidate retention, cleanup/cancellation/failures, capability metadata, one-session/one-acknowledgement runtime activation, calculator and owner-memory routing, standby/inactivity/reactivation/shutdown, self-wake exclusion, output isolation, event and memory privacy, CLI defaults, one-attempt diagnosis, and bounded hardware verification.
 - GitHub Actions CI runs the same verification suite on Windows with Python 3.13 for `main` pushes and pull requests.
 - GitHub Actions should be checked after push for the latest `main` commit.
 - Tool selection tests cover current TimeDate/MemoryRecall/Calculator/Goals/Notes/Tasks selection.

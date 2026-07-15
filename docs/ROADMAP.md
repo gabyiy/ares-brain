@@ -1156,11 +1156,21 @@ Phase 94: Exact Wake Alias and Diagnostic Hardening
 - Added explicit terminal-only `--diagnostic-wake` output for raw/cleaned/normalized local transcripts, selected alias/phrase, rejection reason, capture timing, Whisper status/timing/model, and lifecycle state. These values remain absent from events, owner memory, and normal output.
 - Separated actual candidate, raw-stream, and processing durations; validated the current canonical WAV header before Whisper; added candidate/raw hard limits; reduced the diagnostic PCM margin; and adopted wake-specific 0.3-second pre-roll, two-frame speech evidence, and 0.8-second terminal silence defaults.
 - Added one-attempt diagnosis and bounded seven-stage hardware verification. Explicit retention requires diagnostics, preserves only the latest candidate by default, and never replays microphone audio automatically.
-- Current pytest collection is 1800 tests.
+- Historical Phase 94 pytest collection was 1800 tests.
+
+Phase 95: Bounded Wake-Only Whisper Repetition Hardening
+
+- Real Raspberry Pi diagnostics captured `Aris, Aris, hello, Aris.` from one bounded wake attempt. ALSA, VAD, canonical WAV conversion, tiny Whisper, and cleanup were healthy; the exact classifier had no safe path for wake-only repetition.
+- Exact complete-phrase matching remains first. A second wake-only path accepts a candidate only when every token is a configured alias or configured prefix token, at least one alias is present, and the configured eight-token, four-alias, and three-prefix repetition limits pass.
+- Every unrelated, command, arithmetic, standby, or shutdown token prevents activation. There is still no substring check, edit distance, arbitrary fuzzy matching, or global transcript cleanup.
+- Local diagnostics now distinguish `exact` from `bounded_repetition`, show a collapsed wake-only representation and bounded counts, and explain unknown-token or limit rejection. Original transcripts remain terminal-only and absent from events and memory.
+- Wake-only capture now uses 0.25-second pre-roll, 0.7-second terminal silence, two-frame speech evidence, calibrated 160/120 continue/silence RMS floors, and a two-second active cap. Full-command VAD remains unchanged.
+- Deterministic runtime verification proves the repeated wake transcript creates one session and one acknowledgement, never reaches CoreService as a command, and is followed by normal calculator, standby, reactivation, and shutdown behavior.
+- Current pytest collection is 1828 tests.
 
 Current State
 
-ARES is currently at the completed Architecture Hardening foundation plus a central deterministic Brain session state machine and persistent foreground runtime, explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and CoreService-owned general explicit long-term owner memory with confirmation-gated CRUD. The assistant remains deterministic and offline. The foreground runtime can now poll one bounded Raspberry Pi standby wake adapter, activate on an exact locally transcribed phrase, process multiple serial voice commands under one session ID, return to standby on inactivity or an owner stop phrase, and stop on an explicit shutdown phrase. It still does not activate Cities. Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, and subprocess details; those remain injected adapters. Owner facts and general memories are written only by explicit bounded memory commands, and ordinary transcripts/recordings are not persisted.
+ARES is currently at the completed Architecture Hardening foundation plus a central deterministic Brain session state machine and persistent foreground runtime, explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and CoreService-owned general explicit long-term owner memory with confirmation-gated CRUD. The assistant remains deterministic and offline. The foreground runtime can poll one bounded Raspberry Pi standby wake adapter, activate through exact phrase matching or strict wake-only repetition matching, process multiple serial voice commands under one session ID, return to standby on inactivity or an owner stop phrase, and stop on an explicit shutdown phrase. It still does not activate Cities. Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, and subprocess details; those remain injected adapters. Owner facts and general memories are written only by explicit bounded memory commands, and ordinary transcripts/recordings are not persisted.
 
 The current active interface is:
 
@@ -1178,7 +1188,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1800 tests.
+The current pytest collection is 1828 tests.
 
 The current memory paths are:
 
