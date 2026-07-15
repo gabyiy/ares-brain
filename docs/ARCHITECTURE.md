@@ -244,13 +244,13 @@ BrainRuntime (STANDBY)
   -> existing Piper and ALSA response output
 ```
 
-Standby VAD waits up to three seconds per foreground poll, retains 0.2 seconds of pre-roll, uses 20 ms frames, limits a wake candidate to three seconds, and confirms terminal silence after 0.7 seconds. Ambient calibration is bounded to 0.75 seconds. Threshold validation enforces start greater than continue and continue greater than or equal to silence, with independent minimum and maximum clamps. The existing ALSA normalization boundary prevents 44.1 kHz hardware data from being relabeled as 16 kHz.
+Standby VAD waits up to three seconds per foreground poll, retains 0.3 seconds of pre-roll, uses 20 ms frames with two consecutive speech-start/continue frames, limits active wake speech to three seconds, and confirms terminal silence after 0.8 seconds. Ambient calibration is bounded to 0.75 seconds. Threshold validation enforces start greater than continue and continue greater than or equal to silence, with independent minimum and maximum clamps. The existing ALSA normalization boundary prevents 44.1 kHz hardware data from being relabeled as 16 kHz. Before Whisper, the listener validates the canonical WAV header and enforces separate hard limits for the assembled/normalized candidate and for the raw stream's calibration, speech-wait, and utterance phases. Candidate audio duration, raw duration, and processing wall time are distinct fields.
 
-Whisper does not run continuously. No-speech polls and non-wake speech stay in `STANDBY`, create no session, invoke no skill, produce no spoken error, and do not count as command failures. Candidate speech invokes local Whisper once. Wake matching is case, punctuation, and whitespace tolerant but exact after normalization. Defaults are `ares`, `hey ares`, `hello ares`, and `wake up ares`, with only bounded `ok` and `okay` filler prefixes. Sentences such as `I read about Ares yesterday` do not activate.
+Whisper does not run continuously. No-speech polls and non-wake speech stay in `STANDBY`, create no session, invoke no skill, produce no spoken error, and do not count as command failures. Candidate speech invokes local Whisper once. The validated alias set defaults to `ares` and the observed Whisper rendering `aris`; bounded prefixes generate `ares`, `aris`, `hey ...`, `hello ...`, and `wake up ...` forms. `ok` and `okay` remain optional finite fillers. Classification compares the complete normalized candidate to that finite set. It uses no substring check, edit distance, or arbitrary fuzzy correction, so `Where is Ares?`, `I spoke to Aris yesterday`, `Harris`, `Paris`, and `Aries` remain non-wake speech. An accepted `Aris` form is converted to the corresponding canonical `Ares` activation before `BrainRuntime` handles it.
 
 `core.BrainRuntimeVoiceAdapters` reuses `SingleTurnVoicePipeline` as the active microphone/STT transport and as the TTS/speaker output boundary; it does not duplicate those subprocess paths. A shared `VoiceRuntimeGate` serializes capture and playback and applies a 0.35-second post-playback settling delay. Therefore standby capture and command capture cannot run during acknowledgement or response playback, and ARES cannot transcribe its own output as a wake or command. Normal operation never plays captured owner audio.
 
-The wake contracts are `WakeListenerRequestV1`, `WakeListenerResultV1`, `WakeDetectionResultV1`, `WakeListenerSnapshotV1`, and `StandbyListenResultV1`. Events contain state, status, classification, lengths, safe audio metadata, and correlation/session identifiers only. They exclude transcripts, owner-memory values, raw audio, file contents, and secrets. Temporary candidate directories are unique and removed by default; diagnostic retention is explicit.
+The wake contracts are `WakeListenerRequestV1`, `WakeListenerResultV1`, `WakeDetectionResultV1`, `WakeListenerSnapshotV1`, and `StandbyListenResultV1`. Events contain state, status, classification, lengths, safe audio metadata, and correlation/session identifiers only. They exclude transcripts, owner-memory values, raw audio, file contents, and secrets. `WakeLocalDiagnostics` is deliberately ephemeral and may be sent only to an owner-injected terminal callback under `--diagnostic-wake`; it is never an event or persistence contract. Temporary candidate directories are unique and removed by default. Retention requires both `--diagnostic-wake` and `--retain-diagnostic-audio`, is bounded to the latest candidate by default, and only prints a manual playback command.
 
 Foreground Raspberry Pi verification:
 
@@ -258,11 +258,12 @@ Foreground Raspberry Pi verification:
 cd ~/ares-brain
 source venv/bin/activate
 git pull --ff-only origin main
-python scripts/manual_verify_standby_wake_hardware.py
+python scripts/manual_diagnose_wake_word.py --diagnostic-wake
+python scripts/manual_verify_standby_wake_hardware.py --diagnostic-wake
 python scripts/run_ares_standby_voice.py
 ```
 
-`scripts/manual_verify_standby_wake_hardware.py` is bounded. `scripts/run_ares_standby_voice.py` intentionally remains in the foreground until `shutdown Ares` or Ctrl+C. Neither installs a service or starts at boot. Raspberry Pi wake reliability remains owner-run hardware verification after pulling this checkpoint.
+`scripts/manual_diagnose_wake_word.py` captures exactly one candidate and exits. The hardware verifier runs seven named stages with at most three attempts each by default and fails nonzero when a stage does not reach its required lifecycle state. `scripts/run_ares_standby_voice.py` intentionally remains in the foreground until `shutdown Ares` or Ctrl+C. Neither installs a service or starts at boot. Raspberry Pi wake reliability remains owner-run hardware verification after pulling this checkpoint.
 
 The example listener configuration is enabled within its explicit configuration block but `enabled_modules.linux_standby_wake_listener` remains `false`. This prevents generic module loading from starting capture. The foreground script opts in by constructing the adapter directly under `BrainRuntime` ownership.
 

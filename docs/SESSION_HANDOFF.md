@@ -4,13 +4,13 @@ Last Updated: 2026-07-15
 
 Current Version
 
-ARES v1.97 - Foreground Standby Wake Runtime
+ARES v1.98 - Exact Standby Wake Aliases and Diagnostics
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, persistent foreground runtime, and injected staged Raspberry Pi standby wake listener. Verified components already include ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production natural-language calculator routing, and central general explicit long-term owner memory with confirmation-gated CRUD shared by text and voice through CoreService. The new wake runtime is fully verified with deterministic injected adapters on Windows; Raspberry Pi wake hardware verification remains owner-run after pulling.
+ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, persistent foreground runtime, and injected staged Raspberry Pi standby wake listener. Verified components already include ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production natural-language calculator routing, and central general explicit long-term owner memory with confirmation-gated CRUD shared by text and voice through CoreService. Real Raspberry Pi evidence confirms standby capture/VAD/normalization/cleanup remain alive; the observed blocker was exact classification after Whisper rendered the name as `Aris`. The alias/classifier/diagnostic fix is fully verified with deterministic injected adapters on Windows, while post-fix Raspberry Pi wake activation remains owner-run.
 
 Checkpoint root causes and fixes:
 
@@ -20,6 +20,9 @@ Checkpoint root causes and fixes:
 - Runtime input/output are injected. Queue/collecting adapters drive deterministic verification and bounded console adapters preserve the explicit text interface. Runtime events store category, lengths, status, timing, and correlation/session IDs, never full input, owner-memory values, response content, audio, secrets, or files.
 - Checkpoint 3 adds one injected `StandbyWakeListener` to the Capital-owned runtime. Linux standby uses calibrated RMS VAD as the low-cost first stage, canonical 16 kHz mono PCM, and tiny English Whisper only for a bounded candidate. Exact normalized wake classification activates the existing manager; non-wake speech remains silent in standby and never reaches CoreService.
 - Active voice input/output reuse `SingleTurnVoicePipeline`. A shared capture/playback gate and post-playback delay prevent simultaneous input/output and self-wake. Candidate files are unique and removed by default, events contain no transcript/audio content, and shutdown cancels adapters without hidden worker threads. No City activation, systemd, boot hook, daemon, GPT, cloud, network listener, or barge-in was added.
+- Wake aliases now default to exact `ares` and `aris` names combined with bounded `hey`, `hello`, and `wake up` prefixes. An accepted `Aris` transcript becomes the corresponding canonical `Ares` activation, but unrelated sentences, `Harris`, `Paris`, and `Aries` remain rejected because matching covers the complete normalized candidate.
+- `--diagnostic-wake` exposes the local raw/cleaned/normalized transcript and classification only in the owner foreground terminal. Operational events, contracts, owner memory, and normal output remain transcript-free. Retention additionally requires `--retain-diagnostic-audio`, keeps one latest candidate by default, and never plays it automatically.
+- Wake candidate duration now comes from the finalized canonical WAV rather than total listener wall time. Raw stream, assembled, normalized, Whisper-input, Whisper-processing, and overall processing durations are reported separately, and an over-limit or noncanonical WAV is rejected before Whisper.
 
 - End-of-speech could reach `maximum_duration_reached` because the previous detector cleared all trailing-silence evidence for any frame above one static silence threshold. Adaptive calibration now derives three bounded thresholds, and `POSSIBLE_SILENCE` resumes only after consecutive frames above the continue threshold.
 - Voice arithmetic reached IntentParser as number words and Whisper formatting, so digit/operator intent rules returned `unknown`. The versioned transcript normalizer now preserves raw text and converts only strict supported arithmetic into the unchanged safe calculator route.
@@ -140,10 +143,12 @@ Confirmed Phase 3 foundation:
 - Versioned standby-wake listener contracts, strict wake configuration, exact phrase classification, and a Core-owned listener capability manifest
 - Linux staged wake adapter using existing ALSA/calibrated-VAD/canonical-WAV/Whisper boundaries without continuous transcription
 - Active runtime voice adapters that reuse `SingleTurnVoicePipeline` and enforce capture/playback exclusion plus post-playback settling
-- Foreground `scripts/run_ares_standby_voice.py`, deterministic wake verifier, and bounded Raspberry Pi wake hardware helper
+- Exact configurable `Ares`/`Aris` aliases with complete-candidate false-positive protection
+- Terminal-only wake diagnostics, one-attempt diagnosis, bounded latest-candidate retention, and finalized-WAV duration guards
+- Foreground `scripts/run_ares_standby_voice.py`, deterministic wake verifier, and bounded per-stage Raspberry Pi wake hardware helper
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1769 tests.
+Current pytest collection: 1800 tests.
 
 Hardware-free Raspberry Pi verification after pulling:
 
@@ -165,11 +170,17 @@ Raspberry Pi standby wake verification:
 cd ~/ares-brain
 source venv/bin/activate
 git pull --ff-only origin main
-python scripts/manual_verify_standby_wake_hardware.py
+python scripts/manual_diagnose_wake_word.py \
+  --microphone-device plughw:2,0 \
+  --speaker-device plughw:CARD=Device,DEV=0 \
+  --wake-whisper-command external/whisper.cpp/build/bin/whisper-cli \
+  --wake-whisper-model models/whisper/ggml-tiny.en.bin \
+  --diagnostic-wake
+python scripts/manual_verify_standby_wake_hardware.py --diagnostic-wake
 python scripts/run_ares_standby_voice.py
 ```
 
-The helper is bounded and never replays owner capture. The production command stays in the foreground until `shutdown Ares` or Ctrl+C. Defaults are microphone `plughw:2,0`, speaker `plughw:CARD=Device,DEV=0`, tiny English wake model, base English command model, male `en_US-hfc_male-medium`, 30-second inactivity, and no diagnostic retention.
+The first script captures one candidate and exits. The hardware helper runs seven named tests with three attempts per test by default, exits nonzero on failure, and never replays owner capture. The production command stays in the foreground until `shutdown Ares` or Ctrl+C. Defaults are microphone `plughw:2,0`, speaker `plughw:CARD=Device,DEV=0`, tiny English wake model, base English command model, male `en_US-hfc_male-medium`, exact aliases `ares`/`aris`, 30-second inactivity, and no diagnostic output or retention.
 
 Raspberry Pi post-pull verification:
 
@@ -2182,13 +2193,14 @@ Text REPL
 
 Immediate Next Milestone
 
-Pull and run the bounded wake hardware helper and foreground standby runtime on Raspberry Pi. Record no-speech, unrelated-speech rejection, wake acknowledgement, calculator routing, standby, reactivation, inactivity, and clean shutdown evidence before considering systemd. Runtime ownership must remain in Capital/Core. Do not add boot startup, daemonization, barge-in, GPT, cloud services, autonomous City activation, or a second lifecycle/timer system.
+Pull and run the one-attempt wake diagnostic first. Record its raw/cleaned/normalized local transcript, exact alias classification, finalized candidate duration, and rejection reason. Then run the bounded hardware helper and foreground standby runtime to record no-speech, unrelated-speech rejection, one acknowledgement, calculator routing, standby, second activation, and clean shutdown evidence before considering systemd. Runtime ownership must remain in Capital/Core. Do not add boot startup, daemonization, barge-in, GPT, cloud services, autonomous City activation, or a second lifecycle/timer system.
 
 Next technical choices:
 
-- Pull latest `main`, run the deterministic wake verifier, then run `manual_verify_standby_wake_hardware.py` with the installed tiny/base models and known ALSA devices.
+- Pull latest `main`, run the deterministic wake verifier, run `manual_diagnose_wake_word.py --diagnostic-wake`, then run `manual_verify_standby_wake_hardware.py --diagnostic-wake` with the installed tiny/base models and known ALSA devices.
 - Inspect owner state only through `python scripts/inspect_owner_memory.py --summary --pending` or its focused flags; malformed durable or transient data must fail closed rather than be reset and executed.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
+- If diagnosis reports `Aris`, it must select alias `aris`, canonical phrase `ares`, and accepted classification. If another transcript is reported, use that evidence before changing aliases; do not add fuzzy matching.
 - Tune only validated wake adapter thresholds/durations if real hardware evidence requires it; keep exact phrase policy and Capital/Core lifecycle ownership.
 - Keep systemd/boot startup for the next separately reviewed checkpoint after hardware stability is demonstrated.
 - Keep GPT, embeddings, semantic/vector search, autonomous fact extraction, external weather/stocks/calendar APIs, real scheduling, and notifications out of scope until explicitly approved.
@@ -2232,7 +2244,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1769 tests.
+- Current pytest collection: 1800 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2244,7 +2256,7 @@ Verification Notes
   - `py scripts\manual_verify_brain_session_manager.py`
   - `py scripts\manual_verify_brain_runtime.py`
   - `py scripts\manual_verify_standby_wake_runtime.py`
-- Standby-wake tests cover versioned contracts, configuration bounds/collisions, exact and false-positive phrase matching, queued/Linux listener lifecycle, VAD/canonical-WAV delegation, candidate-only Whisper, cleanup/retention, cancellation, failures, capability metadata, runtime activation, session reuse, calculator and owner-memory routing, standby/inactivity/shutdown, self-wake exclusion, output isolation, event privacy, CLI defaults, and both verification helpers.
+- Standby-wake tests cover versioned contracts, alias/prefix normalization and bounds, shutdown/standby collisions, exact `Ares`/`Aris` matching, false-positive rejection, queued/Linux listener lifecycle, VAD/canonical-WAV delegation, actual-header duration guards, candidate-only Whisper, terminal-only diagnostics, bounded latest-candidate retention, cleanup/cancellation/failures, capability metadata, runtime activation, acknowledgement/session reuse, calculator and owner-memory routing, standby/inactivity/shutdown, self-wake exclusion, output isolation, event privacy, CLI defaults, one-attempt diagnosis, and bounded hardware verification.
 - GitHub Actions CI runs the same verification suite on Windows with Python 3.13 for `main` pushes and pull requests.
 - GitHub Actions should be checked after push for the latest `main` commit.
 - Tool selection tests cover current TimeDate/MemoryRecall/Calculator/Goals/Notes/Tasks selection.
@@ -2492,8 +2504,8 @@ Latest Commits
 Next Planned Step
 
 - Architecture hardening before real hardware/adapters is complete: lifecycle, contracts, manifests, migrations, health/fallback, and measured resource budgets are implemented.
-- Phase 3 now includes the Capital-owned foreground standby wake runtime in deterministic verification, alongside owner-verified ALSA, Whisper, Piper, speaker, voice profiles, single-turn voice, and calculator routing.
-- Pull `main` on Raspberry Pi and run `python scripts/manual_verify_standby_wake_hardware.py`. Verify silence and unrelated speech remain in standby, `Ares` produces one acknowledgement, calculator and owner-memory commands use one session, `goodbye Ares` returns to standby, and `shutdown Ares` cleans up.
+- Phase 3 now includes the Capital-owned foreground standby wake runtime with exact `Ares`/`Aris` aliases, owner-local wake diagnostics, and finalized-WAV duration guards in deterministic verification, alongside owner-verified ALSA, Whisper, Piper, speaker, voice profiles, single-turn voice, and calculator routing.
+- Pull `main` on Raspberry Pi and run `python scripts/manual_diagnose_wake_word.py --diagnostic-wake`, then `python scripts/manual_verify_standby_wake_hardware.py --diagnostic-wake`. Verify silence and unrelated speech remain in standby, an exact `Ares` or `Aris` transcript produces one acknowledgement, calculator and owner-memory commands use one session, `goodbye Ares` returns to standby, and `shutdown Ares` cleans up.
 - Then run `python scripts/run_ares_standby_voice.py` in the foreground. Do not claim hardware wake verification until the owner records this evidence.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.

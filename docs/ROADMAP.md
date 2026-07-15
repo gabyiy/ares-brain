@@ -1147,7 +1147,16 @@ Phase 93: Foreground Raspberry Pi Standby Wake Runtime
 - Reused `SingleTurnVoicePipeline` for active microphone/STT transport and Piper/ALSA output, then routed text through the real CoreService skill path. A shared capture/playback gate plus settling delay prevents self-wake and simultaneous input/output.
 - Added V1 wake request/result/detection/snapshot/listen contracts, a capability manifest, strict configuration, privacy-safe events, unique temporary candidate files, default cleanup, cancellation, bounded failures, and no hidden threads.
 - Added the foreground `scripts/run_ares_standby_voice.py`, deterministic injected-adapter verifier, and bounded Raspberry Pi hardware helper. No systemd unit, boot startup, daemonization, GPT, cloud service, barge-in, or autonomous City loading was added.
-- Current pytest collection is 1769 tests.
+- Historical Phase 93 pytest collection was 1769 tests.
+
+Phase 94: Exact Wake Alias and Diagnostic Hardening
+
+- Real Raspberry Pi evidence proved capture, calibrated VAD, canonical 16 kHz WAV generation, cleanup, and the persistent foreground listener were operating while wake classification remained rejected. The classifier accepted only `Ares` forms even though local Whisper is known to emit `Aris`.
+- Added a validated alias-plus-prefix model with defaults `ares` and `aris`. The complete normalized candidate must equal one generated phrase; no substring, arbitrary fuzzy correction, or edit-distance matching was added.
+- Added explicit terminal-only `--diagnostic-wake` output for raw/cleaned/normalized local transcripts, selected alias/phrase, rejection reason, capture timing, Whisper status/timing/model, and lifecycle state. These values remain absent from events, owner memory, and normal output.
+- Separated actual candidate, raw-stream, and processing durations; validated the current canonical WAV header before Whisper; added candidate/raw hard limits; reduced the diagnostic PCM margin; and adopted wake-specific 0.3-second pre-roll, two-frame speech evidence, and 0.8-second terminal silence defaults.
+- Added one-attempt diagnosis and bounded seven-stage hardware verification. Explicit retention requires diagnostics, preserves only the latest candidate by default, and never replays microphone audio automatically.
+- Current pytest collection is 1800 tests.
 
 Current State
 
@@ -1169,7 +1178,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1769 tests.
+The current pytest collection is 1800 tests.
 
 The current memory paths are:
 
@@ -1240,7 +1249,7 @@ Phase 3 Real Voice Integration
 29. Add the central persistent foreground Brain Runtime with deterministic text activation, multi-command sessions, manager-owned inactivity standby, and explicit shutdown. Completed in deterministic CI.
 30. Verify the hardware-free Brain Runtime scripts after pulling on Raspberry Pi. Pending owner run.
 31. Add one bounded real microphone wake activation adapter without moving runtime ownership out of Capital/Core. Completed in deterministic CI; real Raspberry Pi wake verification remains owner-run.
-32. Run the bounded standby-wake hardware helper and foreground runtime on Raspberry Pi, tune only validated adapter configuration if required, and record hardware evidence.
+32. Run the one-attempt wake diagnostic, then the bounded standby-wake hardware helper and foreground runtime on Raspberry Pi. Confirm the exact `Ares`/`Aris` classification, acknowledgement, command response, standby, second activation, and shutdown before recording hardware proof.
 33. Only after stable hardware proof consider a separately reviewed systemd/boot-startup checkpoint. Wider background listening and autonomous City activation remain out of scope.
 
 What Must Not Be Started Yet
