@@ -904,8 +904,11 @@ class WakeListenerRequestV1(VersionedContract):
     microphone_device: str = ""
     language: str = "en"
     wake_phrases: List[str] = field(default_factory=list)
+    wake_phrase_aliases: List[str] = field(default_factory=list)
+    wake_phrase_prefixes: List[str] = field(default_factory=list)
     standby_phrases: List[str] = field(default_factory=list)
     shutdown_phrases: List[str] = field(default_factory=list)
+    diagnostic_wake: bool = False
     retain_diagnostic_audio: bool = False
 
 
@@ -936,6 +939,10 @@ class WakeDetectionResultV1(VersionedContract):
     command_category: str = "non_wake"
     normalized_wake_phrase: str = ""
     matched_phrase: str = ""
+    selected_alias: str = ""
+    selected_wake_phrase: str = ""
+    canonical_wake_phrase: str = ""
+    rejection_reason: str = ""
     transcript_length: int = 0
     error_code: str = ""
     error_message: str = ""
@@ -974,8 +981,20 @@ class StandbyListenResultV1(VersionedContract):
     command_category: str = "non_wake"
     normalized_wake_phrase: str = ""
     matched_phrase: str = ""
+    selected_alias: str = ""
+    selected_wake_phrase: str = ""
+    canonical_wake_phrase: str = ""
+    rejection_reason: str = ""
     stop_reason: str = ""
     duration_seconds: float = 0.0
+    processing_time_seconds: float = 0.0
+    raw_capture_duration_seconds: float = 0.0
+    assembled_duration_seconds: float = 0.0
+    normalized_duration_seconds: float = 0.0
+    whisper_input_duration_seconds: float = 0.0
+    whisper_processing_time_seconds: float = 0.0
+    whisper_status: str = ""
+    whisper_exit_code: Optional[int] = None
     sample_rate_hz: int = 0
     channels: int = 0
     sample_width_bytes: int = 0

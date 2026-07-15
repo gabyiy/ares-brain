@@ -1,23 +1,42 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 import sys
-from typing import Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from core import BRAIN_STOPPED  # noqa: E402
+from core import BRAIN_ACTIVE, BRAIN_STANDBY, BRAIN_STOPPED  # noqa: E402
 from scripts import run_ares_standby_voice as standby_voice  # noqa: E402
 from scripts import run_ares_voice as single_voice_launcher  # noqa: E402
+
+
+@dataclass(frozen=True)
+class HardwareTestStage:
+    label: str
+    instruction: str
+    expected: str
+
+
+STAGES = (
+    HardwareTestStage("A", "Remain silent.", "no speech and STANDBY"),
+    HardwareTestStage("B", "Say an unrelated sentence.", "speech rejected in STANDBY"),
+    HardwareTestStage("C", "Say 'Ares'.", "ACTIVE and one 'Yes Gabi.' acknowledgement"),
+    HardwareTestStage("D", "Say 'calculate two plus two'.", "spoken 'Result: 4'"),
+    HardwareTestStage("E", "Say 'goodbye Ares'.", "return to STANDBY"),
+    HardwareTestStage("F", "Say 'Ares' again.", "ACTIVE with a new session"),
+    HardwareTestStage("G", "Say 'shutdown Ares'.", "clean STOPPED state"),
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = standby_voice.build_parser()
     parser.description = "Run a bounded Raspberry Pi standby-wake hardware verification."
-    parser.add_argument("--maximum-listen-cycles", type=int, default=80)
+    parser.add_argument("--attempts-per-test", type=int, default=3)
     return parser
 
 
@@ -25,17 +44,24 @@ def run_hardware_verification(
     argv: Optional[Sequence[str]] = None,
     *,
     output_func: Callable[[str], None] = print,
+    runtime_factory: Optional[Callable[..., tuple[Any, Any, Any]]] = None,
 ) -> int:
     args = build_parser().parse_args(argv)
-    if isinstance(args.maximum_listen_cycles, bool) or not 7 <= args.maximum_listen_cycles <= 500:
-        output_func("Configuration error: --maximum-listen-cycles must be between 7 and 500.")
+    if isinstance(args.attempts_per_test, bool) or not 1 <= args.attempts_per_test <= 5:
+        output_func("Configuration error: --attempts-per-test must be between 1 and 5.")
         return 2
-    issue = standby_voice._validate_static_dependencies(args)
+    if args.retain_diagnostic_audio and not args.diagnostic_wake:
+        output_func(
+            "Configuration error: --retain-diagnostic-audio requires --diagnostic-wake."
+        )
+        return 2
+    issue = "" if runtime_factory is not None else standby_voice._validate_static_dependencies(args)
     if issue:
         output_func(f"Dependency error: {issue}")
         return 2
     try:
-        runtime, pipeline, request = standby_voice.create_runtime(args, output_func=output_func)
+        factory = runtime_factory or standby_voice.create_runtime
+        runtime, pipeline, request = factory(args, output_func=output_func)
     except (OSError, RuntimeError, TypeError, ValueError) as error:
         output_func(f"Setup failed: {error}")
         return 2
@@ -54,76 +80,125 @@ def run_hardware_verification(
         return 3
 
     output_func("ARES bounded standby-wake hardware verification")
-    output_func("A. Remain silent for one listen cycle; ARES must stay in STANDBY.")
-    output_func("B. Say an unrelated sentence; ARES must stay silent in STANDBY.")
-    output_func("C. Say 'Ares'; expect 'Yes Gabi.'")
-    output_func("D. Say 'calculate two plus two'; expect 'Result: 4'.")
-    output_func("E. Say 'goodbye Ares'; expect return to STANDBY.")
-    output_func("F. Say 'Ares' again; expect a new session.")
-    output_func("G. Say 'shutdown Ares'; expect clean STOPPED state.")
-    output_func("Owner microphone audio is never replayed by this helper.")
-
+    output_func(f"Attempts per test: {args.attempts_per_test}")
+    output_func("Owner microphone audio is retained only when explicitly requested and never replayed.")
     started = runtime.start()
     if not started.success:
         output_func(f"Runtime start failed: {started.error_code or started.status}")
         return 3
-    previous_session = ""
+
+    first_session = ""
+    recognized_candidates: list[str] = []
     try:
-        for cycle in range(1, args.maximum_listen_cycles + 1):
-            result = runtime.poll_once()
-            snapshot = runtime.snapshot()
-            session_changed = snapshot.session_id != previous_session
-            safe_session = snapshot.session_id or "none"
-            output_func(
-                f"Cycle {cycle}: state={snapshot.current_lifecycle_state}; "
-                f"status={result.status}; session={safe_session}"
-            )
-            if session_changed:
-                output_func(f"Session changed: {previous_session or 'none'} -> {safe_session}")
-                previous_session = snapshot.session_id
-            if result.normalized_input:
-                output_func(
-                    f"Wake/control classification: {result.command_category or 'ordinary'} "
-                    f"({result.normalized_input})"
-                )
-            capture_stop = str(result.data.get("capture_stop_reason") or "")
-            wake_result = getattr(runtime.standby_wake_listener, "last_result", None)
-            if wake_result is not None and not capture_stop:
-                capture_stop = str(getattr(wake_result, "capture_stop_reason", "") or "")
-            if capture_stop:
-                sample_rate = (
-                    getattr(wake_result, "sample_rate_hz", 0)
+        for index, stage in enumerate(STAGES, start=1):
+            output_func(f"Test {index}/7 ({stage.label}): {stage.instruction}")
+            output_func(f"Expected: {stage.expected}.")
+            passed = False
+            for attempt in range(1, args.attempts_per_test + 1):
+                result = runtime.poll_once()
+                snapshot = runtime.snapshot()
+                wake_result = getattr(runtime.standby_wake_listener, "last_result", None)
+                diagnostics = getattr(runtime.standby_wake_listener, "last_diagnostics", None)
+                if args.diagnostic_wake and diagnostics is not None:
+                    transcript = str(getattr(diagnostics, "raw_transcript", "") or "")
+                    if transcript and transcript not in recognized_candidates:
+                        recognized_candidates.append(transcript)
+                candidate_detected = bool(
+                    getattr(wake_result, "speech_detected", False)
                     if wake_result is not None
-                    else result.data.get("sample_rate_hz", 0)
-                )
-                duration = (
-                    getattr(wake_result, "duration_seconds", 0.0)
-                    if wake_result is not None
-                    else result.data.get("duration_seconds", 0.0)
+                    else result.data.get("speech_detected", False)
                 )
                 output_func(
-                    "Wake capture: "
-                    f"stop={capture_stop}; sample_rate={sample_rate}; "
-                    f"duration={float(duration):.3f}s; "
-                    f"cleanup={getattr(wake_result, 'cleanup_status', 'unknown')}"
+                    f"  Attempt {attempt}/{args.attempts_per_test}: "
+                    f"candidate={'detected' if candidate_detected else 'no_speech'}; "
+                    f"classification={_classification(wake_result)}; "
+                    f"state={snapshot.current_lifecycle_state}; "
+                    f"session={snapshot.session_id or 'none'}; status={result.status}"
                 )
-            active_result = getattr(runtime.input_adapter, "last_result", None)
-            if active_result is not None and result.command_category == "ordinary":
-                output_func(
-                    "Command capture: "
-                    f"stop={getattr(active_result, 'recording_status', '')}; "
-                    f"duration={float(getattr(active_result, 'recording_duration_seconds', 0.0)):.3f}s"
+                if wake_result is not None:
+                    output_func(
+                        "  Capture: "
+                        f"stop={getattr(wake_result, 'capture_stop_reason', '') or 'unknown'}; "
+                        f"sample_rate={getattr(wake_result, 'sample_rate_hz', 0)}; "
+                        f"candidate={float(getattr(wake_result, 'duration_seconds', 0.0)):.3f}s; "
+                        f"raw={float(getattr(wake_result, 'raw_capture_duration_seconds', 0.0)):.3f}s; "
+                        f"cleanup={getattr(wake_result, 'cleanup_status', 'unknown')}"
+                    )
+                passed, first_session = _stage_passed(
+                    stage.label,
+                    result,
+                    snapshot,
+                    wake_result,
+                    first_session,
                 )
-            if runtime.session_manager.state == BRAIN_STOPPED:
-                output_func("Cleanup: wake listener, active voice pipeline, and playback stopped.")
-                return 0
-        runtime.shutdown(reason="bounded_hardware_verification_limit")
-        output_func("Verification stopped at the bounded listen-cycle limit before Test G completed.")
-        return 1
+                if passed:
+                    output_func(f"  Test {stage.label}: PASS")
+                    break
+                if attempt < args.attempts_per_test:
+                    output_func(f"  Next action: {stage.instruction}")
+            if not passed:
+                output_func(f"Test {stage.label}: FAIL after {args.attempts_per_test} attempts.")
+                if args.diagnostic_wake:
+                    output_func(
+                        "Recognized local wake transcripts: "
+                        + (" | ".join(recognized_candidates) if recognized_candidates else "none")
+                    )
+                runtime.shutdown(reason=f"hardware_verification_{stage.label}_failed")
+                output_func("Cleanup completed; verification did not pass.")
+                return 1
+        output_func("All bounded hardware stages passed; adapters cleaned up.")
+        return 0
     except KeyboardInterrupt:
         runtime.shutdown(reason="keyboard_interrupt")
         output_func("Verification cancelled; cleanup completed without replaying captured audio.")
         return 130
+
+
+def _classification(wake_result: Any) -> str:
+    if wake_result is None:
+        return "active_command_or_none"
+    if bool(getattr(wake_result, "wake_detected", False)):
+        return "accepted"
+    if bool(getattr(wake_result, "speech_detected", False)):
+        return "rejected"
+    return "no_speech"
+
+
+def _stage_passed(
+    label: str,
+    result: Any,
+    snapshot: Any,
+    wake_result: Any,
+    first_session: str,
+) -> tuple[bool, str]:
+    state = snapshot.current_lifecycle_state
+    if label == "A":
+        return (
+            state == BRAIN_STANDBY
+            and not bool(getattr(wake_result, "speech_detected", False)),
+            first_session,
+        )
+    if label == "B":
+        return (
+            state == BRAIN_STANDBY
+            and bool(getattr(wake_result, "speech_detected", False))
+            and not bool(getattr(wake_result, "wake_detected", False)),
+            first_session,
+        )
+    if label == "C":
+        session = str(snapshot.session_id or "")
+        return state == BRAIN_ACTIVE and bool(session), session or first_session
+    if label == "D":
+        response = str(getattr(result, "response_text", "") or "")
+        return state == BRAIN_ACTIVE and "result: 4" in response.casefold(), first_session
+    if label == "E":
+        return state == BRAIN_STANDBY and not snapshot.session_id, first_session
+    if label == "F":
+        session = str(snapshot.session_id or "")
+        return state == BRAIN_ACTIVE and bool(session) and session != first_session, first_session
+    if label == "G":
+        return state == BRAIN_STOPPED, first_session
+    return False, first_session
 
 
 def main() -> int:

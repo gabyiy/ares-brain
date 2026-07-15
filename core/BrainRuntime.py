@@ -1233,8 +1233,11 @@ class BrainRuntime:
             listener_timeout_seconds=wake_config.speech_wait_timeout_seconds,
             language=wake_config.language,
             wake_phrases=list(wake_config.wake_phrases),
+            wake_phrase_aliases=list(wake_config.wake_phrase_aliases),
+            wake_phrase_prefixes=list(wake_config.wake_phrase_prefixes),
             standby_phrases=list(self.config.standby_phrases),
             shutdown_phrases=list(self.config.shutdown_phrases),
+            diagnostic_wake=wake_config.diagnostic_wake,
             retain_diagnostic_audio=wake_config.retain_diagnostic_audio,
             correlation_id=correlation,
             metadata={"safe": True, "contains_transcript": False, "contains_audio": False},
@@ -1264,6 +1267,9 @@ class BrainRuntime:
                     "command_category": listened.command_category,
                     "capture_stop_reason": listened.capture_stop_reason,
                     "duration_ms": round(listened.duration_seconds * 1000.0, 3),
+                    "processing_time_ms": round(
+                        listened.processing_time_seconds * 1000.0, 3
+                    ),
                 },
             )
         if listened.status == WAKE_STATUS_CANCELLED:
@@ -1309,7 +1315,10 @@ class BrainRuntime:
             self._publish(
                 EVENT_WAKE_REJECTED,
                 correlation,
-                {"status": "non_wake_speech", "reason": "exact_phrase_not_matched"},
+                {
+                    "status": "non_wake_speech",
+                    "reason": listened.rejection_reason or "exact_phrase_not_matched",
+                },
             )
         return self._result(
             True,
@@ -1324,6 +1333,10 @@ class BrainRuntime:
                 "channels": listened.channels,
                 "sample_width_bytes": listened.sample_width_bytes,
                 "duration_seconds": listened.duration_seconds,
+                "processing_time_seconds": listened.processing_time_seconds,
+                "raw_capture_duration_seconds": listened.raw_capture_duration_seconds,
+                "assembled_duration_seconds": listened.assembled_duration_seconds,
+                "normalized_duration_seconds": listened.normalized_duration_seconds,
             },
         )
 

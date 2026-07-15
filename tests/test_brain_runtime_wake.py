@@ -52,7 +52,20 @@ def test_unrelated_standby_speech_is_silently_rejected_without_core_route(tmp_pa
     assert output.texts == []
 
 
-@pytest.mark.parametrize("phrase", ["Ares", "ARES.", "Hey, Ares", "Hello Ares", "Wake up, Ares"])
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "Ares",
+        "Aris",
+        "ARES.",
+        "Hey, Ares",
+        "Hey Aris",
+        "Hello Ares",
+        "Hello, Aris",
+        "Wake up, Ares",
+        "Wake up Aris",
+    ],
+)
 def test_verified_wake_phrase_activates_and_acknowledges_exactly_once(phrase, tmp_path):
     runtime, _, output, wake = _runtime(tmp_path)
     runtime.start()
@@ -254,7 +267,7 @@ def test_runtime_rejects_incomplete_or_phrase_colliding_wake_listener():
             standby_wake_listener=SimpleNamespace(config=WakeListenerConfig()),
         )
     colliding = QueuedStandbyWakeListener(
-        config=WakeListenerConfig(wake_phrases=("shutdown ares",))
+        config=WakeListenerConfig(wake_phrase_prefixes=("shutdown",))
     )
     with pytest.raises(ValueError, match="overlap"):
         BrainRuntime(

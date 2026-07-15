@@ -36,14 +36,49 @@ WAKE_CATEGORY_STANDBY = "standby"
 WAKE_CATEGORY_SHUTDOWN = "shutdown"
 WAKE_CATEGORY_NON_WAKE = "non_wake"
 
-DEFAULT_WAKE_PHRASES = ("ares", "hey ares", "hello ares", "wake up ares")
+DEFAULT_WAKE_PHRASE_ALIASES = ("ares", "aris")
+DEFAULT_WAKE_PHRASE_PREFIXES = ("", "hey", "hello", "wake up")
 DEFAULT_WAKE_FILLER_PREFIXES = ("ok", "okay")
+DEFAULT_WAKE_PHRASES = tuple(
+    " ".join(part for part in (prefix, alias) if part)
+    for prefix in DEFAULT_WAKE_PHRASE_PREFIXES
+    for alias in DEFAULT_WAKE_PHRASE_ALIASES
+)
 DEFAULT_WAKE_MICROPHONE_DEVICE = "plughw:2,0"
 DEFAULT_WAKE_WHISPER_COMMAND = "external/whisper.cpp/build/bin/whisper-cli"
 DEFAULT_WAKE_WHISPER_MODEL = "models/whisper/ggml-tiny.en.bin"
 
 _PHRASE_COMPONENT = re.compile(r"[^a-z0-9]+")
 _CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
+_ALIAS_PATTERN = re.compile(r"^[a-z0-9]{1,24}$")
+_PREFIX_PATTERN = re.compile(r"^[a-z0-9]+(?: [a-z0-9]+){0,2}$")
+
+
+@dataclass(frozen=True)
+class WakeLocalDiagnostics:
+    """Ephemeral owner-terminal diagnostics; never included in runtime events."""
+
+    raw_transcript: str = ""
+    cleaned_transcript: str = ""
+    normalized_transcript: str = ""
+    selected_alias: str = ""
+    selected_wake_phrase: str = ""
+    canonical_wake_phrase: str = ""
+    classification: str = "rejected"
+    rejection_reason: str = ""
+    capture_duration_seconds: float = 0.0
+    raw_capture_duration_seconds: float = 0.0
+    assembled_duration_seconds: float = 0.0
+    normalized_duration_seconds: float = 0.0
+    whisper_input_duration_seconds: float = 0.0
+    capture_stop_reason: str = ""
+    whisper_status: str = ""
+    whisper_exit_code: Optional[int] = None
+    whisper_processing_time_seconds: float = 0.0
+    wake_model_path: str = ""
+    lifecycle_state: str = "STANDBY"
+    retained_audio_path: str = ""
+    cleanup_status: str = "not_required"
 
 
 @dataclass(frozen=True)
@@ -53,7 +88,8 @@ class WakeListenerConfig:
     whisper_command: str = DEFAULT_WAKE_WHISPER_COMMAND
     whisper_model: str = DEFAULT_WAKE_WHISPER_MODEL
     language: str = "en"
-    wake_phrases: tuple[str, ...] = DEFAULT_WAKE_PHRASES
+    wake_phrase_aliases: tuple[str, ...] = DEFAULT_WAKE_PHRASE_ALIASES
+    wake_phrase_prefixes: tuple[str, ...] = DEFAULT_WAKE_PHRASE_PREFIXES
     filler_prefixes: tuple[str, ...] = DEFAULT_WAKE_FILLER_PREFIXES
     calibration_enabled: bool = True
     calibration_duration_seconds: float = 0.75
@@ -66,19 +102,22 @@ class WakeListenerConfig:
     maximum_speech_continue_rms: float = 900.0
     minimum_silence_rms: float = 80.0
     maximum_silence_rms: float = 600.0
-    required_speech_frames: int = 3
-    required_continue_frames: int = 3
+    required_speech_frames: int = 2
+    required_continue_frames: int = 2
     required_silence_frames: int = 5
     speech_wait_timeout_seconds: float = 3.0
     maximum_utterance_seconds: float = 3.0
-    silence_duration_seconds: float = 0.7
-    pre_roll_seconds: float = 0.2
+    silence_duration_seconds: float = 0.8
+    pre_roll_seconds: float = 0.3
     frame_duration_ms: int = 20
     frame_read_timeout_seconds: float = 1.0
     playback_settle_delay_seconds: float = 0.35
     consecutive_failure_limit: int = 3
     retry_delay_seconds: float = 0.25
+    duration_tolerance_seconds: float = 0.05
+    diagnostic_wake: bool = False
     retain_diagnostic_audio: bool = False
+    maximum_retained_candidates: int = 1
     diagnostic_output_directory: str = "data/runtime/wake_audio"
 
     def __post_init__(self) -> None:
@@ -86,8 +125,12 @@ class WakeListenerConfig:
             raise ValueError("enabled must be a boolean")
         if not isinstance(self.calibration_enabled, bool):
             raise ValueError("calibration_enabled must be a boolean")
+        if not isinstance(self.diagnostic_wake, bool):
+            raise ValueError("diagnostic_wake must be a boolean")
         if not isinstance(self.retain_diagnostic_audio, bool):
             raise ValueError("retain_diagnostic_audio must be a boolean")
+        if self.retain_diagnostic_audio and not self.diagnostic_wake:
+            raise ValueError("retain_diagnostic_audio requires diagnostic_wake")
         object.__setattr__(self, "microphone_device", _safe_path_text(self.microphone_device, "microphone_device"))
         object.__setattr__(self, "whisper_command", _safe_path_text(self.whisper_command, "whisper_command"))
         object.__setattr__(self, "whisper_model", _safe_path_text(self.whisper_model, "whisper_model"))
@@ -100,7 +143,16 @@ class WakeListenerConfig:
         if not re.fullmatch(r"[a-z]{2,3}(?:-[a-z]{2})?", language):
             raise ValueError("language must be a bounded language or locale code")
         object.__setattr__(self, "language", language)
-        object.__setattr__(self, "wake_phrases", _validated_phrases(self.wake_phrases, "wake_phrases"))
+        object.__setattr__(
+            self,
+            "wake_phrase_aliases",
+            _validated_aliases(self.wake_phrase_aliases),
+        )
+        object.__setattr__(
+            self,
+            "wake_phrase_prefixes",
+            _validated_prefixes(self.wake_phrase_prefixes, "wake_phrase_prefixes"),
+        )
         object.__setattr__(
             self,
             "filler_prefixes",
@@ -124,6 +176,7 @@ class WakeListenerConfig:
             "frame_read_timeout_seconds": (0.05, 3.0),
             "playback_settle_delay_seconds": (0.0, 3.0),
             "retry_delay_seconds": (0.0, 5.0),
+            "duration_tolerance_seconds": (0.0, 0.5),
         }
         for name, (minimum, maximum) in numeric_bounds.items():
             object.__setattr__(self, name, _bounded_number(getattr(self, name), name, minimum, maximum))
@@ -133,6 +186,7 @@ class WakeListenerConfig:
             ("required_silence_frames", 1, 50),
             ("frame_duration_ms", 10, 40),
             ("consecutive_failure_limit", 1, 10),
+            ("maximum_retained_candidates", 1, 3),
         ):
             object.__setattr__(self, name, _bounded_integer(getattr(self, name), name, minimum, maximum))
         if not self.speech_start_rms > self.speech_continue_rms >= self.silence_rms:
@@ -167,6 +221,14 @@ class WakeListenerConfig:
             for name, value in self.__dict__.items()
         }
 
+    @property
+    def wake_phrases(self) -> tuple[str, ...]:
+        return build_accepted_wake_phrases(
+            self.wake_phrase_aliases,
+            self.wake_phrase_prefixes,
+            self.filler_prefixes,
+        )
+
 
 @runtime_checkable
 class StandbyWakeListener(Protocol):
@@ -191,16 +253,41 @@ class StandbyWakeListener(Protocol):
         ...
 
 
+def clean_wake_transcript(text: str) -> str:
+    cleaned = unicodedata.normalize("NFKC", str(text or ""))
+    cleaned = cleaned.replace("\u2019", "'").replace("`", "'")
+    return " ".join(cleaned.split()).strip()
+
+
 def normalize_wake_phrase(text: str) -> str:
-    normalized = unicodedata.normalize("NFKC", str(text or "")).casefold()
-    normalized = normalized.replace("’", "'").replace("`", "'")
-    return _PHRASE_COMPONENT.sub(" ", normalized).strip()
+    return _PHRASE_COMPONENT.sub(" ", clean_wake_transcript(text).casefold()).strip()
+
+
+def build_accepted_wake_phrases(
+    aliases: Sequence[str] = DEFAULT_WAKE_PHRASE_ALIASES,
+    prefixes: Sequence[str] = DEFAULT_WAKE_PHRASE_PREFIXES,
+    filler_prefixes: Sequence[str] = DEFAULT_WAKE_FILLER_PREFIXES,
+) -> tuple[str, ...]:
+    normalized_aliases = _validated_aliases(aliases)
+    normalized_prefixes = _validated_prefixes(prefixes, "wake_phrase_prefixes")
+    normalized_fillers = _validated_phrases(
+        filler_prefixes,
+        "filler_prefixes",
+        allow_empty=True,
+    )
+    phrases = [
+        _join_wake_phrase(prefix, alias)
+        for prefix in (*normalized_prefixes, *normalized_fillers)
+        for alias in normalized_aliases
+    ]
+    return tuple(dict.fromkeys(phrases))
 
 
 def classify_wake_transcript(
     transcript: str,
     *,
-    wake_phrases: Sequence[str] = DEFAULT_WAKE_PHRASES,
+    wake_phrase_aliases: Sequence[str] = DEFAULT_WAKE_PHRASE_ALIASES,
+    wake_phrase_prefixes: Sequence[str] = DEFAULT_WAKE_PHRASE_PREFIXES,
     filler_prefixes: Sequence[str] = DEFAULT_WAKE_FILLER_PREFIXES,
     standby_phrases: Sequence[str] = (),
     shutdown_phrases: Sequence[str] = (),
@@ -208,25 +295,33 @@ def classify_wake_transcript(
     runtime_id: str = "",
 ) -> WakeDetectionResultV1:
     normalized = normalize_wake_phrase(transcript)
-    wake = set(_validated_phrases(wake_phrases, "wake_phrases"))
+    aliases = _validated_aliases(wake_phrase_aliases)
+    prefixes = _validated_prefixes(wake_phrase_prefixes, "wake_phrase_prefixes")
+    fillers = _validated_phrases(filler_prefixes, "filler_prefixes", allow_empty=True)
+    phrase_map = _wake_phrase_map(aliases, prefixes, fillers)
+    wake = set(phrase_map)
     standby = set(_validated_phrases(standby_phrases, "standby_phrases", allow_empty=True))
     shutdown = set(_validated_phrases(shutdown_phrases, "shutdown_phrases", allow_empty=True))
-    fillers = set(_validated_phrases(filler_prefixes, "filler_prefixes", allow_empty=True))
     if wake & standby or wake & shutdown or standby & shutdown:
         raise ValueError("wake, standby, and shutdown phrases must not overlap")
     category = WAKE_CATEGORY_NON_WAKE
     matched = ""
+    selected_alias = ""
+    selected_phrase = ""
+    canonical_phrase = ""
+    rejection_reason = ""
     detected = False
     if normalized in shutdown:
         category, matched = WAKE_CATEGORY_SHUTDOWN, normalized
     elif normalized in standby:
         category, matched = WAKE_CATEGORY_STANDBY, normalized
-    elif normalized in wake:
-        category, matched, detected = WAKE_CATEGORY_ACTIVATION, normalized, True
-    elif "ares" in wake:
-        filler_matches = {f"{prefix} ares" for prefix in fillers}
-        if normalized in filler_matches:
-            category, matched, detected = WAKE_CATEGORY_ACTIVATION, "ares", True
+    elif normalized in phrase_map:
+        selected_alias, selected_phrase, canonical_phrase = phrase_map[normalized]
+        category, matched, detected = WAKE_CATEGORY_ACTIVATION, selected_phrase, True
+    else:
+        rejection_reason = (
+            "empty_wake_transcript" if not normalized else "exact_wake_phrase_not_matched"
+        )
     status = (
         WAKE_STATUS_DETECTED
         if detected
@@ -242,8 +337,12 @@ def classify_wake_transcript(
         speech_detected=bool(normalized),
         wake_detected=detected,
         command_category=category,
-        normalized_wake_phrase=matched if detected else "",
+        normalized_wake_phrase=canonical_phrase if detected else "",
         matched_phrase=matched,
+        selected_alias=selected_alias,
+        selected_wake_phrase=selected_phrase,
+        canonical_wake_phrase=canonical_phrase,
+        rejection_reason=rejection_reason,
         transcript_length=len(str(transcript or "").strip()),
         correlation_id=correlation_id or new_correlation_id("wake-detect"),
         metadata={"safe": True, "contains_transcript": False},
@@ -316,7 +415,12 @@ class QueuedStandbyWakeListener:
             elif isinstance(item, str):
                 detection = classify_wake_transcript(
                     item,
-                    wake_phrases=request.wake_phrases or self.config.wake_phrases,
+                    wake_phrase_aliases=(
+                        request.wake_phrase_aliases or self.config.wake_phrase_aliases
+                    ),
+                    wake_phrase_prefixes=(
+                        request.wake_phrase_prefixes or self.config.wake_phrase_prefixes
+                    ),
                     filler_prefixes=self.config.filler_prefixes,
                     standby_phrases=request.standby_phrases,
                     shutdown_phrases=request.shutdown_phrases,
@@ -425,6 +529,10 @@ def _listen_result_from_detection(
         command_category=detection.command_category,
         normalized_wake_phrase=detection.normalized_wake_phrase,
         matched_phrase=detection.matched_phrase,
+        selected_alias=detection.selected_alias,
+        selected_wake_phrase=detection.selected_wake_phrase,
+        canonical_wake_phrase=detection.canonical_wake_phrase,
+        rejection_reason=detection.rejection_reason,
         stop_reason=detection.status,
         error_code=detection.error_code,
         error_message=detection.error_message,
@@ -467,6 +575,59 @@ def _validated_phrases(
     if not normalized and not allow_empty:
         raise ValueError(f"{field_name} must contain at least one phrase")
     return normalized
+
+
+def _validated_aliases(values: Sequence[str]) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise ValueError("wake_phrase_aliases must be a sequence of aliases")
+    normalized = tuple(normalize_wake_phrase(value) for value in values)
+    if not normalized:
+        raise ValueError("wake_phrase_aliases must contain at least one alias")
+    if len(normalized) > 8:
+        raise ValueError("wake_phrase_aliases may contain at most 8 aliases")
+    if any(not _ALIAS_PATTERN.fullmatch(value) for value in normalized):
+        raise ValueError("wake_phrase_aliases must contain one safe word of at most 24 characters")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("wake_phrase_aliases contains duplicates after normalization")
+    return normalized
+
+
+def _validated_prefixes(values: Sequence[str], field_name: str) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise ValueError(f"{field_name} must be a sequence of prefixes")
+    normalized = tuple(normalize_wake_phrase(value) for value in values)
+    if not normalized:
+        raise ValueError(f"{field_name} must contain at least one prefix")
+    if len(normalized) > 8:
+        raise ValueError(f"{field_name} may contain at most 8 prefixes")
+    if any(value and (len(value) > 24 or not _PREFIX_PATTERN.fullmatch(value)) for value in normalized):
+        raise ValueError(f"{field_name} contains an unsafe or oversized prefix")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError(f"{field_name} contains duplicates after normalization")
+    return normalized
+
+
+def _join_wake_phrase(prefix: str, alias: str) -> str:
+    return " ".join(part for part in (prefix, alias) if part)
+
+
+def _wake_phrase_map(
+    aliases: Sequence[str],
+    prefixes: Sequence[str],
+    filler_prefixes: Sequence[str],
+) -> Dict[str, tuple[str, str, str]]:
+    canonical_alias = aliases[0]
+    accepted: Dict[str, tuple[str, str, str]] = {}
+    for prefix in prefixes:
+        canonical = _join_wake_phrase(prefix, canonical_alias)
+        for alias in aliases:
+            phrase = _join_wake_phrase(prefix, alias)
+            accepted[phrase] = (alias, phrase, canonical)
+    for prefix in filler_prefixes:
+        for alias in aliases:
+            phrase = _join_wake_phrase(prefix, alias)
+            accepted[phrase] = (alias, phrase, canonical_alias)
+    return accepted
 
 
 def _safe_path_text(value: Any, field_name: str) -> str:

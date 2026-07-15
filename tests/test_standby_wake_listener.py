@@ -46,7 +46,14 @@ def _write_wav(path: Path, *, sample_rate: int = 16000, seconds: float = 0.2) ->
 
 
 class FakeMicrophone:
-    def __init__(self, *, capture_status: str = "completed_after_silence", speech: bool = True):
+    def __init__(
+        self,
+        *,
+        capture_status: str = "completed_after_silence",
+        speech: bool = True,
+        raw_seconds: float = 0.2,
+        candidate_seconds: float = 0.2,
+    ):
         self.capture_status = capture_status
         self.speech = speech
         self.started = False
@@ -55,6 +62,8 @@ class FakeMicrophone:
         self.record_calls = []
         self.raw_path = ""
         self.normalized_path = ""
+        self.raw_seconds = raw_seconds
+        self.candidate_seconds = candidate_seconds
 
     def start(self):
         self.started = True
@@ -91,9 +100,11 @@ class FakeMicrophone:
                 error_message="cancelled",
             )
         normalized = Path(output_path).with_name("normalized-current-turn.wav")
+        assembled = Path(output_path).with_name("assembled-current-turn.wav")
         raw = Path(output_path).with_name("raw-hardware-44100.wav")
-        _write_wav(raw, sample_rate=44100)
-        _write_wav(normalized, sample_rate=16000)
+        _write_wav(raw, sample_rate=44100, seconds=self.raw_seconds)
+        _write_wav(assembled, sample_rate=16000, seconds=self.candidate_seconds)
+        _write_wav(normalized, sample_rate=16000, seconds=self.candidate_seconds)
         self.raw_path = str(raw)
         self.normalized_path = str(normalized)
         return SimpleNamespace(
@@ -104,9 +115,17 @@ class FakeMicrophone:
             error_message="",
             wav_path=str(normalized),
             normalized_wav_path=str(normalized),
+            assembled_wav_path=str(assembled),
             final_whisper_input_path=str(normalized),
             raw_wav_path=str(raw),
-            duration_seconds=0.2,
+            duration_seconds=self.candidate_seconds,
+            raw_duration_seconds=self.raw_seconds,
+            assembled_duration_seconds=self.candidate_seconds,
+            normalized_duration_seconds=self.candidate_seconds,
+            whisper_input_duration_seconds=self.candidate_seconds,
+            total_frames_read=int(self.raw_seconds / 0.02),
+            final_assembled_sample_count=int(self.candidate_seconds * 16000),
+            normalized_sample_count=int(self.candidate_seconds * 16000),
             normalized_sample_rate_hz=16000,
             normalized_channels=1,
             normalized_sample_width_bytes=2,
@@ -136,6 +155,11 @@ class FakeSpeechToText:
             status=self.status,
             text=self.text,
             error_message="" if self.success else self.status,
+            data={
+                "processing_time_seconds": 0.125,
+                "model_path": "models/whisper/ggml-tiny.en.bin",
+                "process": {"returncode": 0 if self.success else 1},
+            },
         )
 
 
@@ -144,7 +168,8 @@ def _request(**changes) -> WakeListenerRequestV1:
         "runtime_id": "runtime-test",
         "lifecycle_state": "STANDBY",
         "listener_timeout_seconds": 3.0,
-        "wake_phrases": ["ares", "hey ares", "hello ares", "wake up ares"],
+        "wake_phrase_aliases": ["ares", "aris"],
+        "wake_phrase_prefixes": ["", "hey", "hello", "wake up"],
         "standby_phrases": ["goodbye ares"],
         "shutdown_phrases": ["shutdown ares"],
         "correlation_id": "wake-test-correlation",
@@ -179,6 +204,8 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
     assert config.maximum_utterance_seconds == 3.0
     assert config.speech_start_rms > config.speech_continue_rms >= config.silence_rms
     assert config.calibration_enabled is True
+    assert config.wake_phrase_aliases == ("ares", "aris")
+    assert config.pre_roll_seconds == 0.3
     assert config.retain_diagnostic_audio is False
 
 
@@ -186,8 +213,8 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
     "changes",
     [
         {"enabled": 1},
-        {"wake_phrases": ["Ares", "ares."]},
-        {"wake_phrases": []},
+        {"wake_phrase_aliases": ["Ares", "ares."]},
+        {"wake_phrase_aliases": []},
         {"speech_start_rms": 100, "speech_continue_rms": 160},
         {"speech_continue_rms": 100, "silence_rms": 120},
         {"speech_wait_timeout_seconds": 0},
@@ -210,9 +237,49 @@ def test_wake_configuration_rejects_unknown_mapping_fields():
         WakeListenerConfig.from_mapping({"invented": True})
 
 
+def test_wake_alias_configuration_is_normalized_bounded_and_collision_safe():
+    config = WakeListenerConfig(
+        wake_phrase_aliases=("ARES!", "Aris"),
+        wake_phrase_prefixes=("", "HEY,", "Wake up"),
+    )
+    assert config.wake_phrase_aliases == ("ares", "aris")
+    assert config.wake_phrase_prefixes == ("", "hey", "wake up")
+    assert "hey aris" in config.wake_phrases
+    with pytest.raises(ValueError, match="duplicates"):
+        WakeListenerConfig(wake_phrase_aliases=("Ares", "ares."))
+    with pytest.raises(ValueError, match="at most 8"):
+        WakeListenerConfig(wake_phrase_aliases=tuple(f"alias{index}" for index in range(9)))
+    with pytest.raises(ValueError, match="at most 24"):
+        WakeListenerConfig(wake_phrase_aliases=("a" * 25,))
+    with pytest.raises(ValueError, match="overlap"):
+        classify_wake_transcript(
+            "shutdown ares",
+            wake_phrase_prefixes=("shutdown",),
+            shutdown_phrases=("shutdown ares",),
+        )
+    with pytest.raises(ValueError, match="overlap"):
+        classify_wake_transcript(
+            "goodbye ares",
+            wake_phrase_prefixes=("goodbye",),
+            standby_phrases=("goodbye ares",),
+        )
+
+
 @pytest.mark.parametrize(
     "text",
-    ["Ares", "ARES.", "  Hey, Ares!  ", "Hello Ares", "Wake up, Ares", "Okay, Ares"],
+    [
+        "Ares",
+        "Aris",
+        "ARES.",
+        "Aris.",
+        "  Hey, Ares!  ",
+        "Hey Aris",
+        "Hello Ares",
+        "Hello, Aris",
+        "Wake up, Ares",
+        "Wake up Aris",
+        "Okay, Ares",
+    ],
 )
 def test_exact_wake_phrase_normalization_accepts_bounded_variants(text):
     result = classify_wake_transcript(text)
@@ -226,11 +293,19 @@ def test_exact_wake_phrase_normalization_accepts_bounded_variants(text):
     [
         "I played God of War with Ares",
         "I read about Ares yesterday",
+        "I spoke to Aris yesterday",
         "compare statistics",
         "nearest shop",
         "address the issue",
         "where is Ares located",
+        "Where is Ares?",
+        "Ares is a Greek god",
         "my game character is named Ares",
+        "My character is called Ares",
+        "Hello, are his shoes ready?",
+        "Harris",
+        "Paris",
+        "Aries",
     ],
 )
 def test_wake_recognition_rejects_substrings_and_unrelated_sentences(text):
@@ -238,6 +313,15 @@ def test_wake_recognition_rejects_substrings_and_unrelated_sentences(text):
     assert result.wake_detected is False
     assert result.command_category == "non_wake"
     assert result.normalized_wake_phrase == ""
+    assert result.rejection_reason == "exact_wake_phrase_not_matched"
+
+
+def test_aris_alias_returns_canonical_ares_activation_without_fuzzy_matching():
+    result = classify_wake_transcript("Hey, Aris.")
+    assert result.selected_alias == "aris"
+    assert result.selected_wake_phrase == "hey aris"
+    assert result.canonical_wake_phrase == "hey ares"
+    assert result.normalized_wake_phrase == "hey ares"
 
 
 def test_wake_classifier_recognizes_bounded_shutdown_and_standby_controls():
@@ -343,7 +427,7 @@ def test_linux_listener_forwards_calibrated_vad_bounds_and_safe_capture_settings
     assert kwargs["silence_rms"] == 120
     assert kwargs["frame_duration_ms"] == 20
     assert kwargs["maximum_utterance_seconds"] == 3.0
-    assert kwargs["pre_roll_seconds"] == 0.2
+    assert kwargs["pre_roll_seconds"] == 0.3
     listener.stop()
 
 
@@ -397,6 +481,7 @@ def test_diagnostic_audio_retention_is_explicit_and_opt_in(tmp_path):
         microphone_adapter=microphone,
         speech_to_text_adapter=FakeSpeechToText("Ares"),
         config=WakeListenerConfig(
+            diagnostic_wake=True,
             retain_diagnostic_audio=True,
             diagnostic_output_directory="diagnostics/wake",
         ),
@@ -410,6 +495,132 @@ def test_diagnostic_audio_retention_is_explicit_and_opt_in(tmp_path):
     assert len(retained) == 1
     assert Path(retained[0]).is_dir()
     assert Path(microphone.normalized_path).is_file()
+    listener.stop()
+
+
+def test_linux_listener_refuses_retention_without_diagnostic_authorization(tmp_path):
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(),
+        speech_to_text_adapter=FakeSpeechToText("Ares"),
+        project_root=tmp_path,
+    )
+    listener.start()
+    result = listener.listen_once(_request(retain_diagnostic_audio=True))
+    assert not result.success
+    assert result.error_code == "wake_diagnostic_retention_not_authorized"
+    assert listener.retained_directories == ()
+    listener.stop()
+
+
+def test_local_wake_diagnostics_are_explicit_and_not_returned_in_contract(tmp_path):
+    emitted = []
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(raw_seconds=1.4, candidate_seconds=0.8),
+        speech_to_text_adapter=FakeSpeechToText("Hello, Aris."),
+        config=WakeListenerConfig(diagnostic_wake=True),
+        project_root=tmp_path,
+        diagnostic_callback=emitted.append,
+    )
+    listener.start()
+    result = listener.listen_once(_request(diagnostic_wake=True))
+    assert result.wake_detected
+    assert len(emitted) == 1
+    diagnostics = emitted[0]
+    assert diagnostics.raw_transcript == "Hello, Aris."
+    assert diagnostics.normalized_transcript == "hello aris"
+    assert diagnostics.selected_alias == "aris"
+    assert diagnostics.classification == "accepted"
+    assert diagnostics.raw_capture_duration_seconds == pytest.approx(1.4, abs=0.001)
+    assert diagnostics.whisper_input_duration_seconds == pytest.approx(0.8, abs=0.001)
+    assert "Hello, Aris" not in str(result.to_dict())
+    listener.stop()
+
+
+def test_local_wake_transcript_diagnostics_are_disabled_by_default(tmp_path):
+    emitted = []
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(),
+        speech_to_text_adapter=FakeSpeechToText("Aris"),
+        project_root=tmp_path,
+        diagnostic_callback=emitted.append,
+    )
+    listener.start()
+    assert listener.listen_once(_request()).wake_detected
+    assert emitted == []
+    assert listener.last_diagnostics is None
+    listener.stop()
+
+
+def test_retained_wake_candidates_are_bounded_to_latest_directory(tmp_path):
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(),
+        speech_to_text_adapter=FakeSpeechToText("Ares"),
+        config=WakeListenerConfig(
+            diagnostic_wake=True,
+            retain_diagnostic_audio=True,
+            maximum_retained_candidates=1,
+            diagnostic_output_directory="diagnostics/wake",
+        ),
+        project_root=tmp_path,
+    )
+    listener.start()
+    listener.listen_once(_request(diagnostic_wake=True, retain_diagnostic_audio=True))
+    first = Path(listener.retained_directories[0])
+    listener.listen_once(_request(diagnostic_wake=True, retain_diagnostic_audio=True))
+    retained = listener.retained_directories
+    assert len(retained) == 1
+    assert Path(retained[0]).is_dir()
+    assert not first.exists()
+    listener.stop()
+
+
+def test_wake_duration_metadata_uses_audio_headers_not_processing_wall_time(tmp_path):
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(raw_seconds=4.0, candidate_seconds=2.4),
+        speech_to_text_adapter=FakeSpeechToText("Ares"),
+        project_root=tmp_path,
+        clock=iter((10.0, 25.0)).__next__,
+    )
+    listener.start()
+    result = listener.listen_once(_request())
+    assert result.duration_seconds == pytest.approx(2.4, abs=0.001)
+    assert result.raw_capture_duration_seconds == pytest.approx(4.0, abs=0.001)
+    assert result.normalized_duration_seconds == pytest.approx(2.4, abs=0.001)
+    assert result.whisper_input_duration_seconds == pytest.approx(2.4, abs=0.001)
+    assert result.processing_time_seconds == 15.0
+    listener.stop()
+
+
+def test_wake_candidate_hard_duration_limit_rejects_before_whisper(tmp_path):
+    microphone = FakeMicrophone(raw_seconds=4.0, candidate_seconds=3.5)
+    stt = FakeSpeechToText("Ares")
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=microphone,
+        speech_to_text_adapter=stt,
+        project_root=tmp_path,
+    )
+    listener.start()
+    result = listener.listen_once(_request())
+    assert not result.success
+    assert result.error_code == "wake_audio_duration_exceeded"
+    assert "wake_candidate_duration_exceeded" in result.error_message
+    assert stt.paths == []
+    listener.stop()
+
+
+def test_wake_raw_capture_hard_limit_includes_only_bounded_capture_phases(tmp_path):
+    stt = FakeSpeechToText("Ares")
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(raw_seconds=7.0, candidate_seconds=0.8),
+        speech_to_text_adapter=stt,
+        project_root=tmp_path,
+    )
+    listener.start()
+    result = listener.listen_once(_request())
+    assert not result.success
+    assert result.error_code == "wake_audio_duration_exceeded"
+    assert "wake_raw_duration_exceeded" in result.error_message
+    assert stt.paths == []
     listener.stop()
 
 

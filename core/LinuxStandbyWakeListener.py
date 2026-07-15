@@ -7,6 +7,7 @@ from threading import RLock
 import tempfile
 import time
 from typing import Any, Callable, Dict, Optional
+import wave
 
 from core.Contracts import (
     StandbyListenResultV1,
@@ -26,8 +27,11 @@ from core.StandbyWakeListener import (
     WAKE_STATUS_FAILED,
     WAKE_STATUS_NO_SPEECH,
     WAKE_STATUS_NON_WAKE_SPEECH,
+    WakeLocalDiagnostics,
     WakeListenerConfig,
     classify_wake_transcript,
+    clean_wake_transcript,
+    normalize_wake_phrase,
 )
 from core.VoiceActivityDetection import (
     VAD_STATUS_CANCELLED,
@@ -57,6 +61,7 @@ class LinuxStandbyWakeListener:
         voice_io_gate: Any = None,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
+        diagnostic_callback: Optional[Callable[[WakeLocalDiagnostics], None]] = None,
     ) -> None:
         if not callable(getattr(microphone_adapter, "record_until_silence", None)):
             raise ValueError("microphone_adapter must support record_until_silence")
@@ -69,6 +74,7 @@ class LinuxStandbyWakeListener:
         self.voice_io_gate = voice_io_gate
         self.clock = clock
         self.sleeper = sleeper
+        self.diagnostic_callback = diagnostic_callback
         self._lock = RLock()
         self._state = WAKE_LISTENER_STOPPED
         self._runtime_id = ""
@@ -81,7 +87,9 @@ class LinuxStandbyWakeListener:
         self._last_cleanup_status = "not_required"
         self._active_turn_directory: Optional[Path] = None
         self._retained_directories: list[str] = []
+        self._pending_diagnostics: Optional[WakeLocalDiagnostics] = None
         self.last_result: Optional[StandbyListenResultV1] = None
+        self.last_diagnostics: Optional[WakeLocalDiagnostics] = None
 
     def start(self, *, runtime_id: str = "") -> WakeListenerResultV1:
         with self._lock:
@@ -126,6 +134,7 @@ class LinuxStandbyWakeListener:
     def listen_once(self, request: WakeListenerRequestV1) -> StandbyListenResultV1:
         with self._lock:
             self._last_cleanup_status = "not_required"
+            self._pending_diagnostics = None
         try:
             result = self._listen_once_unfinalized(request)
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
@@ -137,12 +146,21 @@ class LinuxStandbyWakeListener:
         with self._lock:
             cleanup_status = self._last_cleanup_status
         result = replace(result, cleanup_status=cleanup_status)
+        self._finalize_local_diagnostics(result)
         self.last_result = result
         return result
 
     def _listen_once_unfinalized(self, request: WakeListenerRequestV1) -> StandbyListenResultV1:
         if not isinstance(request, WakeListenerRequestV1):
             raise TypeError("request must be WakeListenerRequestV1")
+        if request.retain_diagnostic_audio and not (
+            request.diagnostic_wake or self.config.diagnostic_wake
+        ):
+            return self._listen_failure(
+                request,
+                "wake_diagnostic_retention_not_authorized",
+                "wake diagnostic retention requires diagnostic wake mode",
+            )
         with self._lock:
             self._listen_count += 1
             if self._state == WAKE_LISTENER_STOPPED:
@@ -219,6 +237,22 @@ class LinuxStandbyWakeListener:
             )
             if not wav_path or not Path(wav_path).is_file():
                 return self._listen_failure(request, "wake_audio_missing", "validated wake WAV is missing")
+            duration_error = self._validate_capture_durations(
+                capture,
+                Path(wav_path),
+                listener_timeout_seconds=request.listener_timeout_seconds,
+            )
+            if duration_error:
+                return self._standby_result(
+                    request,
+                    success=False,
+                    status=WAKE_STATUS_FAILED,
+                    stop_reason="wake_audio_duration_exceeded",
+                    error_code="wake_audio_duration_exceeded",
+                    error_message=duration_error,
+                    capture=capture,
+                    started_at=started_at,
+                )
             transcription = self.speech_to_text_adapter.transcribe_wav(
                 wav_path,
                 language=request.language or self.config.language,
@@ -235,6 +269,7 @@ class LinuxStandbyWakeListener:
                         stop_reason="empty_wake_transcript",
                         capture=capture,
                         started_at=started_at,
+                        transcription=transcription,
                         data={"transcription_status": transcription_status, "transcript_length": 0},
                     )
                 return self._transcription_failure(request, transcription, capture, started_at)
@@ -246,10 +281,16 @@ class LinuxStandbyWakeListener:
                     stop_reason="empty_wake_transcript",
                     capture=capture,
                     started_at=started_at,
+                    transcription=transcription,
                 )
             detection = classify_wake_transcript(
                 transcript,
-                wake_phrases=request.wake_phrases or self.config.wake_phrases,
+                wake_phrase_aliases=(
+                    request.wake_phrase_aliases or self.config.wake_phrase_aliases
+                ),
+                wake_phrase_prefixes=(
+                    request.wake_phrase_prefixes or self.config.wake_phrase_prefixes
+                ),
                 filler_prefixes=self.config.filler_prefixes,
                 standby_phrases=request.standby_phrases,
                 shutdown_phrases=request.shutdown_phrases,
@@ -268,9 +309,15 @@ class LinuxStandbyWakeListener:
                 command_category=detection.command_category,
                 normalized_wake_phrase=detection.normalized_wake_phrase,
                 matched_phrase=detection.matched_phrase,
+                selected_alias=detection.selected_alias,
+                selected_wake_phrase=detection.selected_wake_phrase,
+                canonical_wake_phrase=detection.canonical_wake_phrase,
+                rejection_reason=detection.rejection_reason,
                 stop_reason=detection.status,
                 capture=capture,
                 started_at=started_at,
+                raw_transcript=transcript,
+                transcription=transcription,
                 data={
                     "transcription_status": transcription_status,
                     "transcript_length": len(transcript),
@@ -291,6 +338,9 @@ class LinuxStandbyWakeListener:
                 cleanup_status = "retained_by_explicit_request"
                 with self._lock:
                     self._retained_directories.append(str(turn_directory))
+                    while len(self._retained_directories) > self.config.maximum_retained_candidates:
+                        expired = Path(self._retained_directories.pop(0))
+                        _remove_turn_directory(expired)
             else:
                 cleanup_status = _remove_turn_directory(turn_directory)
             with self._lock:
@@ -436,6 +486,7 @@ class LinuxStandbyWakeListener:
             error_message=_result_error(transcription),
             capture=capture,
             started_at=started_at,
+            transcription=transcription,
             data={"transcription_status": _result_status(transcription)},
         )
 
@@ -496,11 +547,26 @@ class LinuxStandbyWakeListener:
         command_category: str = WAKE_CATEGORY_NON_WAKE,
         normalized_wake_phrase: str = "",
         matched_phrase: str = "",
+        selected_alias: str = "",
+        selected_wake_phrase: str = "",
+        canonical_wake_phrase: str = "",
+        rejection_reason: str = "",
         error_code: str = "",
         error_message: str = "",
+        raw_transcript: str = "",
+        transcription: Any = None,
         data: Optional[Dict[str, Any]] = None,
     ) -> StandbyListenResultV1:
         audio = _capture_audio_metadata(capture)
+        transcription_metadata = _transcription_metadata(transcription)
+        candidate_duration = float(
+            audio.get("whisper_input_duration_seconds", 0.0)
+            or audio.get("normalized_duration_seconds", 0.0)
+            or audio.get("assembled_duration_seconds", 0.0)
+            or audio.get("duration_seconds", 0.0)
+            or 0.0
+        )
+        processing_time = round(max(0.0, self.clock() - started_at), 6)
         result = StandbyListenResultV1(
             success=success,
             status=status,
@@ -516,8 +582,24 @@ class LinuxStandbyWakeListener:
             command_category=command_category,
             normalized_wake_phrase=normalized_wake_phrase,
             matched_phrase=matched_phrase,
+            selected_alias=selected_alias,
+            selected_wake_phrase=selected_wake_phrase,
+            canonical_wake_phrase=canonical_wake_phrase,
+            rejection_reason=rejection_reason,
             stop_reason=stop_reason,
-            duration_seconds=round(max(0.0, self.clock() - started_at), 6),
+            duration_seconds=round(candidate_duration, 6),
+            processing_time_seconds=processing_time,
+            raw_capture_duration_seconds=float(audio.get("raw_duration_seconds", 0.0)),
+            assembled_duration_seconds=float(audio.get("assembled_duration_seconds", 0.0)),
+            normalized_duration_seconds=float(audio.get("normalized_duration_seconds", 0.0)),
+            whisper_input_duration_seconds=float(
+                audio.get("whisper_input_duration_seconds", 0.0)
+            ),
+            whisper_processing_time_seconds=float(
+                transcription_metadata.get("processing_time_seconds", 0.0)
+            ),
+            whisper_status=str(transcription_metadata.get("status", "")),
+            whisper_exit_code=transcription_metadata.get("exit_code"),
             sample_rate_hz=int(audio.get("sample_rate_hz", 0)),
             channels=int(audio.get("channels", 0)),
             sample_width_bytes=int(audio.get("sample_width_bytes", 0)),
@@ -532,8 +614,147 @@ class LinuxStandbyWakeListener:
         if success:
             with self._lock:
                 self._failure_count = 0
+        if bool(request.diagnostic_wake or self.config.diagnostic_wake) and bool(
+            getattr(capture, "speech_detected", False)
+        ):
+            self._remember_local_diagnostics(
+                request=request,
+                result=result,
+                raw_transcript=raw_transcript,
+                audio=audio,
+                capture=capture,
+                transcription=transcription_metadata,
+            )
         self.last_result = result
         return result
+
+    def _validate_capture_durations(
+        self,
+        capture: Any,
+        whisper_input_path: Path,
+        *,
+        listener_timeout_seconds: float,
+    ) -> str:
+        try:
+            whisper_wav = _read_wav_metadata(whisper_input_path)
+        except (OSError, EOFError, ValueError, wave.Error) as error:
+            return f"invalid_wake_wav:{error.__class__.__name__}"
+        if (
+            whisper_wav["sample_rate_hz"] != 16000
+            or whisper_wav["channels"] != 1
+            or whisper_wav["sample_width_bytes"] != 2
+        ):
+            return "wake_whisper_input_not_canonical_pcm"
+
+        frame_seconds = self.config.frame_duration_ms / 1000.0
+        candidate_limit = (
+            self.config.maximum_utterance_seconds
+            + self.config.pre_roll_seconds
+            + (2.0 * frame_seconds)
+            + self.config.duration_tolerance_seconds
+        )
+        candidate_durations = [
+            float(whisper_wav["duration_seconds"]),
+            float(getattr(capture, "assembled_duration_seconds", 0.0) or 0.0),
+            float(getattr(capture, "normalized_duration_seconds", 0.0) or 0.0),
+            float(getattr(capture, "whisper_input_duration_seconds", 0.0) or 0.0),
+        ]
+        if max(candidate_durations) > candidate_limit:
+            return (
+                "wake_candidate_duration_exceeded:"
+                f"actual={max(candidate_durations):.3f}:limit={candidate_limit:.3f}"
+            )
+
+        raw_duration = float(getattr(capture, "raw_duration_seconds", 0.0) or 0.0)
+        raw_path = Path(str(getattr(capture, "raw_wav_path", "") or ""))
+        if raw_path.is_file():
+            try:
+                raw_duration = max(
+                    raw_duration,
+                    float(_read_wav_metadata(raw_path)["duration_seconds"]),
+                )
+            except (OSError, EOFError, ValueError, wave.Error) as error:
+                return f"invalid_raw_wake_wav:{error.__class__.__name__}"
+        raw_limit = (
+            (self.config.calibration_duration_seconds if self.config.calibration_enabled else 0.0)
+            + min(
+                self.config.speech_wait_timeout_seconds,
+                max(0.1, float(listener_timeout_seconds)),
+            )
+            + self.config.maximum_utterance_seconds
+            + (2.0 * frame_seconds)
+            + self.config.duration_tolerance_seconds
+        )
+        if raw_duration > raw_limit:
+            return f"wake_raw_duration_exceeded:actual={raw_duration:.3f}:limit={raw_limit:.3f}"
+        return ""
+
+    def _remember_local_diagnostics(
+        self,
+        *,
+        request: WakeListenerRequestV1,
+        result: StandbyListenResultV1,
+        raw_transcript: str,
+        audio: Dict[str, Any],
+        capture: Any,
+        transcription: Dict[str, Any],
+    ) -> None:
+        whisper_input = str(
+            getattr(capture, "final_whisper_input_path", "")
+            or getattr(capture, "normalized_wav_path", "")
+            or getattr(capture, "wav_path", "")
+            or ""
+        )
+        self._pending_diagnostics = WakeLocalDiagnostics(
+            raw_transcript=str(raw_transcript or ""),
+            cleaned_transcript=clean_wake_transcript(raw_transcript),
+            normalized_transcript=normalize_wake_phrase(raw_transcript),
+            selected_alias=result.selected_alias,
+            selected_wake_phrase=result.selected_wake_phrase,
+            canonical_wake_phrase=result.canonical_wake_phrase,
+            classification="accepted" if result.wake_detected else "rejected",
+            rejection_reason=(
+                result.rejection_reason
+                or ("" if result.wake_detected else result.stop_reason or "wake_not_detected")
+            ),
+            capture_duration_seconds=result.duration_seconds,
+            raw_capture_duration_seconds=float(audio.get("raw_duration_seconds", 0.0)),
+            assembled_duration_seconds=float(audio.get("assembled_duration_seconds", 0.0)),
+            normalized_duration_seconds=float(audio.get("normalized_duration_seconds", 0.0)),
+            whisper_input_duration_seconds=float(
+                audio.get("whisper_input_duration_seconds", 0.0)
+            ),
+            capture_stop_reason=result.capture_stop_reason,
+            whisper_status=str(transcription.get("status", "")),
+            whisper_exit_code=transcription.get("exit_code"),
+            whisper_processing_time_seconds=float(
+                transcription.get("processing_time_seconds", 0.0)
+            ),
+            wake_model_path=str(transcription.get("model_path", "") or self.config.whisper_model),
+            lifecycle_state=request.lifecycle_state,
+            retained_audio_path=whisper_input,
+        )
+
+    def _finalize_local_diagnostics(self, result: StandbyListenResultV1) -> None:
+        with self._lock:
+            diagnostics = self._pending_diagnostics
+            self._pending_diagnostics = None
+        if diagnostics is None:
+            return
+        retained_path = diagnostics.retained_audio_path
+        if result.cleanup_status != "retained_by_explicit_request" or not Path(retained_path).is_file():
+            retained_path = ""
+        diagnostics = replace(
+            diagnostics,
+            retained_audio_path=retained_path,
+            cleanup_status=result.cleanup_status,
+        )
+        self.last_diagnostics = diagnostics
+        if callable(self.diagnostic_callback):
+            try:
+                self.diagnostic_callback(diagnostics)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                return
 
     def _result(
         self,
@@ -560,7 +781,7 @@ class LinuxStandbyWakeListener:
 
 
 def _capture_audio_metadata(capture: Any) -> Dict[str, Any]:
-    return {
+    metadata = {
         "sample_rate_hz": int(
             getattr(capture, "normalized_sample_rate_hz", 0)
             or getattr(capture, "sample_rate_hz", 0)
@@ -577,6 +798,25 @@ def _capture_audio_metadata(capture: Any) -> Dict[str, Any]:
             or 0
         ),
         "duration_seconds": float(getattr(capture, "duration_seconds", 0.0) or 0.0),
+        "raw_duration_seconds": float(
+            getattr(capture, "raw_duration_seconds", 0.0) or 0.0
+        ),
+        "assembled_duration_seconds": float(
+            getattr(capture, "assembled_duration_seconds", 0.0) or 0.0
+        ),
+        "normalized_duration_seconds": float(
+            getattr(capture, "normalized_duration_seconds", 0.0) or 0.0
+        ),
+        "whisper_input_duration_seconds": float(
+            getattr(capture, "whisper_input_duration_seconds", 0.0) or 0.0
+        ),
+        "total_frames_read": int(getattr(capture, "total_frames_read", 0) or 0),
+        "final_assembled_sample_count": int(
+            getattr(capture, "final_assembled_sample_count", 0) or 0
+        ),
+        "normalized_sample_count": int(
+            getattr(capture, "normalized_sample_count", 0) or 0
+        ),
         "capture_stop_reason": str(getattr(capture, "stop_reason", "") or ""),
         "speech_detected": bool(getattr(capture, "speech_detected", False)),
         "ambient_rms": round(float(getattr(capture, "ambient_rms", 0.0) or 0.0), 3),
@@ -591,6 +831,79 @@ def _capture_audio_metadata(capture: Any) -> Dict[str, Any]:
         "derived_silence_rms": round(
             float(getattr(capture, "derived_silence_rms", 0.0) or 0.0), 3
         ),
+    }
+    whisper_path = Path(
+        str(
+            getattr(capture, "final_whisper_input_path", "")
+            or getattr(capture, "normalized_wav_path", "")
+            or getattr(capture, "wav_path", "")
+            or ""
+        )
+    )
+    if whisper_path.is_file():
+        try:
+            wav = _read_wav_metadata(whisper_path)
+            metadata["normalized_duration_seconds"] = float(wav["duration_seconds"])
+            metadata["whisper_input_duration_seconds"] = float(wav["duration_seconds"])
+            metadata["normalized_sample_count"] = int(wav["sample_count"])
+        except (OSError, EOFError, ValueError, wave.Error):
+            pass
+    assembled_path = Path(str(getattr(capture, "assembled_wav_path", "") or ""))
+    if assembled_path.is_file():
+        try:
+            metadata["assembled_duration_seconds"] = float(
+                _read_wav_metadata(assembled_path)["duration_seconds"]
+            )
+        except (OSError, EOFError, ValueError, wave.Error):
+            pass
+    raw_path = Path(str(getattr(capture, "raw_wav_path", "") or ""))
+    if raw_path.is_file():
+        try:
+            metadata["raw_duration_seconds"] = float(
+                _read_wav_metadata(raw_path)["duration_seconds"]
+            )
+        except (OSError, EOFError, ValueError, wave.Error):
+            pass
+    return metadata
+
+
+def _read_wav_metadata(path: Path) -> Dict[str, Any]:
+    if not path.is_file() or path.stat().st_size <= 44:
+        raise ValueError("empty_or_missing_wav")
+    with wave.open(str(path), "rb") as source:
+        channels = source.getnchannels()
+        sample_width = source.getsampwidth()
+        sample_rate = source.getframerate()
+        sample_count = source.getnframes()
+    if channels <= 0 or sample_width <= 0 or sample_rate <= 0 or sample_count <= 0:
+        raise ValueError("invalid_wav_header")
+    return {
+        "sample_rate_hz": sample_rate,
+        "channels": channels,
+        "sample_width_bytes": sample_width,
+        "sample_count": sample_count,
+        "byte_count": sample_count * channels * sample_width,
+        "duration_seconds": sample_count / sample_rate,
+    }
+
+
+def _transcription_metadata(transcription: Any) -> Dict[str, Any]:
+    if transcription is None:
+        return {}
+    data = (
+        dict(transcription.get("data") or {})
+        if isinstance(transcription, dict)
+        else dict(getattr(transcription, "data", {}) or {})
+    )
+    process = dict(data.get("process") or {})
+    exit_code = process.get("returncode")
+    if isinstance(exit_code, bool) or not isinstance(exit_code, int):
+        exit_code = None
+    return {
+        "status": _result_status(transcription),
+        "exit_code": exit_code,
+        "processing_time_seconds": float(data.get("processing_time_seconds", 0.0) or 0.0),
+        "model_path": str(data.get("model_path", "") or ""),
     }
 
 

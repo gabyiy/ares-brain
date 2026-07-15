@@ -4,6 +4,7 @@ import argparse
 from dataclasses import replace
 from pathlib import Path
 import shutil
+import shlex
 import sys
 from typing import Any, Callable, Optional, Sequence
 
@@ -23,6 +24,7 @@ from core import (  # noqa: E402
     SingleTurnPipelineRuntimeInputAdapter,
     SingleTurnPipelineRuntimeOutputAdapter,
     VoiceRuntimeGate,
+    WakeLocalDiagnostics,
     WakeListenerConfig,
 )
 from scripts import manual_verify_single_turn_voice as single_turn  # noqa: E402
@@ -56,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--inactivity-seconds", type=float, default=DEFAULT_INACTIVITY_SECONDS)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--diagnostic-routing", action="store_true")
+    parser.add_argument("--diagnostic-wake", action="store_true")
     parser.add_argument("--retain-diagnostic-audio", action="store_true")
     return parser
 
@@ -122,6 +125,7 @@ def create_runtime(
         whisper_model=str(_repo_path(args.wake_whisper_model)),
         language=args.language,
         playback_settle_delay_seconds=gate.settle_delay_seconds,
+        diagnostic_wake=bool(args.diagnostic_wake),
         retain_diagnostic_audio=bool(args.retain_diagnostic_audio),
         diagnostic_output_directory="data/runtime/wake_audio",
     )
@@ -143,6 +147,11 @@ def create_runtime(
         config=wake_config,
         project_root=REPO_ROOT,
         voice_io_gate=gate,
+        diagnostic_callback=(
+            _wake_diagnostic_callback(output_func, args.speaker_device)
+            if args.diagnostic_wake
+            else None
+        ),
     )
     runtime = BrainRuntime(
         core_service=core_service,
@@ -167,6 +176,12 @@ def run_standby_voice(
     runtime_factory: Optional[Callable[..., tuple[BrainRuntime, Any, Any]]] = None,
 ) -> int:
     args = build_parser().parse_args(argv)
+    if args.retain_diagnostic_audio and not args.diagnostic_wake:
+        output_func(
+            "ARES standby voice configuration error: --retain-diagnostic-audio "
+            "requires --diagnostic-wake."
+        )
+        return 2
     dependency_error = "" if runtime_factory is not None else _validate_static_dependencies(args)
     if dependency_error:
         output_func(f"ARES standby voice configuration error: {dependency_error}")
@@ -291,6 +306,63 @@ def _diagnostic_handler(handler: Callable[[str], Any], output_func: Callable[[st
         return response
 
     return handle
+
+
+def render_wake_diagnostics(
+    diagnostics: WakeLocalDiagnostics,
+    *,
+    speaker_device: str,
+) -> list[str]:
+    exit_status = (
+        "not_available"
+        if diagnostics.whisper_exit_code is None
+        else str(diagnostics.whisper_exit_code)
+    )
+    lines = [
+        "Wake diagnostic:",
+        f"  Raw wake transcript: {diagnostics.raw_transcript or '<empty>'}",
+        f"  Cleaned wake transcript: {diagnostics.cleaned_transcript or '<empty>'}",
+        f"  Normalized wake transcript: {diagnostics.normalized_transcript or '<empty>'}",
+        f"  Selected alias: {diagnostics.selected_alias or 'none'}",
+        f"  Selected wake phrase: {diagnostics.selected_wake_phrase or 'none'}",
+        f"  Wake classification: {diagnostics.classification}",
+        f"  Rejection reason: {diagnostics.rejection_reason or 'none'}",
+        f"  Candidate duration: {diagnostics.capture_duration_seconds:.3f}s",
+        f"  Raw capture duration: {diagnostics.raw_capture_duration_seconds:.3f}s",
+        f"  Assembled duration: {diagnostics.assembled_duration_seconds:.3f}s",
+        f"  Normalized duration: {diagnostics.normalized_duration_seconds:.3f}s",
+        f"  Whisper input duration: {diagnostics.whisper_input_duration_seconds:.3f}s",
+        f"  Capture stop reason: {diagnostics.capture_stop_reason or 'unknown'}",
+        f"  Whisper status: {diagnostics.whisper_status or 'unknown'}",
+        f"  Whisper exit status: {exit_status}",
+        f"  Whisper processing duration: {diagnostics.whisper_processing_time_seconds:.3f}s",
+        f"  Wake model path: {diagnostics.wake_model_path}",
+        f"  Lifecycle state: {diagnostics.lifecycle_state}",
+    ]
+    if diagnostics.retained_audio_path:
+        lines.extend(
+            [
+                f"  Retained wake candidate: {diagnostics.retained_audio_path}",
+                "  Manual playback (not run automatically): "
+                f"aplay -D {shlex.quote(str(speaker_device))} "
+                f"{shlex.quote(diagnostics.retained_audio_path)}",
+            ]
+        )
+    return lines
+
+
+def _wake_diagnostic_callback(
+    output_func: Callable[[str], None],
+    speaker_device: str,
+) -> Callable[[WakeLocalDiagnostics], None]:
+    def emit(diagnostics: WakeLocalDiagnostics) -> None:
+        for line in render_wake_diagnostics(
+            diagnostics,
+            speaker_device=speaker_device,
+        ):
+            output_func(line)
+
+    return emit
 
 
 def main() -> int:

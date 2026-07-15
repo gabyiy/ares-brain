@@ -749,7 +749,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     (calibration_duration_seconds if calibration_enabled else 0.0)
                     + speech_wait_timeout_seconds
                     + maximum_utterance_seconds
-                    + 2.0
+                    + max(0.1, (frame_duration_ms / 1000.0) * 3.0)
                 )
                 stream = DiagnosticPcmFrameSource(
                     source,

@@ -395,13 +395,16 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
             return 1
         output_func("Unrelated speech: rejected silently")
 
-        wake.push("Ares.")
+        wake.push("Aris.")
         activated = runtime.poll_once()
         first_session = runtime.session_manager.session_id
         if not activated.success or spoken != ["Yes Gabi."] or not first_session:
             output_func("FAIL: wake activation acknowledgement/session failed")
             return 1
-        output_func(f"Wake accepted: ACTIVE; session={first_session}; ARES: Yes Gabi.")
+        output_func(
+            f"Wake alias 'Aris' accepted as 'Ares': ACTIVE; "
+            f"session={first_session}; ARES: Yes Gabi."
+        )
 
         microphone.push_speech()
         whisper.push("calculate 2 plus 2")
