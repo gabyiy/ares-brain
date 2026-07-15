@@ -12,6 +12,7 @@ from core.CapabilityManifest import (
     build_voice_city_manifest,
     register_default_voice_manifests,
 )
+from core.BrainSessionManager import BrainSessionConfig, BrainSessionManager
 from core.EventBus import (
     PRIORITY_CRITICAL,
     PRIORITY_HIGH,
@@ -133,12 +134,18 @@ class CoreService:
         owner_memory_service: Any = None,
         register_default_pc: bool = True,
         register_default_voice: bool = True,
+        brain_session_manager: Optional[BrainSessionManager] = None,
+        brain_session_config: Optional[BrainSessionConfig | Mapping[str, Any]] = None,
     ):
         self._services: Dict[str, Any] = {}
         self._service_metadata: Dict[str, Dict[str, Any]] = {}
         self._event_decisions: List[CoreEventDecisionResult] = []
         self._event_history_failures: List[Dict[str, Any]] = []
         self._event_history_store = event_history_store
+        self.brain_session_manager = brain_session_manager or BrainSessionManager(
+            config=brain_session_config,
+            event_history_store=event_history_store,
+        )
         self.lifecycle_manager = lifecycle_manager or ModuleLifecycleManager()
         self.manifest_registry = manifest_registry or CapabilityManifestRegistry(
             policy=manifest_policy,
@@ -202,6 +209,11 @@ class CoreService:
         """Return a bounded read-only report without involving an input adapter."""
 
         return self.owner_memory_service.inspect(include_values=include_values)
+
+    def get_brain_session_snapshot(self):
+        """Return central Brain lifecycle state without activating any module or City."""
+
+        return self.brain_session_manager.snapshot()
 
     def register_service(
         self,

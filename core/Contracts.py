@@ -32,6 +32,8 @@ CONTRACT_SINGLE_TURN_VOICE_REQUEST = "voice.single_turn.request"
 CONTRACT_SINGLE_TURN_VOICE_RESULT = "voice.single_turn.result"
 CONTRACT_MULTI_TURN_VOICE_SESSION_REQUEST = "voice.conversation_session.request"
 CONTRACT_MULTI_TURN_VOICE_SESSION_RESULT = "voice.conversation_session.result"
+CONTRACT_BRAIN_SESSION_TRANSITION_REQUEST = "brain.session.transition.request"
+CONTRACT_BRAIN_SESSION_SNAPSHOT = "brain.session.lifecycle.snapshot"
 CONTRACT_EVENT_PUBLICATION_ENVELOPE = "event.publication.envelope"
 
 CONTRACT_REQUIRED_FIELDS = (
@@ -776,6 +778,35 @@ class EventPublicationEnvelopeV1(VersionedContract):
     timestamp: str = field(default_factory=utc_contract_timestamp)
 
 
+@dataclass(frozen=True)
+class BrainSessionTransitionRequestV1(VersionedContract):
+    contract_name: str = CONTRACT_BRAIN_SESSION_TRANSITION_REQUEST
+    requested_state: str = ""
+    reason: str = ""
+    recovery_safe: bool = False
+
+
+@dataclass(frozen=True)
+class BrainSessionSnapshotV1(VersionedContract):
+    contract_name: str = CONTRACT_BRAIN_SESSION_SNAPSHOT
+    success: bool = True
+    status: str = "current"
+    current_state: str = "STOPPED"
+    previous_state: str = ""
+    source_state: str = "STOPPED"
+    requested_state: str = ""
+    entered_at: str = ""
+    last_activity_at: str = ""
+    inactivity_timeout_seconds: float = 30.0
+    inactivity_deadline_at: str = ""
+    inactivity_expired: bool = False
+    consecutive_failure_count: int = 0
+    maximum_consecutive_failures: int = 3
+    transition_reason: str = ""
+    error_code: str = ""
+    error_message: str = ""
+
+
 def build_default_contract_registry() -> ContractRegistry:
     registry = ContractRegistry()
     registry.register(
@@ -865,6 +896,14 @@ def build_default_contract_registry() -> ContractRegistry:
     registry.register(
         CONTRACT_MULTI_TURN_VOICE_SESSION_RESULT,
         consumers=["MultiTurnVoiceSession", "CoreService"],
+    )
+    registry.register(
+        CONTRACT_BRAIN_SESSION_TRANSITION_REQUEST,
+        consumers=["BrainSessionManager", "CoreService"],
+    )
+    registry.register(
+        CONTRACT_BRAIN_SESSION_SNAPSHOT,
+        consumers=["BrainSessionManager", "CoreService"],
     )
     registry.register(
         CONTRACT_EVENT_PUBLICATION_ENVELOPE,
