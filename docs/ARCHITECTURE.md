@@ -179,7 +179,7 @@ Entering `ACTIVE` from `STANDBY` creates a unique session ID. Processing and res
 
 Lifecycle events are `brain_boot_started`, `brain_initialization_started`, `brain_standby_entered`, `brain_session_activated`, `brain_processing_started`, `brain_response_started`, `brain_session_activity_recorded`, `brain_returning_to_standby`, `brain_shutdown_started`, `brain_stopped`, `brain_state_transition_rejected`, and `brain_lifecycle_error`. They carry state, machine-safe reason, timestamp, correlation/session identifiers, timeout, and failure count only. Transcript text, owner-memory values, audio, secrets, and file contents are excluded. An injected `EventHistoryStore` may persist these bounded records synchronously.
 
-This checkpoint does not add persistent runtime operation. A future explicitly approved runtime loop may observe Brain state, then ask CoreService to validate health, reserve resources, and activate only a requested City. The manager will remain authoritative for the Brain session; Cities will remain lifecycle-managed resources and will neither own nor mutate the central manager directly. Wake-word detection, background microphone listening, daemon startup, and City activation from this state machine are not implemented.
+`BrainSessionManager` remains the sole lifecycle authority for the persistent foreground runtime. Future City activation may be requested by Capital/Core only after CoreService validates capability, health, contract, and capacity; Cities remain lifecycle-managed resources and will neither own nor mutate the central manager. Wake-word microphone detection, background capture, daemon/systemd startup, and City activation from this state machine are not implemented.
 
 Hardware-free verification:
 
@@ -189,6 +189,40 @@ source venv/bin/activate
 git pull --ff-only origin main
 python scripts/manual_verify_brain_session_manager.py
 ```
+
+# Persistent Foreground Brain Runtime
+
+`core.BrainRuntime` belongs to Capital/Core and composes the existing `BrainSessionManager`, `CoreService`, one injected input adapter, one injected output adapter, and an injected production text-command handler. It does not implement skills, persistent memory, STT, TTS, hardware access, or City lifecycle. Runtime execution is serialized; no worker, daemon, or background timer thread is created.
+
+The normal foreground flow is:
+
+```text
+STOPPED -> BOOTING -> INITIALIZING -> STANDBY
+STANDBY -- exact activation --> ACTIVE
+ACTIVE -> PROCESSING -> RESPONDING -> ACTIVE  (repeated commands, same session ID)
+ACTIVE -- owner stop/inactivity --> RETURNING_TO_STANDBY -> STANDBY
+supported state -- explicit shutdown --> SHUTTING_DOWN -> STOPPED
+```
+
+In `STANDBY`, ordinary commands are ignored and no session ID exists. Exact normalized `ares`, `hey ares`, `hello ares`, or `wake up ares` activates one session and emits the configured `Yes Gabi.` acknowledgement only after the lifecycle transition succeeds. While active, commands use the existing `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` route bound to the same CoreService, so calculator and central owner-memory behavior are unchanged. Repeating an activation phrase records activity without replacing the session ID.
+
+Exact `goodbye ares`, `go to sleep ares`, `standby ares`, and `sleep ares` return to standby but keep the process alive. Exact `shutdown ares`, `shut down ares`, and `stop ares completely` perform full shutdown. Phrase matching is case/punctuation tolerant but exact after normalization; arbitrary text containing `ares` does not activate. Cross-category collisions, duplicate normalized phrases, empty/oversized phrases, booleans used as numbers, non-finite values, and out-of-range timeout/failure settings fail closed. Each phrase group accepts 1-16 entries of at most 64 normalized characters; inactivity accepts 1-3600 seconds, failure limits 1-20, input polling 0.05-5 seconds, and synchronous command timeouts 0.1-600 seconds. Runtime inactivity/failure values must equal the composed manager configuration.
+
+The manager's injected clock and 30-second deadline provide inactivity semantics. The foreground input adapter performs bounded waits; only an adapter timeout at or after the exact deadline initiates standby. An input item returned at the boundary is processed serially and refreshes activity, so a successful input is not raced by a second timer. Clock rollback is clamped. No timeout is evaluated while `PROCESSING` or `RESPONDING`.
+
+The V1 runtime contracts are `BrainRuntimeRequestV1`, `BrainRuntimeResultV1`, `BrainRuntimeSnapshotV1`, `BrainRuntimeCommandClassificationV1`, and `BrainRuntimeLoopResultV1`. Injected adapters are defined in `core.BrainRuntimeAdapters`: deterministic queue/collecting adapters support tests, while bounded console adapters support explicit foreground text verification. Runtime events are `brain_runtime_started`, `brain_runtime_input_received`, `brain_activation_requested`, `brain_activation_accepted`, `brain_activation_rejected`, `brain_runtime_command_started`, `brain_runtime_command_completed`, `brain_runtime_command_failed`, `brain_runtime_inactivity_expired`, `brain_runtime_standby_requested`, `brain_runtime_shutdown_requested`, and `brain_runtime_stopped`. They record category, state, lengths, timing, selected skill, status, and correlation/session IDs only; full input text, response values, owner-memory values, audio, secrets, and files are excluded.
+
+Hardware-free verification:
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+python scripts/manual_verify_brain_runtime.py
+python scripts/run_ares_brain_runtime_text.py
+```
+
+The second command is a developer text interface. It is not a wake-word listener, microphone standby path, service, or boot hook. Real microphone wake-word activation is the next separately bounded checkpoint; systemd/boot startup remains later and unimplemented.
 
 ## PCService
 

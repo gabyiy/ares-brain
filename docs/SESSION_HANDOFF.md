@@ -4,18 +4,20 @@ Last Updated: 2026-07-15
 
 Current Version
 
-ARES v1.95 - Central Brain Session Manager
+ARES v1.96 - Persistent Foreground Brain Runtime
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, a production-style one-command single-turn launcher, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production-factory-verified natural-language calculator routing, and central general explicit long-term owner memory with confirmation-gated voice CRUD shared by text and voice through CoreService.
+ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager and persistent foreground text runtime, verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, a production-style one-command single-turn launcher, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production-factory-verified natural-language calculator routing, and central general explicit long-term owner memory with confirmation-gated voice CRUD shared by text and voice through CoreService.
 
 Checkpoint root causes and fixes:
 
 - ARES previously had strict lifecycle state for removable modules and bounded one-turn voice orchestration, but no Capital-owned lifecycle authority for a future persistent Brain process. `BrainSessionManager` now owns the central state machine and CoreService exposes a read-only snapshot without booting or activating any City.
 - V1 transition/snapshot contracts, injected-clock inactivity checks, unique active-session IDs, bounded failure escalation, explicit safe recovery, lock-protected access, transition history, and privacy-bounded lifecycle events are implemented. The manager contains no microphone, Whisper, Piper, memory-store, skill, GPT, network, listener, or runtime-loop behavior.
+- Checkpoint 2 adds `core.BrainRuntime` as the Capital-owned foreground process controller while keeping `BrainSessionManager` as the sole state authority. The runtime boots once to standby, recognizes only exact bounded text phrases, keeps one session ID across serial production skill commands, returns to standby at the exact manager inactivity deadline or an owner stop phrase, and exits only on explicit shutdown/cancellation/end-of-input/unsafe failure.
+- Runtime input/output are injected. Queue/collecting adapters drive deterministic verification and bounded console adapters drive the explicit text interface. Runtime events store category, lengths, status, timing, and correlation/session IDs, never full input, owner-memory values, response content, audio, secrets, or files. No wake-word microphone, continuous capture, City activation, systemd, GPT, cloud, network listener, or runtime worker thread was added.
 
 - End-of-speech could reach `maximum_duration_reached` because the previous detector cleared all trailing-silence evidence for any frame above one static silence threshold. Adaptive calibration now derives three bounded thresholds, and `POSSIBLE_SILENCE` resumes only after consecutive frames above the continue threshold.
 - Voice arithmetic reached IntentParser as number words and Whisper formatting, so digit/operator intent rules returned `unknown`. The versioned transcript normalizer now preserves raw text and converts only strict supported arithmetic into the unchanged safe calculator route.
@@ -132,9 +134,10 @@ Confirmed Phase 3 foundation:
 - Central owner-memory list/count/inspect and confirmation-gated specific/topic/all-general/keyed deletion
 - Atomic cross-process `ares.pending_owner_memory_action` v1 state with expiry, cancellation, corruption rejection, and exact-target snapshots
 - Central versioned `BrainSessionManager` state machine with strict transition rejection, deterministic inactivity checks, failure/recovery handling, and safe lifecycle events
+- Capital/Core `BrainRuntime` foreground loop with exact text activation, same-session multi-command routing, manager-owned inactivity standby, owner standby, explicit shutdown, injected adapters, and privacy-safe events
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1572 tests.
+Current pytest collection: 1671 tests.
 
 Hardware-free Raspberry Pi verification after pulling:
 
@@ -143,9 +146,11 @@ cd ~/ares-brain
 source venv/bin/activate
 git pull --ff-only origin main
 python scripts/manual_verify_brain_session_manager.py
+python scripts/manual_verify_brain_runtime.py
+python scripts/run_ares_brain_runtime_text.py
 ```
 
-The script uses a fake clock and no Raspberry Pi hardware. It does not start microphone capture, playback, Whisper, Piper, a listener, GPT, or a City. Windows verification passed in this checkpoint; post-pull Raspberry Pi execution remains owner-run.
+The manual verifiers use fake-clock/deterministic text paths and no Raspberry Pi hardware. The foreground text process accepts `Ares`, active commands, `goodbye Ares`, and `shutdown Ares`. None of these commands starts microphone capture, playback, Whisper, Piper, a wake listener, GPT, or a City. Windows verification passed in this checkpoint; post-pull Raspberry Pi execution remains owner-run.
 
 Raspberry Pi post-pull verification:
 
@@ -2158,14 +2163,15 @@ Text REPL
 
 Immediate Next Milestone
 
-Pull the safe owner-memory management checkpoint on Raspberry Pi and verify request/confirm/cancel across fresh `python scripts/run_ares_voice.py` processes. Confirm that a specific deletion does not mutate memory until the second turn, topic deletion preserves keyed facts, cancellation retains the target, and list/count inspection remains read-only. Do not manually edit either JSON file during the sequence, and do not add automatic transcript memory, wake words, background listening, or an unbounded conversation service.
+Pull and run the deterministic persistent Brain Runtime verifiers on Raspberry Pi. The next implementation checkpoint is one bounded real microphone wake-word activation adapter feeding the existing Capital-owned runtime; runtime ownership must not move into Voice City. Do not add systemd/boot startup, unrestricted background capture, barge-in, GPT, cloud services, autonomous City activation, or a second lifecycle/timer system.
 
 Next technical choices:
 
-- Pull latest `main`, run both isolated owner-memory verifiers, then use fresh production launcher processes for the spoken request/confirmation/cancellation sequence.
+- Pull latest `main`, run both Brain lifecycle/runtime verifiers, and exercise the explicit foreground text runtime with activation, calculator, owner-memory, standby, reactivation, and shutdown commands.
 - Inspect owner state only through `python scripts/inspect_owner_memory.py --summary --pending` or its focused flags; malformed durable or transient data must fail closed rather than be reset and executed.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
-- Only later add wake-word/background listening.
+- Add only a bounded replaceable microphone wake-word activation adapter next; keep the runtime in Capital/Core and retain exact activation policy.
+- Keep background listening beyond that bounded listener and systemd/boot startup for later checkpoints.
 - Keep GPT, embeddings, semantic/vector search, autonomous fact extraction, external weather/stocks/calendar APIs, real scheduling, and notifications out of scope until explicitly approved.
 - Keep additional real microphone behavior, alternate STT engines, Vosk, wake word, internet-backed adapters, notifications, and automatic PC actions out of scope until each real-audio step is explicitly approved.
 - Keep explicit owner facts distinct from legacy `UserProfileStore`, general `MemoryStore`, operational event history, and RAM-only conversation context.
@@ -2189,24 +2195,25 @@ Future Roadmap
 13. General explicit long-term owner memory, v2-to-v3 migration, lexical retrieval, confirmation-gated broad deletion, and fresh-process verification completed in deterministic tests
 14. Whisper-tolerant explicit-memory routing for `locked term memory` and `remembering ... memory that` completed in deterministic production-path tests
 15. Safe central list/count/inspect and confirmation-gated specific/topic/all-general/keyed deletion completed in deterministic production-path tests
-16. Central deterministic Brain Session Manager completed in CI with no persistent runtime loop or City activation
-17. Verify cross-process owner-memory request/confirm/cancel and keyed/general separation on Raspberry Pi
-18. Design any persistent foreground runtime as a separate bounded checkpoint
-19. Only later add wake-word/background listening
-20. GPT fallback integration
-21. Raspberry Pi deployment
-22. Robot body / sensors
-23. Vision
-24. Robotics
-25. Jetson Orin migration
-26. Autonomous ARES
+16. Central deterministic Brain Session Manager completed in CI
+17. Persistent foreground Brain Runtime completed in CI with exact text activation, multi-command sessions, inactivity standby, and explicit shutdown
+18. Run the hardware-free runtime verifier and foreground text interface after pulling on Raspberry Pi
+19. Add one bounded real microphone wake-word activation adapter without changing Capital/Core runtime ownership
+20. Only later consider broader background listening and systemd/boot startup
+21. GPT fallback integration
+22. Raspberry Pi deployment
+23. Robot body / sensors
+24. Vision
+25. Robotics
+26. Jetson Orin migration
+27. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1572 tests.
+- Current pytest collection: 1671 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.

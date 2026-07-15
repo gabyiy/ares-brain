@@ -1128,16 +1128,26 @@ Phase 91: Central Brain Session Manager
 - Added strict rejection that preserves source state, injected-clock activity/inactivity tracking, unique active-session IDs, bounded consecutive-failure escalation, safe recovery, and lock-protected access.
 - Added bounded lifecycle events and optional existing `EventHistoryStore` persistence without transcripts, memory values, audio, secrets, or file contents.
 - Added read-only CoreService composition, a deterministic hardware-free verifier, and lifecycle/concurrency/privacy/regression tests. No persistent loop, background timer, wake word, listener, or City activation was added.
-- Current pytest collection is 1572 tests.
+- Historical Phase 91 pytest collection was 1572 tests.
+
+Phase 92: Persistent Foreground Brain Runtime
+
+- Added Capital/Core `BrainRuntime` orchestration while retaining `BrainSessionManager` as the only Brain lifecycle-state authority.
+- Added one boot-to-standby process, exact bounded activation/standby/shutdown phrases, one acknowledgement per activation, serialized multi-command active sessions, same-session CoreService/SkillManager routing, deterministic manager-owned inactivity return, and explicit full shutdown.
+- Added V1 runtime request/result/snapshot/classification/loop contracts plus injected deterministic queue/collecting adapters and bounded foreground console adapters. No direct `input()` call, hardware provider, skill logic, memory store, or City lifecycle was placed in the runtime.
+- Added bounded configuration validation, failure escalation/recovery, idempotent resource cleanup, privacy-safe runtime events, a fake-clock real-skill verifier, and an optional foreground text developer interface.
+- No microphone wake-word listener, continuous capture, background service, daemon/systemd startup, autonomous City loading, GPT, cloud service, network listener, barge-in, or worker thread was added.
+- Current pytest collection is 1671 tests.
 
 Current State
 
-ARES is currently at the completed Architecture Hardening foundation plus a central deterministic Brain session state machine, explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, the short production-style single-turn launcher, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and CoreService-owned general explicit long-term owner memory with confirmation-gated CRUD. The assistant remains deterministic and offline. The session manager does not yet run a persistent loop or activate Cities. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control. Owner facts and general memories are written only by explicit bounded memory commands; ordinary transcripts and recordings are not persisted. Voice submits memory-management text through the same Brain route and never edits the durable or transient JSON state directly.
+ARES is currently at the completed Architecture Hardening foundation plus a central deterministic Brain session state machine and persistent foreground text runtime, explicit ALSA microphone/speaker adapters, offline Whisper and Piper adapters, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, the short production-style single-turn launcher, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and CoreService-owned general explicit long-term owner memory with confirmation-gated CRUD. The assistant remains deterministic and offline. The foreground runtime boots once, waits in standby, accepts exact text activation, processes multiple serial commands under one session ID, returns to standby on inactivity or an owner stop phrase, and stops on an explicit shutdown phrase. It does not activate Cities or listen to a microphone. Real audio runs only from explicit owner commands, while Brain/CoreService remain free of ALSA, audio conversion, VAD, Whisper, Piper, model paths, subprocess details, transcript cleanup rules, and conversation hardware control. Owner facts and general memories are written only by explicit bounded memory commands; ordinary transcripts and recordings are not persisted. Voice submits memory-management text through the same Brain route and never edits the durable or transient JSON state directly.
 
 The current active interface is:
 
 - `interfaces.text_repl`
 - `scripts.run_ares_voice` for one explicit foreground voice turn
+- `scripts.run_ares_brain_runtime_text` for explicit persistent foreground text verification
 
 The current deterministic answer paths are:
 
@@ -1148,7 +1158,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1572 tests.
+The current pytest collection is 1671 tests.
 
 The current memory paths are:
 
@@ -1216,10 +1226,10 @@ Phase 3 Real Voice Integration
 26. Harden explicit-memory routing for the real `locked term memory` and `remembering a long term memory that ...` Whisper transcripts. Completed in deterministic CI; post-pull Raspberry Pi verification remains owner-run.
 27. Add complete central list/count/inspect and confirmation-gated specific/topic/all-general/keyed deletion with cross-process transient state. Completed in deterministic CI; post-pull Raspberry Pi verification remains owner-run.
 28. Add the central deterministic Brain Session Manager. Completed in deterministic CI; Raspberry Pi hardware is not required.
-29. Verify specific-delete cancellation/confirmation, topic cancellation, list/count, and keyed/general separation through fresh Raspberry Pi `run_ares_voice.py` processes.
-30. Continue measuring per-turn timing, segmentation, stop recognition, cleanup, transcription quality, and explicit owner-memory phrasing from real results.
-31. Design any persistent foreground runtime and City activation as a separate owner-approved checkpoint.
-32. Only later consider wake-word/background listening.
+29. Add the central persistent foreground Brain Runtime with deterministic text activation, multi-command sessions, manager-owned inactivity standby, and explicit shutdown. Completed in deterministic CI.
+30. Verify the hardware-free Brain Runtime scripts after pulling on Raspberry Pi.
+31. Add one bounded real microphone wake-word activation adapter as the next checkpoint, without moving runtime ownership out of Capital/Core.
+32. Only after that verification consider wider background listening or boot/systemd startup.
 
 What Must Not Be Started Yet
 
