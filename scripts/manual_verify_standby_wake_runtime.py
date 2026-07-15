@@ -395,14 +395,14 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
             return 1
         output_func("Unrelated speech: rejected silently")
 
-        wake.push("Aris.")
+        wake.push("Aris, Aris, hello, Aris.")
         activated = runtime.poll_once()
         first_session = runtime.session_manager.session_id
         if not activated.success or spoken != ["Yes Gabi."] or not first_session:
             output_func("FAIL: wake activation acknowledgement/session failed")
             return 1
         output_func(
-            f"Wake alias 'Aris' accepted as 'Ares': ACTIVE; "
+            f"Bounded wake-only repetition accepted as 'Ares': ACTIVE; "
             f"session={first_session}; ARES: Yes Gabi."
         )
 
@@ -500,6 +500,7 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
             "calculate 2 plus 2",
             "favorite color is blue",
             "what is my favorite color",
+            "aris aris hello aris",
             "raw_transcript",
             "audio_bytes",
         )

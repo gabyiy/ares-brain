@@ -1235,6 +1235,9 @@ class BrainRuntime:
             wake_phrases=list(wake_config.wake_phrases),
             wake_phrase_aliases=list(wake_config.wake_phrase_aliases),
             wake_phrase_prefixes=list(wake_config.wake_phrase_prefixes),
+            maximum_wake_token_count=wake_config.maximum_wake_token_count,
+            maximum_alias_repetitions=wake_config.maximum_alias_repetitions,
+            maximum_prefix_repetitions=wake_config.maximum_prefix_repetitions,
             standby_phrases=list(self.config.standby_phrases),
             shutdown_phrases=list(self.config.shutdown_phrases),
             diagnostic_wake=wake_config.diagnostic_wake,
@@ -1265,6 +1268,8 @@ class BrainRuntime:
                     "speech_detected": listened.speech_detected,
                     "wake_detected": listened.wake_detected,
                     "command_category": listened.command_category,
+                    "classification_path": listened.classification_path,
+                    "classification_reason": listened.classification_reason,
                     "capture_stop_reason": listened.capture_stop_reason,
                     "duration_ms": round(listened.duration_seconds * 1000.0, 3),
                     "processing_time_ms": round(
@@ -1297,6 +1302,7 @@ class BrainRuntime:
                     "status": listened.status,
                     "command_category": listened.command_category,
                     "wake_detected": listened.wake_detected,
+                    "classification_path": listened.classification_path,
                     "sample_rate_hz": listened.sample_rate_hz,
                     "duration_ms": round(listened.duration_seconds * 1000.0, 3),
                 },
@@ -1317,7 +1323,8 @@ class BrainRuntime:
                 correlation,
                 {
                     "status": "non_wake_speech",
-                    "reason": listened.rejection_reason or "exact_phrase_not_matched",
+                    "reason": listened.rejection_reason or "wake_phrase_not_matched",
+                    "classification_path": listened.classification_path,
                 },
             )
         return self._result(

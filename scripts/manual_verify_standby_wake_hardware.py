@@ -112,6 +112,7 @@ def run_hardware_verification(
                     f"  Attempt {attempt}/{args.attempts_per_test}: "
                     f"candidate={'detected' if candidate_detected else 'no_speech'}; "
                     f"classification={_classification(wake_result)}; "
+                    f"path={getattr(wake_result, 'classification_path', '') or 'none'}; "
                     f"state={snapshot.current_lifecycle_state}; "
                     f"session={snapshot.session_id or 'none'}; status={result.status}"
                 )

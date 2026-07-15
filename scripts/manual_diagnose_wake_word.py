@@ -67,7 +67,7 @@ def run_diagnostic(
     )
     microphone = LinuxAlsaMicrophoneAdapter(
         device=args.microphone_device,
-        record_seconds=3,
+        record_seconds=config.maximum_utterance_seconds,
         timeout_seconds=min(args.timeout, 30.0),
     )
     speech_to_text = LinuxWhisperSpeechToTextAdapter(
@@ -85,7 +85,7 @@ def run_diagnostic(
         project_root=REPO_ROOT,
         diagnostic_callback=callback,
     )
-    output_func("Say Ares now.")
+    output_func("Say Ares once, then remain silent.")
     started = listener.start(runtime_id="wake-diagnostic")
     if not started.success:
         output_func(f"Wake listener start failed: {started.error_code or started.status}.")
@@ -104,6 +104,9 @@ def run_diagnostic(
                 language=args.language,
                 wake_phrase_aliases=list(config.wake_phrase_aliases),
                 wake_phrase_prefixes=list(config.wake_phrase_prefixes),
+                maximum_wake_token_count=config.maximum_wake_token_count,
+                maximum_alias_repetitions=config.maximum_alias_repetitions,
+                maximum_prefix_repetitions=config.maximum_prefix_repetitions,
                 diagnostic_wake=True,
                 retain_diagnostic_audio=bool(args.retain_diagnostic_audio),
                 metadata={"safe": True, "contains_transcript": False},
@@ -120,7 +123,21 @@ def run_diagnostic(
         elif result.success:
             output_func(
                 "Wake result: rejected "
-                f"({result.rejection_reason or result.stop_reason or 'exact phrase not matched'})."
+                f"({result.rejection_reason or result.stop_reason or 'wake phrase not matched'})."
+            )
+            diagnostics = getattr(listener, "last_diagnostics", None)
+            output_func(
+                "Wake vocabulary check: "
+                f"{'all tokens allowed' if result.wake_vocabulary_only else 'unknown tokens present'}."
+            )
+            output_func(
+                "Suggested action: "
+                + _rejection_suggestion(
+                    result.rejection_reason,
+                    normalized_transcript=str(
+                        getattr(diagnostics, "normalized_transcript", "") or ""
+                    ),
+                )
             )
         else:
             output_func(
@@ -141,6 +158,32 @@ def _validate_dependencies(args: argparse.Namespace) -> str:
     if not model.is_file():
         return f"wake Whisper model is missing: {model}"
     return ""
+
+
+def _rejection_suggestion(reason: str, *, normalized_transcript: str = "") -> str:
+    suggestions = {
+        "wake_vocabulary_contains_unknown_tokens": (
+            "say only 'Ares' once, then remain silent; unrelated words are rejected"
+        ),
+        "wake_token_count_exceeded": (
+            "say 'Ares' once; the captured wake candidate contained too many words"
+        ),
+        "wake_alias_repetition_exceeded": (
+            "say 'Ares' once; the wake name repeated beyond the safe limit"
+        ),
+        "wake_prefix_repetition_exceeded": (
+            "say 'Ares' once; wake-prefix words repeated beyond the safe limit"
+        ),
+        "wake_alias_missing": "say the configured wake name 'Ares' once",
+        "empty_wake_transcript": "speak closer to the microphone and say 'Ares' once",
+    }
+    suggestion = suggestions.get(
+        str(reason or ""),
+        "say 'Ares' once, then remain silent, and review the transcript above",
+    )
+    if normalized_transcript:
+        return f"{suggestion}."
+    return f"{suggestion}; no usable normalized transcript was available."
 
 
 def main() -> int:

@@ -207,6 +207,13 @@ def test_wake_diagnostic_rendering_is_explicit_and_prints_manual_playback_only()
         selected_alias="aris",
         selected_wake_phrase="hello aris",
         canonical_wake_phrase="hello ares",
+        classification_path="exact",
+        classification_reason="accepted_exact_wake_phrase",
+        collapsed_wake_representation="hello ares",
+        wake_vocabulary_only=True,
+        wake_token_count=2,
+        alias_repetition_count=1,
+        maximum_prefix_repetition_count=1,
         classification="accepted",
         capture_duration_seconds=0.8,
         raw_capture_duration_seconds=2.1,
@@ -228,6 +235,9 @@ def test_wake_diagnostic_rendering_is_explicit_and_prints_manual_playback_only()
     assert "Raw wake transcript: Hello, Aris." in text
     assert "Selected alias: aris" in text
     assert "Wake classification: accepted" in text
+    assert "Classification path: exact" in text
+    assert "Collapsed wake representation: hello ares" in text
+    assert "All tokens in wake vocabulary: yes" in text
     assert "aplay -D" in text
     assert not any(line.strip().startswith("Playing") for line in lines)
 
@@ -286,6 +296,12 @@ def test_one_attempt_wake_diagnostic_accepts_aris_and_exits_after_one_capture():
                     selected_alias="aris",
                     selected_wake_phrase="aris",
                     canonical_wake_phrase="ares",
+                    classification_path="exact",
+                    classification_reason="accepted_exact_wake_phrase",
+                    collapsed_wake_representation="ares",
+                    wake_vocabulary_only=True,
+                    wake_token_count=1,
+                    alias_repetition_count=1,
                     classification="accepted",
                     wake_model_path="tiny.bin",
                 )
@@ -313,8 +329,68 @@ def test_one_attempt_wake_diagnostic_accepts_aris_and_exits_after_one_capture():
     assert code == 0
     assert instances[0].listen_count == 1
     assert instances[0].stop_count == 1
+    assert any("Say Ares once, then remain silent." in line for line in output)
     assert any("Raw wake transcript: Aris." in line for line in output)
     assert output[-1] == "Wake result: accepted (aris -> ares)."
+
+
+def test_one_attempt_diagnostic_explains_bounded_repetition_rejection():
+    class DiagnosticListener:
+        def __init__(self, *, diagnostic_callback=None, **kwargs):
+            self.callback = diagnostic_callback
+            self.last_diagnostics = None
+
+        def start(self, runtime_id=""):
+            return SimpleNamespace(success=True, status="started", error_code="")
+
+        def health(self, runtime_id=""):
+            return SimpleNamespace(success=True, status="healthy", error_code="")
+
+        def listen_once(self, request):
+            self.last_diagnostics = WakeLocalDiagnostics(
+                raw_transcript="Aris unknownword Aris.",
+                cleaned_transcript="Aris unknownword Aris.",
+                normalized_transcript="aris unknownword aris",
+                selected_alias="aris",
+                collapsed_wake_representation="ares <unknown> ares",
+                wake_vocabulary_only=False,
+                wake_token_count=3,
+                alias_repetition_count=2,
+                classification_path="bounded_repetition",
+                classification_reason="wake_vocabulary_contains_unknown_tokens",
+                classification="rejected",
+                rejection_reason="wake_vocabulary_contains_unknown_tokens",
+            )
+            self.callback(self.last_diagnostics)
+            return StandbyListenResultV1(
+                success=True,
+                status="non_wake_speech",
+                speech_detected=True,
+                wake_detected=False,
+                classification_path="bounded_repetition",
+                classification_reason="wake_vocabulary_contains_unknown_tokens",
+                collapsed_wake_representation="ares <unknown> ares",
+                wake_vocabulary_only=False,
+                wake_token_count=3,
+                alias_repetition_count=2,
+                rejection_reason="wake_vocabulary_contains_unknown_tokens",
+            )
+
+        def stop(self, reason=""):
+            return SimpleNamespace(success=True, status="stopped")
+
+    output = []
+    code = manual_diagnose_wake_word.run_diagnostic(
+        ["--diagnostic-wake"],
+        output_func=output.append,
+        listener_factory=DiagnosticListener,
+    )
+    text = "\n".join(output)
+    assert code == 1
+    assert "Classification path: bounded_repetition" in text
+    assert "Collapsed wake representation: ares <unknown> ares" in text
+    assert "Wake vocabulary check: unknown tokens present." in text
+    assert "unrelated words are rejected" in text
 
 
 def test_hardware_verifier_fails_nonzero_after_bounded_attempts():

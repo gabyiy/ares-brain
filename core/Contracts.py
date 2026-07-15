@@ -906,6 +906,9 @@ class WakeListenerRequestV1(VersionedContract):
     wake_phrases: List[str] = field(default_factory=list)
     wake_phrase_aliases: List[str] = field(default_factory=list)
     wake_phrase_prefixes: List[str] = field(default_factory=list)
+    maximum_wake_token_count: int = 8
+    maximum_alias_repetitions: int = 4
+    maximum_prefix_repetitions: int = 3
     standby_phrases: List[str] = field(default_factory=list)
     shutdown_phrases: List[str] = field(default_factory=list)
     diagnostic_wake: bool = False
@@ -942,6 +945,13 @@ class WakeDetectionResultV1(VersionedContract):
     selected_alias: str = ""
     selected_wake_phrase: str = ""
     canonical_wake_phrase: str = ""
+    classification_path: str = ""
+    classification_reason: str = ""
+    collapsed_wake_representation: str = ""
+    wake_vocabulary_only: bool = False
+    wake_token_count: int = 0
+    alias_repetition_count: int = 0
+    maximum_prefix_repetition_count: int = 0
     rejection_reason: str = ""
     transcript_length: int = 0
     error_code: str = ""
@@ -984,6 +994,13 @@ class StandbyListenResultV1(VersionedContract):
     selected_alias: str = ""
     selected_wake_phrase: str = ""
     canonical_wake_phrase: str = ""
+    classification_path: str = ""
+    classification_reason: str = ""
+    collapsed_wake_representation: str = ""
+    wake_vocabulary_only: bool = False
+    wake_token_count: int = 0
+    alias_repetition_count: int = 0
+    maximum_prefix_repetition_count: int = 0
     rejection_reason: str = ""
     stop_reason: str = ""
     duration_seconds: float = 0.0

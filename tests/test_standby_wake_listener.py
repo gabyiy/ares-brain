@@ -21,6 +21,7 @@ from core import (
     WakeListenerRequestV1,
     WakeListenerResultV1,
     WakeListenerSnapshotV1,
+    analyze_bounded_wake_repetition,
     build_standby_wake_listener_manifest,
     classify_wake_transcript,
     normalize_wake_phrase,
@@ -201,11 +202,17 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
     assert config.whisper_model.endswith("ggml-tiny.en.bin")
     assert config.frame_duration_ms == 20
     assert config.speech_wait_timeout_seconds == 3.0
-    assert config.maximum_utterance_seconds == 3.0
+    assert config.maximum_utterance_seconds == 2.0
     assert config.speech_start_rms > config.speech_continue_rms >= config.silence_rms
     assert config.calibration_enabled is True
     assert config.wake_phrase_aliases == ("ares", "aris")
-    assert config.pre_roll_seconds == 0.3
+    assert config.pre_roll_seconds == 0.25
+    assert config.silence_duration_seconds == 0.7
+    assert config.minimum_speech_continue_rms == 160
+    assert config.minimum_silence_rms == 120
+    assert config.maximum_wake_token_count == 8
+    assert config.maximum_alias_repetitions == 4
+    assert config.maximum_prefix_repetitions == 3
     assert config.retain_diagnostic_audio is False
 
 
@@ -219,6 +226,11 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
         {"speech_continue_rms": 100, "silence_rms": 120},
         {"speech_wait_timeout_seconds": 0},
         {"maximum_utterance_seconds": 50},
+        {"maximum_wake_token_count": True},
+        {"maximum_wake_token_count": 17},
+        {"maximum_alias_repetitions": 9},
+        {"maximum_prefix_repetitions": 9},
+        {"maximum_wake_token_count": 2, "maximum_alias_repetitions": 3},
         {"frame_duration_ms": True},
         {"frame_duration_ms": 100},
         {"calibration_enabled": True, "calibration_duration_seconds": 0},
@@ -285,6 +297,8 @@ def test_exact_wake_phrase_normalization_accepts_bounded_variants(text):
     result = classify_wake_transcript(text)
     assert result.wake_detected is True
     assert result.command_category == "activation"
+    assert result.classification_path == "exact"
+    assert result.classification_reason == "accepted_exact_wake_phrase"
     assert result.normalized_wake_phrase in {"ares", "hey ares", "hello ares", "wake up ares"}
 
 
@@ -313,7 +327,75 @@ def test_wake_recognition_rejects_substrings_and_unrelated_sentences(text):
     assert result.wake_detected is False
     assert result.command_category == "non_wake"
     assert result.normalized_wake_phrase == ""
-    assert result.rejection_reason == "exact_wake_phrase_not_matched"
+    assert result.rejection_reason == "wake_vocabulary_contains_unknown_tokens"
+    assert result.classification_path == "bounded_repetition"
+    assert result.wake_vocabulary_only is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ares ares",
+        "aris aris",
+        "aris aris hello aris",
+        "hey ares ares",
+        "wake wake up aris",
+        "hello hello ares",
+    ],
+)
+def test_bounded_wake_only_repetition_is_accepted_without_fuzzy_matching(text):
+    result = classify_wake_transcript(text)
+    assert result.wake_detected is True
+    assert result.normalized_wake_phrase == "ares"
+    assert result.canonical_wake_phrase == "ares"
+    assert result.classification_path == "bounded_repetition"
+    assert result.classification_reason == "accepted_bounded_wake_repetition"
+    assert result.wake_vocabulary_only is True
+    assert result.collapsed_wake_representation
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("aris unknownword aris", "wake_vocabulary_contains_unknown_tokens"),
+        ("please wake up ares", "wake_vocabulary_contains_unknown_tokens"),
+        ("calculate two plus two ares", "wake_vocabulary_contains_unknown_tokens"),
+        ("ares remember that i like games", "wake_vocabulary_contains_unknown_tokens"),
+        ("hello hello", "wake_alias_missing"),
+        ("ares ares ares ares ares", "wake_alias_repetition_exceeded"),
+        ("hello hello hello hello ares", "wake_prefix_repetition_exceeded"),
+        ("hello hello hello ares ares ares ares wake up", "wake_token_count_exceeded"),
+    ],
+)
+def test_bounded_repetition_rejects_unknown_or_excessive_wake_tokens(text, reason):
+    result = classify_wake_transcript(text)
+    assert result.wake_detected is False
+    assert result.rejection_reason == reason
+    assert result.classification_reason == reason
+
+
+def test_wake_token_analysis_collapses_only_known_vocabulary_for_safe_diagnostics():
+    accepted = analyze_bounded_wake_repetition("aris aris hello aris")
+    rejected = analyze_bounded_wake_repetition("aris privateword aris")
+    assert accepted.accepted
+    assert accepted.collapsed_representation == "ares hello ares"
+    assert accepted.alias_repetition_count == 3
+    assert rejected.accepted is False
+    assert rejected.collapsed_representation == "ares <unknown> ares"
+    assert "privateword" not in rejected.collapsed_representation
+
+
+def test_bounded_repetition_limits_are_configurable_and_enforced():
+    alias_limited = classify_wake_transcript(
+        "ares ares",
+        maximum_alias_repetitions=1,
+    )
+    prefix_limited = classify_wake_transcript(
+        "hello hello ares",
+        maximum_prefix_repetitions=1,
+    )
+    assert alias_limited.rejection_reason == "wake_alias_repetition_exceeded"
+    assert prefix_limited.rejection_reason == "wake_prefix_repetition_exceeded"
 
 
 def test_aris_alias_returns_canonical_ares_activation_without_fuzzy_matching():
@@ -426,8 +508,9 @@ def test_linux_listener_forwards_calibrated_vad_bounds_and_safe_capture_settings
     assert kwargs["speech_continue_rms"] == 180
     assert kwargs["silence_rms"] == 120
     assert kwargs["frame_duration_ms"] == 20
-    assert kwargs["maximum_utterance_seconds"] == 3.0
-    assert kwargs["pre_roll_seconds"] == 0.3
+    assert kwargs["maximum_utterance_seconds"] == 2.0
+    assert kwargs["pre_roll_seconds"] == 0.25
+    assert kwargs["silence_seconds"] == 0.7
     listener.stop()
 
 
@@ -530,9 +613,36 @@ def test_local_wake_diagnostics_are_explicit_and_not_returned_in_contract(tmp_pa
     assert diagnostics.normalized_transcript == "hello aris"
     assert diagnostics.selected_alias == "aris"
     assert diagnostics.classification == "accepted"
+    assert diagnostics.classification_path == "exact"
+    assert diagnostics.classification_reason == "accepted_exact_wake_phrase"
+    assert diagnostics.collapsed_wake_representation == "hello ares"
+    assert diagnostics.wake_vocabulary_only is True
     assert diagnostics.raw_capture_duration_seconds == pytest.approx(1.4, abs=0.001)
     assert diagnostics.whisper_input_duration_seconds == pytest.approx(0.8, abs=0.001)
     assert "Hello, Aris" not in str(result.to_dict())
+    listener.stop()
+
+
+def test_local_diagnostics_report_bounded_repetition_path_without_event_payload_text(tmp_path):
+    emitted = []
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(raw_seconds=2.8, candidate_seconds=1.6),
+        speech_to_text_adapter=FakeSpeechToText("Aris, Aris, hello, Aris."),
+        config=WakeListenerConfig(diagnostic_wake=True),
+        project_root=tmp_path,
+        diagnostic_callback=emitted.append,
+    )
+    listener.start()
+    result = listener.listen_once(_request(diagnostic_wake=True))
+    assert result.wake_detected
+    assert result.classification_path == "bounded_repetition"
+    assert result.classification_reason == "accepted_bounded_wake_repetition"
+    assert result.collapsed_wake_representation == "ares hello ares"
+    diagnostics = emitted[0]
+    assert diagnostics.normalized_transcript == "aris aris hello aris"
+    assert diagnostics.collapsed_wake_representation == "ares hello ares"
+    assert diagnostics.classification_path == "bounded_repetition"
+    assert "aris aris hello aris" not in str(result.to_dict()).casefold()
     listener.stop()
 
 
@@ -578,6 +688,7 @@ def test_wake_duration_metadata_uses_audio_headers_not_processing_wall_time(tmp_
     listener = LinuxStandbyWakeListener(
         microphone_adapter=FakeMicrophone(raw_seconds=4.0, candidate_seconds=2.4),
         speech_to_text_adapter=FakeSpeechToText("Ares"),
+        config=WakeListenerConfig(maximum_utterance_seconds=3.0),
         project_root=tmp_path,
         clock=iter((10.0, 25.0)).__next__,
     )
@@ -588,6 +699,27 @@ def test_wake_duration_metadata_uses_audio_headers_not_processing_wall_time(tmp_
     assert result.normalized_duration_seconds == pytest.approx(2.4, abs=0.001)
     assert result.whisper_input_duration_seconds == pytest.approx(2.4, abs=0.001)
     assert result.processing_time_seconds == 15.0
+    listener.stop()
+
+
+def test_maximum_duration_wake_candidate_still_reaches_strict_classifier(tmp_path):
+    microphone = FakeMicrophone(
+        capture_status="maximum_duration_reached",
+        raw_seconds=3.2,
+        candidate_seconds=2.2,
+    )
+    stt = FakeSpeechToText("Aris, Aris, hello, Aris.")
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=microphone,
+        speech_to_text_adapter=stt,
+        project_root=tmp_path,
+    )
+    listener.start()
+    result = listener.listen_once(_request())
+    assert result.wake_detected is True
+    assert result.capture_stop_reason == "maximum_duration_reached"
+    assert result.classification_reason == "accepted_bounded_wake_repetition"
+    assert len(stt.paths) == 1
     listener.stop()
 
 

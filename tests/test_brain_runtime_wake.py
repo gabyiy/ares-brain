@@ -78,6 +78,32 @@ def test_verified_wake_phrase_activates_and_acknowledges_exactly_once(phrase, tm
     assert runtime.snapshot().activation_count == 1
 
 
+def test_bounded_repeated_aris_wake_activates_once_without_core_routing(tmp_path):
+    runtime, active, output, wake = _runtime(tmp_path)
+    runtime.start()
+    wake.push("Aris, Aris, hello, Aris.")
+    activated = runtime.poll_once()
+    first_session = runtime.session_manager.session_id
+    assert activated.status == "activated"
+    assert first_session
+    assert runtime.snapshot().activation_count == 1
+    assert runtime.snapshot().command_count == 0
+    assert output.texts == ["Yes Gabi."]
+
+    active.push("calculate 2 plus 2")
+    command = runtime.poll_once()
+    assert command.response_text == "Result: 4"
+    assert runtime.session_manager.session_id == first_session
+
+    active.push("goodbye Ares")
+    assert runtime.poll_once().status == "standby_entered"
+    wake.push("ares ares")
+    assert runtime.poll_once().status == "activated"
+    assert runtime.session_manager.session_id != first_session
+    active.push("shutdown Ares")
+    assert runtime.poll_once().status == "stopped"
+
+
 def test_active_repeated_activation_keeps_session_and_uses_active_acknowledgement(tmp_path):
     runtime, active, output, wake = _runtime(tmp_path)
     runtime.start()
@@ -284,7 +310,7 @@ def test_wake_runtime_events_are_emitted_without_transcripts_memory_values_or_au
     runtime.start()
     wake.push("private unrelated sentence about Ares yesterday")
     runtime.poll_once()
-    wake.push("Ares")
+    wake.push("Aris, Aris, hello, Aris.")
     runtime.poll_once()
     active.push("Remember that my favorite color is ultraviolet.")
     runtime.poll_once()
@@ -293,9 +319,15 @@ def test_wake_runtime_events_are_emitted_without_transcripts_memory_values_or_au
     assert "brain_wake_detected" in serialized
     assert "brain_wake_rejected" in serialized
     assert "private unrelated sentence" not in serialized
+    assert "aris aris hello aris" not in serialized
     assert "ultraviolet" not in serialized
     assert "raw_transcript" not in serialized
     assert "audio_bytes" not in serialized
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in tmp_path.rglob("*.json")
+    ).casefold()
+    assert "aris aris hello aris" not in persisted
 
 
 def test_no_speech_poll_does_not_emit_noisy_standby_listener_event(tmp_path):

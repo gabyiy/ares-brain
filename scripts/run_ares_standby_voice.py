@@ -131,7 +131,7 @@ def create_runtime(
     )
     wake_microphone = LinuxAlsaMicrophoneAdapter(
         device=args.microphone_device,
-        record_seconds=3,
+        record_seconds=wake_config.maximum_utterance_seconds,
         timeout_seconds=min(float(args.timeout), 30.0),
     )
     wake_stt = LinuxWhisperSpeechToTextAdapter(
@@ -323,9 +323,19 @@ def render_wake_diagnostics(
         f"  Raw wake transcript: {diagnostics.raw_transcript or '<empty>'}",
         f"  Cleaned wake transcript: {diagnostics.cleaned_transcript or '<empty>'}",
         f"  Normalized wake transcript: {diagnostics.normalized_transcript or '<empty>'}",
+        "  Collapsed wake representation: "
+        f"{diagnostics.collapsed_wake_representation or '<empty>'}",
         f"  Selected alias: {diagnostics.selected_alias or 'none'}",
         f"  Selected wake phrase: {diagnostics.selected_wake_phrase or 'none'}",
         f"  Wake classification: {diagnostics.classification}",
+        f"  Classification path: {diagnostics.classification_path or 'none'}",
+        f"  Classification reason: {diagnostics.classification_reason or 'none'}",
+        "  All tokens in wake vocabulary: "
+        f"{'yes' if diagnostics.wake_vocabulary_only else 'no'}",
+        f"  Wake token count: {diagnostics.wake_token_count}",
+        f"  Alias repetitions: {diagnostics.alias_repetition_count}",
+        "  Maximum prefix repetitions: "
+        f"{diagnostics.maximum_prefix_repetition_count}",
         f"  Rejection reason: {diagnostics.rejection_reason or 'none'}",
         f"  Candidate duration: {diagnostics.capture_duration_seconds:.3f}s",
         f"  Raw capture duration: {diagnostics.raw_capture_duration_seconds:.3f}s",
