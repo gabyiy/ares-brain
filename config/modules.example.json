@@ -1,5 +1,9 @@
 {
   "voice_profiles_config": "config/voice_profiles.json",
+  "brain_session": {
+    "inactivity_timeout_seconds": 30,
+    "maximum_consecutive_failures": 3
+  },
   "voice_activity_capture": {
     "mode": "fixed_duration",
     "microphone_device": "plughw:2,0",

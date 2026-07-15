@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.93 - Whisper-Tolerant Explicit Owner Memory Routing
+ARES v1.95 - Central Brain Session Manager
 
 ---
 
@@ -21,6 +21,8 @@ The active runtime includes `core.IntentParser` for structured local intents, `c
 The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the Brain/CoreService capital city model, current CoreService and PCService boundaries, capability discovery, future cities, upgrade philosophy, design rules, and long-term vision.
 
 `core.CoreService` now sits between the Brain and external/local services where practical. It owns service registration, registers `PCService` as `pc` by default, exposes `get_service(name)`, `list_services()`, `get_capabilities()`, `route_by_capability()`, `get_lifecycle_status()`, `get_lifecycle_history()`, `recover_service()`, `get_manifest(name)`, `list_manifests()`, `get_service_health(name)`, `list_service_health()`, and `get_capability_health(capability)`, and aggregates capability data from registered services without adding GPT, internet, remote execution, or hardware behavior. CoreService keeps compatibility city states as `idle`, `active`, `failed`, and `disabled`, and now owns `core.ModuleLifecycleManager` for strict module lifecycle enforcement with `UNLOADED`, `STARTING`, `READY`, `BUSY`, `DEGRADED`, `STOPPING`, `STOPPED`, and `FAILED`. Lazy capability routing starts and health-checks only the selected module, executes it only when READY, and leaves unused modules inactive. `core.Contracts` now provides versioned V1 public request/result contracts, a central compatibility registry, deterministic serialization, and safe rejection before module execution for unsupported contracts. `core.CapabilityManifest` and `CapabilityManifestRegistry` now require CoreService-managed modules to declare identity, capabilities, contracts, dependencies, platform compatibility, permissions, lifecycle support, and provider metadata before activation. `memory.schema_migrations` now provides centralized durable-store schema envelopes, migration registration, legacy import, backup-before-write, atomic replacement, write locking, corruption rejection, and read-only inspection for active JSON-backed persistent stores. `core.Health` now provides a common health result model, bounded adapter fallback policy, explicit retry-safety classification, circuit breaker foundation, short-lived health cache, and event-history integration for observable fallback decisions.
+
+`core.BrainSessionManager` is the central Capital/Core lifecycle controller. It owns the deterministic Brain states `STOPPED`, `BOOTING`, `INITIALIZING`, `STANDBY`, `ACTIVE`, `PROCESSING`, `RESPONDING`, `RETURNING_TO_STANDBY`, `SHUTTING_DOWN`, and `ERROR`; validates every transition; creates one session ID on activation; clears it on standby; tracks activity, inactivity deadlines, and consecutive failures; and emits bounded lifecycle events. `CoreService.get_brain_session_snapshot()` inspects it without activating a City. This is separate from `ModuleLifecycleManager`, which still controls removable modules. No background timer, microphone listener, wake word, City activation loop, GPT, or cloud service was added.
 
 `core.EventBus` now provides an internal future city event skeleton with `Event` records shaped as source, type, priority, payload, and timestamp. Supported priorities are `low`, `normal`, `high`, and `critical`. This is future-use infrastructure only; it does not start background listeners, notifications, camera loops, internet access, GPT, or any daemon.
 
@@ -551,7 +553,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 1465 tests across current core modules
+- Pytest automated coverage for 1572 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -570,7 +572,26 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1506 tests`.
+Current pytest collection: `1572 tests`.
+
+Manual Brain Session Manager Verification
+
+The deterministic lifecycle verifier uses an injected fake clock and no microphone, speaker, Whisper, Piper, network, GPT, or Raspberry Pi hardware:
+
+```powershell
+py scripts\manual_verify_brain_session_manager.py
+```
+
+It demonstrates the complete boot, active request, standby return, and shutdown flow; one rejected illegal transition; exact inactivity expiry; session-ID creation/clearing; and lifecycle-event privacy.
+
+Raspberry Pi owner verification is hardware-free:
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+python scripts/manual_verify_brain_session_manager.py
+```
 
 Manual Calculator Launch Verification
 
@@ -2253,7 +2274,15 @@ Phase 90
 - Added the separate atomic `ares.pending_owner_memory_action` v1 transient store at `data/runtime/pending_owner_memory_action.json` with a 60-second default expiry and cross-process confirmation
 - Bound deletion to exact memory-id snapshots or a keyed-fact key/revision, refused ambiguous matches, preserved keyed facts during general deletion, and kept unrelated commands pending until expiry
 - Added read-only pending/count/summary inspection, isolated fresh-process management verification, voice-route confirmation regressions, event redaction, and architecture guards against voice-owned memory state
-- Current pytest collection is 1506 tests
+- Historical Phase 90 pytest collection was 1506 tests
+
+Phase 91
+
+- Added central `BrainSessionManager` ownership under Capital/Core and minimal read-only composition through `CoreService`
+- Added versioned transition-request and lifecycle-snapshot contracts, strict transition validation, injected-clock inactivity checks, bounded failure escalation/recovery, thread-safe state access, and unique active-session IDs
+- Added bounded Brain lifecycle events with correlation/session identifiers and no transcript, owner-memory, secret, audio, or file content
+- Added a hardware-free deterministic verifier and comprehensive lifecycle, concurrency, contract, event, privacy, CoreService, voice/calculator/owner-memory regression coverage
+- Current pytest collection is 1572 tests
 
 Future phases retain camera understanding, face/object recognition, ROS2, Jetson Orin migration, and autonomous navigation as unimplemented plans.
 

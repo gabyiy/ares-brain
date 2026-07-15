@@ -4,15 +4,18 @@ Last Updated: 2026-07-15
 
 Current Version
 
-ARES v1.94 - Safe Central Owner Memory Management
+ARES v1.95 - Central Brain Session Manager
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, a production-style one-command single-turn launcher, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production-factory-verified natural-language calculator routing, and central general explicit long-term owner memory with confirmation-gated voice CRUD shared by text and voice through CoreService.
+ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, a production-style one-command single-turn launcher, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production-factory-verified natural-language calculator routing, and central general explicit long-term owner memory with confirmation-gated voice CRUD shared by text and voice through CoreService.
 
 Checkpoint root causes and fixes:
+
+- ARES previously had strict lifecycle state for removable modules and bounded one-turn voice orchestration, but no Capital-owned lifecycle authority for a future persistent Brain process. `BrainSessionManager` now owns the central state machine and CoreService exposes a read-only snapshot without booting or activating any City.
+- V1 transition/snapshot contracts, injected-clock inactivity checks, unique active-session IDs, bounded failure escalation, explicit safe recovery, lock-protected access, transition history, and privacy-bounded lifecycle events are implemented. The manager contains no microphone, Whisper, Piper, memory-store, skill, GPT, network, listener, or runtime-loop behavior.
 
 - End-of-speech could reach `maximum_duration_reached` because the previous detector cleared all trailing-silence evidence for any frame above one static silence threshold. Adaptive calibration now derives three bounded thresholds, and `POSSIBLE_SILENCE` resumes only after consecutive frames above the continue threshold.
 - Voice arithmetic reached IntentParser as number words and Whisper formatting, so digit/operator intent rules returned `unknown`. The versioned transcript normalizer now preserves raw text and converts only strict supported arithmetic into the unchanged safe calculator route.
@@ -128,9 +131,21 @@ Confirmed Phase 3 foundation:
 - Bounded Whisper-trigger normalization and owner-memory-before-task production regressions for the observed `locked term` and `remembering ... memory` transcripts
 - Central owner-memory list/count/inspect and confirmation-gated specific/topic/all-general/keyed deletion
 - Atomic cross-process `ares.pending_owner_memory_action` v1 state with expiry, cancellation, corruption rejection, and exact-target snapshots
+- Central versioned `BrainSessionManager` state machine with strict transition rejection, deterministic inactivity checks, failure/recovery handling, and safe lifecycle events
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1506 tests.
+Current pytest collection: 1572 tests.
+
+Hardware-free Raspberry Pi verification after pulling:
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+python scripts/manual_verify_brain_session_manager.py
+```
+
+The script uses a fake clock and no Raspberry Pi hardware. It does not start microphone capture, playback, Whisper, Piper, a listener, GPT, or a City. Windows verification passed in this checkpoint; post-pull Raspberry Pi execution remains owner-run.
 
 Raspberry Pi post-pull verification:
 
@@ -2174,22 +2189,24 @@ Future Roadmap
 13. General explicit long-term owner memory, v2-to-v3 migration, lexical retrieval, confirmation-gated broad deletion, and fresh-process verification completed in deterministic tests
 14. Whisper-tolerant explicit-memory routing for `locked term memory` and `remembering ... memory that` completed in deterministic production-path tests
 15. Safe central list/count/inspect and confirmation-gated specific/topic/all-general/keyed deletion completed in deterministic production-path tests
-16. Verify cross-process owner-memory request/confirm/cancel and keyed/general separation on Raspberry Pi
-17. Only later add wake-word/background listening
-18. GPT fallback integration
-19. Raspberry Pi deployment
-20. Robot body / sensors
-21. Vision
-22. Robotics
-23. Jetson Orin migration
-24. Autonomous ARES
+16. Central deterministic Brain Session Manager completed in CI with no persistent runtime loop or City activation
+17. Verify cross-process owner-memory request/confirm/cancel and keyed/general separation on Raspberry Pi
+18. Design any persistent foreground runtime as a separate bounded checkpoint
+19. Only later add wake-word/background listening
+20. GPT fallback integration
+21. Raspberry Pi deployment
+22. Robot body / sensors
+23. Vision
+24. Robotics
+25. Jetson Orin migration
+26. Autonomous ARES
 
 Verification Notes
 
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1506 tests.
+- Current pytest collection: 1572 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.

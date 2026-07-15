@@ -145,6 +145,8 @@ Current responsibilities:
 - expose `get_lifecycle_status()`
 - expose `get_lifecycle_history()`
 - expose explicit `recover_service()` for failed or degraded modules
+- own the central `BrainSessionManager` composition boundary
+- expose `get_brain_session_snapshot()` without activating a module or City
 - receive internal city events with `handle_event(event)`
 - track city lifecycle states: `idle`, `active`, `failed`, and `disabled`
 - register PCService as the default `pc` service
@@ -152,6 +154,41 @@ Current responsibilities:
 - fail safely when a registered service does not expose required capability interfaces
 
 CoreService does not implement device behavior itself. It discovers and routes to registered services.
+
+# Central Brain Session Lifecycle
+
+`core.BrainSessionManager` belongs to the Capital/Core Brain. It is not a removable City, adapter, skill, hardware provider, or `ModuleLifecycleManager` record. CoreService composes one manager and exposes a read-only snapshot; constructing CoreService does not boot the Brain or activate any registered service.
+
+The versioned public boundary is `BrainSessionTransitionRequestV1` plus `BrainSessionSnapshotV1`. A snapshot reports current/previous/source/requested state, session and correlation identifiers, entered and last-activity timestamps, inactivity timeout/deadline state, consecutive and maximum failure counts, transition reason, structured status/errors, and bounded safe metadata.
+
+Legal transitions are explicit:
+
+```text
+STOPPED -> BOOTING -> INITIALIZING -> STANDBY
+STANDBY -> ACTIVE -> PROCESSING -> RESPONDING -> ACTIVE
+ACTIVE | PROCESSING | RESPONDING -> RETURNING_TO_STANDBY -> STANDBY
+any nonterminal state -> SHUTTING_DOWN -> STOPPED
+operational state -> ERROR (only through explicit failure reporting)
+ERROR -> RETURNING_TO_STANDBY (only explicit safe recovery) -> STANDBY
+ERROR -> SHUTTING_DOWN -> STOPPED
+```
+
+An invalid transition returns `transition_rejected` with source state, requested target, and a bounded reason. State, session ID, timestamps, and transition history remain unchanged. Direct transition to `ERROR` is rejected; `report_failure()` owns failure counting and enters `ERROR` only for an explicitly unrecoverable failure or the configured consecutive-failure limit. Recovery requires `recovery_safe=True` and retains the required `RETURNING_TO_STANDBY` intermediate state.
+
+Entering `ACTIVE` from `STANDBY` creates a unique session ID. Processing and response transitions preserve it. Completing the standby return clears it. `record_activity()` updates an injected-clock deadline, while `inactivity_expired()` only answers a question: it starts no timer, thread, listener, or transition. Defaults are 30 seconds and three consecutive failures; accepted bounds are 1-3600 seconds and 1-20 failures. `config/modules.example.json` records those values.
+
+Lifecycle events are `brain_boot_started`, `brain_initialization_started`, `brain_standby_entered`, `brain_session_activated`, `brain_processing_started`, `brain_response_started`, `brain_session_activity_recorded`, `brain_returning_to_standby`, `brain_shutdown_started`, `brain_stopped`, `brain_state_transition_rejected`, and `brain_lifecycle_error`. They carry state, machine-safe reason, timestamp, correlation/session identifiers, timeout, and failure count only. Transcript text, owner-memory values, audio, secrets, and file contents are excluded. An injected `EventHistoryStore` may persist these bounded records synchronously.
+
+This checkpoint does not add persistent runtime operation. A future explicitly approved runtime loop may observe Brain state, then ask CoreService to validate health, reserve resources, and activate only a requested City. The manager will remain authoritative for the Brain session; Cities will remain lifecycle-managed resources and will neither own nor mutate the central manager directly. Wake-word detection, background microphone listening, daemon startup, and City activation from this state machine are not implemented.
+
+Hardware-free verification:
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+python scripts/manual_verify_brain_session_manager.py
+```
 
 ## PCService
 
@@ -1278,6 +1315,8 @@ Discovery over assumptions is a core design rule. If a service is missing or inc
 # Enforced Module Lifecycle
 
 ARES uses `core.ModuleLifecycleManager` to give every CoreService-managed module an explicit, testable lifecycle before real hardware/adapters are added.
+
+This module lifecycle is intentionally distinct from `BrainSessionManager`: modules move through load/readiness states, while the Capital Brain moves through session states. A City cannot replace or own the Brain session manager.
 
 Required lifecycle states:
 
