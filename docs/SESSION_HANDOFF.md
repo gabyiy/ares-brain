@@ -4,20 +4,22 @@ Last Updated: 2026-07-15
 
 Current Version
 
-ARES v1.96 - Persistent Foreground Brain Runtime
+ARES v1.97 - Foreground Standby Wake Runtime
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager and persistent foreground text runtime, verified Raspberry Pi ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, a production-style one-command single-turn launcher, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production-factory-verified natural-language calculator routing, and central general explicit long-term owner memory with confirmation-gated voice CRUD shared by text and voice through CoreService.
+ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, persistent foreground runtime, and injected staged Raspberry Pi standby wake listener. Verified components already include ALSA input/output, offline Whisper STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production natural-language calculator routing, and central general explicit long-term owner memory with confirmation-gated CRUD shared by text and voice through CoreService. The new wake runtime is fully verified with deterministic injected adapters on Windows; Raspberry Pi wake hardware verification remains owner-run after pulling.
 
 Checkpoint root causes and fixes:
 
 - ARES previously had strict lifecycle state for removable modules and bounded one-turn voice orchestration, but no Capital-owned lifecycle authority for a future persistent Brain process. `BrainSessionManager` now owns the central state machine and CoreService exposes a read-only snapshot without booting or activating any City.
 - V1 transition/snapshot contracts, injected-clock inactivity checks, unique active-session IDs, bounded failure escalation, explicit safe recovery, lock-protected access, transition history, and privacy-bounded lifecycle events are implemented. The manager contains no microphone, Whisper, Piper, memory-store, skill, GPT, network, listener, or runtime-loop behavior.
 - Checkpoint 2 adds `core.BrainRuntime` as the Capital-owned foreground process controller while keeping `BrainSessionManager` as the sole state authority. The runtime boots once to standby, recognizes only exact bounded text phrases, keeps one session ID across serial production skill commands, returns to standby at the exact manager inactivity deadline or an owner stop phrase, and exits only on explicit shutdown/cancellation/end-of-input/unsafe failure.
-- Runtime input/output are injected. Queue/collecting adapters drive deterministic verification and bounded console adapters drive the explicit text interface. Runtime events store category, lengths, status, timing, and correlation/session IDs, never full input, owner-memory values, response content, audio, secrets, or files. No wake-word microphone, continuous capture, City activation, systemd, GPT, cloud, network listener, or runtime worker thread was added.
+- Runtime input/output are injected. Queue/collecting adapters drive deterministic verification and bounded console adapters preserve the explicit text interface. Runtime events store category, lengths, status, timing, and correlation/session IDs, never full input, owner-memory values, response content, audio, secrets, or files.
+- Checkpoint 3 adds one injected `StandbyWakeListener` to the Capital-owned runtime. Linux standby uses calibrated RMS VAD as the low-cost first stage, canonical 16 kHz mono PCM, and tiny English Whisper only for a bounded candidate. Exact normalized wake classification activates the existing manager; non-wake speech remains silent in standby and never reaches CoreService.
+- Active voice input/output reuse `SingleTurnVoicePipeline`. A shared capture/playback gate and post-playback delay prevent simultaneous input/output and self-wake. Candidate files are unique and removed by default, events contain no transcript/audio content, and shutdown cancels adapters without hidden worker threads. No City activation, systemd, boot hook, daemon, GPT, cloud, network listener, or barge-in was added.
 
 - End-of-speech could reach `maximum_duration_reached` because the previous detector cleared all trailing-silence evidence for any frame above one static silence threshold. Adaptive calibration now derives three bounded thresholds, and `POSSIBLE_SILENCE` resumes only after consecutive frames above the continue threshold.
 - Voice arithmetic reached IntentParser as number words and Whisper formatting, so digit/operator intent rules returned `unknown`. The versioned transcript normalizer now preserves raw text and converts only strict supported arithmetic into the unchanged safe calculator route.
@@ -135,9 +137,13 @@ Confirmed Phase 3 foundation:
 - Atomic cross-process `ares.pending_owner_memory_action` v1 state with expiry, cancellation, corruption rejection, and exact-target snapshots
 - Central versioned `BrainSessionManager` state machine with strict transition rejection, deterministic inactivity checks, failure/recovery handling, and safe lifecycle events
 - Capital/Core `BrainRuntime` foreground loop with exact text activation, same-session multi-command routing, manager-owned inactivity standby, owner standby, explicit shutdown, injected adapters, and privacy-safe events
+- Versioned standby-wake listener contracts, strict wake configuration, exact phrase classification, and a Core-owned listener capability manifest
+- Linux staged wake adapter using existing ALSA/calibrated-VAD/canonical-WAV/Whisper boundaries without continuous transcription
+- Active runtime voice adapters that reuse `SingleTurnVoicePipeline` and enforce capture/playback exclusion plus post-playback settling
+- Foreground `scripts/run_ares_standby_voice.py`, deterministic wake verifier, and bounded Raspberry Pi wake hardware helper
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1671 tests.
+Current pytest collection: 1769 tests.
 
 Hardware-free Raspberry Pi verification after pulling:
 
@@ -147,10 +153,23 @@ source venv/bin/activate
 git pull --ff-only origin main
 python scripts/manual_verify_brain_session_manager.py
 python scripts/manual_verify_brain_runtime.py
+python scripts/manual_verify_standby_wake_runtime.py
 python scripts/run_ares_brain_runtime_text.py
 ```
 
-The manual verifiers use fake-clock/deterministic text paths and no Raspberry Pi hardware. The foreground text process accepts `Ares`, active commands, `goodbye Ares`, and `shutdown Ares`. None of these commands starts microphone capture, playback, Whisper, Piper, a wake listener, GPT, or a City. Windows verification passed in this checkpoint; post-pull Raspberry Pi execution remains owner-run.
+The manual verifiers use fake clocks and deterministic injected adapters; they require no Raspberry Pi hardware. The text process remains unchanged. The standby-wake verifier injects microphone, Whisper, Piper, and speaker behavior while exercising the real runtime, manager, single-turn transport, CoreService, calculator, and owner-memory routes. Windows verification passed; post-pull Raspberry Pi wake execution remains owner-run.
+
+Raspberry Pi standby wake verification:
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+python scripts/manual_verify_standby_wake_hardware.py
+python scripts/run_ares_standby_voice.py
+```
+
+The helper is bounded and never replays owner capture. The production command stays in the foreground until `shutdown Ares` or Ctrl+C. Defaults are microphone `plughw:2,0`, speaker `plughw:CARD=Device,DEV=0`, tiny English wake model, base English command model, male `en_US-hfc_male-medium`, 30-second inactivity, and no diagnostic retention.
 
 Raspberry Pi post-pull verification:
 
@@ -163,7 +182,7 @@ python scripts/inspect_owner_memory.py --memories
 
 Run a fresh `python scripts/run_ares_voice.py` process for each of these phrases: `Remember in your long-term memory that I love going to the gym.`, `Remember in long-term memory that I like playing video games.`, `What do I like?`, `What do you remember about the gym?`, and `What do you remember about video games?`. Then inspect with `python scripts/inspect_owner_memory.py --memories`, `--type preference`, `--topic gym`, `--topic gaming`, and `--json`. Existing keyed facts must remain and repeats must not increase the active general-memory count. This has not been claimed as post-fix Raspberry Pi verification from Windows.
 
-The only real audio additions are explicit Linux ALSA fixed-duration or VAD-bounded microphone capture through `LinuxAlsaMicrophoneAdapter`, centralized canonical WAV conversion through `core.WavAudio`, offline WAV transcription through `LinuxWhisperSpeechToTextAdapter`, offline profile-resolved Piper WAV generation through `LinuxPiperTextToSpeechAdapter`, explicit ALSA WAV playback through `LinuxAlsaSpeakerAdapter`, owner-run setup/verification scripts, hardened WAV diagnostics, the controlled single-turn pipeline, its `scripts/run_ares_voice.py` owner launcher, and the bounded multi-turn session. Adaptive calibration remains inside the VAD boundary; transcript normalization and routing diagnostics remain between STT and `VoiceCommandRouter`/SkillManager. `config/voice_profiles.json` is the single voice source; Brain and CoreService do not know ALSA, conversion, VAD, Whisper, Piper, or normalization internals. Owner memory is a separate central service boundary reached through the normal skill route and does not turn transcript handling into automatic persistence. Wake word detection, Vosk, background listening, notifications, GPT, internet runtime access, unbounded conversation loops, automatic transcript memory writes, boot-time microphone activation, and real device/event automation remain disabled until explicitly approved.
+The real audio surface now includes explicit ALSA fixed-duration or VAD-bounded capture, canonical WAV conversion, offline Whisper, profile-resolved Piper, explicit ALSA playback, controlled single/multi-turn paths, and the foreground staged standby-wake runtime. Adaptive calibration stays in the VAD boundary; transcript normalization stays between STT and routing. `config/voice_profiles.json` remains the single voice source, while Brain/CoreService know none of the hardware, model, conversion, or subprocess details. Owner memory remains a separate central service reached through the normal skill route. Vosk, systemd, boot-time microphone activation, daemonization, notifications, GPT, internet runtime access, automatic transcript memory writes, barge-in, and real device/event automation remain disabled.
 
 `skills.VoiceSessionSkill` now starts a bounded mock voice session from text commands: "start voice session", "start mock voice", and "run voice test". It uses only `MockVoiceInputAdapter`, `MockVoiceOutputAdapter`, and `VoiceSessionLoop`, returns a transcript summary, and is wired through IntentParser, Planner, ExecutionPipeline, SkillManager, and the REPL path.
 
@@ -2163,17 +2182,17 @@ Text REPL
 
 Immediate Next Milestone
 
-Pull and run the deterministic persistent Brain Runtime verifiers on Raspberry Pi. The next implementation checkpoint is one bounded real microphone wake-word activation adapter feeding the existing Capital-owned runtime; runtime ownership must not move into Voice City. Do not add systemd/boot startup, unrestricted background capture, barge-in, GPT, cloud services, autonomous City activation, or a second lifecycle/timer system.
+Pull and run the bounded wake hardware helper and foreground standby runtime on Raspberry Pi. Record no-speech, unrelated-speech rejection, wake acknowledgement, calculator routing, standby, reactivation, inactivity, and clean shutdown evidence before considering systemd. Runtime ownership must remain in Capital/Core. Do not add boot startup, daemonization, barge-in, GPT, cloud services, autonomous City activation, or a second lifecycle/timer system.
 
 Next technical choices:
 
-- Pull latest `main`, run both Brain lifecycle/runtime verifiers, and exercise the explicit foreground text runtime with activation, calculator, owner-memory, standby, reactivation, and shutdown commands.
+- Pull latest `main`, run the deterministic wake verifier, then run `manual_verify_standby_wake_hardware.py` with the installed tiny/base models and known ALSA devices.
 - Inspect owner state only through `python scripts/inspect_owner_memory.py --summary --pending` or its focused flags; malformed durable or transient data must fail closed rather than be reset and executed.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
-- Add only a bounded replaceable microphone wake-word activation adapter next; keep the runtime in Capital/Core and retain exact activation policy.
-- Keep background listening beyond that bounded listener and systemd/boot startup for later checkpoints.
+- Tune only validated wake adapter thresholds/durations if real hardware evidence requires it; keep exact phrase policy and Capital/Core lifecycle ownership.
+- Keep systemd/boot startup for the next separately reviewed checkpoint after hardware stability is demonstrated.
 - Keep GPT, embeddings, semantic/vector search, autonomous fact extraction, external weather/stocks/calendar APIs, real scheduling, and notifications out of scope until explicitly approved.
-- Keep additional real microphone behavior, alternate STT engines, Vosk, wake word, internet-backed adapters, notifications, and automatic PC actions out of scope until each real-audio step is explicitly approved.
+- Keep alternate STT engines, Vosk, internet-backed adapters, notifications, and automatic PC actions out of scope until separately approved.
 - Keep explicit owner facts distinct from legacy `UserProfileStore`, general `MemoryStore`, operational event history, and RAM-only conversation context.
 
 ---
@@ -2198,8 +2217,8 @@ Future Roadmap
 16. Central deterministic Brain Session Manager completed in CI
 17. Persistent foreground Brain Runtime completed in CI with exact text activation, multi-command sessions, inactivity standby, and explicit shutdown
 18. Run the hardware-free runtime verifier and foreground text interface after pulling on Raspberry Pi
-19. Add one bounded real microphone wake-word activation adapter without changing Capital/Core runtime ownership
-20. Only later consider broader background listening and systemd/boot startup
+19. Add one bounded real microphone wake activation adapter without changing Capital/Core runtime ownership. Completed in deterministic verification; Raspberry Pi hardware proof remains owner-run.
+20. Verify foreground wake stability on Raspberry Pi, then separately review systemd/boot startup
 21. GPT fallback integration
 22. Raspberry Pi deployment
 23. Robot body / sensors
@@ -2213,7 +2232,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1671 tests.
+- Current pytest collection: 1769 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2222,6 +2241,10 @@ Verification Notes
   - `py -m pytest`
   - `py -m compileall core interfaces events memory skills scripts`
   - `py scripts\verify_phase2_events_memory.py`
+  - `py scripts\manual_verify_brain_session_manager.py`
+  - `py scripts\manual_verify_brain_runtime.py`
+  - `py scripts\manual_verify_standby_wake_runtime.py`
+- Standby-wake tests cover versioned contracts, configuration bounds/collisions, exact and false-positive phrase matching, queued/Linux listener lifecycle, VAD/canonical-WAV delegation, candidate-only Whisper, cleanup/retention, cancellation, failures, capability metadata, runtime activation, session reuse, calculator and owner-memory routing, standby/inactivity/shutdown, self-wake exclusion, output isolation, event privacy, CLI defaults, and both verification helpers.
 - GitHub Actions CI runs the same verification suite on Windows with Python 3.13 for `main` pushes and pull requests.
 - GitHub Actions should be checked after push for the latest `main` commit.
 - Tool selection tests cover current TimeDate/MemoryRecall/Calculator/Goals/Notes/Tasks selection.
@@ -2344,6 +2367,7 @@ The inspector is read-only and exits nonzero for corrupt or unsupported state. I
 
 Latest Commits
 
+- `78baf61` Add foreground standby wake runtime
 - `1744506` Implement safe owner memory management
 - `f63385d` Implement general explicit owner memory
 - `2e8a9fb` Implement central general owner memory
@@ -2468,10 +2492,10 @@ Latest Commits
 Next Planned Step
 
 - Architecture hardening before real hardware/adapters is complete: lifecycle, contracts, manifests, migrations, health/fallback, and measured resource budgets are implemented.
-- Phase 3 now includes verified owner-run ALSA, Whisper, Piper, speaker, voice-profile, single-turn, bounded multi-turn, adaptive VAD, deterministic spoken-calculator routing, a short production-style one-turn launcher, and one central bounded general explicit long-term owner-memory service with confirmation-gated CRUD in Windows/hardware-free verification.
-- Pull `main` on Raspberry Pi and verify specific-delete cancellation/confirmation, topic cancellation, list/count, and keyed/general separation across fresh `python scripts/run_ares_voice.py` processes. Do not edit either JSON file manually during the test.
-- Confirm existing keyed facts remain after general deletion, then inspect the profile and transient pending record through the read-only tool. Do not claim semantic, episodic, inferred, autonomous, or unrestricted conversational memory.
+- Phase 3 now includes the Capital-owned foreground standby wake runtime in deterministic verification, alongside owner-verified ALSA, Whisper, Piper, speaker, voice profiles, single-turn voice, and calculator routing.
+- Pull `main` on Raspberry Pi and run `python scripts/manual_verify_standby_wake_hardware.py`. Verify silence and unrelated speech remain in standby, `Ares` produces one acknowledgement, calculator and owner-memory commands use one session, `goodbye Ares` returns to standby, and `shutdown Ares` cleans up.
+- Then run `python scripts/run_ares_standby_voice.py` in the foreground. Do not claim hardware wake verification until the owner records this evidence.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not enable default real weather/market API behavior, Google Calendar integration, GPT, embeddings, vision, scheduling, notifications, or background automation yet.
-- Do not add wake word detection, boot startup, background listening, cloud speech, an unbounded loop, automatic transcript memory writes, semantic/vector memory, autonomous fact extraction, embeddings, or cloud synchronization yet.
+- Do not add systemd/boot startup, daemonization, cloud speech, barge-in, an unbounded hidden loop, automatic transcript memory writes, semantic/vector memory, autonomous fact extraction, embeddings, or cloud synchronization yet.

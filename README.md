@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v1.96 - Persistent Foreground Brain Runtime
+ARES v1.97 - Foreground Standby Wake Runtime
 
 ---
 
@@ -24,7 +24,7 @@ The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the
 
 `core.BrainSessionManager` is the central Capital/Core lifecycle controller. It owns the deterministic Brain states `STOPPED`, `BOOTING`, `INITIALIZING`, `STANDBY`, `ACTIVE`, `PROCESSING`, `RESPONDING`, `RETURNING_TO_STANDBY`, `SHUTTING_DOWN`, and `ERROR`; validates every transition; creates one session ID on activation; clears it on standby; tracks activity, inactivity deadlines, and consecutive failures; and emits bounded lifecycle events. `CoreService.get_brain_session_snapshot()` inspects it without activating a City. This is separate from `ModuleLifecycleManager`, which still controls removable modules. No background timer, microphone listener, wake word, City activation loop, GPT, or cloud service was added.
 
-`core.BrainRuntime` is the persistent foreground Capital/Core process controller built on that manager. It boots once to `STANDBY`, accepts only exact bounded activation phrases there, creates one active session, serially routes multiple text commands through the existing production `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path, returns to standby on exact owner stop phrases or the manager's 30-second inactivity deadline, and stops only on an explicit shutdown phrase, cancellation, end-of-input, or unsafe failure escalation. `BrainSessionManager` remains the sole lifecycle-state authority. Versioned runtime request/result/snapshot/classification/loop contracts, injected queue/console input adapters, collecting/console output adapters, strict phrase/configuration validation, and privacy-bounded runtime events are included. No wake-word microphone, continuous capture, background service, systemd unit, City activation, GPT, cloud service, network listener, or runtime worker thread was added.
+`core.BrainRuntime` is the persistent foreground Capital/Core process controller built on that manager. It boots once to `STANDBY`, creates one active session after a verified bounded activation, serially routes multiple commands through the existing production `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path, returns to standby on exact owner stop phrases or the manager's 30-second inactivity deadline, and stops only on an explicit shutdown phrase, cancellation, end-of-input, or unsafe failure escalation. `BrainSessionManager` remains the sole lifecycle-state authority. The runtime can now use an injected `StandbyWakeListener`: Linux standby capture first uses calibrated RMS VAD, invokes the tiny local Whisper model only for a bounded speech candidate, and activates only on exact normalized wake phrases. Active command capture and response output continue through the existing `SingleTurnVoicePipeline`, base English command model, Piper profile, and ALSA speaker boundaries. No daemon, systemd unit, boot startup, City activation, GPT, cloud service, network listener, or runtime worker thread was added.
 
 `core.EventBus` now provides an internal future city event skeleton with `Event` records shaped as source, type, priority, payload, and timestamp. Supported priorities are `low`, `normal`, `high`, and `critical`. This is future-use infrastructure only; it does not start background listeners, notifications, camera loops, internet access, GPT, or any daemon.
 
@@ -574,7 +574,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1671 tests`.
+Current pytest collection: `1769 tests`.
 
 Manual Brain Session Manager Verification
 
@@ -600,9 +600,33 @@ The optional explicit foreground text interface uses the same runtime with a bou
 py scripts\run_ares_brain_runtime_text.py
 ```
 
-Type `Ares` to activate, `goodbye Ares` to return to standby, and `shutdown Ares` to stop the process. This is text-mode verification, not microphone wake-word operation.
+Type `Ares` to activate, `goodbye Ares` to return to standby, and `shutdown Ares` to stop the process. This remains the stable hardware-free text mode.
 
-The next bounded checkpoint is real microphone wake-word activation feeding this Capital/Core runtime. It must remain a replaceable input adapter; background capture beyond that listener and systemd/boot startup are still unimplemented.
+Manual Standby Wake Runtime Verification
+
+The deterministic wake verifier injects candidate audio, Whisper results, Piper output, and speaker behavior while using the real `BrainRuntime`, `BrainSessionManager`, `SingleTurnVoicePipeline`, CoreService, calculator, and owner-memory routes:
+
+```powershell
+py scripts\manual_verify_standby_wake_runtime.py
+```
+
+The bounded Raspberry Pi hardware helper guides silent, unrelated-speech, wake, calculator, standby, reactivation, and shutdown checks. It never replays owner capture:
+
+```bash
+python scripts/manual_verify_standby_wake_hardware.py
+```
+
+The production foreground command is:
+
+```bash
+python scripts/run_ares_standby_voice.py
+```
+
+It uses `plughw:2,0`, `plughw:CARD=Device,DEV=0`, `ggml-tiny.en.bin` for bounded wake confirmation, `ggml-base.en.bin` for full commands, and `en_US-hfc_male-medium` by default. Say `Ares` for one `Yes Gabi.` acknowledgement, issue multiple commands under the same session, say `goodbye Ares` for standby, or `shutdown Ares` for full shutdown. Exact normalized matching rejects unrelated sentences that merely contain `Ares`.
+
+Standby does not run Whisper continuously. Calibrated 16 kHz mono PCM VAD captures one bounded candidate, then local Whisper confirms it. A shared capture/playback gate and 0.35-second settling delay prevent capture during ARES output and prevent the acknowledgement from self-triggering. Candidate audio is removed by default; retention is explicit. The process is foreground-only: systemd, boot startup, daemonization, barge-in, GPT, cloud fallback, and autonomous City activation remain unimplemented.
+
+`config/modules.example.json` records the validated listener defaults. The generic module-loader entry remains disabled so importing or booting unrelated ARES paths cannot start capture; the owner-run foreground command explicitly constructs and owns the listener.
 
 Raspberry Pi owner verification is hardware-free:
 
@@ -612,6 +636,7 @@ source venv/bin/activate
 git pull --ff-only origin main
 python scripts/manual_verify_brain_session_manager.py
 python scripts/manual_verify_brain_runtime.py
+python scripts/manual_verify_standby_wake_runtime.py
 python scripts/run_ares_brain_runtime_text.py
 ```
 
@@ -2312,7 +2337,15 @@ Phase 92
 - Added exact activation, standby, and shutdown classification; one acknowledgement per activation; serialized multi-command sessions; deterministic inactivity return; bounded failure recovery; and idempotent cleanup
 - Added versioned runtime request/result/snapshot/classification/loop contracts plus injected queue/console input and collecting/console output adapters
 - Added privacy-safe runtime events, configuration collision/bounds validation, deterministic real-skill verification, and foreground text verification without microphone, wake word, City activation, daemonization, or worker threads
-- Current pytest collection is 1671 tests
+- Historical Phase 92 pytest collection was 1671 tests
+
+Phase 93
+
+- Added an injected Capital/Core standby wake listener without moving lifecycle authority out of `BrainRuntime` and `BrainSessionManager`
+- Added calibrated RMS candidate detection followed by bounded tiny-model Whisper confirmation, exact wake matching, canonical 16 kHz WAV handling, cleanup, cancellation, and privacy-safe contracts/events
+- Reused `SingleTurnVoicePipeline` for active command capture and spoken output, with shared microphone/speaker exclusion and post-playback self-wake protection
+- Added deterministic and bounded hardware verification scripts plus the foreground `scripts/run_ares_standby_voice.py` entry point; systemd and boot startup remain unimplemented
+- Current pytest collection is 1769 tests
 
 Future phases retain camera understanding, face/object recognition, ROS2, Jetson Orin migration, and autonomous navigation as unimplemented plans.
 

@@ -179,7 +179,7 @@ Entering `ACTIVE` from `STANDBY` creates a unique session ID. Processing and res
 
 Lifecycle events are `brain_boot_started`, `brain_initialization_started`, `brain_standby_entered`, `brain_session_activated`, `brain_processing_started`, `brain_response_started`, `brain_session_activity_recorded`, `brain_returning_to_standby`, `brain_shutdown_started`, `brain_stopped`, `brain_state_transition_rejected`, and `brain_lifecycle_error`. They carry state, machine-safe reason, timestamp, correlation/session identifiers, timeout, and failure count only. Transcript text, owner-memory values, audio, secrets, and file contents are excluded. An injected `EventHistoryStore` may persist these bounded records synchronously.
 
-`BrainSessionManager` remains the sole lifecycle authority for the persistent foreground runtime. Future City activation may be requested by Capital/Core only after CoreService validates capability, health, contract, and capacity; Cities remain lifecycle-managed resources and will neither own nor mutate the central manager. Wake-word microphone detection, background capture, daemon/systemd startup, and City activation from this state machine are not implemented.
+`BrainSessionManager` remains the sole lifecycle authority for the persistent foreground runtime. Future City activation may be requested by Capital/Core only after CoreService validates capability, health, contract, and capacity; Cities remain lifecycle-managed resources and will neither own nor mutate the central manager. The manager itself contains no microphone or wake logic. `BrainRuntime` may invoke the bounded wake adapter described below, but daemon/systemd startup and City activation remain unimplemented.
 
 Hardware-free verification:
 
@@ -222,7 +222,49 @@ python scripts/manual_verify_brain_runtime.py
 python scripts/run_ares_brain_runtime_text.py
 ```
 
-The second command is a developer text interface. It is not a wake-word listener, microphone standby path, service, or boot hook. Real microphone wake-word activation is the next separately bounded checkpoint; systemd/boot startup remains later and unimplemented.
+The second command is the stable developer text interface. It is not a microphone path, service, or boot hook. The separately injected foreground wake adapter below does not alter this text mode; systemd/boot startup remains later and unimplemented.
+
+# Foreground Standby Wake Runtime
+
+`core.StandbyWakeListener` defines the bounded adapter contract used by Capital/Core while the lifecycle state is `STANDBY`. `core.LinuxStandbyWakeListener` is the Raspberry Pi/Linux implementation. It owns no lifecycle, skill, memory, or routing state. `BrainRuntime` starts, calls, cancels, and stops it; every activation still goes through `BrainSessionManager.activate_session()`.
+
+The staged path is:
+
+```text
+BrainRuntime (STANDBY)
+  -> LinuxStandbyWakeListener
+  -> LinuxAlsaMicrophoneAdapter calibrated RMS candidate capture
+  -> canonical 16 kHz mono signed 16-bit WAV
+  -> LinuxWhisperSpeechToTextAdapter with bounded tiny English model
+  -> exact normalized wake classification
+  -> BrainSessionManager (ACTIVE)
+  -> one "Yes Gabi." acknowledgement
+  -> existing SingleTurnVoicePipeline transport
+  -> CoreService / SkillManager / IntentParser / Planner / ExecutionPipeline / Skill
+  -> existing Piper and ALSA response output
+```
+
+Standby VAD waits up to three seconds per foreground poll, retains 0.2 seconds of pre-roll, uses 20 ms frames, limits a wake candidate to three seconds, and confirms terminal silence after 0.7 seconds. Ambient calibration is bounded to 0.75 seconds. Threshold validation enforces start greater than continue and continue greater than or equal to silence, with independent minimum and maximum clamps. The existing ALSA normalization boundary prevents 44.1 kHz hardware data from being relabeled as 16 kHz.
+
+Whisper does not run continuously. No-speech polls and non-wake speech stay in `STANDBY`, create no session, invoke no skill, produce no spoken error, and do not count as command failures. Candidate speech invokes local Whisper once. Wake matching is case, punctuation, and whitespace tolerant but exact after normalization. Defaults are `ares`, `hey ares`, `hello ares`, and `wake up ares`, with only bounded `ok` and `okay` filler prefixes. Sentences such as `I read about Ares yesterday` do not activate.
+
+`core.BrainRuntimeVoiceAdapters` reuses `SingleTurnVoicePipeline` as the active microphone/STT transport and as the TTS/speaker output boundary; it does not duplicate those subprocess paths. A shared `VoiceRuntimeGate` serializes capture and playback and applies a 0.35-second post-playback settling delay. Therefore standby capture and command capture cannot run during acknowledgement or response playback, and ARES cannot transcribe its own output as a wake or command. Normal operation never plays captured owner audio.
+
+The wake contracts are `WakeListenerRequestV1`, `WakeListenerResultV1`, `WakeDetectionResultV1`, `WakeListenerSnapshotV1`, and `StandbyListenResultV1`. Events contain state, status, classification, lengths, safe audio metadata, and correlation/session identifiers only. They exclude transcripts, owner-memory values, raw audio, file contents, and secrets. Temporary candidate directories are unique and removed by default; diagnostic retention is explicit.
+
+Foreground Raspberry Pi verification:
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+python scripts/manual_verify_standby_wake_hardware.py
+python scripts/run_ares_standby_voice.py
+```
+
+`scripts/manual_verify_standby_wake_hardware.py` is bounded. `scripts/run_ares_standby_voice.py` intentionally remains in the foreground until `shutdown Ares` or Ctrl+C. Neither installs a service or starts at boot. Raspberry Pi wake reliability remains owner-run hardware verification after pulling this checkpoint.
+
+The example listener configuration is enabled within its explicit configuration block but `enabled_modules.linux_standby_wake_listener` remains `false`. This prevents generic module loading from starting capture. The foreground script opts in by constructing the adapter directly under `BrainRuntime` ownership.
 
 ## PCService
 
