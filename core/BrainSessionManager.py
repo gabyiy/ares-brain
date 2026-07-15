@@ -201,6 +201,7 @@ class BrainSessionManager:
         self._event_bus = event_bus or EventBus(max_history=MAX_TRANSITION_HISTORY)
         self._event_history_store = event_history_store
         self._lock = RLock()
+        self._last_clock_at: Optional[datetime] = None
         now = self._now()
         self._state = BRAIN_STOPPED
         self._previous_state = ""
@@ -824,7 +825,11 @@ class BrainSessionManager:
         raise RuntimeError("session_id_factory did not produce a unique identifier")
 
     def _now(self) -> datetime:
-        return self._normalize_datetime(self._clock())
+        current = self._normalize_datetime(self._clock())
+        if self._last_clock_at is not None and current < self._last_clock_at:
+            return self._last_clock_at
+        self._last_clock_at = current
+        return current
 
     @staticmethod
     def _normalize_datetime(value: datetime) -> datetime:

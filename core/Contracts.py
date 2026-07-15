@@ -34,6 +34,11 @@ CONTRACT_MULTI_TURN_VOICE_SESSION_REQUEST = "voice.conversation_session.request"
 CONTRACT_MULTI_TURN_VOICE_SESSION_RESULT = "voice.conversation_session.result"
 CONTRACT_BRAIN_SESSION_TRANSITION_REQUEST = "brain.session.transition.request"
 CONTRACT_BRAIN_SESSION_SNAPSHOT = "brain.session.lifecycle.snapshot"
+CONTRACT_BRAIN_RUNTIME_REQUEST = "brain.runtime.request"
+CONTRACT_BRAIN_RUNTIME_RESULT = "brain.runtime.result"
+CONTRACT_BRAIN_RUNTIME_SNAPSHOT = "brain.runtime.snapshot"
+CONTRACT_BRAIN_RUNTIME_COMMAND_CLASSIFICATION = "brain.runtime.command_classification"
+CONTRACT_BRAIN_RUNTIME_LOOP_RESULT = "brain.runtime.loop_result"
 CONTRACT_EVENT_PUBLICATION_ENVELOPE = "event.publication.envelope"
 
 CONTRACT_REQUIRED_FIELDS = (
@@ -807,6 +812,84 @@ class BrainSessionSnapshotV1(VersionedContract):
     error_message: str = ""
 
 
+@dataclass(frozen=True)
+class BrainRuntimeRequestV1(VersionedContract):
+    contract_name: str = CONTRACT_BRAIN_RUNTIME_REQUEST
+    runtime_id: str = ""
+    input_text: str = ""
+    timeout_seconds: float = 0.0
+
+
+@dataclass(frozen=True)
+class BrainRuntimeCommandClassificationV1(VersionedContract):
+    contract_name: str = CONTRACT_BRAIN_RUNTIME_COMMAND_CLASSIFICATION
+    success: bool = True
+    status: str = "classified"
+    runtime_id: str = ""
+    current_lifecycle_state: str = "STOPPED"
+    command_category: str = "ordinary"
+    normalized_input: str = ""
+    matched_phrase: str = ""
+    error_code: str = ""
+    error_message: str = ""
+    timestamp: str = field(default_factory=utc_contract_timestamp)
+
+
+@dataclass(frozen=True)
+class BrainRuntimeResultV1(VersionedContract):
+    contract_name: str = CONTRACT_BRAIN_RUNTIME_RESULT
+    success: bool = False
+    status: str = ""
+    runtime_id: str = ""
+    current_lifecycle_state: str = "STOPPED"
+    command_category: str = ""
+    normalized_input: str = ""
+    response_text: str = ""
+    stop_reason: str = ""
+    error_code: str = ""
+    error_message: str = ""
+    timestamp: str = field(default_factory=utc_contract_timestamp)
+    data: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BrainRuntimeSnapshotV1(VersionedContract):
+    contract_name: str = CONTRACT_BRAIN_RUNTIME_SNAPSHOT
+    success: bool = True
+    status: str = "current"
+    runtime_id: str = ""
+    current_lifecycle_state: str = "STOPPED"
+    previous_lifecycle_state: str = ""
+    active: bool = False
+    command_count: int = 0
+    activation_count: int = 0
+    standby_return_count: int = 0
+    failure_count: int = 0
+    inactivity_timeout_seconds: float = 30.0
+    maximum_consecutive_failures: int = 3
+    last_stop_reason: str = ""
+    timestamp: str = field(default_factory=utc_contract_timestamp)
+
+
+@dataclass(frozen=True)
+class BrainRuntimeLoopResultV1(VersionedContract):
+    contract_name: str = CONTRACT_BRAIN_RUNTIME_LOOP_RESULT
+    success: bool = False
+    status: str = ""
+    runtime_id: str = ""
+    current_lifecycle_state: str = "STOPPED"
+    iteration_count: int = 0
+    command_count: int = 0
+    activation_count: int = 0
+    standby_return_count: int = 0
+    failure_count: int = 0
+    output_count: int = 0
+    stop_reason: str = ""
+    error_code: str = ""
+    error_message: str = ""
+    timestamp: str = field(default_factory=utc_contract_timestamp)
+
+
 def build_default_contract_registry() -> ContractRegistry:
     registry = ContractRegistry()
     registry.register(
@@ -904,6 +987,26 @@ def build_default_contract_registry() -> ContractRegistry:
     registry.register(
         CONTRACT_BRAIN_SESSION_SNAPSHOT,
         consumers=["BrainSessionManager", "CoreService"],
+    )
+    registry.register(
+        CONTRACT_BRAIN_RUNTIME_REQUEST,
+        consumers=["BrainRuntime", "RuntimeInputAdapter"],
+    )
+    registry.register(
+        CONTRACT_BRAIN_RUNTIME_RESULT,
+        consumers=["BrainRuntime", "RuntimeOutputAdapter"],
+    )
+    registry.register(
+        CONTRACT_BRAIN_RUNTIME_SNAPSHOT,
+        consumers=["BrainRuntime", "CoreService"],
+    )
+    registry.register(
+        CONTRACT_BRAIN_RUNTIME_COMMAND_CLASSIFICATION,
+        consumers=["BrainRuntime"],
+    )
+    registry.register(
+        CONTRACT_BRAIN_RUNTIME_LOOP_RESULT,
+        consumers=["BrainRuntime"],
     )
     registry.register(
         CONTRACT_EVENT_PUBLICATION_ENVELOPE,
