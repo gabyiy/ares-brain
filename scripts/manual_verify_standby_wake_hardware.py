@@ -28,8 +28,7 @@ STAGES = (
     HardwareTestStage("C", "Say 'Ares'.", "ACTIVE and one 'Yes Gabi.' acknowledgement"),
     HardwareTestStage("D", "Say 'calculate two plus two'.", "spoken 'Result: 4'"),
     HardwareTestStage("E", "Say 'goodbye Ares'.", "return to STANDBY"),
-    HardwareTestStage("F", "Say 'Ares' again.", "ACTIVE with a new session"),
-    HardwareTestStage("G", "Say 'shutdown Ares'.", "clean STOPPED state"),
+    HardwareTestStage("F", "Say 'shutdown Ares'.", "clean STOPPED state"),
 )
 
 
@@ -71,8 +70,8 @@ def run_hardware_verification(
         return 3
     wake_started = runtime.standby_wake_listener.start(runtime_id=runtime.runtime_id)
     wake_health = runtime.standby_wake_listener.health(runtime_id=runtime.runtime_id)
-    runtime.standby_wake_listener.stop("preflight_complete")
     if not wake_started.success or not wake_health.success:
+        runtime.standby_wake_listener.stop("preflight_failed")
         output_func(
             "Wake listener health check failed: "
             f"{wake_health.error_code or wake_started.error_code or 'unhealthy'}."
@@ -91,10 +90,11 @@ def run_hardware_verification(
     recognized_candidates: list[str] = []
     try:
         for index, stage in enumerate(STAGES, start=1):
-            output_func(f"Test {index}/7 ({stage.label}): {stage.instruction}")
+            output_func(f"Test {index}/{len(STAGES)} ({stage.label}): {stage.instruction}")
             output_func(f"Expected: {stage.expected}.")
             passed = False
             for attempt in range(1, args.attempts_per_test + 1):
+                before = runtime.snapshot()
                 result = runtime.poll_once()
                 snapshot = runtime.snapshot()
                 wake_result = getattr(runtime.standby_wake_listener, "last_result", None)
@@ -113,8 +113,24 @@ def run_hardware_verification(
                     f"candidate={'detected' if candidate_detected else 'no_speech'}; "
                     f"classification={_classification(wake_result)}; "
                     f"path={getattr(wake_result, 'classification_path', '') or 'none'}; "
-                    f"state={snapshot.current_lifecycle_state}; "
+                    f"state={before.current_lifecycle_state}->{snapshot.current_lifecycle_state}; "
                     f"session={snapshot.session_id or 'none'}; status={result.status}"
+                )
+                _print_recognition_summary(
+                    output_func,
+                    diagnostics=diagnostics,
+                    wake_result=wake_result,
+                    result=result,
+                    before_state=before.current_lifecycle_state,
+                    diagnostic_enabled=bool(args.diagnostic_wake),
+                )
+                output_func(
+                    "  Active session created: "
+                    + (
+                        "yes"
+                        if not before.session_id and bool(snapshot.session_id)
+                        else "no"
+                    )
                 )
                 if wake_result is not None:
                     output_func(
@@ -195,11 +211,53 @@ def _stage_passed(
     if label == "E":
         return state == BRAIN_STANDBY and not snapshot.session_id, first_session
     if label == "F":
-        session = str(snapshot.session_id or "")
-        return state == BRAIN_ACTIVE and bool(session) and session != first_session, first_session
-    if label == "G":
         return state == BRAIN_STOPPED, first_session
     return False, first_session
+
+
+def _print_recognition_summary(
+    output_func: Callable[[str], None],
+    *,
+    diagnostics: Any,
+    wake_result: Any,
+    result: Any,
+    before_state: str,
+    diagnostic_enabled: bool,
+) -> None:
+    if before_state == BRAIN_STANDBY:
+        recognizer = str(
+            getattr(diagnostics, "recognizer_name", "")
+            or getattr(wake_result, "recognizer_name", "")
+            or "vosk_constrained_grammar"
+        )
+        raw = str(getattr(diagnostics, "raw_recognition_result", "") or "")
+        normalized = str(getattr(diagnostics, "normalized_transcript", "") or "")
+        confidence = getattr(diagnostics, "recognition_confidence", None)
+        available = bool(
+            getattr(diagnostics, "recognition_confidence_available", False)
+        )
+        rejection = str(getattr(wake_result, "rejection_reason", "") or "none")
+        classification = _classification(wake_result)
+    else:
+        recognizer = "whisper_active_command"
+        raw = str(getattr(result, "normalized_input", "") or "")
+        normalized = raw
+        confidence = None
+        available = False
+        rejection = str(getattr(result, "error_code", "") or "none")
+        classification = str(getattr(result, "command_category", "") or "ordinary")
+    output_func(f"  Recognizer used: {recognizer}")
+    output_func(
+        "  Raw recognition result: "
+        + (raw if diagnostic_enabled and raw else "<diagnostics disabled or unavailable>")
+    )
+    output_func(f"  Normalized phrase: {normalized or '<none>'}")
+    output_func(
+        "  Confidence: "
+        + (f"{float(confidence):.3f}" if available and confidence is not None else "unavailable")
+    )
+    output_func(f"  Classification result: {classification}")
+    output_func(f"  Rejection reason: {rejection}")
 
 
 def main() -> int:

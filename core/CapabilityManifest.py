@@ -37,12 +37,19 @@ from core.Contracts import (
     CONTRACT_WAKE_LISTENER_REQUEST,
     CONTRACT_WAKE_LISTENER_RESULT,
     CONTRACT_WAKE_LISTENER_SNAPSHOT,
+    CONTRACT_WAKE_RECOGNIZER_REQUEST,
+    CONTRACT_WAKE_RECOGNIZER_RESULT,
     DEFAULT_CONTRACT_REGISTRY,
     ContractRegistry,
     is_valid_contract_version,
 )
 from core.ResourceBudget import ResourceDeclaration
-from core.ResourceBudget import CPU_WEIGHT_NORMAL, CPU_WEIGHT_TINY, STARTUP_COST_LIGHT
+from core.ResourceBudget import (
+    CPU_WEIGHT_NORMAL,
+    CPU_WEIGHT_TINY,
+    STARTUP_COST_LIGHT,
+    STARTUP_COST_MEDIUM,
+)
 
 
 MANIFEST_VERSION_V1 = "v1"
@@ -1062,24 +1069,25 @@ def build_standby_wake_listener_manifest() -> CapabilityManifest:
         module_type=MODULE_TYPE_ADAPTER,
         module_version=CONTRACT_VERSION_V1,
         manifest_version=MANIFEST_VERSION_V1,
-        description="Bounded ALSA/VAD candidate capture with offline Whisper wake confirmation.",
+        description="Bounded ALSA/VAD candidate capture with offline constrained Vosk wake recognition.",
         provider="ares",
         enabled_by_default=False,
         capabilities=["voice.standby_wake"],
         consumed_contracts={
             CONTRACT_WAKE_LISTENER_REQUEST: [CONTRACT_VERSION_V1],
             CONTRACT_VOICE_ACTIVITY_CAPTURE_RESULT: [CONTRACT_VERSION_V1],
-            CONTRACT_SPEECH_TO_TEXT_RESULT: [CONTRACT_VERSION_V1],
+            CONTRACT_WAKE_RECOGNIZER_RESULT: [CONTRACT_VERSION_V1],
         },
         produced_contracts={
             CONTRACT_WAKE_LISTENER_RESULT: [CONTRACT_VERSION_V1],
             CONTRACT_WAKE_DETECTION_RESULT: [CONTRACT_VERSION_V1],
             CONTRACT_WAKE_LISTENER_SNAPSHOT: [CONTRACT_VERSION_V1],
             CONTRACT_STANDBY_LISTEN_RESULT: [CONTRACT_VERSION_V1],
+            CONTRACT_WAKE_RECOGNIZER_REQUEST: [CONTRACT_VERSION_V1],
             CONTRACT_EVENT_PUBLICATION_ENVELOPE: [CONTRACT_VERSION_V1],
         },
         dependencies=ManifestDependencies(
-            required_capabilities=["voice.capture.activity", "voice.transcribe"],
+            required_capabilities=["voice.capture.activity"],
         ),
         platform=PlatformCompatibility(
             supported_operating_systems=["linux"],
@@ -1098,9 +1106,9 @@ def build_standby_wake_listener_manifest() -> CapabilityManifest:
             LIFECYCLE_OPERATION_STOP,
         ],
         resources=ResourceDeclaration(
-            estimated_ram_mb=24,
-            estimated_cpu_weight=CPU_WEIGHT_TINY,
-            startup_cost=STARTUP_COST_LIGHT,
+            estimated_ram_mb=320,
+            estimated_cpu_weight=CPU_WEIGHT_NORMAL,
+            startup_cost=STARTUP_COST_MEDIUM,
             heavy_module=False,
             persistent_module=True,
             maximum_concurrent_tasks=1,
@@ -1110,8 +1118,10 @@ def build_standby_wake_listener_manifest() -> CapabilityManifest:
             "owner": "capital_core_brain_runtime",
             "foreground_serialized": True,
             "candidate_detection": "adaptive_pcm_frame_rms_hysteresis",
-            "wake_confirmation": "offline_whisper_bounded_utterance",
+            "wake_confirmation": "offline_vosk_constrained_grammar",
             "continuous_whisper": False,
+            "standby_whisper": False,
+            "recognizer_model_loaded_once": True,
             "background_thread": False,
         },
     )

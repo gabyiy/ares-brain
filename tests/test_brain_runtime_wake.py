@@ -56,14 +56,12 @@ def test_unrelated_standby_speech_is_silently_rejected_without_core_route(tmp_pa
     "phrase",
     [
         "Ares",
-        "Aris",
+        "Aries",
         "ARES.",
         "Hey, Ares",
-        "Hey Aris",
-        "Hello Ares",
-        "Hello, Aris",
-        "Wake up, Ares",
-        "Wake up Aris",
+        "Hey Aries",
+        "Okay Ares",
+        "Okay, Aries",
     ],
 )
 def test_verified_wake_phrase_activates_and_acknowledges_exactly_once(phrase, tmp_path):
@@ -78,10 +76,10 @@ def test_verified_wake_phrase_activates_and_acknowledges_exactly_once(phrase, tm
     assert runtime.snapshot().activation_count == 1
 
 
-def test_bounded_repeated_aris_wake_activates_once_without_core_routing(tmp_path):
+def test_constrained_aries_alias_activates_once_without_core_routing(tmp_path):
     runtime, active, output, wake = _runtime(tmp_path)
     runtime.start()
-    wake.push("Aris, Aris, hello, Aris.")
+    wake.push("Aries.")
     activated = runtime.poll_once()
     first_session = runtime.session_manager.session_id
     assert activated.status == "activated"
@@ -97,7 +95,7 @@ def test_bounded_repeated_aris_wake_activates_once_without_core_routing(tmp_path
 
     active.push("goodbye Ares")
     assert runtime.poll_once().status == "standby_entered"
-    wake.push("ares ares")
+    wake.push("okay ares")
     assert runtime.poll_once().status == "activated"
     assert runtime.session_manager.session_id != first_session
     active.push("shutdown Ares")
@@ -310,7 +308,7 @@ def test_wake_runtime_events_are_emitted_without_transcripts_memory_values_or_au
     runtime.start()
     wake.push("private unrelated sentence about Ares yesterday")
     runtime.poll_once()
-    wake.push("Aris, Aris, hello, Aris.")
+    wake.push("Aries.")
     runtime.poll_once()
     active.push("Remember that my favorite color is ultraviolet.")
     runtime.poll_once()
@@ -319,7 +317,7 @@ def test_wake_runtime_events_are_emitted_without_transcripts_memory_values_or_au
     assert "brain_wake_detected" in serialized
     assert "brain_wake_rejected" in serialized
     assert "private unrelated sentence" not in serialized
-    assert "aris aris hello aris" not in serialized
+    assert '"aries"' not in serialized
     assert "ultraviolet" not in serialized
     assert "raw_transcript" not in serialized
     assert "audio_bytes" not in serialized
@@ -327,7 +325,7 @@ def test_wake_runtime_events_are_emitted_without_transcripts_memory_values_or_au
         path.read_text(encoding="utf-8", errors="replace")
         for path in tmp_path.rglob("*.json")
     ).casefold()
-    assert "aris aris hello aris" not in persisted
+    assert "aries" not in persisted
 
 
 def test_no_speech_poll_does_not_emit_noisy_standby_listener_event(tmp_path):

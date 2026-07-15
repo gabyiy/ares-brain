@@ -44,6 +44,8 @@ CONTRACT_WAKE_LISTENER_RESULT = "brain.standby_wake.listener_result"
 CONTRACT_WAKE_DETECTION_RESULT = "brain.standby_wake.detection_result"
 CONTRACT_WAKE_LISTENER_SNAPSHOT = "brain.standby_wake.snapshot"
 CONTRACT_STANDBY_LISTEN_RESULT = "brain.standby_wake.listen_result"
+CONTRACT_WAKE_RECOGNIZER_REQUEST = "brain.standby_wake.recognizer_request"
+CONTRACT_WAKE_RECOGNIZER_RESULT = "brain.standby_wake.recognizer_result"
 CONTRACT_EVENT_PUBLICATION_ENVELOPE = "event.publication.envelope"
 
 CONTRACT_REQUIRED_FIELDS = (
@@ -1012,6 +1014,11 @@ class StandbyListenResultV1(VersionedContract):
     whisper_processing_time_seconds: float = 0.0
     whisper_status: str = ""
     whisper_exit_code: Optional[int] = None
+    recognizer_name: str = ""
+    recognition_status: str = ""
+    recognition_confidence: Optional[float] = None
+    recognition_confidence_available: bool = False
+    recognition_processing_time_seconds: float = 0.0
     sample_rate_hz: int = 0
     channels: int = 0
     sample_width_bytes: int = 0
@@ -1022,6 +1029,54 @@ class StandbyListenResultV1(VersionedContract):
     timestamp: str = field(default_factory=utc_contract_timestamp)
     audio_metadata: Dict[str, Any] = field(default_factory=dict)
     data: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WakeRecognizerRequestV1(VersionedContract):
+    contract_name: str = CONTRACT_WAKE_RECOGNIZER_REQUEST
+    runtime_id: str = ""
+    lifecycle_state: str = "STANDBY"
+    audio_path: str = ""
+    sample_rate_hz: int = 16000
+    channels: int = 1
+    sample_width_bytes: int = 2
+    wake_phrases: List[str] = field(default_factory=list)
+    wake_phrase_aliases: List[str] = field(default_factory=list)
+    standby_phrases: List[str] = field(default_factory=list)
+    shutdown_phrases: List[str] = field(default_factory=list)
+    canonical_wake_phrase: str = "ares"
+    minimum_confidence: float = 0.8
+    timeout_seconds: float = 3.0
+
+
+@dataclass(frozen=True)
+class WakeRecognizerResultV1(VersionedContract):
+    contract_name: str = CONTRACT_WAKE_RECOGNIZER_RESULT
+    success: bool = False
+    status: str = ""
+    runtime_id: str = ""
+    lifecycle_state: str = "STANDBY"
+    recognizer_name: str = ""
+    wake_detected: bool = False
+    command_category: str = "non_wake"
+    normalized_wake_phrase: str = ""
+    matched_phrase: str = ""
+    selected_alias: str = ""
+    selected_wake_phrase: str = ""
+    canonical_wake_phrase: str = ""
+    confidence: Optional[float] = None
+    confidence_available: bool = False
+    minimum_confidence: float = 0.0
+    classification_reason: str = ""
+    rejection_reason: str = ""
+    unknown_token_detected: bool = False
+    recognized_token_count: int = 0
+    processing_time_seconds: float = 0.0
+    model_path: str = ""
+    grammar_phrase_count: int = 0
+    error_code: str = ""
+    error_message: str = ""
+    timestamp: str = field(default_factory=utc_contract_timestamp)
 
 
 def build_default_contract_registry() -> ContractRegistry:
@@ -1161,6 +1216,14 @@ def build_default_contract_registry() -> ContractRegistry:
     registry.register(
         CONTRACT_STANDBY_LISTEN_RESULT,
         consumers=["BrainRuntime", "StandbyWakeListener"],
+    )
+    registry.register(
+        CONTRACT_WAKE_RECOGNIZER_REQUEST,
+        consumers=["StandbyWakeListener", "WakeRecognizer"],
+    )
+    registry.register(
+        CONTRACT_WAKE_RECOGNIZER_RESULT,
+        consumers=["StandbyWakeListener", "WakeRecognizer"],
     )
     registry.register(
         CONTRACT_EVENT_PUBLICATION_ENVELOPE,

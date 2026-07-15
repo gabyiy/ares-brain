@@ -36,17 +36,17 @@ WAKE_CATEGORY_STANDBY = "standby"
 WAKE_CATEGORY_SHUTDOWN = "shutdown"
 WAKE_CATEGORY_NON_WAKE = "non_wake"
 
-DEFAULT_WAKE_PHRASE_ALIASES = ("ares", "aris")
-DEFAULT_WAKE_PHRASE_PREFIXES = ("", "hey", "hello", "wake up")
-DEFAULT_WAKE_FILLER_PREFIXES = ("ok", "okay")
+DEFAULT_WAKE_PHRASE_ALIASES = ("ares", "aries")
+DEFAULT_WAKE_PHRASE_PREFIXES = ("", "hey", "okay")
+DEFAULT_WAKE_FILLER_PREFIXES: tuple[str, ...] = ()
 DEFAULT_WAKE_PHRASES = tuple(
     " ".join(part for part in (prefix, alias) if part)
     for prefix in DEFAULT_WAKE_PHRASE_PREFIXES
     for alias in DEFAULT_WAKE_PHRASE_ALIASES
 )
 DEFAULT_WAKE_MICROPHONE_DEVICE = "plughw:2,0"
-DEFAULT_WAKE_WHISPER_COMMAND = "external/whisper.cpp/build/bin/whisper-cli"
-DEFAULT_WAKE_WHISPER_MODEL = "models/whisper/ggml-tiny.en.bin"
+DEFAULT_WAKE_VOSK_MODEL = "models/vosk/vosk-model-small-en-us-0.15"
+DEFAULT_WAKE_MINIMUM_CONFIDENCE = 0.8
 
 _PHRASE_COMPONENT = re.compile(r"[^a-z0-9]+")
 _CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
@@ -86,35 +86,25 @@ class WakeLocalDiagnostics:
     lifecycle_state: str = "STANDBY"
     retained_audio_path: str = ""
     cleanup_status: str = "not_required"
-
-
-@dataclass(frozen=True)
-class WakeTokenAnalysis:
-    """Privacy-safe result of bounded wake-only token analysis."""
-
-    accepted: bool = False
-    selected_alias: str = ""
-    collapsed_representation: str = ""
-    wake_vocabulary_only: bool = False
-    token_count: int = 0
-    alias_repetition_count: int = 0
-    maximum_prefix_repetition_count: int = 0
-    reason: str = ""
+    recognizer_name: str = ""
+    raw_recognition_result: str = ""
+    recognition_status: str = ""
+    recognition_confidence: Optional[float] = None
+    recognition_confidence_available: bool = False
+    recognition_processing_time_seconds: float = 0.0
+    recognizer_model_path: str = ""
 
 
 @dataclass(frozen=True)
 class WakeListenerConfig:
     enabled: bool = True
     microphone_device: str = DEFAULT_WAKE_MICROPHONE_DEVICE
-    whisper_command: str = DEFAULT_WAKE_WHISPER_COMMAND
-    whisper_model: str = DEFAULT_WAKE_WHISPER_MODEL
+    vosk_model_path: str = DEFAULT_WAKE_VOSK_MODEL
+    minimum_recognition_confidence: float = DEFAULT_WAKE_MINIMUM_CONFIDENCE
     language: str = "en"
     wake_phrase_aliases: tuple[str, ...] = DEFAULT_WAKE_PHRASE_ALIASES
     wake_phrase_prefixes: tuple[str, ...] = DEFAULT_WAKE_PHRASE_PREFIXES
     filler_prefixes: tuple[str, ...] = DEFAULT_WAKE_FILLER_PREFIXES
-    maximum_wake_token_count: int = 8
-    maximum_alias_repetitions: int = 4
-    maximum_prefix_repetitions: int = 3
     calibration_enabled: bool = True
     calibration_duration_seconds: float = 0.75
     speech_start_rms: float = 200.0
@@ -156,8 +146,11 @@ class WakeListenerConfig:
         if self.retain_diagnostic_audio and not self.diagnostic_wake:
             raise ValueError("retain_diagnostic_audio requires diagnostic_wake")
         object.__setattr__(self, "microphone_device", _safe_path_text(self.microphone_device, "microphone_device"))
-        object.__setattr__(self, "whisper_command", _safe_path_text(self.whisper_command, "whisper_command"))
-        object.__setattr__(self, "whisper_model", _safe_path_text(self.whisper_model, "whisper_model"))
+        object.__setattr__(
+            self,
+            "vosk_model_path",
+            _safe_path_text(self.vosk_model_path, "vosk_model_path"),
+        )
         object.__setattr__(
             self,
             "diagnostic_output_directory",
@@ -201,13 +194,11 @@ class WakeListenerConfig:
             "playback_settle_delay_seconds": (0.0, 3.0),
             "retry_delay_seconds": (0.0, 5.0),
             "duration_tolerance_seconds": (0.0, 0.5),
+            "minimum_recognition_confidence": (0.5, 1.0),
         }
         for name, (minimum, maximum) in numeric_bounds.items():
             object.__setattr__(self, name, _bounded_number(getattr(self, name), name, minimum, maximum))
         for name, minimum, maximum in (
-            ("maximum_wake_token_count", 1, 16),
-            ("maximum_alias_repetitions", 1, 8),
-            ("maximum_prefix_repetitions", 1, 8),
             ("required_speech_frames", 1, 20),
             ("required_continue_frames", 1, 20),
             ("required_silence_frames", 1, 50),
@@ -227,14 +218,6 @@ class WakeListenerConfig:
                 raise ValueError(f"{minimum_name} cannot exceed {maximum_name}")
         if self.calibration_enabled and self.calibration_duration_seconds <= 0:
             raise ValueError("calibration_duration_seconds must be positive when calibration is enabled")
-        if self.maximum_alias_repetitions > self.maximum_wake_token_count:
-            raise ValueError(
-                "maximum_alias_repetitions cannot exceed maximum_wake_token_count"
-            )
-        if self.maximum_prefix_repetitions > self.maximum_wake_token_count:
-            raise ValueError(
-                "maximum_prefix_repetitions cannot exceed maximum_wake_token_count"
-            )
 
     @classmethod
     def from_mapping(cls, value: Optional["WakeListenerConfig | Mapping[str, Any]"] = None) -> "WakeListenerConfig":
@@ -324,9 +307,6 @@ def classify_wake_transcript(
     wake_phrase_aliases: Sequence[str] = DEFAULT_WAKE_PHRASE_ALIASES,
     wake_phrase_prefixes: Sequence[str] = DEFAULT_WAKE_PHRASE_PREFIXES,
     filler_prefixes: Sequence[str] = DEFAULT_WAKE_FILLER_PREFIXES,
-    maximum_wake_token_count: int = 8,
-    maximum_alias_repetitions: int = 4,
-    maximum_prefix_repetitions: int = 3,
     standby_phrases: Sequence[str] = (),
     shutdown_phrases: Sequence[str] = (),
     correlation_id: str = "",
@@ -336,11 +316,6 @@ def classify_wake_transcript(
     aliases = _validated_aliases(wake_phrase_aliases)
     prefixes = _validated_prefixes(wake_phrase_prefixes, "wake_phrase_prefixes")
     fillers = _validated_phrases(filler_prefixes, "filler_prefixes", allow_empty=True)
-    token_limit, alias_limit, prefix_limit = _validated_wake_repetition_limits(
-        maximum_wake_token_count,
-        maximum_alias_repetitions,
-        maximum_prefix_repetitions,
-    )
     phrase_map = _wake_phrase_map(aliases, prefixes, fillers)
     wake = set(phrase_map)
     standby = set(_validated_phrases(standby_phrases, "standby_phrases", allow_empty=True))
@@ -380,30 +355,14 @@ def classify_wake_transcript(
         alias_repetition_count = 1
         maximum_prefix_repetition_count = 1 if wake_token_count > 1 else 0
     else:
-        analysis = analyze_bounded_wake_repetition(
-            normalized,
-            wake_phrase_aliases=aliases,
-            wake_phrase_prefixes=prefixes,
-            maximum_wake_token_count=token_limit,
-            maximum_alias_repetitions=alias_limit,
-            maximum_prefix_repetitions=prefix_limit,
+        tokens = tuple(normalized.split())
+        classification_path = "exact" if normalized else "none"
+        classification_reason = (
+            "exact_wake_phrase_not_matched" if normalized else "empty_wake_transcript"
         )
-        classification_path = "bounded_repetition" if normalized else "none"
-        classification_reason = analysis.reason
-        collapsed_representation = analysis.collapsed_representation
-        wake_vocabulary_only = analysis.wake_vocabulary_only
-        wake_token_count = analysis.token_count
-        alias_repetition_count = analysis.alias_repetition_count
-        maximum_prefix_repetition_count = analysis.maximum_prefix_repetition_count
-        selected_alias = analysis.selected_alias
-        if analysis.accepted:
-            canonical_phrase = aliases[0]
-            selected_phrase = analysis.collapsed_representation
-            category = WAKE_CATEGORY_ACTIVATION
-            matched = canonical_phrase
-            detected = True
-        else:
-            rejection_reason = analysis.reason
+        wake_token_count = len(tokens)
+        wake_vocabulary_only = False
+        rejection_reason = classification_reason
     status = (
         WAKE_STATUS_DETECTED
         if detected
@@ -435,75 +394,6 @@ def classify_wake_transcript(
         transcript_length=len(str(transcript or "").strip()),
         correlation_id=correlation_id or new_correlation_id("wake-detect"),
         metadata={"safe": True, "contains_transcript": False},
-    )
-
-
-def analyze_bounded_wake_repetition(
-    normalized_transcript: str,
-    *,
-    wake_phrase_aliases: Sequence[str] = DEFAULT_WAKE_PHRASE_ALIASES,
-    wake_phrase_prefixes: Sequence[str] = DEFAULT_WAKE_PHRASE_PREFIXES,
-    maximum_wake_token_count: int = 8,
-    maximum_alias_repetitions: int = 4,
-    maximum_prefix_repetitions: int = 3,
-) -> WakeTokenAnalysis:
-    """Classify repetition using only configured wake vocabulary.
-
-    Unknown tokens are represented as ``<unknown>`` in the collapsed value so
-    this result can cross the privacy-safe listener contract boundary.
-    """
-
-    aliases = _validated_aliases(wake_phrase_aliases)
-    prefixes = _validated_prefixes(wake_phrase_prefixes, "wake_phrase_prefixes")
-    token_limit, alias_limit, prefix_limit = _validated_wake_repetition_limits(
-        maximum_wake_token_count,
-        maximum_alias_repetitions,
-        maximum_prefix_repetitions,
-    )
-
-    normalized = normalize_wake_phrase(normalized_transcript)
-    tokens = tuple(normalized.split())
-    alias_set = set(aliases)
-    prefix_tokens = {
-        token
-        for prefix in prefixes
-        for token in prefix.split()
-        if token
-    }
-    allowed_tokens = alias_set | prefix_tokens
-    unknown = [token for token in tokens if token not in allowed_tokens]
-    selected_alias = next((token for token in tokens if token in alias_set), "")
-    alias_count = sum(token in alias_set for token in tokens)
-    prefix_counts = {
-        token: tokens.count(token)
-        for token in prefix_tokens
-    }
-    maximum_prefix_count = max(prefix_counts.values(), default=0)
-    collapsed = _collapse_wake_tokens(tokens, alias_set, aliases[0], allowed_tokens)
-
-    if not tokens:
-        reason = "empty_wake_transcript"
-    elif len(tokens) > token_limit:
-        reason = "wake_token_count_exceeded"
-    elif unknown:
-        reason = "wake_vocabulary_contains_unknown_tokens"
-    elif not selected_alias:
-        reason = "wake_alias_missing"
-    elif alias_count > alias_limit:
-        reason = "wake_alias_repetition_exceeded"
-    elif maximum_prefix_count > prefix_limit:
-        reason = "wake_prefix_repetition_exceeded"
-    else:
-        reason = "accepted_bounded_wake_repetition"
-    return WakeTokenAnalysis(
-        accepted=reason == "accepted_bounded_wake_repetition",
-        selected_alias=selected_alias,
-        collapsed_representation=collapsed,
-        wake_vocabulary_only=bool(tokens) and not unknown,
-        token_count=len(tokens),
-        alias_repetition_count=alias_count,
-        maximum_prefix_repetition_count=maximum_prefix_count,
-        reason=reason,
     )
 
 
@@ -580,9 +470,6 @@ class QueuedStandbyWakeListener:
                         request.wake_phrase_prefixes or self.config.wake_phrase_prefixes
                     ),
                     filler_prefixes=self.config.filler_prefixes,
-                    maximum_wake_token_count=request.maximum_wake_token_count,
-                    maximum_alias_repetitions=request.maximum_alias_repetitions,
-                    maximum_prefix_repetitions=request.maximum_prefix_repetitions,
                     standby_phrases=request.standby_phrases,
                     shutdown_phrases=request.shutdown_phrases,
                     correlation_id=request.correlation_id,
@@ -713,16 +600,45 @@ def validate_wake_control_phrases(
     wake_phrases: Sequence[str],
     standby_phrases: Sequence[str],
     shutdown_phrases: Sequence[str],
+    wake_phrase_aliases: Sequence[str] = (),
 ) -> None:
     wake = set(_validated_phrases(wake_phrases, "wake_phrases"))
-    standby = set(_validated_phrases(standby_phrases, "standby_phrases"))
-    shutdown = set(_validated_phrases(shutdown_phrases, "shutdown_phrases"))
+    standby = set(
+        expand_control_phrase_aliases(standby_phrases, wake_phrase_aliases)
+        if wake_phrase_aliases
+        else _validated_phrases(standby_phrases, "standby_phrases")
+    )
+    shutdown = set(
+        expand_control_phrase_aliases(shutdown_phrases, wake_phrase_aliases)
+        if wake_phrase_aliases
+        else _validated_phrases(shutdown_phrases, "shutdown_phrases")
+    )
     if wake & standby:
         raise ValueError("wake and standby phrases must not overlap")
     if wake & shutdown:
         raise ValueError("wake and shutdown phrases must not overlap")
     if standby & shutdown:
         raise ValueError("standby and shutdown phrases must not overlap")
+
+
+def expand_control_phrase_aliases(
+    phrases: Sequence[str],
+    aliases: Sequence[str],
+) -> tuple[str, ...]:
+    """Expand only complete alias tokens inside configured control phrases."""
+
+    normalized_phrases = _validated_phrases(phrases, "control_phrases", allow_empty=True)
+    normalized_aliases = _validated_aliases(aliases)
+    canonical_alias = normalized_aliases[0]
+    expanded: list[str] = []
+    for phrase in normalized_phrases:
+        tokens = phrase.split()
+        variants = normalized_aliases if canonical_alias in tokens else (canonical_alias,)
+        for alias in variants:
+            expanded.append(
+                " ".join(alias if token == canonical_alias else token for token in tokens)
+            )
+    return tuple(dict.fromkeys(expanded))
 
 
 def _validated_phrases(
@@ -749,14 +665,13 @@ def _validated_aliases(values: Sequence[str]) -> tuple[str, ...]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise ValueError("wake_phrase_aliases must be a sequence of aliases")
     normalized = tuple(normalize_wake_phrase(value) for value in values)
+    normalized = tuple(dict.fromkeys(normalized))
     if not normalized:
         raise ValueError("wake_phrase_aliases must contain at least one alias")
     if len(normalized) > 8:
         raise ValueError("wake_phrase_aliases may contain at most 8 aliases")
     if any(not _ALIAS_PATTERN.fullmatch(value) for value in normalized):
         raise ValueError("wake_phrase_aliases must contain one safe word of at most 24 characters")
-    if len(set(normalized)) != len(normalized):
-        raise ValueError("wake_phrase_aliases contains duplicates after normalization")
     return normalized
 
 
@@ -787,68 +702,14 @@ def _wake_phrase_map(
     canonical_alias = aliases[0]
     accepted: Dict[str, tuple[str, str, str]] = {}
     for prefix in prefixes:
-        canonical = _join_wake_phrase(prefix, canonical_alias)
         for alias in aliases:
             phrase = _join_wake_phrase(prefix, alias)
-            accepted[phrase] = (alias, phrase, canonical)
+            accepted[phrase] = (alias, phrase, canonical_alias)
     for prefix in filler_prefixes:
         for alias in aliases:
             phrase = _join_wake_phrase(prefix, alias)
             accepted[phrase] = (alias, phrase, canonical_alias)
     return accepted
-
-
-def _collapse_wake_tokens(
-    tokens: Sequence[str],
-    alias_tokens: set[str],
-    canonical_alias: str,
-    allowed_tokens: set[str],
-) -> str:
-    collapsed: list[str] = []
-    for token in tokens:
-        if token in alias_tokens:
-            value = canonical_alias
-        elif token in allowed_tokens:
-            value = token
-        else:
-            value = "<unknown>"
-        if not collapsed or collapsed[-1] != value:
-            collapsed.append(value)
-    return " ".join(collapsed)
-
-
-def _validated_wake_repetition_limits(
-    maximum_wake_token_count: Any,
-    maximum_alias_repetitions: Any,
-    maximum_prefix_repetitions: Any,
-) -> tuple[int, int, int]:
-    token_limit = _bounded_integer(
-        maximum_wake_token_count,
-        "maximum_wake_token_count",
-        1,
-        16,
-    )
-    alias_limit = _bounded_integer(
-        maximum_alias_repetitions,
-        "maximum_alias_repetitions",
-        1,
-        8,
-    )
-    prefix_limit = _bounded_integer(
-        maximum_prefix_repetitions,
-        "maximum_prefix_repetitions",
-        1,
-        8,
-    )
-    if alias_limit > token_limit:
-        raise ValueError(
-            "maximum_alias_repetitions cannot exceed maximum_wake_token_count"
-        )
-    if prefix_limit > token_limit:
-        raise ValueError(
-            "maximum_prefix_repetitions cannot exceed maximum_wake_token_count"
-        )
-    return token_limit, alias_limit, prefix_limit
 
 
 def _safe_path_text(value: Any, field_name: str) -> str:

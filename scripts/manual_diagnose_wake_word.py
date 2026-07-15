@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from pathlib import Path
-import shutil
 import sys
 from typing import Callable, Optional, Sequence
 
@@ -13,7 +13,8 @@ sys.path.insert(0, str(REPO_ROOT))
 from core import (  # noqa: E402
     LinuxAlsaMicrophoneAdapter,
     LinuxStandbyWakeListener,
-    LinuxWhisperSpeechToTextAdapter,
+    VOSK_MODEL_INSTALL_COMMAND,
+    VoskWakeRecognizer,
     WakeListenerConfig,
     WakeListenerRequestV1,
 )
@@ -27,8 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--microphone-device", default=defaults.microphone_device)
     parser.add_argument("--speaker-device", default=standby_voice.DEFAULT_SPEAKER_DEVICE)
-    parser.add_argument("--wake-whisper-command", default=defaults.whisper_command)
-    parser.add_argument("--wake-whisper-model", default=defaults.whisper_model)
+    parser.add_argument("--vosk-model", default=defaults.vosk_model_path)
+    parser.add_argument(
+        "--wake-min-confidence",
+        type=float,
+        default=defaults.minimum_recognition_confidence,
+    )
     parser.add_argument("--language", default=defaults.language)
     parser.add_argument("--diagnostic-wake", action="store_true")
     parser.add_argument("--retain-diagnostic-audio", action="store_true")
@@ -58,8 +63,8 @@ def run_diagnostic(
 
     config = WakeListenerConfig(
         microphone_device=args.microphone_device,
-        whisper_command=str(standby_voice._repo_path_or_command(args.wake_whisper_command)),
-        whisper_model=str(standby_voice._repo_path(args.wake_whisper_model)),
+        vosk_model_path=str(standby_voice._repo_path(args.vosk_model)),
+        minimum_recognition_confidence=args.wake_min_confidence,
         language=args.language,
         diagnostic_wake=True,
         retain_diagnostic_audio=bool(args.retain_diagnostic_audio),
@@ -70,17 +75,15 @@ def run_diagnostic(
         record_seconds=config.maximum_utterance_seconds,
         timeout_seconds=min(args.timeout, 30.0),
     )
-    speech_to_text = LinuxWhisperSpeechToTextAdapter(
-        model_path=standby_voice._repo_path(args.wake_whisper_model),
-        whisper_command=str(standby_voice._repo_path_or_command(args.wake_whisper_command)),
-        language=args.language,
-        timeout_seconds=min(args.timeout, 30.0),
+    wake_recognizer = VoskWakeRecognizer(
+        model_path=standby_voice._repo_path(args.vosk_model),
+        minimum_confidence=args.wake_min_confidence,
     )
     callback = standby_voice._wake_diagnostic_callback(output_func, args.speaker_device)
     factory = listener_factory or LinuxStandbyWakeListener
     listener = factory(
         microphone_adapter=microphone,
-        speech_to_text_adapter=speech_to_text,
+        wake_recognizer=wake_recognizer,
         config=config,
         project_root=REPO_ROOT,
         diagnostic_callback=callback,
@@ -104,9 +107,6 @@ def run_diagnostic(
                 language=args.language,
                 wake_phrase_aliases=list(config.wake_phrase_aliases),
                 wake_phrase_prefixes=list(config.wake_phrase_prefixes),
-                maximum_wake_token_count=config.maximum_wake_token_count,
-                maximum_alias_repetitions=config.maximum_alias_repetitions,
-                maximum_prefix_repetitions=config.maximum_prefix_repetitions,
                 diagnostic_wake=True,
                 retain_diagnostic_audio=bool(args.retain_diagnostic_audio),
                 metadata={"safe": True, "contains_transcript": False},
@@ -127,8 +127,13 @@ def run_diagnostic(
             )
             diagnostics = getattr(listener, "last_diagnostics", None)
             output_func(
-                "Wake vocabulary check: "
-                f"{'all tokens allowed' if result.wake_vocabulary_only else 'unknown tokens present'}."
+                "Confidence check: "
+                + (
+                    f"{result.recognition_confidence:.3f}"
+                    if result.recognition_confidence_available
+                    and result.recognition_confidence is not None
+                    else "unavailable"
+                )
             )
             output_func(
                 "Suggested action: "
@@ -149,30 +154,31 @@ def run_diagnostic(
 
 
 def _validate_dependencies(args: argparse.Namespace) -> str:
-    command = standby_voice._repo_path_or_command(args.wake_whisper_command)
-    if isinstance(command, Path) and not command.is_file():
-        return f"wake Whisper command is missing: {command}"
-    if isinstance(command, str) and not shutil.which(command):
-        return f"wake Whisper command is unavailable: {command}"
-    model = standby_voice._repo_path(args.wake_whisper_model)
-    if not model.is_file():
-        return f"wake Whisper model is missing: {model}"
+    if importlib.util.find_spec("vosk") is None:
+        return "Vosk is not installed. Run: python -m pip install -r requirements.txt"
+    model = standby_voice._repo_path(args.vosk_model)
+    if not model.is_dir():
+        return (
+            f"Vosk wake model is missing: {model}. Recommended Raspberry Pi model: "
+            "vosk-model-small-en-us-0.15. Install it with: "
+            f"{VOSK_MODEL_INSTALL_COMMAND}"
+        )
     return ""
 
 
 def _rejection_suggestion(reason: str, *, normalized_transcript: str = "") -> str:
     suggestions = {
-        "wake_vocabulary_contains_unknown_tokens": (
-            "say only 'Ares' once, then remain silent; unrelated words are rejected"
+        "unknown_token_result": (
+            "say only 'Ares' once, then remain silent; [unk] and unrelated words are rejected"
         ),
-        "wake_token_count_exceeded": (
-            "say 'Ares' once; the captured wake candidate contained too many words"
+        "exact_constrained_phrase_not_matched": (
+            "say one configured phrase: 'Ares', 'Hey Ares', or 'Okay Ares'"
         ),
-        "wake_alias_repetition_exceeded": (
-            "say 'Ares' once; the wake name repeated beyond the safe limit"
+        "wake_confidence_below_threshold": (
+            "speak clearly and closer to the microphone; confidence was below the safe threshold"
         ),
-        "wake_prefix_repetition_exceeded": (
-            "say 'Ares' once; wake-prefix words repeated beyond the safe limit"
+        "missing_word_confidence": (
+            "the recognizer returned no usable word confidence, so activation was refused"
         ),
         "wake_alias_missing": "say the configured wake name 'Ares' once",
         "empty_wake_transcript": "speak closer to the microphone and say 'Ares' once",

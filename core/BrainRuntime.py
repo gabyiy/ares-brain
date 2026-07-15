@@ -286,6 +286,7 @@ class BrainRuntime:
                 wake_config.wake_phrases,
                 self.config.standby_phrases,
                 self.config.shutdown_phrases,
+                wake_config.wake_phrase_aliases,
             )
         self.standby_wake_listener = standby_wake_listener
         self._event_bus = event_bus or EventBus(max_history=300)
@@ -1235,9 +1236,6 @@ class BrainRuntime:
             wake_phrases=list(wake_config.wake_phrases),
             wake_phrase_aliases=list(wake_config.wake_phrase_aliases),
             wake_phrase_prefixes=list(wake_config.wake_phrase_prefixes),
-            maximum_wake_token_count=wake_config.maximum_wake_token_count,
-            maximum_alias_repetitions=wake_config.maximum_alias_repetitions,
-            maximum_prefix_repetitions=wake_config.maximum_prefix_repetitions,
             standby_phrases=list(self.config.standby_phrases),
             shutdown_phrases=list(self.config.shutdown_phrases),
             diagnostic_wake=wake_config.diagnostic_wake,

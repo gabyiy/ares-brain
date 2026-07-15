@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import replace
+import importlib.util
 from pathlib import Path
 import shutil
 import shlex
@@ -20,12 +21,13 @@ from core import (  # noqa: E402
     CoreService,
     LinuxAlsaMicrophoneAdapter,
     LinuxStandbyWakeListener,
-    LinuxWhisperSpeechToTextAdapter,
     SingleTurnPipelineRuntimeInputAdapter,
     SingleTurnPipelineRuntimeOutputAdapter,
     VoiceRuntimeGate,
     WakeLocalDiagnostics,
     WakeListenerConfig,
+    VOSK_MODEL_INSTALL_COMMAND,
+    VoskWakeRecognizer,
 )
 from scripts import manual_verify_single_turn_voice as single_turn  # noqa: E402
 from scripts import run_ares_voice as single_voice_launcher  # noqa: E402
@@ -34,8 +36,8 @@ from scripts import run_ares_voice as single_voice_launcher  # noqa: E402
 _WAKE_DEFAULTS = WakeListenerConfig()
 DEFAULT_MICROPHONE_DEVICE = _WAKE_DEFAULTS.microphone_device
 DEFAULT_SPEAKER_DEVICE = single_turn.DEFAULT_SPEAKER_DEVICE
-DEFAULT_WAKE_WHISPER_COMMAND = _WAKE_DEFAULTS.whisper_command
-DEFAULT_WAKE_WHISPER_MODEL = _WAKE_DEFAULTS.whisper_model
+DEFAULT_WAKE_VOSK_MODEL = _WAKE_DEFAULTS.vosk_model_path
+DEFAULT_WAKE_MINIMUM_CONFIDENCE = _WAKE_DEFAULTS.minimum_recognition_confidence
 DEFAULT_COMMAND_WHISPER_COMMAND = single_turn.DEFAULT_WHISPER_COMMAND
 DEFAULT_COMMAND_WHISPER_MODEL = single_turn.DEFAULT_WHISPER_MODEL
 DEFAULT_VOICE_PROFILE = single_voice_launcher._configured_default_voice_profile()
@@ -50,8 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--microphone-device", default=DEFAULT_MICROPHONE_DEVICE)
     parser.add_argument("--speaker-device", default=DEFAULT_SPEAKER_DEVICE)
     parser.add_argument("--language", default="en")
-    parser.add_argument("--wake-whisper-command", default=DEFAULT_WAKE_WHISPER_COMMAND)
-    parser.add_argument("--wake-whisper-model", default=DEFAULT_WAKE_WHISPER_MODEL)
+    parser.add_argument("--vosk-model", default=DEFAULT_WAKE_VOSK_MODEL)
+    parser.add_argument(
+        "--wake-min-confidence",
+        type=float,
+        default=DEFAULT_WAKE_MINIMUM_CONFIDENCE,
+    )
     parser.add_argument("--command-whisper-command", default=DEFAULT_COMMAND_WHISPER_COMMAND)
     parser.add_argument("--command-whisper-model", default=DEFAULT_COMMAND_WHISPER_MODEL)
     parser.add_argument("--voice-profile", default=DEFAULT_VOICE_PROFILE)
@@ -121,8 +127,8 @@ def create_runtime(
 
     wake_config = WakeListenerConfig(
         microphone_device=args.microphone_device,
-        whisper_command=str(_repo_path_or_command(args.wake_whisper_command)),
-        whisper_model=str(_repo_path(args.wake_whisper_model)),
+        vosk_model_path=str(_repo_path(args.vosk_model)),
+        minimum_recognition_confidence=args.wake_min_confidence,
         language=args.language,
         playback_settle_delay_seconds=gate.settle_delay_seconds,
         diagnostic_wake=bool(args.diagnostic_wake),
@@ -134,16 +140,14 @@ def create_runtime(
         record_seconds=wake_config.maximum_utterance_seconds,
         timeout_seconds=min(float(args.timeout), 30.0),
     )
-    wake_stt = LinuxWhisperSpeechToTextAdapter(
-        model_path=_repo_path(args.wake_whisper_model),
-        whisper_command=str(_repo_path_or_command(args.wake_whisper_command)),
-        language=args.language,
-        timeout_seconds=min(float(args.timeout), 30.0),
+    wake_recognizer = VoskWakeRecognizer(
+        model_path=_repo_path(args.vosk_model),
+        minimum_confidence=args.wake_min_confidence,
     )
     listener_factory = wake_listener_factory or LinuxStandbyWakeListener
     wake_listener = listener_factory(
         microphone_adapter=wake_microphone,
-        speech_to_text_adapter=wake_stt,
+        wake_recognizer=wake_recognizer,
         config=wake_config,
         project_root=REPO_ROOT,
         voice_io_gate=gate,
@@ -201,9 +205,9 @@ def run_standby_voice(
         return 3
     wake_started = runtime.standby_wake_listener.start(runtime_id=runtime.runtime_id)
     wake_health = runtime.standby_wake_listener.health(runtime_id=runtime.runtime_id)
-    runtime.standby_wake_listener.stop("preflight_complete")
     if not wake_started.success or not wake_health.success:
         issue = wake_health if not wake_health.success else wake_started
+        runtime.standby_wake_listener.stop("preflight_failed")
         output_func(
             "ARES wake listener dependency check failed before capture: "
             f"{issue.error_code or issue.status} ({issue.error_message or issue.status})."
@@ -257,8 +261,25 @@ def _command_pipeline_args(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def _validate_static_dependencies(args: argparse.Namespace) -> str:
+    confidence = args.wake_min_confidence
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not 0.5 <= float(confidence) <= 1.0
+    ):
+        return "wake minimum confidence must be between 0.5 and 1.0"
+    if importlib.util.find_spec("vosk") is None:
+        return (
+            "Vosk is not installed. Run: python -m pip install -r requirements.txt"
+        )
+    vosk_model = _repo_path(args.vosk_model)
+    if not vosk_model.is_dir():
+        return (
+            f"Vosk wake model is missing: {vosk_model}. Recommended Raspberry Pi model: "
+            "vosk-model-small-en-us-0.15. Install it with: "
+            f"{VOSK_MODEL_INSTALL_COMMAND}"
+        )
     for label, value in (
-        ("wake Whisper command", args.wake_whisper_command),
         ("command Whisper command", args.command_whisper_command),
     ):
         resolved = _repo_path_or_command(value)
@@ -267,7 +288,6 @@ def _validate_static_dependencies(args: argparse.Namespace) -> str:
         if isinstance(resolved, str) and not shutil.which(resolved):
             return f"{label} is not available: {resolved}"
     for label, value in (
-        ("wake Whisper model", args.wake_whisper_model),
         ("command Whisper model", args.command_whisper_model),
     ):
         resolved = _repo_path(value)
@@ -313,40 +333,36 @@ def render_wake_diagnostics(
     *,
     speaker_device: str,
 ) -> list[str]:
-    exit_status = (
-        "not_available"
-        if diagnostics.whisper_exit_code is None
-        else str(diagnostics.whisper_exit_code)
+    confidence = (
+        f"{diagnostics.recognition_confidence:.3f}"
+        if diagnostics.recognition_confidence_available
+        and diagnostics.recognition_confidence is not None
+        else "unavailable"
     )
     lines = [
         "Wake diagnostic:",
-        f"  Raw wake transcript: {diagnostics.raw_transcript or '<empty>'}",
-        f"  Cleaned wake transcript: {diagnostics.cleaned_transcript or '<empty>'}",
-        f"  Normalized wake transcript: {diagnostics.normalized_transcript or '<empty>'}",
-        "  Collapsed wake representation: "
-        f"{diagnostics.collapsed_wake_representation or '<empty>'}",
+        f"  Recognizer used: {diagnostics.recognizer_name or 'unknown'}",
+        "  Raw recognition result: "
+        f"{diagnostics.raw_recognition_result or '<empty>'}",
+        f"  Raw recognized phrase: {diagnostics.raw_transcript or '<empty>'}",
+        f"  Normalized phrase: {diagnostics.normalized_transcript or '<empty>'}",
+        f"  Confidence: {confidence}",
         f"  Selected alias: {diagnostics.selected_alias or 'none'}",
         f"  Selected wake phrase: {diagnostics.selected_wake_phrase or 'none'}",
         f"  Wake classification: {diagnostics.classification}",
         f"  Classification path: {diagnostics.classification_path or 'none'}",
         f"  Classification reason: {diagnostics.classification_reason or 'none'}",
-        "  All tokens in wake vocabulary: "
-        f"{'yes' if diagnostics.wake_vocabulary_only else 'no'}",
-        f"  Wake token count: {diagnostics.wake_token_count}",
-        f"  Alias repetitions: {diagnostics.alias_repetition_count}",
-        "  Maximum prefix repetitions: "
-        f"{diagnostics.maximum_prefix_repetition_count}",
         f"  Rejection reason: {diagnostics.rejection_reason or 'none'}",
         f"  Candidate duration: {diagnostics.capture_duration_seconds:.3f}s",
         f"  Raw capture duration: {diagnostics.raw_capture_duration_seconds:.3f}s",
         f"  Assembled duration: {diagnostics.assembled_duration_seconds:.3f}s",
         f"  Normalized duration: {diagnostics.normalized_duration_seconds:.3f}s",
-        f"  Whisper input duration: {diagnostics.whisper_input_duration_seconds:.3f}s",
+        f"  Recognizer input duration: {diagnostics.whisper_input_duration_seconds:.3f}s",
         f"  Capture stop reason: {diagnostics.capture_stop_reason or 'unknown'}",
-        f"  Whisper status: {diagnostics.whisper_status or 'unknown'}",
-        f"  Whisper exit status: {exit_status}",
-        f"  Whisper processing duration: {diagnostics.whisper_processing_time_seconds:.3f}s",
-        f"  Wake model path: {diagnostics.wake_model_path}",
+        f"  Recognition status: {diagnostics.recognition_status or 'unknown'}",
+        "  Recognition processing duration: "
+        f"{diagnostics.recognition_processing_time_seconds:.3f}s",
+        f"  Vosk model path: {diagnostics.recognizer_model_path or diagnostics.wake_model_path}",
         f"  Lifecycle state: {diagnostics.lifecycle_state}",
     ]
     if diagnostics.retained_audio_path:

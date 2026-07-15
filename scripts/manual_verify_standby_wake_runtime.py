@@ -395,14 +395,14 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
             return 1
         output_func("Unrelated speech: rejected silently")
 
-        wake.push("Aris, Aris, hello, Aris.")
+        wake.push("Aries.")
         activated = runtime.poll_once()
         first_session = runtime.session_manager.session_id
         if not activated.success or spoken != ["Yes Gabi."] or not first_session:
             output_func("FAIL: wake activation acknowledgement/session failed")
             return 1
         output_func(
-            f"Bounded wake-only repetition accepted as 'Ares': ACTIVE; "
+            f"Constrained alias 'Aries' resolved to 'Ares': ACTIVE; "
             f"session={first_session}; ARES: Yes Gabi."
         )
 
@@ -474,7 +474,7 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
             return 1
         output_func("Inactivity 30.000s: STANDBY; session cleared")
 
-        wake.push("wake up Ares")
+        wake.push("okay Ares")
         runtime.poll_once()
         microphone.push_speech()
         whisper.push("shutdown Ares")
@@ -500,7 +500,7 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
             "calculate 2 plus 2",
             "favorite color is blue",
             "what is my favorite color",
-            "aris aris hello aris",
+            "aries",
             "raw_transcript",
             "audio_bytes",
         )
@@ -517,7 +517,9 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
         if len(speaker.played_paths) != len(piper.texts):
             output_func("FAIL: deterministic Piper/speaker output counts diverged")
             return 1
-        output_func("Injected microphone/Whisper/Piper/speaker route: PASS")
+        output_func(
+            "Injected constrained-standby/active-Whisper/Piper/speaker route: PASS"
+        )
         output_func("Event privacy: PASS; temporary audio: none; worker threads: none")
         output_func("Standby wake runtime verification passed.")
         return 0
