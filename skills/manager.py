@@ -6,6 +6,11 @@ from core.DeviceAction import LocalDeviceActionAdapter
 from core.ExecutionPipeline import ExecutionPipeline
 from core.Intent import Intent, redact_sensitive_entities
 from core.IntentParser import IntentParser
+from core.OwnerMemory import (
+    OWNER_MEMORY_CANCEL_DELETE,
+    OWNER_MEMORY_CONFIRM_DELETE,
+    parse_owner_memory_command,
+)
 from core.Planner import Plan
 from core.ToolAdapter import MockCalendarAdapter, MockMarketAdapter, MockWeatherAdapter, ToolAdapterRegistry
 from core.ToolChain import ToolChain
@@ -310,6 +315,21 @@ class SkillManager:
         )
 
     def _handle_confirmation_text(self, text, context: SkillContext):
+        generic_pending = self.confirmation_manager.pending()
+        owner_command = parse_owner_memory_command(str(text or ""))
+        owner_pending = (
+            not generic_pending
+            and owner_command.action in {OWNER_MEMORY_CONFIRM_DELETE, OWNER_MEMORY_CANCEL_DELETE}
+            and bool(
+                getattr(
+                    self.owner_memory_service,
+                    "has_pending_state",
+                    getattr(self.owner_memory_service, "has_pending_action", lambda: False),
+                )()
+            )
+        )
+        if owner_pending:
+            return None
         decision = self.confirmation_manager.decide(str(text or ""))
         if not decision:
             return None

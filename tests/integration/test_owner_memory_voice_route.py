@@ -125,8 +125,13 @@ def test_all_required_owner_memory_interactions_use_production_voice_route(tmp_p
         ),
         (
             "Forget my favorite color.",
-            "I forgot your favorite color.",
-            "forgotten",
+            "Your saved favorite color is red. Should I delete that fact?",
+            "confirmation_required",
+        ),
+        (
+            "Yes, delete it.",
+            "I deleted your favorite-color fact.",
+            "deleted_keyed_fact",
         ),
         (
             "What is my favorite color?",
@@ -160,6 +165,52 @@ def test_all_required_owner_memory_interactions_use_production_voice_route(tmp_p
         usage = pipeline.resource_manager.current_usage()
         assert usage["active_task_count"] == 0
         assert "single_turn_voice_pipeline" not in usage["reservation_names"]
+
+
+def test_production_voice_route_requires_cross_process_owner_memory_confirmation(tmp_path):
+    profile_path = tmp_path / "memory" / "owner_profile.json"
+    turns = (
+        (
+            "Remember that I like going to the gym.",
+            "I will remember that you like going to the gym.",
+            "created",
+        ),
+        (
+            "Forget that I like going to the gym.",
+            "I found the memory that you like going to the gym. Should I delete it?",
+            "confirmation_required",
+        ),
+        (
+            "Yes, delete it.",
+            "I deleted the memory that you like going to the gym.",
+            "deleted_specific",
+        ),
+    )
+
+    for turn, (transcript, expected_text, expected_status) in enumerate(turns, start=1):
+        result, manager, _, _, tts, speaker, pipeline = _run_voice_turn(
+            tmp_path,
+            profile_path,
+            transcript,
+            playback=True,
+            turn=100 + turn,
+        )
+
+        assert result.success is True
+        assert result.detected_intent == "owner_memory"
+        assert result.routed_skill == "owner_memory"
+        assert result.brain_text_response == expected_text
+        assert manager.last_plan.steps[0].target == "owner_memory"
+        metadata = manager.last_execution.step_results[0].returned_data["metadata"]
+        assert metadata["storage_status"] == expected_status
+        assert tts.requests[0].text == expected_text
+        assert speaker.play_count == 1
+        assert pipeline.resource_manager.current_usage()["active_task_count"] == 0
+
+    final_service = OwnerMemoryService(profile_path)
+    final_report = final_service.inspect(include_values=True)
+    assert final_report["memory_count"] == 0
+    assert final_report["pending_action_status"] == "missing"
 
 
 def test_save_then_fresh_production_manager_recalls_persisted_value(tmp_path):
@@ -408,8 +459,13 @@ def test_declarative_update_and_delete_forms_use_owner_memory_pipeline(tmp_path)
         ),
         (
             "Delete my favorite color.",
-            "I forgot your favorite color.",
-            "forgotten",
+            "Your saved favorite color is red. Should I delete that fact?",
+            "confirmation_required",
+        ),
+        (
+            "Yes, delete it.",
+            "I deleted your favorite-color fact.",
+            "deleted_keyed_fact",
         ),
     )
 

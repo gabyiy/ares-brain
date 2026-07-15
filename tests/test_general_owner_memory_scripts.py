@@ -8,6 +8,7 @@ from memory import OwnerMemoryService
 from scripts import inspect_owner_memory
 from scripts import manual_verify_general_owner_memory
 from scripts import manual_verify_general_long_term_memory
+from scripts import manual_verify_owner_memory_management
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -195,6 +196,114 @@ def test_general_long_term_verifier_refuses_to_reset_canonical_profile(monkeypat
 
     code = manual_verify_general_long_term_memory._run_sequence(
         canonical,
+        True,
+        False,
+        output.append,
+        subprocess.run,
+    )
+
+    assert code == 2
+    assert any("refuses" in line for line in output)
+
+
+def test_inspection_script_reports_counts_facts_memories_and_pending_state(tmp_path):
+    profile = tmp_path / "owner_profile.json"
+    pending = tmp_path / "pending_owner_memory_action.json"
+    from scripts.manual_verify_owner_memory import run_owner_memory_text
+
+    run_owner_memory_text("Remember that my favorite color is red.", profile, pending)
+    run_owner_memory_text("Remember that I like going to the gym.", profile, pending)
+    run_owner_memory_text("Forget that I like going to the gym.", profile, pending)
+    output = []
+
+    code = inspect_owner_memory.run_inspection(
+        [
+            "--profile",
+            str(profile),
+            "--pending-state",
+            str(pending),
+            "--summary",
+            "--facts",
+            "--memories",
+            "--pending",
+        ],
+        output.append,
+    )
+
+    assert code == 0
+    assert "Keyed fact count: 1" in output
+    assert "Active general memory count: 1" in output
+    assert any("favorite color: red" in line for line in output)
+    assert any("The owner likes going to the gym" in line for line in output)
+    assert "Pending state: active" in output
+    assert any("forget_specific / general_memory / 1 candidate" in line for line in output)
+
+
+def test_inspection_script_json_includes_versioned_pending_state_without_modification(tmp_path):
+    profile = tmp_path / "owner_profile.json"
+    pending = tmp_path / "pending.json"
+    from scripts.manual_verify_owner_memory import run_owner_memory_text
+
+    run_owner_memory_text("Remember that I like tea.", profile, pending)
+    run_owner_memory_text("Forget that I like tea.", profile, pending)
+    profile_before = profile.read_bytes()
+    pending_before = pending.read_bytes()
+    output = []
+
+    code = inspect_owner_memory.run_inspection(
+        ["--profile", str(profile), "--pending-state", str(pending), "--json"],
+        output.append,
+    )
+    payload = json.loads("\n".join(output))
+
+    assert code == 0
+    assert payload["pending_action_status"] == "active"
+    assert payload["pending_action"]["operation"] == "forget_specific"
+    assert profile.read_bytes() == profile_before
+    assert pending.read_bytes() == pending_before
+
+
+def test_owner_memory_management_manual_verifier_uses_isolated_fresh_processes(tmp_path):
+    profile = tmp_path / "owner_profile.json"
+    pending = tmp_path / "pending.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "manual_verify_owner_memory_management.py"),
+            "--profile",
+            str(profile),
+            "--pending-state",
+            str(pending),
+            "--reset",
+            "--verbose",
+        ],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "cross-process confirmation" in completed.stdout
+    assert "keyed/general separation" in completed.stdout
+    assert json.loads(profile.read_text(encoding="utf-8"))["schema_version"] == 3
+
+
+def test_management_verifier_refuses_to_reset_canonical_state(monkeypatch, tmp_path):
+    profile = tmp_path / "canonical_profile.json"
+    pending = tmp_path / "canonical_pending.json"
+    monkeypatch.setattr(manual_verify_owner_memory_management, "DEFAULT_OWNER_PROFILE_PATH", profile)
+    monkeypatch.setattr(
+        manual_verify_owner_memory_management,
+        "DEFAULT_PENDING_OWNER_MEMORY_ACTION_PATH",
+        pending,
+    )
+    output = []
+
+    code = manual_verify_owner_memory_management._run_sequence(
+        profile,
+        pending,
         True,
         False,
         output.append,

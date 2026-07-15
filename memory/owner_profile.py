@@ -442,7 +442,7 @@ class OwnerProfileStore:
             matches = self._matching_memories(
                 [dict(memory) for memory in profile.get("memories") or []],
                 clean_query,
-                limit=max(1, min(MAX_MEMORY_RETRIEVAL_RESULTS, int(limit))),
+                limit=max(1, min(MAX_GENERAL_MEMORIES, int(limit))),
             )
         except GeneralMemoryValidationError as error:
             return self._general_validation_failure("recall_memory", error)
@@ -524,6 +524,86 @@ class OwnerProfileStore:
         self._publish(result)
         return result
 
+    def forget_memories_by_ids(self, memory_ids: Tuple[str, ...] | list[str]) -> OwnerProfileResultV1:
+        """Forget only the exact active records selected during confirmation preview."""
+
+        file_existed_before = self.path.exists()
+        target_ids = tuple(dict.fromkeys(str(item or "") for item in memory_ids))
+        if (
+            not target_ids
+            or len(target_ids) > MAX_GENERAL_MEMORIES
+            or any(not item.startswith("mem-") or len(item) != 20 for item in target_ids)
+        ):
+            return self._general_validation_failure(
+                "forget_memory_ids",
+                GeneralMemoryValidationError(
+                    "invalid_memory_targets",
+                    "Confirmed owner-memory targets are invalid.",
+                ),
+            )
+        try:
+            with StoreWriteLock(self._transaction_path):
+                profile = self._load()
+                memories = [dict(memory) for memory in profile.get("memories") or []]
+                target_set = set(target_ids)
+                matches = [
+                    (index, memory)
+                    for index, memory in enumerate(memories)
+                    if memory.get("status") == "active" and memory.get("memory_id") in target_set
+                ]
+                if not matches:
+                    result = OwnerProfileResultV1(
+                        True,
+                        "missing",
+                        "miss",
+                        metadata=self._general_operation_metadata(
+                            file_existed_before,
+                            requested_count=len(target_ids),
+                            forgotten_count=0,
+                        ),
+                    )
+                    self._publish(result)
+                    return result
+                timestamp = self._timestamp_factory()
+                forgotten = []
+                for index, previous in matches:
+                    updated = dict(previous)
+                    updated.update({"status": "forgotten", "updated_at": timestamp})
+                    memories[index] = updated
+                    forgotten.append(updated)
+                memories = self._trim_memory_history(memories)
+                profile = self._profile(
+                    dict(profile.get("facts") or {}),
+                    memories=memories,
+                    pending_delete_all=profile.get("pending_delete_all"),
+                )
+                self._validate_profile_size(profile)
+                self._save(profile)
+        except Exception as error:
+            return self._failure(
+                "forget_memory_ids",
+                "",
+                error,
+                stage="write" if "profile" in locals() else "read",
+                file_existed_before=file_existed_before,
+            )
+        result = OwnerProfileResultV1(
+            True,
+            "forgotten",
+            "forget_memory_ids",
+            memory=dict(forgotten[0]),
+            memories=tuple(forgotten),
+            changed=True,
+            metadata=self._general_operation_metadata(
+                file_existed_before,
+                requested_count=len(target_ids),
+                forgotten_count=len(forgotten),
+                active_memory_count=self._active_memory_count(memories),
+            ),
+        )
+        self._publish(result)
+        return result
+
     def list_memories(self, *, include_inactive: bool = False) -> OwnerProfileResultV1:
         file_existed_before = self.path.exists()
         try:
@@ -595,9 +675,21 @@ class OwnerProfileStore:
                     )
                     self._publish(result)
                     return result
-                deleted_fact_count = len(dict(profile.get("facts") or {}))
-                deleted_memory_count = self._active_memory_count(list(profile.get("memories") or []))
-                self._save(self._profile({}, memories=[], pending_delete_all=None))
+                facts = dict(profile.get("facts") or {})
+                memories = [dict(memory) for memory in profile.get("memories") or []]
+                deleted_fact_count = 0
+                deleted_memory_count = self._active_memory_count(memories)
+                timestamp = self._timestamp_factory()
+                for memory in memories:
+                    if memory.get("status") == "active":
+                        memory.update({"status": "forgotten", "updated_at": timestamp})
+                self._save(
+                    self._profile(
+                        facts,
+                        memories=self._trim_memory_history(memories),
+                        pending_delete_all=None,
+                    )
+                )
         except Exception as error:
             return self._failure("delete_all_confirm", "", error, stage="write" if 'profile' in locals() else "read", file_existed_before=file_existed_before)
         result = OwnerProfileResultV1(

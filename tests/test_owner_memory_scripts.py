@@ -91,7 +91,7 @@ def test_persistence_script_runs_all_steps_in_fresh_processes():
 
     assert success is True
     assert any(line.startswith("PASS routing priority") for line in output)
-    assert sum(line.startswith("PASS step") for line in output) == 6
+    assert sum(line.startswith("PASS step") for line in output) == 7
     assert output[-1] == "PASS: verification used an isolated temporary profile only."
 
 

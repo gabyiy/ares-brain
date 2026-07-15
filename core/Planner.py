@@ -208,7 +208,16 @@ class Planner:
         normalized_key = str(entities.get("normalized_key") or "")
         memory_kind = str(entities.get("memory_kind") or "fact")
         can_execute = (
-            action in {"reject", "list", "delete_all_request", "delete_all_confirm"}
+            action in {
+                "reject",
+                "list",
+                "count",
+                "confirm_delete",
+                "cancel_delete",
+                "forget_all_general",
+                "delete_all_request",
+                "delete_all_confirm",
+            }
             or bool(normalized_key)
             or memory_kind == "general"
         )

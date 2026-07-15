@@ -202,6 +202,8 @@ def test_general_memory_create_recall_list_duplicate_and_forget(tmp_path):
     duplicate = manager.handle("Remember that I enjoy going to the gym.", run_before_intents=True)
     listed = manager.handle("What do you remember about me?", run_before_intents=True)
     forgotten = manager.handle("Forget that I like going to the gym.", run_before_intents=True)
+    before_confirmation = service.inspect(include_values=True)
+    confirmed = manager.handle("Yes, delete it.", run_before_intents=True)
     missing = manager.handle("What do you remember about exercise?", run_before_intents=True)
 
     assert created.text == "I will remember that you like going to the gym."
@@ -209,7 +211,9 @@ def test_general_memory_create_recall_list_duplicate_and_forget(tmp_path):
     assert category.text == "You like going to the gym."
     assert duplicate.text == "I already remember that you like going to the gym."
     assert listed.text == "I remember that you like going to the gym."
-    assert forgotten.text == "I forgot that you like going to the gym."
+    assert forgotten.text == "I found the memory that you like going to the gym. Should I delete it?"
+    assert before_confirmation["memory_count"] == 1
+    assert confirmed.text == "I deleted the memory that you like going to the gym."
     assert missing.text == "I do not have an active long-term memory about exercise."
     report = service.inspect(include_values=True)
     assert report["memory_count"] == 0
@@ -305,7 +309,7 @@ def test_explicit_correction_supersedes_only_matching_preference(tmp_path):
     assert statuses["wireless mice"] == "active"
 
 
-def test_update_by_topic_and_forget_all_by_type_are_scoped(tmp_path):
+def test_update_by_topic_and_delete_all_general_requires_confirmation(tmp_path):
     manager, service, _ = _manager(tmp_path)
     manager.handle("Remember that I prefer wired mice.", run_before_intents=True)
     manager.handle("Remember that I like strategy games.", run_before_intents=True)
@@ -313,12 +317,16 @@ def test_update_by_topic_and_forget_all_by_type_are_scoped(tmp_path):
 
     updated = manager.handle("Update my mice preference to wireless mice.", run_before_intents=True)
     forgotten = manager.handle("Forget all my saved preferences.", run_before_intents=True)
+    before_confirmation = service.inspect(include_values=True)
+    confirmed = manager.handle("Confirm delete all general memories.", run_before_intents=True)
     routine = manager.handle("What is my routine?", run_before_intents=True)
 
     assert updated.metadata["storage_status"] == "updated"
-    assert forgotten.metadata["storage_status"] == "forgotten"
-    assert routine.text == "You normally train on Friday."
-    assert service.inspect(include_values=True)["memory_count"] == 1
+    assert forgotten.metadata["storage_status"] == "confirmation_required"
+    assert before_confirmation["memory_count"] == 3
+    assert confirmed.metadata["storage_status"] == "deleted_all_general"
+    assert routine.text == "I do not have any saved routine yet."
+    assert service.inspect(include_values=True)["memory_count"] == 0
 
 
 def test_exact_forget_does_not_delete_a_related_memory_with_shared_topics(tmp_path):
@@ -327,14 +335,18 @@ def test_exact_forget_does_not_delete_a_related_memory_with_shared_topics(tmp_pa
     manager.handle("Remember that I like gym shoes.", run_before_intents=True)
 
     forgotten = manager.handle("Forget that I like the gym.", run_before_intents=True)
+    before_confirmation = service.inspect(include_values=True)
+    confirmed = manager.handle("Yes, delete it.", run_before_intents=True)
     remaining = manager.handle("What do you remember about shoes?", run_before_intents=True)
 
-    assert forgotten.text == "I forgot that you like the gym."
+    assert forgotten.text == "I found the memory that you like the gym. Should I delete it?"
+    assert before_confirmation["memory_count"] == 2
+    assert confirmed.text == "I deleted the memory that you like the gym."
     assert remaining.text == "You told me that you like gym shoes."
     assert service.inspect(include_values=True)["memory_count"] == 1
 
 
-def test_broad_delete_requires_persisted_exact_confirmation(tmp_path):
+def test_ambiguous_broad_delete_is_rejected_without_pending_state(tmp_path):
     path = tmp_path / "owner_profile.json"
     first, _, _ = _manager(tmp_path / "first", path)
     first.handle("Remember that I like tea.", run_before_intents=True)
@@ -350,12 +362,12 @@ def test_broad_delete_requires_persisted_exact_confirmation(tmp_path):
         run_before_intents=True,
     )
 
-    assert requested.metadata["storage_status"] == "confirmation_required"
-    assert "requires confirmation" in requested.text
-    assert wrong_result is None or wrong_result.skill != "owner_memory"
+    assert requested.metadata["storage_status"] == "rejected"
+    assert requested.metadata["rejection_reason"] == "ambiguous_memory_deletion"
+    assert wrong_result.metadata["storage_status"] == "missing_pending"
     assert recalled.text == "You like tea."
-    assert confirmed_result.text == "I deleted all your long-term owner memory."
-    assert service.inspect(include_values=True)["memory_count"] == 0
+    assert confirmed_result.metadata["storage_status"] == "missing_pending"
+    assert service.inspect(include_values=True)["memory_count"] == 1
 
 
 @pytest.mark.parametrize(

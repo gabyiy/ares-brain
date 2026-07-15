@@ -40,6 +40,44 @@ GENERAL_MEMORY_DELETE_ALL_RULE = "owner_general_long_term_delete_all_v1"
 DELETE_ALL_CONFIRMATION_PHRASE = "Yes, delete all my long-term owner memory"
 _DELETE_ALL_CONFIRMATION_NORMALIZED = "yes delete all my longterm owner memory"
 
+_CONFIRM_DELETE_PHRASES = {
+    "yes",
+    "confirm",
+    "yes delete it",
+    "yes delete them",
+    "confirm deletion",
+    "yes forget it",
+    "proceed",
+    "delete all general memories",
+    "confirm delete all general memories",
+    "yes delete all general memories",
+    _DELETE_ALL_CONFIRMATION_NORMALIZED,
+}
+_CANCEL_DELETE_PHRASES = {
+    "cancel",
+    "no cancel",
+    "no cancel it",
+    "no cancel deletion",
+    "do not delete it",
+    "never mind",
+    "keep the memory",
+    "stop the deletion",
+}
+_DELETE_ALL_GENERAL_PHRASES = {
+    "forget all my general longterm memories",
+    "forget all my general memories",
+    "forget all my saved preferences",
+    "delete all my saved preferences",
+    "remove every general memory about me",
+}
+_AMBIGUOUS_DELETE_PHRASES = {
+    "forget it",
+    "delete my memory",
+    "remove everything",
+    "clear memory",
+    "delete memory",
+}
+
 _CONTROL_CATEGORY = "Cc"
 _UNSAFE_MEMORY_PATTERN = re.compile(
     r"(?:__import__|\b(?:eval|exec)\s*\(|<script\b|\bimport\s+(?:os|sys|subprocess)\b|"
@@ -145,9 +183,31 @@ def parse_general_owner_memory(text: str) -> GeneralMemoryParse:
     if re.match(r"^remember\s+this\s+(?:idea|note)(?:\s*:|\s+)", source, flags=re.IGNORECASE):
         return GeneralMemoryParse(False)
 
-    if lowered == _DELETE_ALL_CONFIRMATION_NORMALIZED:
-        return GeneralMemoryParse(True, action="delete_all_confirm", parser_rule=GENERAL_MEMORY_DELETE_ALL_RULE)
-    if lowered in {
+    if lowered in _CONFIRM_DELETE_PHRASES:
+        return GeneralMemoryParse(
+            True,
+            action="confirm_delete",
+            parser_rule=GENERAL_MEMORY_DELETE_ALL_RULE,
+            routing_reason="pending_owner_memory_confirmation",
+        )
+    if lowered in _CANCEL_DELETE_PHRASES:
+        return GeneralMemoryParse(
+            True,
+            action="cancel_delete",
+            parser_rule=GENERAL_MEMORY_DELETE_ALL_RULE,
+            routing_reason="pending_owner_memory_cancellation",
+        )
+    if lowered in _DELETE_ALL_GENERAL_PHRASES:
+        return GeneralMemoryParse(
+            True,
+            action="forget_all_general",
+            query={"match_all": True, "response_style": "all_general", "display_query": "general long-term memories"},
+            extracted_phrase="general long-term memories",
+            parser_rule=GENERAL_MEMORY_DELETE_ALL_RULE,
+            confirmation_required=True,
+            routing_reason="explicit_general_memory_delete_all_request",
+        )
+    if lowered in _AMBIGUOUS_DELETE_PHRASES or lowered in {
         "forget everything about me",
         "delete all long term memory",
         "delete all my long term memory",
@@ -156,9 +216,11 @@ def parse_general_owner_memory(text: str) -> GeneralMemoryParse:
     }:
         return GeneralMemoryParse(
             True,
-            action="delete_all_request",
+            action="reject",
             parser_rule=GENERAL_MEMORY_DELETE_ALL_RULE,
-            confirmation_required=True,
+            rejection_reason="ambiguous_memory_deletion",
+            clarification_reason="ambiguous_memory_deletion",
+            routing_reason="ambiguous_destructive_owner_memory_request",
         )
 
     # Existing bounded multi-step commands are planned one clause at a time.
@@ -593,14 +655,49 @@ def general_memory_clause(record: Mapping[str, Any], *, third_person: bool = Fal
 
 def _parse_list_or_recall(source: str) -> tuple[str, Dict[str, Any]] | None:
     clean = source.casefold()
+    count_scopes = {
+        "how many memories do you have about me": "all",
+        "how many general long-term memories do i have": "general",
+        "how many general longterm memories do i have": "general",
+        "how many general long term memories do i have": "general",
+        "how many preferences have you saved": "preferences",
+        "how many owner facts are stored": "facts",
+    }
+    if clean in count_scopes:
+        scope = count_scopes[clean]
+        return "count", {
+            "scope": scope,
+            "memory_type": "preference" if scope == "preferences" else "",
+            "display_query": scope,
+        }
     if clean in {
-        "list my longterm memories",
-        "list my long term memories",
         "what do you remember about me",
         "list what you know about me",
         "tell me what you remember about me",
+        "tell me all the things you remember about me",
+        "what memories do you have about me",
     }:
-        return "list", {"match_all": True, "response_style": "combined_list", "display_query": "me"}
+        return "list", {"scope": "all", "match_all": True, "response_style": "combined_list", "display_query": "me"}
+    if clean in {
+        "list my longterm memories",
+        "list my long-term memories",
+        "list my long term memories",
+        "list my general memories",
+        "list my general longterm memories",
+        "list my general long-term memories",
+        "list my general long term memories",
+    }:
+        return "list", {"scope": "general", "match_all": True, "response_style": "general_list", "display_query": "general memories"}
+    if clean in {"list my saved facts", "list my owner facts"}:
+        return "list", {"scope": "facts", "response_style": "fact_list", "display_query": "saved facts"}
+    if clean in {"read my saved preferences", "list my saved preferences"}:
+        return "list", {
+            "scope": "general",
+            "memory_type": "preference",
+            "match_all": True,
+            "response_style": "type_list",
+            "display_query": "preferences",
+        }
     if clean in {"what are my preferences", "show my saved preferences", "what are some things i like", "what do i like", "what do i like doing", "what do i enjoy"}:
         return "recall", {
             "memory_type": "preference",
@@ -618,15 +715,17 @@ def _parse_list_or_recall(source: str) -> tuple[str, Dict[str, Any]] | None:
     match = re.fullmatch(r"when\s+do\s+i\s+(?:normally|usually)\s+(?P<topic>.+)", source, flags=re.IGNORECASE)
     if match:
         topic = _clean_fragment(match.group("topic"))
-        return "recall", {"memory_type": "routine", "topics": list(extract_memory_topics(topic)), "tokens": list(extract_memory_topics(topic)), "response_style": "topic", "display_query": topic}
+        return "inspect", {"memory_type": "routine", "topics": list(extract_memory_topics(topic)), "tokens": list(extract_memory_topics(topic)), "response_style": "topic", "display_query": topic}
     match = re.fullmatch(r"what\s+do\s+you\s+(?:remember|know)\s+about\s+(?:my\s+)?(?P<topic>.+)", source, flags=re.IGNORECASE)
     if not match:
         match = re.fullmatch(r"what\s+did\s+i\s+tell\s+you\s+about\s+(?P<topic>.+)", source, flags=re.IGNORECASE)
+    if not match:
+        match = re.fullmatch(r"do\s+you\s+remember\s+anything\s+about\s+(?P<topic>.+)", source, flags=re.IGNORECASE)
     if match:
         topic = _clean_fragment(match.group("topic"))
         if topic.casefold().startswith("my "):
             return None
-        return "recall", {"topics": list(extract_memory_topics(topic)), "tokens": list(extract_memory_topics(topic)), "response_style": "topic", "display_query": topic}
+        return "inspect", {"topics": list(extract_memory_topics(topic)), "tokens": list(extract_memory_topics(topic)), "response_style": "topic", "display_query": topic}
     match = re.fullmatch(r"do\s+i\s+(?P<fact>like|love|enjoy|prefer|dislike|hate)\s+(?P<object>.+)", source, flags=re.IGNORECASE)
     if match:
         fact = f"I {match.group('fact')} {match.group('object')}"
@@ -639,18 +738,59 @@ def _parse_list_or_recall(source: str) -> tuple[str, Dict[str, Any]] | None:
     match = re.fullmatch(r"what\s+do\s+you\s+know\s+about\s+my\s+(?P<topic>.+)", source, flags=re.IGNORECASE)
     if match:
         topic = _clean_fragment(match.group("topic"))
-        return "recall", {"topics": list(extract_memory_topics(topic)), "tokens": list(extract_memory_topics(topic)), "response_style": "topic", "display_query": topic}
+        return "inspect", {"topics": list(extract_memory_topics(topic)), "tokens": list(extract_memory_topics(topic)), "response_style": "topic", "display_query": topic}
     return None
 
 
 def _parse_forget(source: str) -> GeneralMemoryParse | None:
     patterns = (
-        (re.compile(r"^(?:forget|delete)(?:\s+the)?(?:\s+longterm)?\s+memory\s+that\s+(?P<fact>.+)$", re.IGNORECASE), "fact"),
-        (re.compile(r"^forget\s+that\s+(?P<fact>.+)$", re.IGNORECASE), "fact"),
-        (re.compile(r"^(?:forget|delete)(?:\s+all)?\s+(?:memories|memory)\s+about\s+(?P<topic>.+)$", re.IGNORECASE), "topic"),
-        (re.compile(r"^forget\s+what\s+i\s+told\s+you\s+about\s+(?P<topic>.+)$", re.IGNORECASE), "topic"),
-        (re.compile(r"^remove\s+my\s+(?P<topic>.+?)\s+preference$", re.IGNORECASE), "preference"),
-        (re.compile(r"^forget\s+all\s+my\s+saved\s+(?P<kind>preferences|routines|goals)$", re.IGNORECASE), "type"),
+        (
+            re.compile(
+                r"^(?:forget|forgot|remove|delete|erase)\s+everything(?:\s+you\s+remember)?\s+about\s+(?P<topic>.+)$",
+                re.IGNORECASE,
+            ),
+            "topic_wide",
+        ),
+        (
+            re.compile(r"^(?:remove|delete|erase)\s+(?:all\s+|my\s+)?memories\s+(?:about|related\s+to)\s+(?P<topic>.+)$", re.IGNORECASE),
+            "topic_wide",
+        ),
+        (
+            re.compile(r"^(?:forget|forgot|delete|erase)(?:\s+the)?(?:\s+longterm)?\s+memory\s+that\s+(?P<fact>.+)$", re.IGNORECASE),
+            "fact",
+        ),
+        (
+            re.compile(r"^(?:forget|forgot|do\s+not\s+remember|don't\s+remember|stop\s+remembering)\s+that\s+(?P<fact>.+)$", re.IGNORECASE),
+            "fact",
+        ),
+        (
+            re.compile(r"^(?:remove|delete)\s+(?:the\s+)?(?:saved\s+)?memory\s+that\s+(?P<fact>.+)$", re.IGNORECASE),
+            "fact",
+        ),
+        (
+            re.compile(r"^(?:remove|delete)\s+my\s+(?:saved\s+)?preference\s+for\s+(?P<topic>.+)$", re.IGNORECASE),
+            "preference",
+        ),
+        (
+            re.compile(r"^remove\s+my\s+(?P<topic>.+?)\s+preference$", re.IGNORECASE),
+            "preference",
+        ),
+        (
+            re.compile(r"^(?:remove|delete)\s+(?:the\s+)?saved\s+memory\s+about\s+(?P<topic>.+)$", re.IGNORECASE),
+            "topic_specific",
+        ),
+        (
+            re.compile(r"^(?:forget|forgot)\s+(?:about\s+)?(?:my\s+)?(?P<topic>.+?)\s+memor(?:y|ies)$", re.IGNORECASE),
+            "topic_specific",
+        ),
+        (
+            re.compile(r"^forget\s+what\s+i\s+told\s+you\s+about\s+(?P<topic>.+)$", re.IGNORECASE),
+            "topic_specific",
+        ),
+        (
+            re.compile(r"^(?:remove|delete)\s+from\s+(?:longterm\s+)?memory(?:\s+that)?\s+(?P<fact>.+)$", re.IGNORECASE),
+            "fact",
+        ),
     )
     for pattern, kind in patterns:
         match = pattern.fullmatch(source)
@@ -663,18 +803,45 @@ def _parse_forget(source: str) -> GeneralMemoryParse | None:
             except GeneralMemoryValidationError as error:
                 return _rejected(error.code, protected=error.protected, fact_text=fact)
             query = {"signature": general_memory_signature(memory), "topics": memory["topics"], "predicate": memory["predicate"], "response_style": "exact", "display_query": fact}
-            return GeneralMemoryParse(True, action="forget", memory=memory, query=query, fact_text=fact, extracted_phrase=fact, parser_rule=GENERAL_MEMORY_FORGET_RULE)
-        if kind == "topic":
+            return GeneralMemoryParse(
+                True,
+                action="forget_specific",
+                memory=memory,
+                query=query,
+                fact_text=fact,
+                extracted_phrase=fact,
+                parser_rule=GENERAL_MEMORY_FORGET_RULE,
+                confirmation_required=True,
+                routing_reason="specific_general_memory_deletion_request",
+            )
+        if kind in {"topic_wide", "topic_specific"}:
             topic = _clean_fragment(match.group("topic"))
             query = {"topics": list(extract_memory_topics(topic)), "tokens": list(extract_memory_topics(topic)), "match_all": True, "response_style": "topic", "display_query": topic}
-            return GeneralMemoryParse(True, action="forget", query=query, extracted_phrase=topic, parser_rule=GENERAL_MEMORY_FORGET_RULE)
+            return GeneralMemoryParse(
+                True,
+                action="forget_topic" if kind == "topic_wide" else "forget_specific",
+                query=query,
+                extracted_phrase=topic,
+                parser_rule=GENERAL_MEMORY_FORGET_RULE,
+                confirmation_required=True,
+                routing_reason=(
+                    "explicit_topic_memory_deletion_request"
+                    if kind == "topic_wide"
+                    else "specific_memory_match_request"
+                ),
+            )
         if kind == "preference":
             topic = _clean_fragment(match.group("topic"))
             query = {"memory_type": "preference", "topics": list(extract_memory_topics(topic)), "match_all": True, "response_style": "topic", "display_query": topic}
-            return GeneralMemoryParse(True, action="forget", query=query, extracted_phrase=topic, parser_rule=GENERAL_MEMORY_FORGET_RULE)
-        memory_type = {"preferences": "preference", "routines": "routine", "goals": "goal"}[match.group("kind").casefold()]
-        query = {"memory_type": memory_type, "match_all": True, "response_style": "type", "display_query": match.group("kind")}
-        return GeneralMemoryParse(True, action="forget", query=query, extracted_phrase=match.group("kind"), parser_rule=GENERAL_MEMORY_FORGET_RULE)
+            return GeneralMemoryParse(
+                True,
+                action="forget_specific",
+                query=query,
+                extracted_phrase=topic,
+                parser_rule=GENERAL_MEMORY_FORGET_RULE,
+                confirmation_required=True,
+                routing_reason="specific_preference_deletion_request",
+            )
     return None
 
 

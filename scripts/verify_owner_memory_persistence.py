@@ -35,8 +35,13 @@ EXPECTED_STEPS = (
     ),
     (
         "forget my favorite color",
-        "I forgot your favorite color.",
-        "forgotten",
+        "Your saved favorite color is red. Should I delete that fact?",
+        "confirmation_required",
+    ),
+    (
+        "yes delete it",
+        "I deleted your favorite-color fact.",
+        "deleted_keyed_fact",
     ),
     (
         "what is my favorite color",

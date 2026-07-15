@@ -1,4 +1,6 @@
 import ast
+import subprocess
+import sys
 from pathlib import Path
 
 from core import CoreService, IntentParser
@@ -32,6 +34,27 @@ FORBIDDEN_MEMORY_IMPORT_TOKENS = (
 )
 
 
+def test_events_first_import_does_not_cycle_through_owner_memory():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from events import EventHistoryStore; "
+                "from memory import OwnerMemoryService, OwnerProfileStore; "
+                "assert EventHistoryStore and OwnerMemoryService and OwnerProfileStore"
+            ),
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_voice_boundaries_do_not_construct_or_import_concrete_owner_store():
     for relative_path in VOICE_BOUNDARY_FILES:
         source = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
@@ -58,6 +81,8 @@ def test_production_voice_launcher_does_not_write_owner_json_directly():
     assert ".write_bytes(" not in source
     assert "owner_profile.json" not in source
     assert "OwnerProfileStore" not in source
+    assert "PendingOwnerMemoryActionStore" not in source
+    assert "pending_owner_memory_action.json" not in source
 
 
 def test_owner_memory_routing_precedes_tasks_and_tasks_do_not_own_profile_storage():
@@ -124,6 +149,25 @@ def test_only_one_production_python_default_owner_profile_path_exists():
             if '"data" / "memory" / "owner_profile.json"' in path.read_text(encoding="utf-8"):
                 matches.append(path.relative_to(REPO_ROOT).as_posix())
     assert matches == ["memory/owner_profile.py"]
+
+
+def test_only_one_production_python_default_pending_owner_action_path_exists():
+    matches = []
+    for folder in ("core", "memory", "skills", "interfaces", "scripts"):
+        for path in (REPO_ROOT / folder).rglob("*.py"):
+            if '"data" / "runtime" / "pending_owner_memory_action.json"' in path.read_text(encoding="utf-8"):
+                matches.append(path.relative_to(REPO_ROOT).as_posix())
+    assert matches == ["memory/pending_owner_memory.py"]
+
+
+def test_tasks_and_voice_boundaries_do_not_own_pending_owner_memory_state():
+    paths = [REPO_ROOT / "skills" / "builtin" / "tasks.py"]
+    paths.extend(REPO_ROOT / relative for relative in VOICE_BOUNDARY_FILES)
+    for path in paths:
+        source = path.read_text(encoding="utf-8")
+        assert "PendingOwnerMemoryActionStore" not in source, path.name
+        assert "pending_owner_memory_action.json" not in source, path.name
+        assert "forget_memories_by_ids" not in source, path.name
 
 
 def test_voice_manager_uses_core_service_owned_memory(tmp_path):
@@ -197,6 +241,7 @@ def test_no_voice_specific_owner_memory_files_are_defined():
                 if path.name in {
                     "manual_verify_general_owner_memory.py",
                     "manual_verify_general_long_term_memory.py",
+                    "manual_verify_owner_memory_management.py",
                 }:
                     continue
                 source = path.read_text(encoding="utf-8", errors="ignore")

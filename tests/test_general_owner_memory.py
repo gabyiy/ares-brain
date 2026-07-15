@@ -47,8 +47,8 @@ def _manager(tmp_path):
         ("What game do I like?", "recall", "favorite_game", ""),
         ("What is my dog's name?", "recall", "dog_name", ""),
         ("What work schedule did I tell you?", "recall", "work_schedule", ""),
-        ("Remove my dog name from memory.", "forget", "dog_name", ""),
-        ("Do not remember my birthday anymore.", "forget", "birthday", ""),
+        ("Remove my dog name from memory.", "forget_keyed_fact", "dog_name", ""),
+        ("Do not remember my birthday anymore.", "forget_keyed_fact", "birthday", ""),
     ],
 )
 def test_general_owner_memory_parser_is_bounded_and_deterministic(text, action, key, value):
@@ -88,7 +88,8 @@ def test_required_general_memory_lifecycle_uses_real_skill_path(tmp_path):
         ("Remember that my favorite game is EVE Online.", "I will remember that your favorite game is EVE Online."),
         ("Change my favorite game to StarCraft.", "I updated your favorite game from EVE Online to StarCraft."),
         ("What is my favorite game?", "Your favorite game is StarCraft."),
-        ("Forget my city.", "I forgot your city."),
+        ("Forget my city.", "Your saved city is Madrid. Should I delete that fact?"),
+        ("Yes, delete it.", "I deleted your city fact."),
         ("Where do I live?", "I do not know your city yet."),
     )
 

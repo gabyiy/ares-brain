@@ -14,6 +14,14 @@ OWNER_MEMORY_UPDATE = "update"
 OWNER_MEMORY_RECALL = "recall"
 OWNER_MEMORY_FORGET = "forget"
 OWNER_MEMORY_LIST = "list"
+OWNER_MEMORY_INSPECT = "inspect"
+OWNER_MEMORY_COUNT = "count"
+OWNER_MEMORY_FORGET_SPECIFIC = "forget_specific"
+OWNER_MEMORY_FORGET_TOPIC = "forget_topic"
+OWNER_MEMORY_FORGET_ALL_GENERAL = "forget_all_general"
+OWNER_MEMORY_FORGET_KEYED_FACT = "forget_keyed_fact"
+OWNER_MEMORY_CONFIRM_DELETE = "confirm_delete"
+OWNER_MEMORY_CANCEL_DELETE = "cancel_delete"
 OWNER_MEMORY_DELETE_ALL_REQUEST = "delete_all_request"
 OWNER_MEMORY_DELETE_ALL_CONFIRM = "delete_all_confirm"
 OWNER_MEMORY_REJECT = "reject"
@@ -108,15 +116,17 @@ _RECALL_PATTERNS = (
     re.compile(r"^what\s+did\s+i\s+tell\s+you\s+about\s+my\s+(?P<key>.+)$", re.IGNORECASE),
 )
 _FORGET_PATTERNS = (
+    (re.compile(r"^(?:forget|delete)\s+my\s+(?P<key>.+?)\s+from\s+memory$", re.IGNORECASE), OWNER_MEMORY_DELETE_RULE),
+    (re.compile(r"^remove\s+my\s+(?:saved\s+)?(?P<key>.+?)(?:\s+from\s+memory)?$", re.IGNORECASE), OWNER_MEMORY_DELETE_RULE),
     (re.compile(r"^(?:forget|delete)\s+my\s+(?P<key>.+)$", re.IGNORECASE), OWNER_MEMORY_DELETE_RULE),
-    (re.compile(r"^remove\s+my\s+(?P<key>.+?)\s+from\s+memory$", re.IGNORECASE), OWNER_MEMORY_DELETE_RULE),
     (re.compile(r"^do\s+not\s+remember\s+my\s+(?P<key>.+?)\s+anymore$", re.IGNORECASE), OWNER_MEMORY_DELETE_RULE),
 )
 _LIST_PHRASES = {
-    "what do you remember about me",
-    "list what you know about me",
-    "show my saved facts",
-    "tell me what you remember about me",
+    "what do you remember about me": "all",
+    "list what you know about me": "all",
+    "show my saved facts": "facts",
+    "list my saved facts": "facts",
+    "tell me what you remember about me": "all",
 }
 _SPECIAL_RECALL_KEYS = {
     "where do i live": "city",
@@ -255,6 +265,29 @@ class OwnerMemoryCommand:
             if self.action == OWNER_MEMORY_SAVE and self.fact_text:
                 trigger = self.normalized_memory_trigger or "remember longterm that"
                 return f"{trigger} {self.fact_text}".strip()
+            if self.action in {OWNER_MEMORY_RECALL, OWNER_MEMORY_INSPECT}:
+                display = str(self.query.get("display_query") or "me")
+                style = str(self.query.get("response_style") or "topic")
+                memory_type = str(self.query.get("memory_type") or "")
+                if style == "preference_list":
+                    return "what do i like"
+                if style == "assertion":
+                    return f"do you remember that {display}"
+                if style == "type_list" and memory_type == "preference":
+                    return "what are my preferences"
+                if style == "type_list" and memory_type == "routine":
+                    return "what is my routine"
+                if style == "type_list" and memory_type == "goal":
+                    return "what goals do i have"
+                return f"what do you remember about {display}"
+            if self.action == OWNER_MEMORY_FORGET_SPECIFIC:
+                if self.fact_text:
+                    return f"forget that {self.fact_text}"
+                return f"remove the saved memory about {self.query.get('display_query') or 'that topic'}"
+            if self.action == OWNER_MEMORY_FORGET_TOPIC:
+                return f"forget everything about {self.query.get('display_query') or 'that topic'}"
+            if self.action == OWNER_MEMORY_FORGET_ALL_GENERAL:
+                return "forget all my general longterm memories"
             return ""
         key = self.display_key or owner_fact_display_name(self.normalized_key)
         if self.action == OWNER_MEMORY_SAVE:
@@ -263,10 +296,17 @@ class OwnerMemoryCommand:
             return f"update my {key} to {self.value}"
         if self.action == OWNER_MEMORY_RECALL:
             return f"what is my {key}"
-        if self.action == OWNER_MEMORY_FORGET:
+        if self.action in {OWNER_MEMORY_FORGET, OWNER_MEMORY_FORGET_KEYED_FACT}:
             return f"forget my {key}"
         if self.action == OWNER_MEMORY_LIST:
-            return "what do you remember about me"
+            scope = str(self.query.get("scope") or "all")
+            return "list my saved facts" if scope == "facts" else "list my general memories" if scope == "general" else "what do you remember about me"
+        if self.action == OWNER_MEMORY_COUNT:
+            return "how many memories do you have about me"
+        if self.action == OWNER_MEMORY_CONFIRM_DELETE:
+            return "yes delete it"
+        if self.action == OWNER_MEMORY_CANCEL_DELETE:
+            return "cancel deletion"
         if self.action == OWNER_MEMORY_DELETE_ALL_REQUEST:
             return "delete all long term owner memory"
         if self.action == OWNER_MEMORY_DELETE_ALL_CONFIRM:
@@ -285,8 +325,8 @@ class OwnerMemoryCommand:
             "query": dict(self.query),
             "persistence": self.persistence,
             "explicit": self.explicit,
-            "extracted_memory_phrase": self.extracted_memory_phrase,
-            "fact_text": self.fact_text,
+            "extracted_memory_phrase": "" if self.protected else self.extracted_memory_phrase,
+            "fact_text": "" if self.protected else self.fact_text,
             "clarification_reason": self.clarification_reason,
             "confirmation_required": self.confirmation_required,
             "normalized_memory_trigger": self.normalized_memory_trigger,
@@ -294,11 +334,20 @@ class OwnerMemoryCommand:
         }
         if self.rejection_reason:
             entities["rejection_reason"] = self.rejection_reason
+        sensitive_fields = set()
         if self.value not in ("", None) and not self.protected:
             entities["value"] = self.value
-            entities[SENSITIVE_ENTITY_FIELDS] = ["value"]
+            sensitive_fields.add("value")
         if self.memory and not self.protected:
-            entities[SENSITIVE_ENTITY_FIELDS] = sorted(set(entities.get(SENSITIVE_ENTITY_FIELDS, ())) | {"memory"})
+            sensitive_fields.add("memory")
+        if self.query:
+            sensitive_fields.add("query")
+        if self.extracted_memory_phrase:
+            sensitive_fields.add("extracted_memory_phrase")
+        if self.fact_text:
+            sensitive_fields.add("fact_text")
+        if sensitive_fields:
+            entities[SENSITIVE_ENTITY_FIELDS] = sorted(sensitive_fields)
         return entities
 
 
@@ -315,11 +364,13 @@ def parse_owner_memory_command(text: str) -> OwnerMemoryCommand:
     if re.match(r"^remember\s+(?:my\s+)?task\b", clean, flags=re.IGNORECASE):
         return OwnerMemoryCommand(False)
     if lowered in _LIST_PHRASES:
+        scope = _LIST_PHRASES[lowered]
         return OwnerMemoryCommand(
             True,
             action=OWNER_MEMORY_LIST,
             parser_rule=OWNER_MEMORY_LIST_RULE,
-            memory_kind="all",
+            memory_kind="fact" if scope == "facts" else "all",
+            query={"scope": scope, "response_style": "fact_list" if scope == "facts" else "combined_list"},
             persistence="long_term",
             explicit=True,
         )
@@ -330,9 +381,17 @@ def parse_owner_memory_command(text: str) -> OwnerMemoryCommand:
     if early_general.recognized and early_general.action in {
         "update",
         "recall",
+        "inspect",
+        "count",
         "forget",
+        "forget_specific",
+        "forget_topic",
+        "forget_all_general",
+        "confirm_delete",
+        "cancel_delete",
         "delete_all_request",
         "delete_all_confirm",
+        "reject",
     }:
         return _general_command(early_general)
 
@@ -365,7 +424,7 @@ def parse_owner_memory_command(text: str) -> OwnerMemoryCommand:
     for pattern, parser_rule in _FORGET_PATTERNS:
         match = pattern.fullmatch(clean)
         if match:
-            return _key_command(OWNER_MEMORY_FORGET, match.group("key"), parser_rule=parser_rule)
+            return _key_command(OWNER_MEMORY_FORGET_KEYED_FACT, match.group("key"), parser_rule=parser_rule)
 
     general = parse_general_owner_memory(clean)
     if general.recognized:
@@ -522,7 +581,15 @@ def _general_command(parsed: GeneralMemoryParse) -> OwnerMemoryCommand:
         "save": OWNER_MEMORY_SAVE,
         "update": OWNER_MEMORY_UPDATE,
         "recall": OWNER_MEMORY_RECALL,
+        "inspect": OWNER_MEMORY_INSPECT,
+        "count": OWNER_MEMORY_COUNT,
         "forget": OWNER_MEMORY_FORGET,
+        "forget_specific": OWNER_MEMORY_FORGET_SPECIFIC,
+        "forget_topic": OWNER_MEMORY_FORGET_TOPIC,
+        "forget_all_general": OWNER_MEMORY_FORGET_ALL_GENERAL,
+        "forget_keyed_fact": OWNER_MEMORY_FORGET_KEYED_FACT,
+        "confirm_delete": OWNER_MEMORY_CONFIRM_DELETE,
+        "cancel_delete": OWNER_MEMORY_CANCEL_DELETE,
         "list": OWNER_MEMORY_LIST,
         "delete_all_request": OWNER_MEMORY_DELETE_ALL_REQUEST,
         "delete_all_confirm": OWNER_MEMORY_DELETE_ALL_CONFIRM,
@@ -534,7 +601,13 @@ def _general_command(parsed: GeneralMemoryParse) -> OwnerMemoryCommand:
         rejection_reason=parsed.rejection_reason,
         protected=parsed.protected,
         parser_rule=parsed.parser_rule,
-        memory_kind="general" if action != OWNER_MEMORY_LIST else "all",
+        memory_kind=(
+            "pending"
+            if action in {OWNER_MEMORY_CONFIRM_DELETE, OWNER_MEMORY_CANCEL_DELETE}
+            else "all"
+            if action in {OWNER_MEMORY_LIST, OWNER_MEMORY_COUNT}
+            else "general"
+        ),
         memory=dict(parsed.memory),
         query=dict(parsed.query),
         persistence="long_term",

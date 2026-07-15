@@ -41,17 +41,27 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_OWNER_PROFILE_PATH),
         help="owner-profile JSON path; use a temporary path for isolated checks",
     )
+    parser.add_argument("--pending-state", default="", help="optional isolated pending-action path")
     parser.add_argument("--json", action="store_true", help="print one JSON result line")
     return parser
 
 
-def run_owner_memory_text(text: str, profile_path: Path) -> dict[str, Any]:
+def run_owner_memory_text(
+    text: str,
+    profile_path: Path,
+    pending_path: Optional[Path] = None,
+    *,
+    owner_memory_service: Optional[OwnerMemoryService] = None,
+) -> dict[str, Any]:
     path = resolve_owner_profile_path(profile_path)
     support_dir = path.parent / ".owner_memory_verification"
     event_bus = EventBus()
-    core_service = CoreService(
-        owner_memory_service=OwnerMemoryService(path, event_bus=event_bus)
+    service = owner_memory_service or OwnerMemoryService(
+        path,
+        event_bus=event_bus,
+        pending_path=pending_path,
     )
+    core_service = CoreService(owner_memory_service=service)
     manager = single_turn.create_skill_manager(
         core_service,
         event_history_store=EventHistoryStore(support_dir / "events.json"),
@@ -101,6 +111,12 @@ def run_owner_memory_text(text: str, profile_path: Path) -> dict[str, Any]:
         "profile_path": str(diagnostics.get("profile_path") or path),
         "file_existed_before": diagnostics.get("file_existed_before"),
         "parser_rule": str(diagnostics.get("parser_rule") or ""),
+        "pending_state_path": str(diagnostics.get("pending_state_path") or service.pending_path),
+        "pending_operation": str(diagnostics.get("pending_operation") or ""),
+        "pending_status": str(diagnostics.get("pending_status") or ""),
+        "pending_candidate_count": int(diagnostics.get("pending_candidate_count") or 0),
+        "pending_expires_at": str(diagnostics.get("pending_expires_at") or ""),
+        "pending_topic": str(diagnostics.get("pending_topic") or ""),
         "value_redacted": True,
     }
 
@@ -110,7 +126,11 @@ def run_manual_verification(
     output_func: Callable[[str], None] = print,
 ) -> int:
     args = build_parser().parse_args(argv)
-    result = run_owner_memory_text(args.text, Path(args.profile_path))
+    result = run_owner_memory_text(
+        args.text,
+        Path(args.profile_path),
+        Path(args.pending_state) if args.pending_state else None,
+    )
     if args.json:
         output_func(json.dumps(result, ensure_ascii=False, sort_keys=True))
     else:

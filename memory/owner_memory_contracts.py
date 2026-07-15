@@ -14,6 +14,14 @@ OWNER_MEMORY_ACTION_UPDATE = "update"
 OWNER_MEMORY_ACTION_RECALL = "recall"
 OWNER_MEMORY_ACTION_FORGET = "forget"
 OWNER_MEMORY_ACTION_LIST = "list"
+OWNER_MEMORY_ACTION_INSPECT = "inspect"
+OWNER_MEMORY_ACTION_COUNT = "count"
+OWNER_MEMORY_ACTION_FORGET_SPECIFIC = "forget_specific"
+OWNER_MEMORY_ACTION_FORGET_TOPIC = "forget_topic"
+OWNER_MEMORY_ACTION_FORGET_ALL_GENERAL = "forget_all_general"
+OWNER_MEMORY_ACTION_FORGET_KEYED_FACT = "forget_keyed_fact"
+OWNER_MEMORY_ACTION_CONFIRM_DELETE = "confirm_delete"
+OWNER_MEMORY_ACTION_CANCEL_DELETE = "cancel_delete"
 OWNER_MEMORY_ACTION_DELETE_ALL_REQUEST = "delete_all_request"
 OWNER_MEMORY_ACTION_DELETE_ALL_CONFIRM = "delete_all_confirm"
 OWNER_MEMORY_ACTIONS = {
@@ -22,6 +30,14 @@ OWNER_MEMORY_ACTIONS = {
     OWNER_MEMORY_ACTION_RECALL,
     OWNER_MEMORY_ACTION_FORGET,
     OWNER_MEMORY_ACTION_LIST,
+    OWNER_MEMORY_ACTION_INSPECT,
+    OWNER_MEMORY_ACTION_COUNT,
+    OWNER_MEMORY_ACTION_FORGET_SPECIFIC,
+    OWNER_MEMORY_ACTION_FORGET_TOPIC,
+    OWNER_MEMORY_ACTION_FORGET_ALL_GENERAL,
+    OWNER_MEMORY_ACTION_FORGET_KEYED_FACT,
+    OWNER_MEMORY_ACTION_CONFIRM_DELETE,
+    OWNER_MEMORY_ACTION_CANCEL_DELETE,
     OWNER_MEMORY_ACTION_DELETE_ALL_REQUEST,
     OWNER_MEMORY_ACTION_DELETE_ALL_CONFIRM,
 }
@@ -121,6 +137,7 @@ class OwnerMemoryResultV1:
     memory: Dict[str, Any] = field(default_factory=dict)
     memories: Tuple[Dict[str, Any], ...] = ()
     confirmation_required: bool = False
+    pending_action: Dict[str, Any] = field(default_factory=dict)
     error_code: str = ""
     error_message: str = ""
     correlation_id: str = ""
@@ -147,6 +164,7 @@ class OwnerMemoryResultV1:
             "error_message": self.error_message,
             "metadata": dict(self.metadata),
             "confirmation_required": self.confirmation_required,
+            "pending_action": dict(self.pending_action),
         }
         if include_values:
             if self.value is not None:

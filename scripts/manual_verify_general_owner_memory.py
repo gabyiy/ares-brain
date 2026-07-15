@@ -25,7 +25,8 @@ STEPS = (
     ("Change my favorite game to StarCraft.", "I updated your favorite game from EVE Online to StarCraft.", "updated"),
     ("What game do I like?", "Your favorite game is StarCraft.", "recalled"),
     ("What do you remember about me?", "", "listed"),
-    ("Forget my city.", "I forgot your city.", "forgotten"),
+    ("Forget my city.", "Your saved city is Madrid. Should I delete that fact?", "confirmation_required"),
+    ("Yes, delete it.", "I deleted your city fact.", "deleted_keyed_fact"),
     ("Where do I live?", "I do not know your city yet.", "missing"),
     ("When is my birthday?", "Your birthday is June 8.", "recalled"),
 )

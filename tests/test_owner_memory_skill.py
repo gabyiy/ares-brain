@@ -33,8 +33,8 @@ def _manager(tmp_path, bus=None):
         ("what is my favorite color?", "recall", "favorite_color"),
         ("what's my favorite colour", "recall", "favorite_color"),
         ("do you remember my favorite color?", "recall", "favorite_color"),
-        ("forget my favorite color.", "forget", "favorite_color"),
-        ("delete my favorite color.", "forget", "favorite_color"),
+        ("forget my favorite color.", "forget_keyed_fact", "favorite_color"),
+        ("delete my favorite color.", "forget_keyed_fact", "favorite_color"),
         (
             "remember that modified white color is blue.",
             "save",
@@ -58,7 +58,7 @@ def test_owner_memory_parser_rejects_ambiguous_command_instead_of_guessing():
 
     assert command.recognized is True
     assert command.action == OWNER_MEMORY_REJECT
-    assert command.rejection_reason == "ambiguous_value_rejected"
+    assert command.rejection_reason == "unsafe_memory_rejected"
 
 
 @pytest.mark.parametrize(
@@ -137,8 +137,13 @@ def test_required_owner_memory_interactions_use_planner_and_skill(tmp_path):
         ),
         (
             "Forget my favorite color.",
-            "I forgot your favorite color.",
-            "forgotten",
+            "Your saved favorite color is red. Should I delete that fact?",
+            "confirmation_required",
+        ),
+        (
+            "Yes, delete it.",
+            "I deleted your favorite-color fact.",
+            "deleted_keyed_fact",
         ),
         (
             "Do you remember my favorite color?",
@@ -254,6 +259,10 @@ def test_owner_memory_skill_manifest_is_registered_with_explicit_capabilities(tm
         "memory.owner.general.recall",
         "memory.owner.general.forget",
         "memory.owner.general.list",
+        "memory.owner.general.inspect",
+        "memory.owner.general.count",
+        "memory.owner.deletion.confirm",
+        "memory.owner.deletion.cancel",
     }
 
 
@@ -284,6 +293,12 @@ def test_owner_memory_response_exposes_bounded_operation_diagnostics(tmp_path):
         "normalized_memory_trigger": "",
         "routing_reason": "",
         "memory_id": "",
+        "pending_state_path": str(store.path.with_name("pending_owner_memory_action.json")),
+        "pending_operation": "",
+        "pending_status": "",
+        "pending_candidate_count": 0,
+        "pending_expires_at": "",
+        "pending_topic": "",
     }
 
 
