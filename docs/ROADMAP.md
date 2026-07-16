@@ -1175,7 +1175,15 @@ Phase 96: Constrained-Grammar Vosk Standby Wake Recognition
 - Wake activation requires an exact complete normalized phrase and usable confidence for every returned word. The conservative default minimum is 0.8. `[unk]`, missing confidence, low confidence, extra words, partial words, and unrelated sentences reject activation.
 - Active full-sentence commands remain on the existing base-English Whisper route. BrainRuntime lifecycle ownership, ALSA/VAD/canonical WAV capture, capture/playback exclusion, skills, memory, Piper, speaker output, inactivity, standby, shutdown, and cleanup are unchanged.
 - Added explicit `vosk==0.3.45` dependency management, local-model configuration/preflight, actionable missing-model guidance, bounded owner diagnostics, six-stage hardware verification, and transcript-free contracts/events.
-- Current pytest collection is 1847 tests.
+- Historical Phase 96 pytest collection was 1847 tests.
+
+Phase 97: Shared Active Lifecycle Voice Control
+
+- Real Raspberry Pi verification proved constrained Vosk wake, `STANDBY -> ACTIVE`, exactly one session and acknowledgement, base-English Whisper active transcription, calculator execution, Piper, and ALSA playback. `goodbye aris` then fell through as an ordinary unknown command because wake and active lifecycle parsing used different owner-name policies.
+- Added one validated `core.AresIdentity` policy for exact whole-token `ares`/`aris` canonicalization. `core.LifecycleControl` classifies complete configured standby and shutdown phrases before `CoreService`, parser, planner, `SkillManager`, or skills; partial words and surrounding sentences remain ordinary input.
+- Standby controls now include exact `goodbye ares`, `go to standby ares`, `go to sleep ares`, `standby ares`, and `sleep ares`; shutdown controls remain exact `shutdown ares`, `shut down ares`, and `stop ares completely`. The `aris` forms canonicalize through the shared policy rather than duplicating phrase lists.
+- Corrected active-command diagnostics to use the current `SingleTurnVoicePipeline` capture instead of the previous wake-listener result. Wake and active-command transcripts are separated and terminal-only. The reported `2.260s` candidate and `5.220s` raw maximum-duration values were stale wake data, so command-mode VAD retains its validated 15-second maximum and 0.9-second terminal silence with focused synthetic regressions.
+- Full deterministic verification passed with 1903 tests; Raspberry Pi completion remains owner-run.
 
 Current State
 
@@ -1268,7 +1276,7 @@ Phase 3 Real Voice Integration
 29. Add the central persistent foreground Brain Runtime with deterministic text activation, multi-command sessions, manager-owned inactivity standby, and explicit shutdown. Completed in deterministic CI.
 30. Verify the hardware-free Brain Runtime scripts after pulling on Raspberry Pi. Pending owner run.
 31. Add one bounded real microphone wake activation adapter without moving runtime ownership out of Capital/Core. Completed in deterministic CI; real Raspberry Pi wake verification remains owner-run.
-32. Install the local small English Vosk model, then run the one-attempt diagnostic, bounded standby-wake hardware helper, and foreground runtime on Raspberry Pi. Confirm exact `Ares`/`Aries` classification, confidence, acknowledgement, active Whisper command response, standby, second activation, and shutdown before recording hardware proof.
+32. Pull the lifecycle-control hardening checkpoint, then run the bounded standby-wake hardware helper and foreground runtime on Raspberry Pi. Confirm exact `Ares`/`Aris` wake classification, confidence, acknowledgement, active Whisper calculator response, `goodbye Ares`/`goodbye Aris` standby without ordinary routing, second activation, and `shutdown Ares`/`shutdown Aris` cleanup before recording complete hardware proof.
 33. Only after stable hardware proof consider a separately reviewed systemd/boot-startup checkpoint. Wider background listening and autonomous City activation remain out of scope.
 
 What Must Not Be Started Yet

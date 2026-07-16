@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v2.00 - Constrained Vosk Standby Wake Recognition
+ARES v2.00 - Constrained Wake and Lifecycle Voice Control
 
 ---
 
@@ -24,7 +24,7 @@ The permanent architecture reference is `docs/ARCHITECTURE.md`. It documents the
 
 `core.BrainSessionManager` is the central Capital/Core lifecycle controller. It owns the deterministic Brain states `STOPPED`, `BOOTING`, `INITIALIZING`, `STANDBY`, `ACTIVE`, `PROCESSING`, `RESPONDING`, `RETURNING_TO_STANDBY`, `SHUTTING_DOWN`, and `ERROR`; validates every transition; creates one session ID on activation; clears it on standby; tracks activity, inactivity deadlines, and consecutive failures; and emits bounded lifecycle events. `CoreService.get_brain_session_snapshot()` inspects it without activating a City. This is separate from `ModuleLifecycleManager`, which still controls removable modules. No background timer, microphone listener, wake word, City activation loop, GPT, or cloud service was added.
 
-`core.BrainRuntime` is the persistent foreground Capital/Core process controller built on that manager. It boots once to `STANDBY`, creates one active session after a verified bounded activation, serially routes multiple commands through the existing production `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path, returns to standby on exact owner stop phrases or the manager's 30-second inactivity deadline, and stops only on an explicit shutdown phrase, cancellation, end-of-input, or unsafe failure escalation. `BrainSessionManager` remains the sole lifecycle-state authority. The injected Linux `StandbyWakeListener` uses calibrated VAD followed by `VoskWakeRecognizer`, a local constrained-grammar adapter. Its complete recognized phrase must be one of `ares`, `aries`, `hey ares`, `hey aries`, `okay ares`, or `okay aries`, all words must include usable confidence at or above the default 0.8 threshold, and `[unk]` or any extra word rejects activation. Active command capture remains on the existing base-English Whisper `SingleTurnVoicePipeline`; Piper and ALSA output are unchanged. No daemon, systemd unit, boot startup, City activation, GPT, cloud service, network listener, or runtime worker thread was added.
+`core.BrainRuntime` is the persistent foreground Capital/Core process controller built on that manager. It boots once to `STANDBY`, creates one active session after a verified bounded activation, serially routes multiple commands through the existing production `SkillManager -> IntentParser -> Planner -> ExecutionPipeline -> Skill` path, returns to standby on exact owner stop phrases or the manager's 30-second inactivity deadline, and stops only on an explicit shutdown phrase, cancellation, end-of-input, or unsafe failure escalation. `BrainSessionManager` remains the sole lifecycle-state authority. The injected Linux `StandbyWakeListener` uses calibrated VAD followed by `VoskWakeRecognizer`, a local constrained-grammar adapter. Its complete recognized phrase must be one of `ares`, `aris`, `hey ares`, `hey aris`, `okay ares`, or `okay aris`, all words must include usable confidence at or above the default 0.8 threshold, and `[unk]` or any extra word rejects activation. The shared `core.AresIdentity` policy canonicalizes only complete `ares`/`aris` tokens, and strict `core.LifecycleControl` matching intercepts `goodbye aris` and `shutdown aris` before `CoreService`; partial words and surrounding sentences remain ordinary input. Active command capture remains on the existing base-English Whisper `SingleTurnVoicePipeline`; Piper and ALSA output are unchanged. No daemon, systemd unit, boot startup, City activation, GPT, cloud service, network listener, or runtime worker thread was added.
 
 `core.EventBus` now provides an internal future city event skeleton with `Event` records shaped as source, type, priority, payload, and timestamp. Supported priorities are `low`, `normal`, `high`, and `critical`. This is future-use infrastructure only; it does not start background listeners, notifications, camera loops, internet access, GPT, or any daemon.
 
@@ -574,7 +574,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1847 tests`.
+Current pytest collection: `1903 tests`.
 
 Manual Brain Session Manager Verification
 
@@ -664,7 +664,7 @@ python scripts/run_ares_standby_voice.py --diagnostic-wake --retain-diagnostic-a
 
 The second form retains at most the configured number of wake candidates (one by default) and prints a manual `aplay` command. Neither form automatically plays captured microphone audio.
 
-It uses `plughw:2,0`, `plughw:CARD=Device,DEV=0`, `vosk-model-small-en-us-0.15` for bounded standby wake recognition, `ggml-base.en.bin` for full active commands, and `en_US-hfc_male-medium` by default. Say `Ares` once for one `Yes Gabi.` acknowledgement. The constrained grammar contains the six explicit `ares`/`aries` phrases plus `[unk]`; the complete recognized phrase must match exactly and every returned word must have confidence at or above 0.8. `okay`, `bye`, `alrighty`, `areas`, `air`, partial words, and sentences that merely mention Ares remain rejected. Issue multiple commands under one session, say `goodbye Ares` for standby, or `shutdown Ares` for full shutdown.
+It uses `plughw:2,0`, `plughw:CARD=Device,DEV=0`, `vosk-model-small-en-us-0.15` for bounded standby wake recognition, `ggml-base.en.bin` for full active commands, and `en_US-hfc_male-medium` by default. Say `Ares` once for one `Yes Gabi.` acknowledgement. The constrained grammar contains the six explicit `ares`/`aris` phrases plus `[unk]`; the complete recognized phrase must match exactly and every returned word must have confidence at or above 0.8. `okay`, `bye`, `alrighty`, `areas`, `air`, `aries`, partial words, and sentences that merely mention Ares remain rejected. Issue multiple commands under one session, say `goodbye Ares` or `goodbye Aris` for standby, or `shutdown Ares` or `shutdown Aris` for full shutdown. With `--diagnostic-wake`, wake and active-command transcripts are printed in separate owner-terminal sections and remain absent from events, memory, and persistent logs.
 
 Standby does not run Whisper. Calibrated 16 kHz mono PCM wake VAD uses 20 ms frames, two-frame speech evidence, 0.25 seconds of pre-roll, 0.7 seconds of terminal silence, and a two-second active-utterance cap before in-process Vosk classifies one candidate. Its calibrated continue/silence floors are 160/120 RMS; full-command VAD and Whisper defaults remain unchanged. WAV headers and duration bounds are checked before Vosk. A shared capture/playback gate and 0.35-second settling delay prevent capture during ARES output and prevent the acknowledgement from self-triggering. Candidate audio is removed by default. `--diagnostic-wake --retain-diagnostic-audio` retains only the latest candidate and prints a manual `aplay` command; retention never implies playback. The process is foreground-only: systemd, boot startup, daemonization, barge-in, GPT, cloud fallback, and autonomous City activation remain unimplemented.
 
@@ -2411,7 +2411,16 @@ Phase 96
 - Replaced only standby wake transcription with an injected in-process `VoskWakeRecognizer` using a six-phrase constrained grammar plus `[unk]`, exact complete-phrase matching, and a conservative 0.8 minimum word-confidence threshold.
 - Kept the full active command path on the existing base-English Whisper adapter and preserved BrainRuntime lifecycle ownership, VAD/canonical WAV handling, capture/playback exclusion, cleanup, skills, memory, Piper, and ALSA behavior.
 - Added explicit local-model/dependency preflight, actionable Raspberry Pi installation guidance, transcript-free contracts/events, owner-terminal diagnostics, and fail-closed missing/low-confidence handling.
-- Current pytest collection is 1847 tests
+- Historical Phase 96 pytest collection was 1847 tests
+
+Phase 97
+
+- Real Raspberry Pi verification proved wake activation, one session, acknowledgement, active Whisper transcription, calculator routing, and spoken `Result: 4`; returning to standby failed because active lifecycle parsing did not share the wake recognizer's `aris` alias.
+- Added one immutable, validated `ares`/`aris` identity policy used by wake recognition and lifecycle classification. Only complete alias tokens canonicalize; `paris`, `harris`, `aries`, and sentences containing an alias remain unchanged.
+- Added strict standby/shutdown interception before `CoreService`, `IntentParser`, `SkillManager`, planner, and skills. Recognized controls transition lifecycle directly, clear the session once for standby, and never produce the unknown-command fallback.
+- Corrected the hardware verifier to read the current active-command capture diagnostics rather than stale standby-wake timing, and separated wake transcript summaries from active-command transcript summaries. Command VAD defaults remain unchanged; deterministic PCM tests cover terminal-silence completion, room noise, internal pauses, and the absolute maximum.
+- Raspberry Pi verification of the complete wake, calculator, standby, second-wake, and shutdown sequence remains owner-run after pulling this checkpoint.
+- Current pytest collection is 1903 tests.
 
 Future phases retain camera understanding, face/object recognition, ROS2, Jetson Orin migration, and autonomous navigation as unimplemented plans.
 

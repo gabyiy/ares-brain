@@ -5,10 +5,11 @@
     "maximum_consecutive_failures": 3
   },
   "brain_runtime": {
+    "ares_name_aliases": ["ares", "aris"],
     "activation_phrases": ["ares", "hey ares", "hello ares", "wake up ares"],
     "active_acknowledgement": "Yes Gabi.",
     "already_active_acknowledgement": "Yes Gabi, I am listening.",
-    "standby_phrases": ["goodbye ares", "go to sleep ares", "standby ares", "sleep ares"],
+    "standby_phrases": ["goodbye ares", "go to standby ares", "go to sleep ares", "standby ares", "sleep ares"],
     "shutdown_phrases": ["shutdown ares", "shut down ares", "stop ares completely"],
     "inactivity_timeout_seconds": 30,
     "maximum_consecutive_failures": 3,
@@ -23,7 +24,7 @@
     "vosk_model_path": "models/vosk/vosk-model-small-en-us-0.15",
     "minimum_recognition_confidence": 0.8,
     "language": "en",
-    "wake_phrase_aliases": ["ares", "aries"],
+    "wake_phrase_aliases": ["ares", "aris"],
     "wake_phrase_prefixes": ["", "hey", "okay"],
     "filler_prefixes": [],
     "calibration_enabled": true,
