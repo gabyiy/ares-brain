@@ -24,7 +24,6 @@ from core.SingleTurnVoiceStages import SingleTurnVoiceStageMixin
 from core.SingleTurnVoiceSupport import (
     PIPELINE_CLEANUP_KEEP,
     PreBrainHook,
-    SingleTurnPreBrainDecision,
     SingleTurnRunState,
     VoiceStageCoordinator,
     contract_failure_result,
@@ -39,6 +38,7 @@ from core.SpeechToText import SpeechToTextAdapter
 from core.TextToSpeech import TextToSpeechAdapter
 from core.TranscriptNormalization import TranscriptNormalizer
 from core.VoiceCommandRouter import VoiceCommandRouter
+from memory.schema_migrations import MigrationError
 
 
 SINGLE_TURN_MODULE_NAME = "single_turn_voice_pipeline"
@@ -299,25 +299,81 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         clean_text = str(text or "").strip()
         if not clean_text:
             return contract_failure_result(request, "local_output_text_required")
+        try:
+            normalized = validated_single_turn_request(request)
+        except ValueError as error:
+            return contract_failure_result(request, str(error))
         local_request = replace(
-            request,
+            normalized,
             text_input=clean_text,
             playback_enabled=True,
             metadata={
-                **dict(request.metadata or {}),
+                **dict(normalized.metadata or {}),
                 "local_output": True,
             },
         )
-        return self.run_once(
-            local_request,
-            cancellation_token=cancellation_token,
-            pre_brain_hook=lambda _: SingleTurnPreBrainDecision(
-                handled=True,
-                status="local_output",
-                response_text=clean_text,
-                continue_to_output=True,
-                data={"source": "configured_local_phrase"},
-            ),
+        self._active_request = local_request
+        state = SingleTurnRunState(request=local_request, started_at=self.clock())
+        state.brain_execution_status = "local_output"
+        state.brain_text_response = clean_text
+        state.data["local_output"] = {
+            "source": "configured_local_phrase",
+            "input_turn_created": False,
+        }
+        result: Optional[SingleTurnVoiceResultV1] = None
+        start_result: Optional[LifecycleResult] = None
+        health_result: Optional[LifecycleResult] = None
+        stop_result: Optional[LifecycleResult] = None
+        try:
+            start_result = self.start(local_request)
+            if not start_result.success:
+                result = self._failure(
+                    state,
+                    "lifecycle_start",
+                    start_result.error_message or start_result.status,
+                    "start_failed",
+                )
+            else:
+                health_result = self.health_check(local_request)
+                self._apply_health_state(state, health_result)
+                if not health_result.success:
+                    result = self._failure(
+                        state,
+                        "health_check",
+                        health_result.error_message or health_result.status,
+                        "health_check_failed",
+                    )
+                else:
+                    result = self._execute_ready(
+                        local_request,
+                        state,
+                        cancellation_token,
+                        stage_runner=self._run_local_output_stages,
+                    )
+        except KeyboardInterrupt:
+            if cancellation_token is not None and cancellation_token.supports_cancellation:
+                cancellation_token.cancel("keyboard_interrupt")
+            result = self._failure(state, "cancellation", "keyboard_interrupt", "cancelled")
+        finally:
+            stop_result = self.stop(local_request)
+            cleanup = self._cleanup_files(local_request, result)
+
+        assert result is not None
+        return replace(
+            result,
+            total_processing_time_seconds=elapsed(self.clock, state.started_at),
+            events=[dict(event) for event in state.events],
+            data={
+                **dict(result.data),
+                "lifecycle": {
+                    "start": start_result.to_dict() if start_result else {},
+                    "health_check": health_result.to_dict() if health_result else {},
+                    "stop": stop_result.to_dict() if stop_result else {},
+                },
+                "cleanup": cleanup,
+                "coordinator": self.coordinator.to_dict(),
+                "resource_usage": self.resource_manager.current_usage(),
+            },
         )
 
     def add_stage_observer(self, observer: StageCallback) -> Callable[[], None]:
@@ -351,6 +407,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         state: SingleTurnRunState,
         cancellation_token: Optional[CancellationToken],
         pre_brain_hook: Optional[PreBrainHook] = None,
+        stage_runner: Optional[Callable[..., SingleTurnVoiceResultV1]] = None,
     ) -> SingleTurnVoiceResultV1:
         if self.lifecycle_manager.status(SINGLE_TURN_MODULE_NAME).state != LIFECYCLE_READY:
             return self._failure(state, "lifecycle", "module_not_ready", "not_ready")
@@ -380,7 +437,8 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
 
         def execute_stages(_: Any) -> SingleTurnVoiceResultV1:
             try:
-                return self._run_stages(
+                runner = stage_runner or self._run_stages
+                return runner(
                     request,
                     state,
                     cancellation_token,
@@ -437,6 +495,32 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
             response,
             data=response_data,
         )
+
+    def _run_local_output_stages(
+        self,
+        request: SingleTurnVoiceRequestV1,
+        state: SingleTurnRunState,
+        cancellation_token: Optional[CancellationToken],
+        _pre_brain_hook: Optional[PreBrainHook] = None,
+    ) -> SingleTurnVoiceResultV1:
+        cancelled = self._cancelled(state, cancellation_token, "before_synthesis")
+        if cancelled:
+            return cancelled
+        self._stage(5, "Synthesizing response", "running")
+        synthesis_failure = self._synthesize(request, state, emit_event=False)
+        if synthesis_failure:
+            return synthesis_failure
+        self._stage(5, "Synthesizing response", "completed")
+
+        cancelled = self._cancelled(state, cancellation_token, "before_playback")
+        if cancelled:
+            return cancelled
+        self._stage(6, "Playing response", "running")
+        playback_failure = self._playback(request, state, emit_event=False)
+        if playback_failure:
+            return playback_failure
+        self._stage(6, "Playing response", "completed")
+        return self._result(state, success=True, status="completed_local_output")
 
     def _apply_health_state(
         self,
@@ -764,7 +848,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
                     "metadata": {"safe": True, "source": "single_turn_voice_pipeline"},
                 },
             )
-        except (OSError, RuntimeError, ValueError) as error:
+        except (MigrationError, OSError) as error:
             state.data.setdefault("event_history_failures", []).append(
                 {"event_type": event_type, "error": safe_exception(error)}
             )

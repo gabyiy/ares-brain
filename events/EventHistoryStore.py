@@ -1,10 +1,17 @@
 import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from threading import RLock
+from typing import Any, Callable, Dict, List, Optional
 
-from memory.schema_migrations import SCHEMA_EVENT_HISTORY, load_store_data, save_store_data
+from memory.schema_migrations import (
+    MigrationError,
+    SCHEMA_EVENT_HISTORY,
+    load_store_data,
+    save_store_data,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -102,19 +109,40 @@ class EventHistoryRecord:
 class EventHistoryStore:
     """Persistent local store for internal event decisions and results."""
 
-    def __init__(self, path: Optional[Path] = None, max_records: int = DEFAULT_MAX_HISTORY):
+    def __init__(
+        self,
+        path: Optional[Path] = None,
+        max_records: int = DEFAULT_MAX_HISTORY,
+        *,
+        warning_callback: Optional[Callable[[str], None]] = None,
+    ):
         self.path = Path(path) if path else (_event_history_path_from_env() or DEFAULT_EVENT_HISTORY_PATH)
         self.max_records = max(0, int(max_records))
+        self._warning_callback = warning_callback or _default_warning
+        self._lock = RLock()
+        self._dropped_event_count = 0
+        self._reported_failures: set[str] = set()
 
-    def add(self, event: Any, result: Any) -> EventHistoryRecord:
+    @property
+    def dropped_event_count(self) -> int:
+        with self._lock:
+            return self._dropped_event_count
+
+    def add(self, event: Any, result: Any) -> Optional[EventHistoryRecord]:
         record = EventHistoryRecord.from_event_result(event, result)
-        records = self.list()
-        records.append(record)
-        self._save(self._bounded(records))
-        return record
+        with self._lock:
+            try:
+                records = self._load()
+                records.append(record)
+                self._save(self._bounded(records))
+            except (MigrationError, OSError) as error:
+                self._record_dropped_event(error)
+                return None
+            return record
 
     def list(self) -> List[EventHistoryRecord]:
-        return self._load()
+        with self._lock:
+            return self._load()
 
     def recent(
         self,
@@ -141,7 +169,8 @@ class EventHistoryStore:
         return records
 
     def clear(self) -> None:
-        self._save([])
+        with self._lock:
+            self._save([])
 
     def _load(self) -> List[EventHistoryRecord]:
         data = load_store_data(self.path, SCHEMA_EVENT_HISTORY, [])
@@ -164,6 +193,25 @@ class EventHistoryStore:
         if self.max_records == 0:
             return []
         return list(records)[-self.max_records :]
+
+    def _record_dropped_event(self, error: Exception) -> None:
+        self._dropped_event_count += 1
+        status = error.status if isinstance(error, MigrationError) else type(error).__name__
+        reason = (
+            "store locked"
+            if isinstance(error, MigrationError) and error.status == "store_locked"
+            else f"{status}: {str(error)[:160]}"
+        )
+        warning = f"WARNING: event history append skipped: {reason}: {self.path}"
+        warning_key = f"{status}:{str(error)[:160]}"
+        if warning_key in self._reported_failures:
+            return
+        self._reported_failures.add(warning_key)
+        self._warning_callback(warning)
+
+
+def _default_warning(message: str) -> None:
+    print(message, file=sys.stderr)
 
 
 def _event_to_dict(event: Any) -> Dict[str, Any]:

@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from memory.schema_migrations import MigrationError
+
 
 CPU_WEIGHT_TINY = "tiny"
 CPU_WEIGHT_LOW = "low"
@@ -985,7 +987,7 @@ class ResourceManager:
         }
         try:
             self.event_history_store.add(event, result)
-        except (OSError, RuntimeError, ValueError) as error:
+        except (MigrationError, OSError) as error:
             self._event_history_failures.append(
                 {
                     "source": "resource_manager",

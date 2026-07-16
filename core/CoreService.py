@@ -43,6 +43,7 @@ from core.ModuleLifecycle import (
     LifecycleRequest,
     ModuleLifecycleManager,
 )
+from memory.schema_migrations import MigrationError
 from core.PCService import PCService, WindowsPCService
 from core.ResourceBudget import (
     RESOURCE_ERROR_NO_EVICTION_CANDIDATE,
@@ -1332,7 +1333,7 @@ class CoreService:
         if self._event_history_store is not None:
             try:
                 self._event_history_store.add(event, result)
-            except (OSError, RuntimeError, ValueError) as error:
+            except (MigrationError, OSError) as error:
                 self._event_history_failures.append(
                     {
                         "source": "core_service",

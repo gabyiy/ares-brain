@@ -11,6 +11,8 @@ from core import (
     StandbyListenResultV1,
     WakeLocalDiagnostics,
 )
+from events import EventHistoryStore
+from memory.schema_migrations import StoreWriteLock, store_lock_path
 from scripts import manual_diagnose_wake_word
 from scripts import manual_verify_standby_wake_hardware
 from scripts import manual_verify_standby_wake_runtime
@@ -168,11 +170,14 @@ def test_static_dependency_validation_reports_missing_vosk_package(monkeypatch):
     assert error == "Vosk is not installed. Run: python -m pip install -r requirements.txt"
 
 
-def test_foreground_launcher_preflights_then_runs_and_stops_cleanly():
+def test_foreground_launcher_preflights_then_runs_and_stops_cleanly(tmp_path):
     factory, runtime, pipeline = _factory()
     output = []
+    lock_target = tmp_path / "runtime"
     code = run_ares_standby_voice.run_standby_voice(
-        [], output_func=output.append, runtime_factory=factory
+        ["--runtime-lock-path", str(lock_target)],
+        output_func=output.append,
+        runtime_factory=factory,
     )
     assert code == 0
     assert pipeline.started == 1 and pipeline.stopped == 1
@@ -180,24 +185,127 @@ def test_foreground_launcher_preflights_then_runs_and_stops_cleanly():
     assert runtime.standby_wake_listener.stop_count == 1
     assert any("foreground standby" in line.casefold() for line in output)
     assert output[-1] == "ARES standby voice runtime stopped cleanly."
+    assert not store_lock_path(lock_target).exists()
 
 
-def test_foreground_launcher_returns_dependency_failure_before_runtime_loop():
+def test_foreground_launcher_returns_dependency_failure_before_runtime_loop(tmp_path):
     factory, _, pipeline = _factory(pipeline_healthy=False)
     output = []
     code = run_ares_standby_voice.run_standby_voice(
-        [], output_func=output.append, runtime_factory=factory
+        ["--runtime-lock-path", str(tmp_path / "runtime")],
+        output_func=output.append,
+        runtime_factory=factory,
     )
     assert code == 3
     assert pipeline.stopped == 1
     assert any("dependency check failed" in line.casefold() for line in output)
 
 
-def test_foreground_launcher_returns_wake_health_and_loop_failures():
+def test_foreground_launcher_returns_wake_health_and_loop_failures(tmp_path):
     wake_factory, _, _ = _factory(wake_healthy=False)
-    assert run_ares_standby_voice.run_standby_voice([], runtime_factory=wake_factory) == 3
+    assert run_ares_standby_voice.run_standby_voice(
+        ["--runtime-lock-path", str(tmp_path / "wake-runtime")],
+        runtime_factory=wake_factory,
+    ) == 3
     loop_factory, _, _ = _factory(loop_success=False)
-    assert run_ares_standby_voice.run_standby_voice([], runtime_factory=loop_factory) == 1
+    assert run_ares_standby_voice.run_standby_voice(
+        ["--runtime-lock-path", str(tmp_path / "loop-runtime")],
+        runtime_factory=loop_factory,
+    ) == 1
+
+
+def test_second_production_runtime_is_rejected_without_starting_capture(tmp_path):
+    lock_target = tmp_path / "ares_standby_voice.runtime"
+    factory, runtime, _ = _factory()
+    output = []
+
+    with StoreWriteLock(lock_target, owner_kind="ares_standby_voice_runtime"):
+        code = run_ares_standby_voice.run_standby_voice(
+            ["--runtime-lock-path", str(lock_target)],
+            output_func=output.append,
+            runtime_factory=factory,
+        )
+
+    assert code == 4
+    assert output == ["ARES is already running"]
+    assert runtime.standby_wake_listener.start_count == 0
+
+
+def test_keyboard_interrupt_releases_production_runtime_lock(tmp_path):
+    lock_target = tmp_path / "ares_standby_voice.runtime"
+    pipeline = FakePipeline()
+
+    class InterruptedRuntime(FakeRuntime):
+        def run(self):
+            raise KeyboardInterrupt
+
+    runtime = InterruptedRuntime()
+
+    def factory(args, output_func=print):
+        return runtime, pipeline, SingleTurnVoiceRequestV1()
+
+    code = run_ares_standby_voice.run_standby_voice(
+        ["--runtime-lock-path", str(lock_target)],
+        output_func=lambda _: None,
+        runtime_factory=factory,
+    )
+
+    assert code == 130
+    assert runtime.shutdown_count == 1
+    assert not store_lock_path(lock_target).exists()
+
+
+def test_production_composition_reuses_one_event_history_store(tmp_path):
+    history = EventHistoryStore(path=tmp_path / "events.json")
+    captured = {}
+
+    class CompositionPipeline:
+        def __init__(self, store):
+            self.event_history_store = store
+
+        def run_once(self, request, cancellation_token=None, pre_brain_hook=None):
+            return SimpleNamespace(success=True, status="runtime_transport_captured")
+
+        def run_local_output(self, request, text, cancellation_token=None):
+            return SimpleNamespace(success=True, status="completed_local_output")
+
+        def stop(self, request=None):
+            return SimpleNamespace(success=True, status="stopped")
+
+    def pipeline_factory(args, **kwargs):
+        captured.update(kwargs)
+        return CompositionPipeline(kwargs["event_history_store"])
+
+    class CompositionWakeListener:
+        def __init__(self, *, config, **kwargs):
+            self.config = config
+
+        def start(self, *args, **kwargs):
+            return SimpleNamespace(success=True, status="started")
+
+        enter_standby = start
+        leave_standby = start
+        listen_once = start
+        cancel = start
+        stop = start
+        snapshot = start
+        health = start
+
+    args = run_ares_standby_voice.build_parser().parse_args([])
+    runtime, pipeline, _ = run_ares_standby_voice.create_runtime(
+        args,
+        pipeline_factory=pipeline_factory,
+        wake_listener_factory=CompositionWakeListener,
+        event_history_store=history,
+    )
+
+    assert pipeline.event_history_store is history
+    assert captured["event_history_store"] is history
+    assert captured["skill_manager"].event_history_store is history
+    assert runtime._event_history_store is history
+    assert runtime.session_manager._event_history_store is history
+    assert runtime.core_service._event_history_store is history
+    assert runtime.core_service.resource_manager.event_history_store is history
 
 
 def test_deterministic_manual_wake_runtime_script_passes_and_is_hardware_free():
@@ -377,6 +485,63 @@ def test_hardware_reliability_mode_fails_on_unexpected_stream_reopen():
     assert any("stream changed" in line for line in output)
 
 
+def test_hardware_reliability_mode_prompts_and_consumes_second_confirmation_candidate():
+    class ConfirmingListener(ReliabilityListener):
+        def __init__(self):
+            super().__init__([False, True])
+
+        def listen_once(self, request):
+            self.index += 1
+            confirmation_required = self.index == 1
+            accepted = self.index == 2
+            self.last_result = StandbyListenResultV1(
+                success=True,
+                status="non_wake_speech" if confirmation_required else "wake_detected",
+                speech_detected=True,
+                wake_detected=accepted,
+                confirmation_required=confirmation_required,
+                confirmation_count=self.index,
+                confirmation_required_count=2,
+                recognition_confidence=0.464,
+                recognition_confidence_available=True,
+                classification_reason=(
+                    "medium_confidence_confirmation_required"
+                    if confirmation_required
+                    else "accepted_medium_confidence_repetition"
+                ),
+                duration_seconds=0.8,
+                stream_open_count=1,
+                calibration_count=1,
+                candidate_number=self.index,
+                stream_instance_id=self.stream_id,
+                alsa_handle_id=f"{self.stream_id}-handle",
+            )
+            self.last_diagnostics = WakeLocalDiagnostics(
+                raw_transcript="aris",
+                beginning_clipped=False,
+            )
+            return self.last_result
+
+    output = []
+    runtime = ReliabilityRuntime([])
+    runtime.standby_wake_listener = ConfirmingListener()
+
+    assert manual_verify_standby_wake_hardware._run_wake_reliability(
+        runtime,
+        1,
+        output_func=output.append,
+        diagnostic_enabled=True,
+        wake_transcripts=[],
+    )
+    assert runtime.standby_wake_listener.index == 2
+    assert any(
+        line.strip() == "Low-confidence wake detected. Say Ares once more."
+        for line in output
+    )
+    assert any("Confirmation result: accepted; count=2/2" in line for line in output)
+    assert any("1/1 accepted" in line for line in output)
+
+
 def test_hardware_helper_active_summary_uses_active_diagnostics_not_stale_wake_result():
     output = []
     diagnostics = ActiveCommandLocalDiagnostics(
@@ -483,11 +648,15 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
     assert "Finalized candidate duration: 1.200s" in rendered
 
 
-def test_retention_requires_explicit_wake_diagnostics_before_runtime_creation():
+def test_retention_requires_explicit_wake_diagnostics_before_runtime_creation(tmp_path):
     factory, runtime, _ = _factory()
     output = []
     code = run_ares_standby_voice.run_standby_voice(
-        ["--retain-diagnostic-audio"],
+        [
+            "--retain-diagnostic-audio",
+            "--runtime-lock-path",
+            str(tmp_path / "runtime"),
+        ],
         output_func=output.append,
         runtime_factory=factory,
     )

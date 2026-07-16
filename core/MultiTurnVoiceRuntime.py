@@ -22,6 +22,7 @@ from core.MultiTurnVoiceSupport import (
     SessionStateTransitionError,
 )
 from core.SingleTurnVoiceSupport import safe_exception
+from memory.schema_migrations import MigrationError
 
 
 MULTI_TURN_MODULE_NAME = "multi_turn_voice_session"
@@ -186,7 +187,7 @@ class MultiTurnVoiceRuntimeMixin:
                         "metadata": {"safe": True, "source": "multi_turn_voice_session"},
                     },
                 )
-            except (OSError, RuntimeError, ValueError) as error:
+            except (MigrationError, OSError) as error:
                 self._event_history_failures.append(
                     {"event_type": event_type, "error": safe_exception(error)}
                 )

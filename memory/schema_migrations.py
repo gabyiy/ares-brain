@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import shutil
+import socket
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import RLock
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from uuid import uuid4
 
 
 SCHEMA_VERSION_1 = 1
@@ -32,7 +36,11 @@ _ENVELOPE_FIELDS = {
     "data",
 }
 _OPTIONAL_ENVELOPE_FIELDS = {"metadata"}
-_WRITE_LOCKS: set[str] = set()
+LOCK_METADATA_SCHEMA = "ares.file_lock"
+LOCK_METADATA_VERSION = 1
+DEFAULT_STALE_LOCK_SECONDS = 30.0
+_WRITE_LOCKS: Dict[str, str] = {}
+_WRITE_LOCKS_GUARD = RLock()
 
 
 def utc_now() -> str:
@@ -454,45 +462,457 @@ class MigrationRegistry:
             return False
 
 
+@dataclass(frozen=True)
+class StoreLockInspection:
+    store_path: str
+    lock_path: str
+    lock_exists: bool
+    metadata_format: str = ""
+    metadata_valid: bool = False
+    owner_pid: int = 0
+    owner_hostname: str = ""
+    owner_token: str = ""
+    owner_kind: str = ""
+    created_at: str = ""
+    lock_age_seconds: float = 0.0
+    owner_process_state: str = "unknown"
+    expired: bool = False
+    safe_recovery_possible: bool = False
+    metadata_fingerprint: str = ""
+    error_message: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "store_path": self.store_path,
+            "lock_path": self.lock_path,
+            "lock_exists": self.lock_exists,
+            "metadata_format": self.metadata_format,
+            "metadata_valid": self.metadata_valid,
+            "owner_pid": self.owner_pid,
+            "owner_hostname": self.owner_hostname,
+            "owner_token": self.owner_token,
+            "owner_kind": self.owner_kind,
+            "created_at": self.created_at,
+            "lock_age_seconds": self.lock_age_seconds,
+            "owner_process_state": self.owner_process_state,
+            "expired": self.expired,
+            "safe_recovery_possible": self.safe_recovery_possible,
+            "error_message": self.error_message,
+        }
+
+
+@dataclass(frozen=True)
+class StoreLockRecoveryResult:
+    success: bool
+    status: str
+    recovered: bool
+    inspection: StoreLockInspection
+    error_message: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "status": self.status,
+            "recovered": self.recovered,
+            "inspection": self.inspection.to_dict(),
+            "error_message": self.error_message,
+        }
+
+
+def store_lock_path(path: Path) -> Path:
+    target = Path(path)
+    return target.with_suffix(target.suffix + ".lock")
+
+
+def inspect_store_lock(
+    path: Path,
+    *,
+    stale_after_seconds: float = DEFAULT_STALE_LOCK_SECONDS,
+    now: Optional[Callable[[], datetime]] = None,
+    process_alive: Optional[Callable[[int], Optional[bool]]] = None,
+    hostname: Optional[str] = None,
+) -> StoreLockInspection:
+    target = Path(path)
+    lock_path = store_lock_path(target)
+    stale_seconds = _validated_stale_lock_seconds(stale_after_seconds)
+    if not lock_path.exists():
+        return StoreLockInspection(
+            store_path=str(target),
+            lock_path=str(lock_path),
+            lock_exists=False,
+            owner_process_state="not_present",
+        )
+
+    try:
+        raw = lock_path.read_bytes()
+    except FileNotFoundError:
+        return StoreLockInspection(
+            store_path=str(target),
+            lock_path=str(lock_path),
+            lock_exists=False,
+            owner_process_state="not_present",
+        )
+    except OSError as error:
+        return StoreLockInspection(
+            store_path=str(target),
+            lock_path=str(lock_path),
+            lock_exists=True,
+            error_message=f"lock_read_failed:{type(error).__name__}:{str(error)[:120]}",
+        )
+
+    fingerprint = hashlib.sha256(raw).hexdigest()
+    current_time = _validated_utc_now((now or (lambda: datetime.now(timezone.utc)))())
+    current_hostname = str(hostname or socket.gethostname()).strip()
+    text = raw.decode("utf-8", errors="replace").strip()
+    metadata_format = "json_v1"
+    metadata_valid = False
+    owner_pid = 0
+    owner_hostname = ""
+    owner_token = ""
+    owner_kind = ""
+    created_at = ""
+    created_datetime: Optional[datetime] = None
+    error_message = ""
+
+    try:
+        payload = json.loads(text)
+        if not isinstance(payload, dict):
+            raise ValueError("lock metadata must be a JSON object")
+        if payload.get("schema_name") != LOCK_METADATA_SCHEMA:
+            raise ValueError("unsupported lock metadata schema")
+        if payload.get("schema_version") != LOCK_METADATA_VERSION:
+            raise ValueError("unsupported lock metadata version")
+        pid = payload.get("pid")
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+            raise ValueError("lock owner pid is invalid")
+        owner_pid = pid
+        owner_hostname = _validated_lock_text(payload.get("hostname"), "hostname", 255)
+        owner_token = _validated_lock_text(payload.get("owner_token"), "owner_token", 128)
+        owner_kind = _validated_lock_text(payload.get("owner_kind"), "owner_kind", 64)
+        created_at = _validated_lock_text(payload.get("created_at"), "created_at", 64)
+        created_datetime = _parse_utc_timestamp(created_at)
+        metadata_valid = True
+    except (json.JSONDecodeError, TypeError, ValueError) as error:
+        try:
+            created_datetime = _parse_utc_timestamp(text)
+            created_at = text
+            metadata_format = "legacy_timestamp_v0"
+            metadata_valid = True
+            owner_kind = "legacy_store_write"
+        except ValueError:
+            metadata_format = "malformed"
+            error_message = f"lock_metadata_malformed:{str(error)[:120]}"
+
+    age_seconds = (
+        max(0.0, (current_time - created_datetime).total_seconds())
+        if created_datetime is not None
+        else 0.0
+    )
+    expired = bool(created_datetime is not None and age_seconds >= stale_seconds)
+    owner_state = "unknown"
+    safe_recovery = False
+    if metadata_format == "legacy_timestamp_v0" and created_datetime is not None:
+        boot_time = _local_boot_time()
+        if boot_time is not None and created_datetime < boot_time:
+            owner_state = "dead_prior_boot"
+            safe_recovery = expired
+        else:
+            owner_state = "legacy_owner_unknown"
+            error_message = "legacy_lock_owner_cannot_be_proven_dead_on_this_boot"
+    elif metadata_valid:
+        if owner_hostname.casefold() != current_hostname.casefold():
+            owner_state = "remote_or_different_host"
+        else:
+            checker = process_alive or _process_alive
+            alive = checker(owner_pid)
+            owner_state = "alive" if alive is True else "dead" if alive is False else "unknown"
+            safe_recovery = alive is False and expired
+
+    return StoreLockInspection(
+        store_path=str(target),
+        lock_path=str(lock_path),
+        lock_exists=True,
+        metadata_format=metadata_format,
+        metadata_valid=metadata_valid,
+        owner_pid=owner_pid,
+        owner_hostname=owner_hostname,
+        owner_token=owner_token,
+        owner_kind=owner_kind,
+        created_at=created_at,
+        lock_age_seconds=round(age_seconds, 6),
+        owner_process_state=owner_state,
+        expired=expired,
+        safe_recovery_possible=safe_recovery,
+        metadata_fingerprint=fingerprint,
+        error_message=error_message,
+    )
+
+
+def recover_store_lock(
+    path: Path,
+    *,
+    stale_after_seconds: float = DEFAULT_STALE_LOCK_SECONDS,
+    now: Optional[Callable[[], datetime]] = None,
+    process_alive: Optional[Callable[[int], Optional[bool]]] = None,
+    hostname: Optional[str] = None,
+) -> StoreLockRecoveryResult:
+    inspection = inspect_store_lock(
+        path,
+        stale_after_seconds=stale_after_seconds,
+        now=now,
+        process_alive=process_alive,
+        hostname=hostname,
+    )
+    if not inspection.lock_exists:
+        return StoreLockRecoveryResult(True, "lock_not_present", False, inspection)
+    if not inspection.safe_recovery_possible:
+        return StoreLockRecoveryResult(
+            False,
+            "lock_not_safely_recoverable",
+            False,
+            inspection,
+            inspection.error_message or f"lock owner is {inspection.owner_process_state}",
+        )
+
+    lock_path = Path(inspection.lock_path)
+    recovery_path = lock_path.with_name(
+        f".{lock_path.name}.recover-{uuid4().hex}"
+    )
+    try:
+        os.replace(str(lock_path), str(recovery_path))
+    except FileNotFoundError:
+        refreshed = inspect_store_lock(path, stale_after_seconds=stale_after_seconds)
+        return StoreLockRecoveryResult(True, "lock_disappeared", False, refreshed)
+    except OSError as error:
+        return StoreLockRecoveryResult(
+            False,
+            "lock_recovery_failed",
+            False,
+            inspection,
+            f"{type(error).__name__}:{str(error)[:120]}",
+        )
+
+    try:
+        moved_fingerprint = hashlib.sha256(recovery_path.read_bytes()).hexdigest()
+        if moved_fingerprint != inspection.metadata_fingerprint:
+            if not lock_path.exists():
+                os.replace(str(recovery_path), str(lock_path))
+            return StoreLockRecoveryResult(
+                False,
+                "lock_changed_during_recovery",
+                False,
+                inspection,
+                "lock metadata changed before atomic recovery",
+            )
+        recovery_path.unlink()
+    except OSError as error:
+        if recovery_path.exists() and not lock_path.exists():
+            try:
+                os.replace(str(recovery_path), str(lock_path))
+            except OSError:
+                pass
+        return StoreLockRecoveryResult(
+            False,
+            "lock_recovery_cleanup_failed",
+            False,
+            inspection,
+            f"{type(error).__name__}:{str(error)[:120]}",
+        )
+    refreshed = inspect_store_lock(path, stale_after_seconds=stale_after_seconds)
+    return StoreLockRecoveryResult(True, "recovered_dead_owner_lock", True, refreshed)
+
+
 class StoreWriteLock:
-    def __init__(self, path: Path):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        recover_if_owner_dead: bool = False,
+        stale_after_seconds: float = DEFAULT_STALE_LOCK_SECONDS,
+        owner_kind: str = "store_write",
+        process_alive: Optional[Callable[[int], Optional[bool]]] = None,
+        hostname: Optional[str] = None,
+        now: Optional[Callable[[], datetime]] = None,
+    ):
         self.path = Path(path)
-        self.lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        self.lock_path = store_lock_path(self.path)
+        if not isinstance(recover_if_owner_dead, bool):
+            raise ValueError("recover_if_owner_dead must be a boolean")
+        self.recover_if_owner_dead = recover_if_owner_dead
+        self.stale_after_seconds = _validated_stale_lock_seconds(stale_after_seconds)
+        self.owner_kind = _validated_lock_text(owner_kind, "owner_kind", 64)
+        self._process_alive = process_alive
+        self._hostname = str(hostname or socket.gethostname()).strip()
+        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._owner_token = uuid4().hex
         self._acquired = False
+        self._key = ""
+
+    @property
+    def owner_token(self) -> str:
+        return self._owner_token
 
     def __enter__(self):
         key = str(self.lock_path.resolve())
-        if key in _WRITE_LOCKS or self.lock_path.exists():
-            raise MigrationError(
-                f"Store is locked: {self.path}",
-                path=self.path,
-                status="store_locked",
-            )
+        with _WRITE_LOCKS_GUARD:
+            if key in _WRITE_LOCKS:
+                raise self._locked_error("lock_owned_in_current_process")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            descriptor = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(utc_now())
+            self._create_lock_file()
         except FileExistsError as error:
-            raise MigrationError(
-                f"Store is locked: {self.path}",
-                path=self.path,
-                status="store_locked",
-            ) from error
-        _WRITE_LOCKS.add(key)
+            if self.recover_if_owner_dead:
+                recovered = recover_store_lock(
+                    self.path,
+                    stale_after_seconds=self.stale_after_seconds,
+                    now=self._now,
+                    process_alive=self._process_alive,
+                    hostname=self._hostname,
+                )
+                if recovered.recovered:
+                    try:
+                        self._create_lock_file()
+                    except FileExistsError as retry_error:
+                        raise self._locked_error("lock_reacquired_during_recovery") from retry_error
+                else:
+                    raise self._locked_error(recovered.status) from error
+            else:
+                raise self._locked_error("lock_file_exists") from error
+        with _WRITE_LOCKS_GUARD:
+            _WRITE_LOCKS[key] = self._owner_token
         self._key = key
         self._acquired = True
         return self
 
     def __exit__(self, exc_type, exc, traceback):
         if self._acquired:
-            _WRITE_LOCKS.discard(self._key)
+            with _WRITE_LOCKS_GUARD:
+                if _WRITE_LOCKS.get(self._key) == self._owner_token:
+                    _WRITE_LOCKS.pop(self._key, None)
+            self._unlink_if_owned()
+        self._acquired = False
+        return False
+
+    def _create_lock_file(self) -> None:
+        descriptor = os.open(
+            str(self.lock_path),
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+        payload = {
+            "schema_name": LOCK_METADATA_SCHEMA,
+            "schema_version": LOCK_METADATA_VERSION,
+            "pid": os.getpid(),
+            "hostname": self._hostname,
+            "owner_token": self._owner_token,
+            "owner_kind": self.owner_kind,
+            "created_at": _format_utc_timestamp(self._now()),
+        }
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=True, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except Exception:
             try:
                 self.lock_path.unlink()
             except FileNotFoundError:
                 pass
-        self._acquired = False
+            raise
+
+    def _unlink_if_owned(self) -> None:
+        try:
+            payload = json.loads(self.lock_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError, ValueError):
+            return
+        if payload.get("owner_token") != self._owner_token:
+            return
+        try:
+            self.lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _locked_error(self, reason: str) -> MigrationError:
+        inspection = inspect_store_lock(
+            self.path,
+            stale_after_seconds=self.stale_after_seconds,
+            now=self._now,
+            process_alive=self._process_alive,
+            hostname=self._hostname,
+        )
+        return MigrationError(
+            f"Store is locked: {self.path}",
+            path=self.path,
+            status="store_locked",
+            details={"reason": reason, "lock": inspection.to_dict()},
+        )
+
+
+def _validated_stale_lock_seconds(value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("stale_after_seconds must be numeric")
+    seconds = float(value)
+    if not 1.0 <= seconds <= 86400.0:
+        raise ValueError("stale_after_seconds must be between 1 and 86400")
+    return seconds
+
+
+def _validated_lock_text(value: Any, label: str, maximum: int) -> str:
+    text = str(value or "").strip()
+    if not text or len(text) > maximum or any(ord(character) < 32 for character in text):
+        raise ValueError(f"lock {label} is invalid")
+    return text
+
+
+def _parse_utc_timestamp(value: str) -> datetime:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("lock timestamp is missing")
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("lock timestamp is invalid") from error
+    if parsed.tzinfo is None:
+        raise ValueError("lock timestamp must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _validated_utc_now(value: datetime) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError("lock clock must return a timezone-aware datetime")
+    return value.astimezone(timezone.utc)
+
+
+def _format_utc_timestamp(value: datetime) -> str:
+    return _validated_utc_now(value).isoformat().replace("+00:00", "Z")
+
+
+def _process_alive(pid: int) -> Optional[bool]:
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
+    except OSError:
+        return None
+    return True
+
+
+def _local_boot_time() -> Optional[datetime]:
+    path = Path("/proc/stat")
+    if not path.is_file():
+        return None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("btime "):
+                return datetime.fromtimestamp(int(line.split()[1]), timezone.utc)
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
 
 
 def load_store_envelope(

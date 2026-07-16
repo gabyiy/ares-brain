@@ -1038,6 +1038,7 @@ class StandbyListenResultV1(VersionedContract):
     recognition_confidence_available: bool = False
     recognition_processing_time_seconds: float = 0.0
     confidence_tier: str = ""
+    confirmation_required: bool = False
     confirmation_count: int = 0
     confirmation_required_count: int = 0
     stream_open_count: int = 0

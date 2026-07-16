@@ -31,6 +31,8 @@ from core import (  # noqa: E402
     VOSK_MODEL_INSTALL_COMMAND,
     VoskWakeRecognizer,
 )
+from events import EventHistoryStore  # noqa: E402
+from memory.schema_migrations import MigrationError, StoreWriteLock  # noqa: E402
 from scripts import manual_verify_single_turn_voice as single_turn  # noqa: E402
 from scripts import run_ares_voice as single_voice_launcher  # noqa: E402
 
@@ -46,6 +48,8 @@ DEFAULT_COMMAND_WHISPER_MODEL = single_turn.DEFAULT_WHISPER_MODEL
 DEFAULT_VOICE_PROFILE = single_voice_launcher._configured_default_voice_profile()
 DEFAULT_INACTIVITY_SECONDS = 30.0
 DEFAULT_TIMEOUT_SECONDS = 300.0
+DEFAULT_RUNTIME_LOCK_PATH = REPO_ROOT / "data" / "runtime" / "ares_standby_voice.runtime"
+DEFAULT_RUNTIME_LOCK_STALE_SECONDS = 30.0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,6 +88,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diagnostic-routing", action="store_true")
     parser.add_argument("--diagnostic-wake", action="store_true")
     parser.add_argument("--retain-diagnostic-audio", action="store_true")
+    parser.add_argument(
+        "--runtime-lock-path",
+        default=str(DEFAULT_RUNTIME_LOCK_PATH),
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--runtime-lock-stale-seconds",
+        type=float,
+        default=DEFAULT_RUNTIME_LOCK_STALE_SECONDS,
+        help=argparse.SUPPRESS,
+    )
     return parser
 
 
@@ -93,19 +108,26 @@ def create_runtime(
     output_func: Callable[[str], None] = print,
     pipeline_factory: Optional[Callable[..., Any]] = None,
     wake_listener_factory: Optional[Callable[..., Any]] = None,
+    event_history_store: Optional[EventHistoryStore] = None,
 ) -> tuple[BrainRuntime, Any, Any]:
+    history = event_history_store or EventHistoryStore(warning_callback=output_func)
     name_policy = AresNamePolicy()
     session_manager = BrainSessionManager(
         config=BrainSessionConfig(
             inactivity_timeout_seconds=args.inactivity_seconds,
             maximum_consecutive_failures=3,
-        )
+        ),
+        event_history_store=history,
     )
     core_service = CoreService(
         brain_session_manager=session_manager,
+        event_history_store=history,
         register_default_pc=False,
     )
-    skill_manager = single_turn.create_skill_manager(core_service)
+    skill_manager = single_turn.create_skill_manager(
+        core_service,
+        event_history_store=history,
+    )
     command_handler = single_turn.build_existing_brain_handler(skill_manager)
     if args.diagnostic_routing:
         command_handler = _diagnostic_handler(command_handler, output_func)
@@ -129,6 +151,7 @@ def create_runtime(
         manual_args,
         output_func=lambda _text: None,
         skill_manager=skill_manager,
+        event_history_store=history,
     )
     gate = VoiceRuntimeGate(settle_delay_seconds=0.35)
     active_input = SingleTurnPipelineRuntimeInputAdapter(
@@ -199,6 +222,7 @@ def create_runtime(
             command_timeout_seconds=min(float(args.timeout), 600.0),
         ),
         standby_wake_listener=wake_listener,
+        event_history_store=history,
     )
     return runtime, pipeline, base_request
 
@@ -210,6 +234,40 @@ def run_standby_voice(
     runtime_factory: Optional[Callable[..., tuple[BrainRuntime, Any, Any]]] = None,
 ) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        runtime_lock_path = _repo_path(args.runtime_lock_path)
+        with StoreWriteLock(
+            runtime_lock_path,
+            recover_if_owner_dead=True,
+            stale_after_seconds=args.runtime_lock_stale_seconds,
+            owner_kind="ares_standby_voice_runtime",
+        ):
+            return _run_standby_voice_locked(
+                args,
+                output_func=output_func,
+                runtime_factory=runtime_factory,
+            )
+    except MigrationError as error:
+        error_path = Path(error.path).resolve() if error.path else None
+        if error.status == "store_locked" and error_path == runtime_lock_path.resolve():
+            output_func("ARES is already running")
+            return 4
+        output_func(f"ARES runtime lock failed: {error}")
+        return 2
+    except OSError as error:
+        output_func(f"ARES runtime lock failed: {error}")
+        return 2
+    except ValueError as error:
+        output_func(f"ARES standby voice configuration error: {error}")
+        return 2
+
+
+def _run_standby_voice_locked(
+    args: argparse.Namespace,
+    *,
+    output_func: Callable[[str], None],
+    runtime_factory: Optional[Callable[..., tuple[BrainRuntime, Any, Any]]],
+) -> int:
     if args.retain_diagnostic_audio and not args.diagnostic_wake:
         output_func(
             "ARES standby voice configuration error: --retain-diagnostic-audio "

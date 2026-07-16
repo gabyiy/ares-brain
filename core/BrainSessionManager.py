@@ -17,6 +17,7 @@ from core.Contracts import (
     validate_contract,
 )
 from core.EventBus import PRIORITY_CRITICAL, PRIORITY_NORMAL, Event, EventBus
+from memory.schema_migrations import MigrationError
 
 
 BRAIN_BOOTING = "BOOTING"
@@ -804,7 +805,7 @@ class BrainSessionManager:
                     "metadata": {"safe": True},
                 },
             )
-        except (OSError, RuntimeError, ValueError) as error:
+        except (MigrationError, OSError) as error:
             self._event_history_failures.append(
                 {
                     "event_type": event_type,

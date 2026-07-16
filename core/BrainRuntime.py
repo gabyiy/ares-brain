@@ -8,6 +8,8 @@ from threading import Lock, RLock
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 from uuid import uuid4
 
+from memory.schema_migrations import MigrationError
+
 from core.AresIdentity import (
     DEFAULT_ARES_NAME_ALIASES,
     canonicalize_ares_name_tokens,
@@ -1652,7 +1654,7 @@ class BrainRuntime:
                     "metadata": {"safe": True},
                 },
             )
-        except (OSError, RuntimeError, TypeError, ValueError) as error:
+        except (MigrationError, OSError) as error:
             self._event_history_failures.append(
                 {
                     "event_type": event_type,

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 import sys
+from tempfile import TemporaryDirectory
 from typing import Any, Callable, Optional, Sequence
 
 
@@ -12,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from core import BRAIN_ACTIVE, BRAIN_STANDBY, BRAIN_STOPPED  # noqa: E402
+from memory.schema_migrations import StoreWriteLock  # noqa: E402
 from scripts import run_ares_standby_voice as standby_voice  # noqa: E402
 from scripts import run_ares_voice as single_voice_launcher  # noqa: E402
 
@@ -57,6 +59,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_hardware_verification(
+    argv: Optional[Sequence[str]] = None,
+    *,
+    output_func: Callable[[str], None] = print,
+    runtime_factory: Optional[Callable[..., tuple[Any, Any, Any]]] = None,
+) -> int:
+    with TemporaryDirectory(prefix="ares-wake-verifier-lock-") as directory:
+        with StoreWriteLock(
+            Path(directory) / "hardware_verifier.runtime",
+            owner_kind="ares_wake_hardware_verifier",
+        ):
+            return _run_hardware_verification_locked(
+                argv,
+                output_func=output_func,
+                runtime_factory=runtime_factory,
+            )
+
+
+def _run_hardware_verification_locked(
     argv: Optional[Sequence[str]] = None,
     *,
     output_func: Callable[[str], None] = print,
@@ -296,6 +316,47 @@ def _run_wake_reliability(
         transcript = str(getattr(diagnostics, "raw_transcript", "") or "")
         if diagnostic_enabled and transcript and transcript not in wake_transcripts:
             wake_transcripts.append(transcript)
+        if bool(getattr(wake_result, "confirmation_required", False)):
+            first_confidence = getattr(wake_result, "recognition_confidence", None)
+            first_decision = str(
+                getattr(wake_result, "classification_reason", "")
+                or getattr(wake_result, "rejection_reason", "")
+                or "medium_confidence_confirmation_required"
+            )
+            output_func("  Low-confidence wake detected. Say Ares once more.")
+            output_func(
+                "  Confirmation request: "
+                f"transcript={transcript or '<unavailable>'}; "
+                "confidence="
+                + (
+                    f"{float(first_confidence):.3f}"
+                    if first_confidence is not None
+                    else "unavailable"
+                )
+                + f"; decision={first_decision}"
+            )
+            records.append(
+                f"{attempt}.1:confirmation_required:"
+                f"{transcript or '<unavailable>'}:"
+                + (
+                    f"{float(first_confidence):.3f}"
+                    if first_confidence is not None
+                    else "unavailable"
+                )
+                + f":{first_decision}"
+            )
+            wake_result = listener.listen_once(request)
+            after = runtime.snapshot()
+            diagnostics = getattr(listener, "last_diagnostics", None)
+            transcript = str(getattr(diagnostics, "raw_transcript", "") or "")
+            if diagnostic_enabled and transcript and transcript not in wake_transcripts:
+                wake_transcripts.append(transcript)
+            output_func(
+                "  Confirmation result: "
+                f"{'accepted' if getattr(wake_result, 'wake_detected', False) else 'rejected'}; "
+                f"count={int(getattr(wake_result, 'confirmation_count', 0) or 0)}/"
+                f"{int(getattr(wake_result, 'confirmation_required_count', 0) or 0)}"
+            )
         success = bool(
             getattr(wake_result, "wake_detected", False)
             and after.current_lifecycle_state == BRAIN_STANDBY

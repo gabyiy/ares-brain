@@ -11,6 +11,7 @@ from core import (
 )
 from core.EventBus import Event
 from events import EventHistoryStore
+from memory.schema_migrations import StoreWriteLock
 
 
 def _event(source="voice", type="voice.status", priority=PRIORITY_NORMAL):
@@ -112,4 +113,38 @@ def test_event_history_store_zero_max_size_keeps_no_records(tmp_path):
     store.add(_event(), _result())
 
     assert store.list() == []
+
+
+def test_event_history_lock_failure_warns_counts_drop_and_does_not_raise(tmp_path):
+    path = tmp_path / "events.json"
+    warnings = []
+    store = EventHistoryStore(path=path, warning_callback=warnings.append)
+    event = {
+        "source": "brain_runtime",
+        "type": "brain_activation_accepted",
+        "priority": "normal",
+        "payload": {"safe": True},
+    }
+    result = {"success": True, "decision": "recorded"}
+
+    with StoreWriteLock(path):
+        first = store.add(event, result)
+        second = store.add(event, result)
+
+    assert first is None and second is None
+    assert store.dropped_event_count == 2
+    assert len(warnings) == 1
+    assert warnings[0].startswith("WARNING: event history append skipped: store locked:")
+    assert str(path) in warnings[0]
+
+
+def test_event_history_unexpected_programming_error_still_surfaces(tmp_path, monkeypatch):
+    store = EventHistoryStore(path=tmp_path / "events.json", warning_callback=lambda _: None)
+    monkeypatch.setattr(store, "_save", lambda records: (_ for _ in ()).throw(RuntimeError("bug")))
+
+    with pytest.raises(RuntimeError, match="bug"):
+        store.add(
+            {"source": "test", "type": "unexpected", "priority": "normal"},
+            {"success": True, "decision": "recorded"},
+        )
     assert store.recent() == []

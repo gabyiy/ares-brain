@@ -790,6 +790,8 @@ class SingleTurnVoiceStageMixin:
         self,
         request: SingleTurnVoiceRequestV1,
         state: SingleTurnRunState,
+        *,
+        emit_event: bool = True,
     ) -> Optional[SingleTurnVoiceResultV1]:
         output_path = speech_output_path(request.recording_output_path)
         state.generated_speech_wav_path = str(output_path)
@@ -836,24 +838,27 @@ class SingleTurnVoiceStageMixin:
                 tts_result.error_message or tts_result.status,
                 "tts_failed",
             )
-        self._emit(
-            state,
-            self.EVENT_SYNTHESIS_COMPLETED,
-            "synthesis",
-            tts_result.status,
-            True,
-            {
-                "voice_profile": state.resolved_voice_profile,
-                "processing_time_seconds": state.tts_processing_time_seconds,
-                "duration_seconds": tts_result.duration_seconds,
-            },
-        )
+        if emit_event:
+            self._emit(
+                state,
+                self.EVENT_SYNTHESIS_COMPLETED,
+                "synthesis",
+                tts_result.status,
+                True,
+                {
+                    "voice_profile": state.resolved_voice_profile,
+                    "processing_time_seconds": state.tts_processing_time_seconds,
+                    "duration_seconds": tts_result.duration_seconds,
+                },
+            )
         return None
 
     def _playback(
         self,
         request: SingleTurnVoiceRequestV1,
         state: SingleTurnRunState,
+        *,
+        emit_event: bool = True,
     ) -> Optional[SingleTurnVoiceResultV1]:
         if not state.generated_speech_wav_path:
             return self._failure(state, "playback", "speech_wav_missing", "playback_failed")
@@ -896,12 +901,13 @@ class SingleTurnVoiceStageMixin:
                 playback.error_message or playback.status,
                 "playback_failed",
             )
-        self._emit(
-            state,
-            self.EVENT_PLAYBACK_COMPLETED,
-            "playback",
-            playback.status,
-            True,
-            {"device": playback.device, "duration_seconds": playback.duration_seconds},
-        )
+        if emit_event:
+            self._emit(
+                state,
+                self.EVENT_PLAYBACK_COMPLETED,
+                "playback",
+                playback.status,
+                True,
+                {"device": playback.device, "duration_seconds": playback.duration_seconds},
+            )
         return None

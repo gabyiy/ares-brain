@@ -1059,6 +1059,9 @@ class LinuxStandbyWakeListener:
                 recognition_metadata.get("processing_time_seconds", 0.0)
             ),
             confidence_tier=str(recognition_metadata.get("confidence_tier", "")),
+            confirmation_required=bool(
+                recognition_metadata.get("confirmation_required", False)
+            ),
             confirmation_count=int(
                 recognition_metadata.get("confirmation_count", 0) or 0
             ),
@@ -1506,6 +1509,9 @@ def _recognition_metadata(recognition: Any) -> Dict[str, Any]:
         ),
         "confidence_tier": str(
             getattr(recognition, "confidence_tier", "") or ""
+        ),
+        "confirmation_required": bool(
+            getattr(recognition, "confirmation_required", False)
         ),
         "confirmation_count": int(
             getattr(recognition, "confirmation_count", 0) or 0

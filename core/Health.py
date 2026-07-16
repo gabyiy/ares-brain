@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
+from memory.schema_migrations import MigrationError
+
 
 HEALTH_STATUS_HEALTHY = "healthy"
 HEALTH_STATUS_DEGRADED = "degraded"
@@ -817,7 +819,7 @@ class AdapterFallbackPolicy:
         }
         try:
             self.event_history_store.add(event, result)
-        except (OSError, RuntimeError, ValueError) as error:
+        except (MigrationError, OSError) as error:
             self._event_history_failures.append(
                 {
                     "source": "adapter_fallback_policy",

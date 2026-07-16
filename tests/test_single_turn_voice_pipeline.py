@@ -37,6 +37,8 @@ from core import (
     VoiceActivityCaptureResultV1,
     build_single_turn_voice_pipeline_manifest,
 )
+from events import EventHistoryStore
+from memory.schema_migrations import StoreWriteLock
 from skills.base import SkillResponse
 
 
@@ -1074,6 +1076,53 @@ def test_local_output_uses_pipeline_tts_and_speaker_without_brain(tmp_path):
     assert tts.requests[0].text == "Goodbye Gabriel."
     assert speaker.play_count == 1
     assert order.index("piper.synthesize") < order.index("speaker.play")
+
+
+def test_local_output_does_not_create_fake_single_turn_input_event(tmp_path):
+    history = EventHistoryStore(path=tmp_path / "events.json")
+    pipeline, *_ = _pipeline(tmp_path, event_history_store=history)
+
+    result = pipeline.run_local_output(
+        _request(tmp_path, playback_enabled=True),
+        "Yes Gabi.",
+    )
+
+    assert result.success is True
+    assert result.events == []
+    assert result.data["local_output"]["input_turn_created"] is False
+    assert history.list() == []
+
+
+def test_locked_event_history_does_not_block_acknowledgement_or_calculator(tmp_path):
+    warnings = []
+    history_path = tmp_path / "events.json"
+    history = EventHistoryStore(path=history_path, warning_callback=warnings.append)
+    pipeline, *_ = _pipeline(tmp_path, event_history_store=history)
+
+    with StoreWriteLock(history_path):
+        acknowledgement = pipeline.run_local_output(
+            _request(tmp_path, playback_enabled=True),
+            "Yes Gabi.",
+        )
+        calculator = pipeline.run_once(_request(tmp_path))
+
+    assert acknowledgement.success is True
+    assert acknowledgement.brain_text_response == "Yes Gabi."
+    assert calculator.success is True
+    assert calculator.brain_text_response == "Result: 4"
+    assert history.dropped_event_count > 0
+    assert any("event history append skipped" in warning for warning in warnings)
+
+
+def test_unexpected_event_history_programming_error_surfaces_from_pipeline(tmp_path):
+    class BrokenHistory:
+        def add(self, event, result):
+            raise RuntimeError("event history programming defect")
+
+    pipeline, *_ = _pipeline(tmp_path, event_history_store=BrokenHistory())
+
+    with pytest.raises(RuntimeError, match="programming defect"):
+        pipeline.run_once(_request(tmp_path))
 
 
 def test_stage_observer_can_be_added_and_removed_without_replacing_primary_callback(tmp_path):
