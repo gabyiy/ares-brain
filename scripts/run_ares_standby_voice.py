@@ -14,6 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from core import (  # noqa: E402
+    AresNamePolicy,
+    ActiveCommandLocalDiagnostics,
     BrainRuntime,
     BrainRuntimeConfig,
     BrainSessionConfig,
@@ -76,6 +78,7 @@ def create_runtime(
     pipeline_factory: Optional[Callable[..., Any]] = None,
     wake_listener_factory: Optional[Callable[..., Any]] = None,
 ) -> tuple[BrainRuntime, Any, Any]:
+    name_policy = AresNamePolicy()
     session_manager = BrainSessionManager(
         config=BrainSessionConfig(
             inactivity_timeout_seconds=args.inactivity_seconds,
@@ -117,6 +120,11 @@ def create_runtime(
         base_request=base_request,
         session_id_provider=lambda: session_manager.session_id,
         voice_io_gate=gate,
+        diagnostic_callback=(
+            _active_command_diagnostic_callback(output_func)
+            if args.diagnostic_wake
+            else None
+        ),
     )
     voice_output = SingleTurnPipelineRuntimeOutputAdapter(
         pipeline=pipeline,
@@ -130,6 +138,7 @@ def create_runtime(
         vosk_model_path=str(_repo_path(args.vosk_model)),
         minimum_recognition_confidence=args.wake_min_confidence,
         language=args.language,
+        wake_phrase_aliases=name_policy.aliases,
         playback_settle_delay_seconds=gate.settle_delay_seconds,
         diagnostic_wake=bool(args.diagnostic_wake),
         retain_diagnostic_audio=bool(args.retain_diagnostic_audio),
@@ -163,6 +172,7 @@ def create_runtime(
         input_adapter=active_input,
         output_adapter=voice_output,
         config=BrainRuntimeConfig(
+            ares_name_aliases=name_policy.aliases,
             inactivity_timeout_seconds=args.inactivity_seconds,
             maximum_consecutive_failures=3,
             input_polling_interval_seconds=0.25,
@@ -326,6 +336,45 @@ def _diagnostic_handler(handler: Callable[[str], Any], output_func: Callable[[st
         return response
 
     return handle
+
+
+def render_active_command_diagnostics(
+    diagnostics: ActiveCommandLocalDiagnostics,
+) -> list[str]:
+    return [
+        "Active-command diagnostic:",
+        f"  Raw Whisper transcript: {diagnostics.raw_transcript or '<empty>'}",
+        f"  Cleaned transcript: {diagnostics.cleaned_transcript or '<empty>'}",
+        "  Alias-canonicalized transcript: "
+        f"{diagnostics.alias_canonicalized_transcript or '<empty>'}",
+        f"  Lifecycle classification: {diagnostics.lifecycle_classification}",
+        f"  Selected lifecycle action: {diagnostics.selected_lifecycle_action}",
+        "  CoreService routing bypassed: "
+        f"{'yes' if diagnostics.core_service_bypassed else 'no'}",
+        "  Lifecycle state: "
+        f"{diagnostics.lifecycle_state_before or 'unknown'} -> "
+        f"{diagnostics.lifecycle_state_after or 'unknown'}",
+        "  Active session: "
+        f"{diagnostics.session_id_before or 'none'} -> "
+        f"{diagnostics.session_id_after or 'none'}",
+        f"  Capture stop reason: {diagnostics.capture_stop_reason or 'unknown'}",
+        f"  Raw capture duration: {diagnostics.raw_capture_duration_seconds:.3f}s",
+        "  Finalized candidate duration: "
+        f"{diagnostics.finalized_candidate_duration_seconds:.3f}s",
+        "  Whisper processing duration: "
+        f"{diagnostics.whisper_processing_duration_seconds:.3f}s",
+        f"  Terminal-silence status: {diagnostics.terminal_silence_status}",
+    ]
+
+
+def _active_command_diagnostic_callback(
+    output_func: Callable[[str], None],
+) -> Callable[[ActiveCommandLocalDiagnostics], None]:
+    def emit(diagnostics: ActiveCommandLocalDiagnostics) -> None:
+        for line in render_active_command_diagnostics(diagnostics):
+            output_func(line)
+
+    return emit
 
 
 def render_wake_diagnostics(

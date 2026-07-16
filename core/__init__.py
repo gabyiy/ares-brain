@@ -92,9 +92,27 @@ from core.BrainRuntimeAdapters import (
     RuntimeOutputResult,
 )
 from core.BrainRuntimeVoiceAdapters import (
+    ActiveCommandLocalDiagnostics,
     SingleTurnPipelineRuntimeInputAdapter,
     SingleTurnPipelineRuntimeOutputAdapter,
     VoiceRuntimeGate,
+)
+from core.AresIdentity import (
+    CANONICAL_ARES_NAME,
+    DEFAULT_ARES_NAME_ALIASES,
+    AresNamePolicy,
+    canonicalize_ares_name_tokens,
+    clean_spoken_phrase,
+    expand_ares_alias_phrases,
+    normalize_spoken_phrase,
+    validate_ares_name_aliases,
+)
+from core.LifecycleControl import (
+    LIFECYCLE_ACTION_NONE,
+    LIFECYCLE_ACTION_SHUTDOWN,
+    LIFECYCLE_ACTION_STANDBY,
+    LifecycleControlClassification,
+    classify_lifecycle_control,
 )
 from core.BrainRuntime import (
     DEFAULT_ACTIVATION_PHRASES,
@@ -726,6 +744,20 @@ __all__ = [
     "ConsoleRuntimeInputAdapter",
     "CollectingRuntimeOutputAdapter",
     "ConsoleRuntimeOutputAdapter",
+    "CANONICAL_ARES_NAME",
+    "DEFAULT_ARES_NAME_ALIASES",
+    "AresNamePolicy",
+    "canonicalize_ares_name_tokens",
+    "clean_spoken_phrase",
+    "expand_ares_alias_phrases",
+    "normalize_spoken_phrase",
+    "validate_ares_name_aliases",
+    "LifecycleControlClassification",
+    "classify_lifecycle_control",
+    "LIFECYCLE_ACTION_NONE",
+    "LIFECYCLE_ACTION_STANDBY",
+    "LIFECYCLE_ACTION_SHUTDOWN",
+    "ActiveCommandLocalDiagnostics",
     "SingleTurnPipelineRuntimeInputAdapter",
     "SingleTurnPipelineRuntimeOutputAdapter",
     "VoiceRuntimeGate",

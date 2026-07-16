@@ -44,13 +44,13 @@ def _classify(text: str, *, confidence: float = 0.95, words=None):
     "text",
     [
         "ares",
-        "aries",
+        "aris",
         "hey ares",
-        "hey aries",
+        "hey aris",
         "okay ares",
-        "okay aries",
+        "okay aris",
         "ARES.",
-        "Hey, Aries!",
+        "Hey, Aris!",
     ],
 )
 def test_exact_constrained_wake_phrases_are_accepted(text):
@@ -76,7 +76,7 @@ def test_exact_constrained_wake_phrases_are_accepted(text):
         "ares is a greek god",
         "paris",
         "harris",
-        "aris",
+        "aries",
     ],
 )
 def test_unrelated_or_partial_phrases_are_rejected_without_substring_matching(text):
@@ -108,7 +108,7 @@ def test_low_confidence_and_missing_confidence_fail_closed():
 
 def test_controls_require_exact_phrase_and_usable_confidence():
     accepted = _classify("shutdown ares")
-    alias = _classify("shutdown aries")
+    alias = _classify("shutdown aris")
     missing = _classify("shutdown ares", words=[])
     unrelated = _classify("please shutdown ares")
     assert accepted.command_category == "shutdown"
@@ -197,28 +197,28 @@ def test_vosk_adapter_loads_model_once_uses_constrained_grammar_and_unk(tmp_path
     wav = tmp_path / "wake.wav"
     _write_wav(wav)
     module = FakeVoskModule(
-        {"text": "okay aries", "result": _word_results("okay aries")}
+        {"text": "okay aris", "result": _word_results("okay aris")}
     )
     adapter = VoskWakeRecognizer(model_path=model, vosk_module=module)
     assert adapter.start().success
     assert adapter.start().status == "already_started"
     result = adapter.recognize_wav(_recognizer_request(wav))
     assert result.wake_detected
-    assert result.selected_alias == "aries"
+    assert result.selected_alias == "aris"
     assert result.normalized_wake_phrase == "ares"
     assert module.model_paths == [str(model.resolve())]
     grammar = module.grammars[0][2]
     assert grammar == [
         "ares",
-        "aries",
+        "aris",
         "hey ares",
-        "hey aries",
+        "hey aris",
         "okay ares",
-        "okay aries",
+        "okay aris",
         "goodbye ares",
-        "goodbye aries",
+        "goodbye aris",
         "shutdown ares",
-        "shutdown aries",
+        "shutdown aris",
         "[unk]",
     ]
     assert adapter.last_diagnostics.raw_recognition_result

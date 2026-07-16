@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import SingleTurnVoiceRequestV1, StandbyListenResultV1, WakeLocalDiagnostics
+from core import (
+    ActiveCommandLocalDiagnostics,
+    SingleTurnVoiceRequestV1,
+    StandbyListenResultV1,
+    WakeLocalDiagnostics,
+)
 from scripts import manual_diagnose_wake_word
 from scripts import manual_verify_standby_wake_hardware
 from scripts import manual_verify_standby_wake_runtime
@@ -211,12 +216,77 @@ def test_hardware_helper_is_bounded_and_uses_production_runtime_parser():
     assert "between 1 and 5" in output[0]
 
 
+def test_hardware_helper_stage_e_requires_bypass_and_does_not_retry_unknown_fallback():
+    snapshot = SimpleNamespace(current_lifecycle_state="STANDBY", session_id="")
+    passed, _ = manual_verify_standby_wake_hardware._stage_passed(
+        "E",
+        SimpleNamespace(
+            response_text="",
+            data={"core_service_bypassed": True},
+        ),
+        snapshot,
+        None,
+        "session-1",
+    )
+    fallback, _ = manual_verify_standby_wake_hardware._stage_passed(
+        "E",
+        SimpleNamespace(
+            response_text="I cannot handle that request yet.",
+            data={"core_service_bypassed": False},
+        ),
+        snapshot,
+        None,
+        "session-1",
+    )
+
+    assert passed is True
+    assert fallback is False
+    assert manual_verify_standby_wake_hardware._retry_allowed(
+        "E", SimpleNamespace(status="input_timeout")
+    )
+    assert not manual_verify_standby_wake_hardware._retry_allowed(
+        "E", SimpleNamespace(status="command_completed")
+    )
+
+
+def test_hardware_helper_active_summary_uses_active_diagnostics_not_stale_wake_result():
+    output = []
+    diagnostics = ActiveCommandLocalDiagnostics(
+        raw_transcript="goodbye aris",
+        alias_canonicalized_transcript="goodbye ares",
+    )
+    manual_verify_standby_wake_hardware._print_recognition_summary(
+        output.append,
+        diagnostics=diagnostics,
+        wake_result=None,
+        result=SimpleNamespace(command_category="standby", error_code=""),
+        before_state="ACTIVE",
+        diagnostic_enabled=True,
+    )
+    text = "\n".join(output)
+    assert "Recognizer used: whisper_active_command" in text
+    assert "Raw recognition result: goodbye aris" in text
+    assert "Normalized phrase: goodbye ares" in text
+    assert "active_command_or_none" not in text
+
+    summary = []
+    manual_verify_standby_wake_hardware._print_transcript_summary(
+        summary.append,
+        ["ares"],
+        ["goodbye aris"],
+    )
+    assert summary == [
+        "Wake transcripts: ares",
+        "Active-command transcripts: goodbye aris",
+    ]
+
+
 def test_wake_diagnostic_rendering_is_explicit_and_prints_manual_playback_only():
     diagnostics = WakeLocalDiagnostics(
-        raw_transcript="Okay, Aries.",
-        normalized_transcript="okay aries",
-        selected_alias="aries",
-        selected_wake_phrase="okay aries",
+        raw_transcript="Okay, Aris.",
+        normalized_transcript="okay aris",
+        selected_alias="aris",
+        selected_wake_phrase="okay aris",
         canonical_wake_phrase="ares",
         classification_path="vosk_constrained_grammar",
         classification_reason="accepted_vosk_constrained_grammar",
@@ -228,7 +298,7 @@ def test_wake_diagnostic_rendering_is_explicit_and_prints_manual_playback_only()
         whisper_input_duration_seconds=0.8,
         capture_stop_reason="completed_after_silence",
         recognizer_name="vosk_constrained_grammar",
-        raw_recognition_result='[{"text": "okay aries"}]',
+        raw_recognition_result='[{"text": "okay aris"}]',
         recognition_status="wake_detected",
         recognition_confidence=0.94,
         recognition_confidence_available=True,
@@ -242,14 +312,47 @@ def test_wake_diagnostic_rendering_is_explicit_and_prints_manual_playback_only()
     )
     text = "\n".join(lines)
     assert "Recognizer used: vosk_constrained_grammar" in text
-    assert 'Raw recognition result: [{"text": "okay aries"}]' in text
-    assert "Normalized phrase: okay aries" in text
+    assert 'Raw recognition result: [{"text": "okay aris"}]' in text
+    assert "Normalized phrase: okay aris" in text
     assert "Confidence: 0.940" in text
-    assert "Selected alias: aries" in text
+    assert "Selected alias: aris" in text
     assert "Wake classification: accepted" in text
     assert "Classification path: vosk_constrained_grammar" in text
     assert "aplay -D" in text
     assert not any(line.strip().startswith("Playing") for line in lines)
+
+
+def test_active_command_diagnostics_separate_real_command_capture_from_wake_capture():
+    diagnostics = ActiveCommandLocalDiagnostics(
+        raw_transcript="Goodbye Aris.",
+        cleaned_transcript="goodbye aris",
+        alias_canonicalized_transcript="goodbye ares",
+        lifecycle_classification="standby",
+        selected_lifecycle_action="standby",
+        core_service_bypassed=True,
+        lifecycle_state_before="ACTIVE",
+        lifecycle_state_after="STANDBY",
+        session_id_before="session-1",
+        session_id_after="",
+        capture_stop_reason="completed_after_silence",
+        raw_capture_duration_seconds=2.4,
+        finalized_candidate_duration_seconds=1.2,
+        whisper_processing_duration_seconds=0.6,
+        terminal_silence_status="confirmed_terminal_silence",
+    )
+
+    rendered = "\n".join(
+        run_ares_standby_voice.render_active_command_diagnostics(diagnostics)
+    )
+
+    assert "Raw Whisper transcript: Goodbye Aris." in rendered
+    assert "Alias-canonicalized transcript: goodbye ares" in rendered
+    assert "Lifecycle classification: standby" in rendered
+    assert "CoreService routing bypassed: yes" in rendered
+    assert "Lifecycle state: ACTIVE -> STANDBY" in rendered
+    assert "Active session: session-1 -> none" in rendered
+    assert "Raw capture duration: 2.400s" in rendered
+    assert "Finalized candidate duration: 1.200s" in rendered
 
 
 def test_retention_requires_explicit_wake_diagnostics_before_runtime_creation():
@@ -280,7 +383,7 @@ def test_one_attempt_wake_diagnostic_cli_defaults_and_validation():
     assert "requires --diagnostic-wake" in output[0]
 
 
-def test_one_attempt_wake_diagnostic_accepts_aries_and_exits_after_one_capture():
+def test_one_attempt_wake_diagnostic_accepts_aris_and_exits_after_one_capture():
     instances = []
 
     class DiagnosticListener:
@@ -300,16 +403,16 @@ def test_one_attempt_wake_diagnostic_accepts_aries_and_exits_after_one_capture()
             self.listen_count += 1
             self.callback(
                 WakeLocalDiagnostics(
-                    raw_transcript="Aries.",
-                    normalized_transcript="aries",
-                    selected_alias="aries",
-                    selected_wake_phrase="aries",
+                    raw_transcript="Aris.",
+                    normalized_transcript="aris",
+                    selected_alias="aris",
+                    selected_wake_phrase="aris",
                     canonical_wake_phrase="ares",
                     classification_path="vosk_constrained_grammar",
                     classification_reason="accepted_vosk_constrained_grammar",
                     classification="accepted",
                     recognizer_name="vosk_constrained_grammar",
-                    raw_recognition_result='{"text":"aries"}',
+                    raw_recognition_result='{"text":"aris"}',
                     recognition_status="wake_detected",
                     recognition_confidence=0.95,
                     recognition_confidence_available=True,
@@ -321,8 +424,8 @@ def test_one_attempt_wake_diagnostic_accepts_aries_and_exits_after_one_capture()
                 status="wake_detected",
                 wake_detected=True,
                 speech_detected=True,
-                selected_alias="aries",
-                selected_wake_phrase="aries",
+                selected_alias="aris",
+                selected_wake_phrase="aris",
                 canonical_wake_phrase="ares",
             )
 
@@ -340,8 +443,8 @@ def test_one_attempt_wake_diagnostic_accepts_aries_and_exits_after_one_capture()
     assert instances[0].listen_count == 1
     assert instances[0].stop_count == 1
     assert any("Say Ares once, then remain silent." in line for line in output)
-    assert any("Raw recognized phrase: Aries." in line for line in output)
-    assert output[-1] == "Wake result: accepted (aries -> ares)."
+    assert any("Raw recognized phrase: Aris." in line for line in output)
+    assert output[-1] == "Wake result: accepted (aris -> ares)."
 
 
 def test_one_attempt_diagnostic_explains_unknown_token_rejection():

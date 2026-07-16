@@ -233,7 +233,7 @@ def _request(**changes) -> WakeListenerRequestV1:
         "runtime_id": "runtime-test",
         "lifecycle_state": "STANDBY",
         "listener_timeout_seconds": 3.0,
-        "wake_phrase_aliases": ["ares", "aries"],
+        "wake_phrase_aliases": ["ares", "aris"],
         "wake_phrase_prefixes": ["", "hey", "okay"],
         "standby_phrases": ["goodbye ares"],
         "shutdown_phrases": ["shutdown ares"],
@@ -270,7 +270,7 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
     assert config.maximum_utterance_seconds == 2.0
     assert config.speech_start_rms > config.speech_continue_rms >= config.silence_rms
     assert config.calibration_enabled is True
-    assert config.wake_phrase_aliases == ("ares", "aries")
+    assert config.wake_phrase_aliases == ("ares", "aris")
     assert config.wake_phrase_prefixes == ("", "hey", "okay")
     assert config.pre_roll_seconds == 0.25
     assert config.silence_duration_seconds == 0.7
@@ -311,15 +311,15 @@ def test_wake_configuration_rejects_unknown_mapping_fields():
 
 def test_wake_alias_configuration_is_normalized_bounded_and_collision_safe():
     config = WakeListenerConfig(
-        wake_phrase_aliases=("ARES!", "Aries"),
+        wake_phrase_aliases=("ARES!", "Aris"),
         wake_phrase_prefixes=("", "HEY,", "Okay"),
     )
-    assert config.wake_phrase_aliases == ("ares", "aries")
+    assert config.wake_phrase_aliases == ("ares", "aris")
     assert config.wake_phrase_prefixes == ("", "hey", "okay")
-    assert "hey aries" in config.wake_phrases
+    assert "hey aris" in config.wake_phrases
     assert WakeListenerConfig(
-        wake_phrase_aliases=("Ares", "ares.", "Aries")
-    ).wake_phrase_aliases == ("ares", "aries")
+        wake_phrase_aliases=("Ares", "ares.", "Aris")
+    ).wake_phrase_aliases == ("ares", "aris")
     with pytest.raises(ValueError, match="at most 8"):
         WakeListenerConfig(wake_phrase_aliases=tuple(f"alias{index}" for index in range(9)))
     with pytest.raises(ValueError, match="at most 24"):
@@ -342,13 +342,13 @@ def test_wake_alias_configuration_is_normalized_bounded_and_collision_safe():
     "text",
     [
         "Ares",
-        "Aries",
+        "Aris",
         "ARES.",
-        "Aries.",
+        "Aris.",
         "  Hey, Ares!  ",
-        "Hey Aries",
+        "Hey Aris",
         "Okay, Ares",
-        "Okay Aries",
+        "Okay Aris",
     ],
 )
 def test_exact_wake_phrase_normalization_accepts_bounded_variants(text):
@@ -365,7 +365,7 @@ def test_exact_wake_phrase_normalization_accepts_bounded_variants(text):
     [
         "I played God of War with Ares",
         "I read about Ares yesterday",
-        "I spoke to Aries yesterday",
+        "I spoke to Aris yesterday",
         "compare statistics",
         "nearest shop",
         "address the issue",
@@ -377,7 +377,7 @@ def test_exact_wake_phrase_normalization_accepts_bounded_variants(text):
         "Hello, are his shoes ready?",
         "Harris",
         "Paris",
-        "Aris",
+        "Aries",
         "Areas",
         "Air",
         "Bye",
@@ -398,7 +398,7 @@ def test_wake_recognition_rejects_substrings_and_unrelated_sentences(text):
     "text",
     [
         "ares ares",
-        "aries aries",
+        "aris aris",
         "hello ares",
         "wake up ares",
         "okay okay ares",
@@ -410,10 +410,10 @@ def test_non_grammar_repetition_or_prefixes_are_rejected(text):
     assert result.rejection_reason == "exact_wake_phrase_not_matched"
 
 
-def test_aries_alias_returns_canonical_ares_activation_without_fuzzy_matching():
-    result = classify_wake_transcript("Hey, Aries.")
-    assert result.selected_alias == "aries"
-    assert result.selected_wake_phrase == "hey aries"
+def test_aris_alias_returns_canonical_ares_activation_without_fuzzy_matching():
+    result = classify_wake_transcript("Hey, Aris.")
+    assert result.selected_alias == "aris"
+    assert result.selected_wake_phrase == "hey aris"
     assert result.canonical_wake_phrase == "ares"
     assert result.normalized_wake_phrase == "ares"
 
@@ -634,7 +634,7 @@ def test_local_wake_diagnostics_are_explicit_and_not_returned_in_contract(tmp_pa
     emitted = []
     listener = LinuxStandbyWakeListener(
         microphone_adapter=FakeMicrophone(raw_seconds=1.4, candidate_seconds=0.8),
-        wake_recognizer=FakeWakeRecognizer("Okay, Aries."),
+        wake_recognizer=FakeWakeRecognizer("Okay, Aris."),
         config=WakeListenerConfig(diagnostic_wake=True),
         project_root=tmp_path,
         diagnostic_callback=emitted.append,
@@ -644,18 +644,18 @@ def test_local_wake_diagnostics_are_explicit_and_not_returned_in_contract(tmp_pa
     assert result.wake_detected
     assert len(emitted) == 1
     diagnostics = emitted[0]
-    assert diagnostics.raw_transcript == "Okay, Aries."
-    assert diagnostics.normalized_transcript == "okay aries"
-    assert diagnostics.selected_alias == "aries"
+    assert diagnostics.raw_transcript == "Okay, Aris."
+    assert diagnostics.normalized_transcript == "okay aris"
+    assert diagnostics.selected_alias == "aris"
     assert diagnostics.classification == "accepted"
     assert diagnostics.classification_path == "vosk_constrained_grammar"
     assert diagnostics.classification_reason == "accepted_vosk_constrained_grammar"
     assert diagnostics.recognizer_name == "fake_vosk_constrained_grammar"
     assert diagnostics.recognition_confidence == pytest.approx(0.95)
-    assert '"text": "Okay, Aries."' in diagnostics.raw_recognition_result
+    assert '"text": "Okay, Aris."' in diagnostics.raw_recognition_result
     assert diagnostics.raw_capture_duration_seconds == pytest.approx(1.4, abs=0.001)
     assert diagnostics.whisper_input_duration_seconds == pytest.approx(0.8, abs=0.001)
-    assert "Okay, Aries" not in str(result.to_dict())
+    assert "Okay, Aris" not in str(result.to_dict())
     listener.stop()
 
 
@@ -684,7 +684,7 @@ def test_local_wake_transcript_diagnostics_are_disabled_by_default(tmp_path):
     emitted = []
     listener = LinuxStandbyWakeListener(
         microphone_adapter=FakeMicrophone(),
-        wake_recognizer=FakeWakeRecognizer("Aries"),
+        wake_recognizer=FakeWakeRecognizer("Aris"),
         project_root=tmp_path,
         diagnostic_callback=emitted.append,
     )

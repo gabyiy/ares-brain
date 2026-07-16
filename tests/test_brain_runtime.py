@@ -14,6 +14,7 @@ from core import (
     BRAIN_ACTIVE,
     BRAIN_PROCESSING,
     BRAIN_RESPONDING,
+    BRAIN_RETURNING_TO_STANDBY,
     BRAIN_STANDBY,
     BRAIN_STOPPED,
     CONTRACT_BRAIN_RUNTIME_COMMAND_CLASSIFICATION,
@@ -213,9 +214,11 @@ def test_runtime_contracts_are_versioned_and_registered(contract_name, contract_
 def test_runtime_configuration_defaults_are_bounded_and_explicit():
     config = BrainRuntimeConfig()
 
+    assert config.ares_name_aliases == ("ares", "aris")
     assert config.activation_phrases == ("ares", "hey ares", "hello ares", "wake up ares")
     assert config.standby_phrases == (
         "goodbye ares",
+        "go to standby ares",
         "go to sleep ares",
         "standby ares",
         "sleep ares",
@@ -234,6 +237,8 @@ def test_runtime_configuration_defaults_are_bounded_and_explicit():
     "changes",
     [
         {"activation_phrases": []},
+        {"ares_name_aliases": []},
+        {"ares_name_aliases": ["aris"]},
         {"activation_phrases": ["ares", "ARES!"]},
         {"activation_phrases": [1]},
         {"activation_phrases": "ares"},
@@ -323,6 +328,18 @@ def test_activation_phrase_classification_is_exact_and_bounded(text):
     runtime, _ = _runtime()
 
     assert runtime.classify_command(text).command_category == RUNTIME_COMMAND_ACTIVATION
+
+
+def test_runtime_alias_canonicalization_is_whole_token_only():
+    runtime, _ = _runtime()
+
+    assert runtime.classify_command("Aris").normalized_input == "ares"
+    assert runtime.classify_command("goodbye Aris").normalized_input == "goodbye ares"
+    assert runtime.classify_command("shutdown Aris").normalized_input == "shutdown ares"
+    for value in ("Paris", "Harris", "Aries"):
+        classification = runtime.classify_command(value)
+        assert classification.normalized_input == value.casefold()
+        assert classification.command_category == RUNTIME_COMMAND_ORDINARY
 
 
 def test_runtime_boots_once_through_manager_to_standby():
@@ -445,7 +462,16 @@ def test_unsupported_active_command_returns_safe_response_and_runtime_survives(t
 
 @pytest.mark.parametrize(
     "phrase",
-    ["goodbye Ares", "goodbye, Ares", "go to sleep Ares", "standby Ares", "sleep Ares"],
+    [
+        "goodbye Ares",
+        "goodbye, Aris",
+        "go to standby Ares",
+        "go to standby Aris",
+        "go to sleep Ares",
+        "standby Ares",
+        "standby Aris",
+        "sleep Ares",
+    ],
 )
 def test_standby_phrases_return_to_standby_without_stopping_runtime(phrase):
     runtime, _ = _runtime()
@@ -469,7 +495,16 @@ def test_standby_phrase_while_standby_is_noop_and_creates_no_session():
     assert runtime.session_manager.session_id == ""
 
 
-@pytest.mark.parametrize("phrase", ["shutdown Ares", "shut down Ares", "stop Ares completely"])
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "shutdown Ares",
+        "shutdown Aris",
+        "shut down Ares",
+        "shut down Aris",
+        "stop Ares completely",
+    ],
+)
 def test_shutdown_phrases_stop_runtime_and_clear_session(phrase):
     runtime, _ = _runtime()
     _start_active(runtime)
@@ -489,6 +524,64 @@ def test_goodbye_is_not_full_shutdown():
 
     assert result.command_category == RUNTIME_COMMAND_STANDBY
     assert runtime.session_manager.state != BRAIN_STOPPED
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "goodbye",
+        "goodbye my friend",
+        "I said goodbye to Ares yesterday",
+        "tell me about standby",
+        "what does shutdown mean",
+        "do not shutdown Ares",
+        "calculate two plus two Ares",
+        "Ares remember this",
+        "Paris",
+        "Harris",
+        "Aries",
+        "please goodbye Ares now",
+    ],
+)
+def test_lifecycle_controls_reject_partial_or_extra_sentence_words(text):
+    runtime, _ = _runtime()
+    assert runtime.classify_command(text).command_category == RUNTIME_COMMAND_ORDINARY
+
+
+def test_standby_alias_bypasses_core_route_and_clears_session_once():
+    calls = []
+    runtime, _ = _runtime(handler=lambda text: calls.append(text))
+    session_id = _start_active(runtime)
+
+    result = runtime.handle_text("Goodbye, Aris.")
+
+    assert result.status == "standby_entered"
+    assert result.normalized_input == "goodbye ares"
+    assert result.response_text != "I cannot handle that request yet."
+    assert result.data["core_service_bypassed"] is True
+    assert result.data["session_id_before"] == session_id
+    assert calls == []
+    transitions = [
+        (item.source_state, item.target_state)
+        for item in runtime.session_manager.history()
+    ]
+    assert transitions.count((BRAIN_ACTIVE, BRAIN_RETURNING_TO_STANDBY)) == 1
+    assert transitions.count((BRAIN_RETURNING_TO_STANDBY, BRAIN_STANDBY)) == 1
+
+
+def test_shutdown_alias_bypasses_core_route_and_releases_runtime():
+    calls = []
+    runtime, _ = _runtime(handler=lambda text: calls.append(text))
+    _start_active(runtime)
+
+    result = runtime.handle_text("Shut down, Aris.")
+
+    assert result.status == "stopped"
+    assert result.normalized_input == "shut down ares"
+    assert result.data["core_service_bypassed"] is True
+    assert calls == []
+    assert runtime.session_manager.state == BRAIN_STOPPED
+    assert runtime.session_manager.session_id == ""
 
 
 def test_inactivity_before_exact_and_after_boundary_is_deterministic():

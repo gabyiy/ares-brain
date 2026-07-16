@@ -6,9 +6,14 @@ from math import isfinite
 import re
 from threading import Lock, RLock
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
-import unicodedata
 from uuid import uuid4
 
+from core.AresIdentity import (
+    DEFAULT_ARES_NAME_ALIASES,
+    canonicalize_ares_name_tokens,
+    normalize_spoken_phrase,
+    validate_ares_name_aliases,
+)
 from core.BrainRuntimeAdapters import (
     RUNTIME_INPUT_CANCELLED,
     RUNTIME_INPUT_END,
@@ -45,6 +50,11 @@ from core.Contracts import (
 )
 from core.CoreService import CoreService
 from core.EventBus import PRIORITY_CRITICAL, PRIORITY_NORMAL, Event, EventBus
+from core.LifecycleControl import (
+    LIFECYCLE_ACTION_SHUTDOWN,
+    LIFECYCLE_ACTION_STANDBY,
+    classify_lifecycle_control,
+)
 from core.StandbyWakeListener import (
     WAKE_CATEGORY_ACTIVATION,
     WAKE_CATEGORY_SHUTDOWN,
@@ -83,6 +93,7 @@ EVENT_WAKE_LISTENER_STOPPED = "brain_wake_listener_stopped"
 DEFAULT_ACTIVATION_PHRASES = ("ares", "hey ares", "hello ares", "wake up ares")
 DEFAULT_STANDBY_PHRASES = (
     "goodbye ares",
+    "go to standby ares",
     "go to sleep ares",
     "standby ares",
     "sleep ares",
@@ -106,12 +117,12 @@ MAX_POLLING_INTERVAL_SECONDS = 5.0
 MIN_COMMAND_TIMEOUT_SECONDS = 0.1
 MAX_COMMAND_TIMEOUT_SECONDS = 600.0
 
-_PUNCTUATION_PATTERN = re.compile(r"[^a-z0-9]+")
 _SAFE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$")
 
 
 @dataclass(frozen=True)
 class BrainRuntimeConfig:
+    ares_name_aliases: tuple[str, ...] = DEFAULT_ARES_NAME_ALIASES
     activation_phrases: tuple[str, ...] = DEFAULT_ACTIVATION_PHRASES
     active_acknowledgement: str = DEFAULT_ACTIVE_ACKNOWLEDGEMENT
     already_active_acknowledgement: str = DEFAULT_ALREADY_ACTIVE_ACKNOWLEDGEMENT
@@ -125,10 +136,24 @@ class BrainRuntimeConfig:
     shutdown_response: str = "ARES is shutting down."
 
     def __post_init__(self) -> None:
-        activation = _validated_phrases(self.activation_phrases, "activation_phrases")
-        standby = _validated_phrases(self.standby_phrases, "standby_phrases")
-        shutdown = _validated_phrases(self.shutdown_phrases, "shutdown_phrases")
+        aliases = validate_ares_name_aliases(self.ares_name_aliases)
+        activation = _canonicalized_runtime_phrases(
+            self.activation_phrases,
+            "activation_phrases",
+            aliases,
+        )
+        standby = _canonicalized_runtime_phrases(
+            self.standby_phrases,
+            "standby_phrases",
+            aliases,
+        )
+        shutdown = _canonicalized_runtime_phrases(
+            self.shutdown_phrases,
+            "shutdown_phrases",
+            aliases,
+        )
         _validate_phrase_collisions(activation, standby, shutdown)
+        object.__setattr__(self, "ares_name_aliases", aliases)
         object.__setattr__(self, "activation_phrases", activation)
         object.__setattr__(self, "standby_phrases", standby)
         object.__setattr__(self, "shutdown_phrases", shutdown)
@@ -202,6 +227,7 @@ class BrainRuntimeConfig:
         if not isinstance(value, Mapping):
             raise ValueError("brain_runtime configuration must be a mapping")
         allowed = {
+            "ares_name_aliases",
             "activation_phrases",
             "active_acknowledgement",
             "already_active_acknowledgement",
@@ -221,6 +247,7 @@ class BrainRuntimeConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "ares_name_aliases": list(self.ares_name_aliases),
             "activation_phrases": list(self.activation_phrases),
             "active_acknowledgement": self.active_acknowledgement,
             "already_active_acknowledgement": self.already_active_acknowledgement,
@@ -288,6 +315,10 @@ class BrainRuntime:
                 self.config.shutdown_phrases,
                 wake_config.wake_phrase_aliases,
             )
+            if tuple(wake_config.wake_phrase_aliases) != self.config.ares_name_aliases:
+                raise ValueError(
+                    "standby wake aliases must match BrainRuntime ares_name_aliases"
+                )
         self.standby_wake_listener = standby_wake_listener
         self._event_bus = event_bus or EventBus(max_history=300)
         self._event_history_store = event_history_store
@@ -385,18 +416,24 @@ class BrainRuntime:
         *,
         correlation_id: str = "",
     ) -> BrainRuntimeCommandClassificationV1:
-        normalized = normalize_runtime_phrase(text)
+        control = classify_lifecycle_control(
+            text,
+            standby_phrases=self.config.standby_phrases,
+            shutdown_phrases=self.config.shutdown_phrases,
+            ares_name_aliases=self.config.ares_name_aliases,
+        )
+        normalized = control.canonicalized_input
         state = self.session_manager.state
         category = RUNTIME_COMMAND_ORDINARY
         matched = ""
         if not normalized:
             category = RUNTIME_COMMAND_EMPTY
-        elif normalized in self.config.shutdown_phrases:
+        elif control.action == LIFECYCLE_ACTION_SHUTDOWN:
             category = RUNTIME_COMMAND_SHUTDOWN
-            matched = normalized
-        elif normalized in self.config.standby_phrases:
+            matched = control.matched_phrase
+        elif control.action == LIFECYCLE_ACTION_STANDBY:
             category = RUNTIME_COMMAND_STANDBY
-            matched = normalized
+            matched = control.matched_phrase
         elif normalized in self.config.activation_phrases:
             category = RUNTIME_COMMAND_ACTIVATION
             matched = normalized
@@ -410,7 +447,18 @@ class BrainRuntime:
             matched_phrase=matched,
             correlation_id=correlation_id or new_correlation_id("runtime-classify"),
             session_id=self.session_manager.session_id,
-            metadata={"safe": True, "source": "brain_runtime"},
+            metadata={
+                "safe": True,
+                "source": "brain_runtime",
+                "lifecycle_action": control.action,
+                "routing_reason": control.routing_reason,
+                "core_service_bypassed": category
+                in {
+                    RUNTIME_COMMAND_ACTIVATION,
+                    RUNTIME_COMMAND_STANDBY,
+                    RUNTIME_COMMAND_SHUTDOWN,
+                },
+            },
         )
 
     def handle_text(
@@ -496,6 +544,7 @@ class BrainRuntime:
                     correlation_id=normalized_request.correlation_id,
                     reason="owner_shutdown_phrase",
                     command_category=RUNTIME_COMMAND_SHUTDOWN,
+                    normalized_input=classification.normalized_input,
                 )
             if classification.command_category == RUNTIME_COMMAND_STANDBY:
                 return self._handle_standby(classification)
@@ -574,7 +623,14 @@ class BrainRuntime:
                         error_code="runtime_stopped",
                         error_message="runtime stopped while waiting for input",
                     )
-                return self.handle_text(input_result.text)
+                before = self.session_manager.snapshot()
+                handled = self.handle_text(input_result.text)
+                self._record_local_input_diagnostics(
+                    handled,
+                    lifecycle_state_before=before.current_state,
+                    session_id_before=before.session_id,
+                )
+                return handled
             if input_result.status == RUNTIME_INPUT_TIMEOUT:
                 return self._handle_input_timeout()
             if input_result.status == RUNTIME_INPUT_CANCELLED:
@@ -656,9 +712,12 @@ class BrainRuntime:
         correlation_id: str = "",
         reason: str = "runtime_shutdown_requested",
         command_category: str = RUNTIME_COMMAND_SHUTDOWN,
+        normalized_input: str = "",
     ) -> BrainRuntimeResultV1:
         correlation = correlation_id or new_correlation_id("runtime-shutdown")
         with self._command_lock:
+            state_before = self.session_manager.state
+            session_before = self.session_manager.session_id
             if self.session_manager.state == BRAIN_STOPPED:
                 self._close_resources()
                 return self._result(
@@ -666,7 +725,14 @@ class BrainRuntime:
                     "already_stopped",
                     correlation_id=correlation,
                     command_category=command_category,
+                    normalized_input=normalized_input,
                     stop_reason=self._last_stop_reason or reason,
+                    data={
+                        "core_service_bypassed": True,
+                        "lifecycle_action": "shutdown",
+                        "lifecycle_state_before": state_before,
+                        "session_id_before": session_before,
+                    },
                 )
             self._publish(
                 EVENT_RUNTIME_SHUTDOWN_REQUESTED,
@@ -704,7 +770,14 @@ class BrainRuntime:
                 "stopped",
                 correlation_id=correlation,
                 command_category=command_category,
+                normalized_input=normalized_input,
                 stop_reason=reason,
+                data={
+                    "core_service_bypassed": True,
+                    "lifecycle_action": "shutdown",
+                    "lifecycle_state_before": state_before,
+                    "session_id_before": session_before,
+                },
             )
 
     def events(self, event_type: Optional[str] = None) -> list[Event]:
@@ -752,6 +825,10 @@ class BrainRuntime:
                 command_category=RUNTIME_COMMAND_ACTIVATION,
                 normalized_input=classification.normalized_input,
                 response_text=self.config.active_acknowledgement,
+                data={
+                    "core_service_bypassed": True,
+                    "lifecycle_action": "activation",
+                },
             )
         if state == BRAIN_ACTIVE:
             activity = self.session_manager.record_activity(
@@ -779,6 +856,10 @@ class BrainRuntime:
                 command_category=RUNTIME_COMMAND_ACTIVATION,
                 normalized_input=classification.normalized_input,
                 response_text=self.config.already_active_acknowledgement,
+                data={
+                    "core_service_bypassed": True,
+                    "lifecycle_action": "activation",
+                },
             )
         self._publish(
             EVENT_ACTIVATION_REJECTED,
@@ -801,6 +882,7 @@ class BrainRuntime:
     ) -> BrainRuntimeResultV1:
         correlation = classification.correlation_id
         state = self.session_manager.state
+        session_before = self.session_manager.session_id
         self._publish(
             EVENT_RUNTIME_STANDBY_REQUESTED,
             correlation,
@@ -814,6 +896,12 @@ class BrainRuntime:
                 command_category=RUNTIME_COMMAND_STANDBY,
                 normalized_input=classification.normalized_input,
                 stop_reason="owner_standby_phrase",
+                data={
+                    "core_service_bypassed": True,
+                    "lifecycle_action": "standby",
+                    "lifecycle_state_before": state,
+                    "session_id_before": session_before,
+                },
             )
         if state != BRAIN_ACTIVE:
             return self._result(
@@ -830,6 +918,8 @@ class BrainRuntime:
             "owner_standby_phrase",
             normalized_input=classification.normalized_input,
             response_text=self.config.standby_response,
+            lifecycle_state_before=state,
+            session_id_before=session_before,
         )
 
     def _process_active_command(
@@ -921,7 +1011,12 @@ class BrainRuntime:
             command_category=RUNTIME_COMMAND_ORDINARY,
             normalized_input=classification.normalized_input,
             response_text=response_text,
-            data={"selected_skill": selected_skill, "processing_time_seconds": elapsed},
+            data={
+                "selected_skill": selected_skill,
+                "processing_time_seconds": elapsed,
+                "core_service_bypassed": False,
+                "lifecycle_action": "none",
+            },
         )
 
     def _handle_input_timeout(self) -> BrainRuntimeResultV1:
@@ -950,6 +1045,8 @@ class BrainRuntime:
         *,
         normalized_input: str = "",
         response_text: str = "",
+        lifecycle_state_before: str = "",
+        session_id_before: str = "",
     ) -> BrainRuntimeResultV1:
         returning = self.session_manager.request_return_to_standby(
             correlation_id=correlation,
@@ -978,6 +1075,12 @@ class BrainRuntime:
                     stop_reason=reason,
                     error_code=output.error_code,
                     error_message=output.error_message,
+                    data={
+                        "core_service_bypassed": bool(normalized_input),
+                        "lifecycle_action": "standby" if normalized_input else "inactivity",
+                        "lifecycle_state_before": lifecycle_state_before,
+                        "session_id_before": session_id_before,
+                    },
                 )
         return self._result(
             True,
@@ -987,6 +1090,12 @@ class BrainRuntime:
             normalized_input=normalized_input,
             response_text=response_text,
             stop_reason=reason,
+            data={
+                "core_service_bypassed": bool(normalized_input),
+                "lifecycle_action": "standby" if normalized_input else "inactivity",
+                "lifecycle_state_before": lifecycle_state_before,
+                "session_id_before": session_id_before,
+            },
         )
 
     def _recover_command_failure(
@@ -1403,6 +1512,26 @@ class BrainRuntime:
                 except (OSError, RuntimeError, TypeError, ValueError):
                     self._failure_count += 1
 
+    def _record_local_input_diagnostics(
+        self,
+        runtime_result: BrainRuntimeResultV1,
+        *,
+        lifecycle_state_before: str,
+        session_id_before: str,
+    ) -> None:
+        recorder = getattr(self.input_adapter, "record_runtime_result", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(
+                runtime_result=runtime_result,
+                lifecycle_state_before=lifecycle_state_before,
+                session_id_before=session_id_before,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            # Owner-terminal diagnostics are non-authoritative and cannot alter lifecycle.
+            return
+
     def _publish(
         self,
         event_type: str,
@@ -1515,8 +1644,21 @@ class BrainRuntime:
 
 
 def normalize_runtime_phrase(value: Any) -> str:
-    normalized = unicodedata.normalize("NFKC", str(value or "")).lower().strip()
-    return " ".join(_PUNCTUATION_PATTERN.sub(" ", normalized).split())
+    return normalize_spoken_phrase(value)
+
+
+def _canonicalized_runtime_phrases(
+    value: Any,
+    label: str,
+    aliases: Sequence[str],
+) -> tuple[str, ...]:
+    normalized = _validated_phrases(value, label)
+    canonicalized = tuple(
+        canonicalize_ares_name_tokens(phrase, aliases) for phrase in normalized
+    )
+    if len(set(canonicalized)) != len(canonicalized):
+        raise ValueError(f"{label} contains duplicate phrases after alias canonicalization")
+    return canonicalized
 
 
 def _validated_phrases(value: Any, label: str) -> tuple[str, ...]:

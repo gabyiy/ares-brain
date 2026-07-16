@@ -27,8 +27,13 @@ STAGES = (
     HardwareTestStage("B", "Say an unrelated sentence.", "speech rejected in STANDBY"),
     HardwareTestStage("C", "Say 'Ares'.", "ACTIVE and one 'Yes Gabi.' acknowledgement"),
     HardwareTestStage("D", "Say 'calculate two plus two'.", "spoken 'Result: 4'"),
-    HardwareTestStage("E", "Say 'goodbye Ares'.", "return to STANDBY"),
-    HardwareTestStage("F", "Say 'shutdown Ares'.", "clean STOPPED state"),
+    HardwareTestStage(
+        "E",
+        "Say 'goodbye Ares' once, then remain silent.",
+        "return to STANDBY without ordinary routing",
+    ),
+    HardwareTestStage("F", "Say 'Ares'.", "ACTIVE with a new session"),
+    HardwareTestStage("G", "Say 'shutdown Ares'.", "clean STOPPED state"),
 )
 
 
@@ -87,7 +92,8 @@ def run_hardware_verification(
         return 3
 
     first_session = ""
-    recognized_candidates: list[str] = []
+    wake_transcripts: list[str] = []
+    active_command_transcripts: list[str] = []
     try:
         for index, stage in enumerate(STAGES, start=1):
             output_func(f"Test {index}/{len(STAGES)} ({stage.label}): {stage.instruction}")
@@ -97,12 +103,22 @@ def run_hardware_verification(
                 before = runtime.snapshot()
                 result = runtime.poll_once()
                 snapshot = runtime.snapshot()
-                wake_result = getattr(runtime.standby_wake_listener, "last_result", None)
-                diagnostics = getattr(runtime.standby_wake_listener, "last_diagnostics", None)
+                standby_attempt = before.current_lifecycle_state == BRAIN_STANDBY
+                wake_result = (
+                    getattr(runtime.standby_wake_listener, "last_result", None)
+                    if standby_attempt
+                    else None
+                )
+                diagnostics = (
+                    getattr(runtime.standby_wake_listener, "last_diagnostics", None)
+                    if standby_attempt
+                    else getattr(runtime.input_adapter, "last_diagnostics", None)
+                )
                 if args.diagnostic_wake and diagnostics is not None:
                     transcript = str(getattr(diagnostics, "raw_transcript", "") or "")
-                    if transcript and transcript not in recognized_candidates:
-                        recognized_candidates.append(transcript)
+                    target = wake_transcripts if standby_attempt else active_command_transcripts
+                    if transcript and transcript not in target:
+                        target.append(transcript)
                 candidate_detected = bool(
                     getattr(wake_result, "speech_detected", False)
                     if wake_result is not None
@@ -132,7 +148,7 @@ def run_hardware_verification(
                         else "no"
                     )
                 )
-                if wake_result is not None:
+                if standby_attempt and wake_result is not None:
                     output_func(
                         "  Capture: "
                         f"stop={getattr(wake_result, 'capture_stop_reason', '') or 'unknown'}; "
@@ -151,18 +167,31 @@ def run_hardware_verification(
                 if passed:
                     output_func(f"  Test {stage.label}: PASS")
                     break
+                if not _retry_allowed(stage.label, result):
+                    output_func(
+                        "  Retry refused: a recognized non-lifecycle command is not "
+                        "treated as no speech or failed transcription."
+                    )
+                    break
                 if attempt < args.attempts_per_test:
                     output_func(f"  Next action: {stage.instruction}")
             if not passed:
                 output_func(f"Test {stage.label}: FAIL after {args.attempts_per_test} attempts.")
                 if args.diagnostic_wake:
-                    output_func(
-                        "Recognized local wake transcripts: "
-                        + (" | ".join(recognized_candidates) if recognized_candidates else "none")
+                    _print_transcript_summary(
+                        output_func,
+                        wake_transcripts,
+                        active_command_transcripts,
                     )
                 runtime.shutdown(reason=f"hardware_verification_{stage.label}_failed")
                 output_func("Cleanup completed; verification did not pass.")
                 return 1
+        if args.diagnostic_wake:
+            _print_transcript_summary(
+                output_func,
+                wake_transcripts,
+                active_command_transcripts,
+            )
         output_func("All bounded hardware stages passed; adapters cleaned up.")
         return 0
     except KeyboardInterrupt:
@@ -209,8 +238,23 @@ def _stage_passed(
         response = str(getattr(result, "response_text", "") or "")
         return state == BRAIN_ACTIVE and "result: 4" in response.casefold(), first_session
     if label == "E":
-        return state == BRAIN_STANDBY and not snapshot.session_id, first_session
+        return (
+            state == BRAIN_STANDBY
+            and not snapshot.session_id
+            and str(getattr(result, "response_text", "") or "")
+            != "I cannot handle that request yet."
+            and bool(dict(getattr(result, "data", {}) or {}).get("core_service_bypassed")),
+            first_session,
+        )
     if label == "F":
+        session = str(snapshot.session_id or "")
+        return (
+            state == BRAIN_ACTIVE
+            and bool(session)
+            and session != first_session,
+            first_session,
+        )
+    if label == "G":
         return state == BRAIN_STOPPED, first_session
     return False, first_session
 
@@ -240,8 +284,12 @@ def _print_recognition_summary(
         classification = _classification(wake_result)
     else:
         recognizer = "whisper_active_command"
-        raw = str(getattr(result, "normalized_input", "") or "")
-        normalized = raw
+        raw = str(getattr(diagnostics, "raw_transcript", "") or "")
+        normalized = str(
+            getattr(diagnostics, "alias_canonicalized_transcript", "")
+            or getattr(result, "normalized_input", "")
+            or ""
+        )
         confidence = None
         available = False
         rejection = str(getattr(result, "error_code", "") or "none")
@@ -258,6 +306,34 @@ def _print_recognition_summary(
     )
     output_func(f"  Classification result: {classification}")
     output_func(f"  Rejection reason: {rejection}")
+
+
+def _retry_allowed(label: str, result: Any) -> bool:
+    if label != "E":
+        return True
+    return str(getattr(result, "status", "") or "") in {
+        "input_timeout",
+        "transcription_failed",
+    }
+
+
+def _print_transcript_summary(
+    output_func: Callable[[str], None],
+    wake_transcripts: Sequence[str],
+    active_command_transcripts: Sequence[str],
+) -> None:
+    output_func(
+        "Wake transcripts: "
+        + (" | ".join(wake_transcripts) if wake_transcripts else "none")
+    )
+    output_func(
+        "Active-command transcripts: "
+        + (
+            " | ".join(active_command_transcripts)
+            if active_command_transcripts
+            else "none"
+        )
+    )
 
 
 def main() -> int:

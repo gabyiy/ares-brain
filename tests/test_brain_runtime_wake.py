@@ -56,12 +56,12 @@ def test_unrelated_standby_speech_is_silently_rejected_without_core_route(tmp_pa
     "phrase",
     [
         "Ares",
-        "Aries",
+        "Aris",
         "ARES.",
         "Hey, Ares",
-        "Hey Aries",
+        "Hey Aris",
         "Okay Ares",
-        "Okay, Aries",
+        "Okay, Aris",
     ],
 )
 def test_verified_wake_phrase_activates_and_acknowledges_exactly_once(phrase, tmp_path):
@@ -76,10 +76,10 @@ def test_verified_wake_phrase_activates_and_acknowledges_exactly_once(phrase, tm
     assert runtime.snapshot().activation_count == 1
 
 
-def test_constrained_aries_alias_activates_once_without_core_routing(tmp_path):
+def test_constrained_aris_alias_activates_once_without_core_routing(tmp_path):
     runtime, active, output, wake = _runtime(tmp_path)
     runtime.start()
-    wake.push("Aries.")
+    wake.push("Aris.")
     activated = runtime.poll_once()
     first_session = runtime.session_manager.session_id
     assert activated.status == "activated"
@@ -93,12 +93,16 @@ def test_constrained_aries_alias_activates_once_without_core_routing(tmp_path):
     assert command.response_text == "Result: 4"
     assert runtime.session_manager.session_id == first_session
 
-    active.push("goodbye Ares")
-    assert runtime.poll_once().status == "standby_entered"
+    active.push("goodbye Aris")
+    standby = runtime.poll_once()
+    assert standby.status == "standby_entered"
+    assert standby.data["core_service_bypassed"] is True
+    assert runtime.session_manager.session_id == ""
+    assert wake.snapshot().listener_state == "ready"
     wake.push("okay ares")
     assert runtime.poll_once().status == "activated"
     assert runtime.session_manager.session_id != first_session
-    active.push("shutdown Ares")
+    active.push("shutdown Aris")
     assert runtime.poll_once().status == "stopped"
 
 
@@ -301,6 +305,17 @@ def test_runtime_rejects_incomplete_or_phrase_colliding_wake_listener():
             output_adapter=CollectingRuntimeOutputAdapter(),
             standby_wake_listener=colliding,
         )
+    mismatched = QueuedStandbyWakeListener(
+        config=WakeListenerConfig(wake_phrase_aliases=("ares", "alternate"))
+    )
+    with pytest.raises(ValueError, match="must match BrainRuntime"):
+        BrainRuntime(
+            core_service=service,
+            command_handler=lambda _: None,
+            input_adapter=QueuedRuntimeInputAdapter(),
+            output_adapter=CollectingRuntimeOutputAdapter(),
+            standby_wake_listener=mismatched,
+        )
 
 
 def test_wake_runtime_events_are_emitted_without_transcripts_memory_values_or_audio(tmp_path):
@@ -308,24 +323,27 @@ def test_wake_runtime_events_are_emitted_without_transcripts_memory_values_or_au
     runtime.start()
     wake.push("private unrelated sentence about Ares yesterday")
     runtime.poll_once()
-    wake.push("Aries.")
+    wake.push("Aris.")
     runtime.poll_once()
     active.push("Remember that my favorite color is ultraviolet.")
+    runtime.poll_once()
+    active.push("goodbye Aris")
     runtime.poll_once()
     serialized = json.dumps([event.to_dict() for event in runtime.events()]).casefold()
     assert "brain_wake_candidate_detected" in serialized
     assert "brain_wake_detected" in serialized
     assert "brain_wake_rejected" in serialized
     assert "private unrelated sentence" not in serialized
-    assert '"aries"' not in serialized
+    assert '"aris"' not in serialized
     assert "ultraviolet" not in serialized
+    assert "goodbye aris" not in serialized
     assert "raw_transcript" not in serialized
     assert "audio_bytes" not in serialized
     persisted = "\n".join(
         path.read_text(encoding="utf-8", errors="replace")
         for path in tmp_path.rglob("*.json")
     ).casefold()
-    assert "aries" not in persisted
+    assert "aris" not in persisted
 
 
 def test_no_speech_poll_does_not_emit_noisy_standby_listener_event(tmp_path):

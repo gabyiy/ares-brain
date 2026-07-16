@@ -50,7 +50,18 @@ class FakePipeline:
             error_stage=self.input_error_stage,
             error_reason=self.input_error_reason,
             recording_status="completed_after_silence",
-            data={"recording": {"stop_reason": "completed_after_silence"}},
+            raw_transcript=self.input_text,
+            cleaned_transcript=self.input_text,
+            transcription_processing_time_seconds=0.42,
+            recording_duration_seconds=1.1,
+            data={
+                "recording": {
+                    "stop_reason": "completed_after_silence",
+                    "raw_duration_seconds": 2.8,
+                    "assembled_duration_seconds": 1.1,
+                    "normalized_duration_seconds": 1.1,
+                }
+            },
         )
 
     def run_local_output(self, request, text, cancellation_token=None):
@@ -93,6 +104,50 @@ def test_active_voice_input_delegates_capture_and_transcription_to_single_turn_p
     assert request.text_input == ""
     assert request.recording_output_path != str(tmp_path / "base.wav")
     assert result.metadata["capture_stop_reason"] == "completed_after_silence"
+    assert result.metadata["raw_capture_duration_seconds"] == pytest.approx(2.8)
+    assert result.metadata["finalized_candidate_duration_seconds"] == pytest.approx(1.1)
+
+
+def test_active_command_diagnostics_use_current_command_capture_and_runtime_result(tmp_path):
+    pipeline = FakePipeline()
+    pipeline.input_text = "goodbye aris"
+    emitted = []
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: "session-1",
+        diagnostic_callback=emitted.append,
+    )
+
+    captured = adapter.wait_for_input(1.0)
+    adapter.record_runtime_result(
+        runtime_result=SimpleNamespace(
+            command_category="standby",
+            normalized_input="goodbye ares",
+            current_lifecycle_state="STANDBY",
+            session_id="",
+            data={"core_service_bypassed": True},
+        ),
+        lifecycle_state_before="ACTIVE",
+        session_id_before="session-1",
+    )
+
+    assert captured.text == "goodbye aris"
+    assert len(emitted) == 1
+    diagnostics = emitted[0]
+    assert diagnostics.raw_transcript == "goodbye aris"
+    assert diagnostics.alias_canonicalized_transcript == "goodbye ares"
+    assert diagnostics.selected_lifecycle_action == "standby"
+    assert diagnostics.core_service_bypassed is True
+    assert diagnostics.lifecycle_state_before == "ACTIVE"
+    assert diagnostics.lifecycle_state_after == "STANDBY"
+    assert diagnostics.session_id_before == "session-1"
+    assert diagnostics.session_id_after == ""
+    assert diagnostics.capture_stop_reason == "completed_after_silence"
+    assert diagnostics.raw_capture_duration_seconds == pytest.approx(2.8)
+    assert diagnostics.finalized_candidate_duration_seconds == pytest.approx(1.1)
+    assert diagnostics.whisper_processing_duration_seconds == pytest.approx(0.42)
+    assert diagnostics.terminal_silence_status == "confirmed_terminal_silence"
 
 
 @pytest.mark.parametrize(
@@ -135,6 +190,8 @@ def test_active_voice_input_maps_pipeline_failure_without_hiding_it(tmp_path):
     assert result.status == "failed"
     assert result.error_code == "active_voice_pipeline_failed"
     assert "device unavailable" in result.error_message
+    assert adapter.last_diagnostics is not None
+    assert adapter.last_diagnostics.raw_capture_duration_seconds == pytest.approx(2.8)
 
 
 def test_runtime_voice_output_uses_local_output_path_and_only_plays_response(tmp_path):

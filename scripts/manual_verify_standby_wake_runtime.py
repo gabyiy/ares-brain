@@ -395,14 +395,14 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
             return 1
         output_func("Unrelated speech: rejected silently")
 
-        wake.push("Aries.")
+        wake.push("Aris.")
         activated = runtime.poll_once()
         first_session = runtime.session_manager.session_id
         if not activated.success or spoken != ["Yes Gabi."] or not first_session:
             output_func("FAIL: wake activation acknowledgement/session failed")
             return 1
         output_func(
-            f"Constrained alias 'Aries' resolved to 'Ares': ACTIVE; "
+            f"Constrained alias 'Aris' resolved to 'Ares': ACTIVE; "
             f"session={first_session}; ARES: Yes Gabi."
         )
 
@@ -444,12 +444,12 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
         output_func("Self-wake guard: active output did not invoke standby listener")
 
         microphone.push_speech()
-        whisper.push("goodbye Ares")
+        whisper.push("goodbye Aris")
         standby = runtime.poll_once()
         if standby.status != "standby_entered" or runtime.session_manager.state != BRAIN_STANDBY:
-            output_func("FAIL: goodbye did not return to standby")
+            output_func("FAIL: goodbye alias did not return to standby")
             return 1
-        output_func("goodbye Ares: RETURNING_TO_STANDBY -> STANDBY")
+        output_func("goodbye Aris -> goodbye Ares: RETURNING_TO_STANDBY -> STANDBY")
 
         wake.push("hey, Ares")
         runtime.poll_once()
@@ -477,7 +477,7 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
         wake.push("okay Ares")
         runtime.poll_once()
         microphone.push_speech()
-        whisper.push("shutdown Ares")
+        whisper.push("shutdown Aris")
         stopped = runtime.poll_once()
         if not stopped.success or runtime.session_manager.state != BRAIN_STOPPED:
             output_func("FAIL: explicit shutdown did not stop runtime")
@@ -490,7 +490,7 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
         ):
             output_func("FAIL: adapters were not stopped during shutdown")
             return 1
-        output_func("shutdown Ares: SHUTTING_DOWN -> STOPPED; adapters stopped")
+        output_func("shutdown Aris -> shutdown Ares: SHUTTING_DOWN -> STOPPED; adapters stopped")
 
         event_payload = json.dumps(
             [event.to_dict() for event in runtime.events() + runtime.session_manager.events()],
@@ -500,7 +500,7 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
             "calculate 2 plus 2",
             "favorite color is blue",
             "what is my favorite color",
-            "aries",
+            "aris",
             "raw_transcript",
             "audio_bytes",
         )

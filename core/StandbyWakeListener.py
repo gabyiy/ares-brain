@@ -6,7 +6,14 @@ from math import isfinite
 import re
 from threading import RLock
 from typing import Any, Deque, Dict, Mapping, Optional, Protocol, Sequence, runtime_checkable
-import unicodedata
+
+from core.AresIdentity import (
+    DEFAULT_ARES_NAME_ALIASES,
+    clean_spoken_phrase,
+    expand_ares_alias_phrases,
+    normalize_spoken_phrase,
+    validate_ares_name_aliases,
+)
 
 from core.Contracts import (
     StandbyListenResultV1,
@@ -36,7 +43,7 @@ WAKE_CATEGORY_STANDBY = "standby"
 WAKE_CATEGORY_SHUTDOWN = "shutdown"
 WAKE_CATEGORY_NON_WAKE = "non_wake"
 
-DEFAULT_WAKE_PHRASE_ALIASES = ("ares", "aries")
+DEFAULT_WAKE_PHRASE_ALIASES = DEFAULT_ARES_NAME_ALIASES
 DEFAULT_WAKE_PHRASE_PREFIXES = ("", "hey", "okay")
 DEFAULT_WAKE_FILLER_PREFIXES: tuple[str, ...] = ()
 DEFAULT_WAKE_PHRASES = tuple(
@@ -48,9 +55,7 @@ DEFAULT_WAKE_MICROPHONE_DEVICE = "plughw:2,0"
 DEFAULT_WAKE_VOSK_MODEL = "models/vosk/vosk-model-small-en-us-0.15"
 DEFAULT_WAKE_MINIMUM_CONFIDENCE = 0.8
 
-_PHRASE_COMPONENT = re.compile(r"[^a-z0-9]+")
 _CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
-_ALIAS_PATTERN = re.compile(r"^[a-z0-9]{1,24}$")
 _PREFIX_PATTERN = re.compile(r"^[a-z0-9]+(?: [a-z0-9]+){0,2}$")
 
 
@@ -272,13 +277,11 @@ class StandbyWakeListener(Protocol):
 
 
 def clean_wake_transcript(text: str) -> str:
-    cleaned = unicodedata.normalize("NFKC", str(text or ""))
-    cleaned = cleaned.replace("\u2019", "'").replace("`", "'")
-    return " ".join(cleaned.split()).strip()
+    return clean_spoken_phrase(text)
 
 
 def normalize_wake_phrase(text: str) -> str:
-    return _PHRASE_COMPONENT.sub(" ", clean_wake_transcript(text).casefold()).strip()
+    return normalize_spoken_phrase(text)
 
 
 def build_accepted_wake_phrases(
@@ -628,17 +631,7 @@ def expand_control_phrase_aliases(
     """Expand only complete alias tokens inside configured control phrases."""
 
     normalized_phrases = _validated_phrases(phrases, "control_phrases", allow_empty=True)
-    normalized_aliases = _validated_aliases(aliases)
-    canonical_alias = normalized_aliases[0]
-    expanded: list[str] = []
-    for phrase in normalized_phrases:
-        tokens = phrase.split()
-        variants = normalized_aliases if canonical_alias in tokens else (canonical_alias,)
-        for alias in variants:
-            expanded.append(
-                " ".join(alias if token == canonical_alias else token for token in tokens)
-            )
-    return tuple(dict.fromkeys(expanded))
+    return expand_ares_alias_phrases(normalized_phrases, aliases)
 
 
 def _validated_phrases(
@@ -662,17 +655,10 @@ def _validated_phrases(
 
 
 def _validated_aliases(values: Sequence[str]) -> tuple[str, ...]:
-    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
-        raise ValueError("wake_phrase_aliases must be a sequence of aliases")
-    normalized = tuple(normalize_wake_phrase(value) for value in values)
-    normalized = tuple(dict.fromkeys(normalized))
-    if not normalized:
-        raise ValueError("wake_phrase_aliases must contain at least one alias")
-    if len(normalized) > 8:
-        raise ValueError("wake_phrase_aliases may contain at most 8 aliases")
-    if any(not _ALIAS_PATTERN.fullmatch(value) for value in normalized):
-        raise ValueError("wake_phrase_aliases must contain one safe word of at most 24 characters")
-    return normalized
+    try:
+        return validate_ares_name_aliases(values)
+    except ValueError as error:
+        raise ValueError(str(error).replace("ares_name_aliases", "wake_phrase_aliases")) from error
 
 
 def _validated_prefixes(values: Sequence[str], field_name: str) -> tuple[str, ...]:

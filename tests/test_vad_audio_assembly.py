@@ -204,3 +204,45 @@ def test_only_confirmed_terminal_silence_is_trimmed(tmp_path):
     assert result.untrimmed_duration_seconds == pytest.approx(0.22)
     assert result.assembled_duration_seconds == pytest.approx(0.12)
     assert read_pcm(result.wav_path) == b"".join(speech + low_energy_words)
+
+
+def test_short_lifecycle_phrase_uses_command_profile_and_finishes_after_terminal_silence(
+    tmp_path,
+):
+    calibration = [pcm_frame(40)] * 38
+    waiting = [pcm_frame(40)] * 8
+    short_phrase = [pcm_frame(700)] * 18
+    terminal_room_noise = [pcm_frame(70)] * 45
+
+    result = execute(
+        tmp_path,
+        calibration + waiting + short_phrase + terminal_room_noise,
+    )
+
+    assert result.status == VAD_STATUS_COMPLETED_AFTER_SILENCE
+    assert result.stop_reason == VAD_STATUS_COMPLETED_AFTER_SILENCE
+    assert result.maximum_duration_reached is False
+    assert result.raw_duration_seconds == pytest.approx(2.18)
+    assert result.trailing_silence_trimmed_seconds == pytest.approx(0.9)
+    assert result.data["transitions"][-1]["to"] == "COMPLETE"
+
+
+def test_command_profile_preserves_natural_pause_and_does_not_cut_longer_command(
+    tmp_path,
+):
+    calibration = [pcm_frame(40)] * 38
+    first_words = [pcm_frame(700)] * 40
+    internal_pause = [pcm_frame(100)] * 20
+    resumed_words = [pcm_frame(700)] * 45
+    terminal_silence = [pcm_frame(40)] * 45
+
+    result = execute(
+        tmp_path,
+        calibration + first_words + internal_pause + resumed_words + terminal_silence,
+    )
+
+    assert result.status == VAD_STATUS_COMPLETED_AFTER_SILENCE
+    pcm = read_pcm(result.wav_path)
+    assert b"".join(internal_pause) in pcm
+    assert result.maximum_duration_reached is False
+    assert result.assembled_duration_seconds > 2.0
