@@ -4,13 +4,13 @@ Last Updated: 2026-07-16
 
 Current Version
 
-ARES v2.03 - Event-History Lock Resilience
+ARES v2.04 - Bounded Active Whisper Transcription
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, persistent foreground runtime, and injected Raspberry Pi standby wake listener. Verified components include ALSA input/output, constrained Vosk standby recognition, offline Whisper active-command STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production natural-language calculator routing, and central explicit long-term owner memory with confirmation-gated CRUD. Real Raspberry Pi evidence proves Vosk recognized `ares`, activated one session, spoke `Yes Gabi.`, and the active Whisper/calculator/Piper route returned `Result: 4`; `goodbye Ares` also succeeded in one sequence. A later activation reached `ACTIVE` but crashed before acknowledgement because a stale legacy `data/event_history.json.lock` raised `MigrationError` while acknowledgement output entered a fake single-turn event path. This checkpoint makes event telemetry fail safely, removes that fake turn, adds owner-aware lock inspection/recovery and process exclusivity, and preserves strict critical-memory locking. A quiet-room 9/10 wake result and the complete standby/calculator/return/reactivation/shutdown sequence remain owner-run Raspberry Pi requirements.
+ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, persistent foreground runtime, and injected Raspberry Pi standby wake listener. Verified components include ALSA input/output, constrained Vosk standby recognition, bounded offline Whisper active-command STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production natural-language calculator routing, and central explicit long-term owner memory with confirmation-gated CRUD. Real Raspberry Pi evidence proves Vosk recognized `ares`, activated one session, spoke `Yes Gabi.`, and the active Whisper/calculator/Piper route returned `Result: 4`; `goodbye Ares` also succeeded in one sequence. Event-history lock failures no longer crash activation. The latest production run then captured `goodbye Ares` but appeared to stop at `Transcribing command`: the generic 300-second launcher budget had been passed into synchronous active Whisper, and the pipeline's elapsed timeout was checked only after `transcribe()` returned. This checkpoint adds a separate 30-second subprocess boundary, child cleanup, canonical-WAV validation, microphone-gate release before inference, failure cleanup, and owner-terminal timing diagnostics. A quiet-room 9/10 wake result and the complete standby/calculator/return/reactivation/shutdown sequence remain owner-run Raspberry Pi requirements.
 
 Checkpoint root causes and fixes:
 
@@ -31,10 +31,14 @@ Checkpoint root causes and fixes:
 - Recognized standby and shutdown commands bypass ordinary routing. `goodbye aries` transitions `ACTIVE -> RETURNING_TO_STANDBY -> STANDBY`, clears the session once, and cannot produce the unknown fallback. `shut down aries` transitions through `SHUTTING_DOWN -> STOPPED` and closes adapters.
 - `VoiceRuntimeGate` makes microphone ownership testable: standby owns one stream only in `STANDBY`, releases it before acknowledgement and active Whisper capture, and reacquires it only after playback plus settling. A second simultaneous capture owner is rejected.
 - Active-command terminal diagnostics now come from the current `SingleTurnVoicePipeline` result. The hardware verifier previously reused `standby_wake_listener.last_result` during active stages, so the reported `2.260s` candidate, `5.220s` raw capture, and maximum-duration stop belonged to the prior wake candidate. Wake and active transcript summaries are now separate, local-only sections. Production also prints waiting, capture-start, speech-detected, captured, transcribing, processing, and bounded no-speech states so microphone ownership after acknowledgement is visible. Command VAD remains independently configured at a 15-second maximum with 0.9-second terminal silence and focused regressions for short controls, room noise, ordinary pauses, and the hard bound.
+- Active command inference now has a dedicated `--active-transcription-timeout` with a 30-second Raspberry Pi default; it is no longer coupled to the broader 300-second launcher budget. The timeout reaches `LinuxWhisperSpeechToTextAdapter` through the finalized audio contract and is enforced inside `WhisperSubprocessRunner` with bounded pipe draining, terminate/wait/kill/reap cleanup, and structured `transcription_timeout` failure. Ctrl+C reaps the child before cancellation continues.
+- The ALSA adapter and shared `VoiceRuntimeGate` both release active microphone ownership before Whisper starts. The WAV writer is closed, then the pipeline reopens and validates a nonempty 16 kHz mono signed 16-bit PCM file. Current-turn command audio uses `delete_always` in normal foreground operation, so success, timeout, and expected transcription failure do not leave WAVs; explicit diagnostic retention remains opt-in.
+- `--diagnostic-wake` now prints active finalization timestamps, optional local WAV path, bytes and format, transcription backend/start/completion/timeout/duration, parse status, routing timing/result, lifecycle before/after, and cleanup status. Raw active transcripts and paths remain terminal-only and do not enter events, memory, or persistent logs.
 - Production now composes one authoritative `EventHistoryStore` across BrainRuntime, BrainSessionManager, CoreService/resource management, SkillManager, and SingleTurnVoicePipeline. Expected event-history lock/persistence failures print a bounded warning, increment an in-memory dropped-event counter, and do not stop activation, acknowledgement, active commands, calculator or memory execution, standby, or shutdown. Unexpected programming errors still surface.
 - `run_local_output()` now performs only TTS and speaker playback for acknowledgement/response text. It does not emit `voice_single_turn_started`, does not create a fake owner input turn, and does not call CoreService or skills.
 - Store locks now carry versioned PID/hostname/timestamp/owner-kind/token metadata. `scripts/inspect_store_lock.py` reports lock ownership and only recovers an expired local lock whose owner is proven dead; live, malformed, remote, and unprovable legacy locks remain untouched. Critical owner-memory failures remain strict.
-- `scripts/run_ares_standby_voice.py` holds a separate process lock at `data/runtime/ares_standby_voice.runtime.lock`; a second process exits with `ARES is already running`, and normal shutdown or Ctrl+C releases ownership. Hardware verification uses an isolated temporary runtime lock.
+- Event-history appends automatically recover only expired local lock metadata whose PID is proven dead. Live, malformed, remote, and unprovable legacy locks remain untouched and produce a bounded telemetry warning. Owner-memory and other critical durable stores remain strict.
+- `scripts/run_ares_standby_voice.py` holds a separate process lock at `data/runtime/ares_standby_voice.runtime.lock`; a second process exits with `ARES is already running (PID <owner>)`, and normal shutdown, handled runtime errors, or Ctrl+C release ownership. Hardware verification uses an isolated temporary runtime lock.
 - A medium-confidence hardware attempt now prints `Low-confidence wake detected. Say Ares once more.` and consumes that immediate second candidate through the same listener, preserving recognizer confirmation state. Thresholds remain `0.55` immediate, `0.40` confirmation, and below `0.40` reject.
 
 - End-of-speech could reach `maximum_duration_reached` because the previous detector cleared all trailing-silence evidence for any frame above one static silence threshold. Adaptive calibration now derives three bounded thresholds, and `POSSIBLE_SILENCE` resumes only after consecutive frames above the continue threshold.
@@ -164,7 +168,7 @@ Confirmed Phase 3 foundation:
 - Output-only acknowledgement TTS/playback with no fake single-turn input event
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 1967 tests.
+Current pytest collection: 1989 tests.
 
 Hardware-free Raspberry Pi verification after pulling:
 
@@ -2222,7 +2226,7 @@ Text REPL
 
 Immediate Next Milestone
 
-Pull the event-history lock resilience checkpoint. Inspect the event-history and foreground runtime locks, recover only a proven-dead owner, and then require at least 9/10 quiet-room exact wake classifications with normally one stream open and one calibration across the reliability phase. Record the complete sequence: constrained Vosk wake, one output-only acknowledgement and session, visible active microphone acquisition, active Whisper calculator result, `goodbye Ares` returning to standby without ordinary routing, second activation, and clean shutdown. A temporarily unavailable event-history append may warn but must not terminate that sequence. Runtime ownership remains in Capital/Core. Do not add boot startup, daemonization, barge-in, GPT, cloud services, autonomous City activation, or a second lifecycle/timer system.
+Pull the bounded active-Whisper checkpoint. Inspect the event-history and foreground runtime locks, recover only a proven-dead owner, and then require at least 9/10 quiet-room exact wake classifications with normally one stream open and one calibration across the reliability phase. Record the complete sequence: constrained Vosk wake, one output-only acknowledgement and session, visible active microphone acquisition, bounded active Whisper calculator result, `goodbye Ares` returning to standby without ordinary routing, second activation, and clean shutdown. A temporarily unavailable event-history append may warn but must not terminate that sequence, and active transcription must complete or fail visibly within its dedicated timeout. Runtime ownership remains in Capital/Core. Do not add boot startup, daemonization, barge-in, GPT, cloud services, autonomous City activation, or a second lifecycle/timer system.
 
 Next technical choices:
 
@@ -2275,7 +2279,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 1967 tests.
+- Current pytest collection: 1989 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.

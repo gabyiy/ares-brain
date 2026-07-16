@@ -574,7 +574,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1967 tests`.
+Current pytest collection: `1989 tests`.
 
 Manual Brain Session Manager Verification
 
@@ -670,11 +670,15 @@ python scripts/inspect_store_lock.py \
   --recover-if-owner-dead
 ```
 
-Lock metadata records the local PID, hostname, creation time, owner kind, and a unique token. Recovery is allowed only for an expired lock whose local owner can be proved dead; a live owner, remote owner, malformed lock, or same-boot legacy timestamp lock is never stolen. `run_ares_standby_voice.py` holds the separate runtime lock for its whole foreground lifetime, releases it on normal shutdown and Ctrl+C, and reports `ARES is already running` if a second process starts.
+Lock metadata records the local PID, hostname, creation time, owner kind, and a unique token. Recovery is allowed only for an expired lock whose local owner can be proved dead; a live owner, remote owner, malformed lock, or same-boot legacy timestamp lock is never stolen. Event-history appends apply that same bounded dead-owner recovery automatically and otherwise degrade to a warning. `run_ares_standby_voice.py` holds the separate runtime lock for its whole foreground lifetime, releases it on normal shutdown, handled runtime errors, and Ctrl+C, and reports the live owner PID when a second process starts.
 
 `EventHistoryStore` is operational telemetry, not owner state. The production runtime injects one authoritative instance into `BrainRuntime`, `BrainSessionManager`, `CoreService`, its resource manager, `SkillManager`, and `SingleTurnVoicePipeline`. A lock or expected persistence failure while appending produces a visible `WARNING: event history append skipped: ...`, increments the in-memory dropped-event count, and does not stop wake activation, acknowledgement, commands, standby, or shutdown. Unexpected programming errors still surface. Owner-memory and other critical durable stores retain strict lock behavior.
 
 Wake acknowledgement now uses the pipeline's output-only TTS/playback route. It does not create a fake user input turn or emit `voice_single_turn_started`; the active microphone is acquired only after acknowledgement playback and the settling gate complete.
+
+Active command Whisper now has its own validated hard timeout, independent of the launcher's broader 300-second process budget. The Raspberry Pi foreground default is 30 seconds (`--active-transcription-timeout 30`). `WhisperSubprocessRunner` drains stdout/stderr with `communicate(timeout=...)`; on timeout it terminates, waits for a bounded grace period, kills only if needed, reaps the process, and returns `transcription_timeout`. Ctrl+C also kills and reaps an active Whisper child before cancellation continues. The runtime reports the failure and resumes bounded active listening instead of remaining at `Transcribing command` or falsely routing a lifecycle phrase.
+
+Before inference, the command pipeline has stopped ALSA capture, released the microphone ownership gate, closed the WAV writer, and reopened the finalized file for validation. Only a nonempty canonical 16 kHz, mono, signed 16-bit PCM WAV reaches command Whisper. Normal foreground operation uses `delete_always` cleanup for current-turn command audio, including timeout and failed transcription; explicit diagnostic retention remains the only preservation path. `--diagnostic-wake` additionally prints owner-local finalization timestamps, WAV bytes/format, Whisper start/completion/timeout, parse status, routing timing, lifecycle result, and cleanup status. These transcripts and paths do not enter operational events, owner memory, or persistent logs.
 
 Owner-local wake diagnostics are separately opt-in:
 
@@ -2464,7 +2468,7 @@ Phase 100
 - Event-history append locking is now non-fatal telemetry with visible warning/drop accounting; owner-memory and other critical stores remain fail-closed.
 - Production reuses one event-history instance, acknowledgement uses output-only TTS/playback, store locks carry owner metadata with proven-dead recovery, and the foreground launcher rejects a second live runtime.
 - Medium-confidence hardware verification now visibly prompts for and consumes the required immediate second exact wake candidate.
-- Current deterministic collection is 1967 tests. Raspberry Pi 9/10 wake reliability and the complete production lifecycle remain owner-run requirements.
+- Current deterministic collection is 1989 tests. Raspberry Pi 9/10 wake reliability and the complete production lifecycle remain owner-run requirements.
 
 Future phases retain camera understanding, face/object recognition, ROS2, Jetson Orin migration, and autonomous navigation as unimplemented plans.
 
