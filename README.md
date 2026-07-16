@@ -574,7 +574,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `1903 tests`.
+Current pytest collection: `1967 tests`.
 
 Manual Brain Session Manager Verification
 
@@ -629,7 +629,9 @@ Run the focused automated wake checks:
 python -m pytest tests/test_vosk_wake_recognizer.py \
   tests/test_standby_wake_listener.py \
   tests/test_brain_runtime_wake.py \
-  tests/test_run_ares_standby_voice.py
+  tests/test_run_ares_standby_voice.py \
+  tests/test_store_lock_safety.py \
+  tests/test_event_history_store.py
 ```
 
 Then diagnose one local wake recognition. This explicit diagnostic prints the owner-local Vosk result and classification but does not write either to operational events or memory:
@@ -657,6 +659,23 @@ The production foreground command is:
 python scripts/run_ares_standby_voice.py
 ```
 
+Before starting production after an interrupted process, inspect both the operational event-history lock and the foreground runtime lock. The command accepts the protected target path and resolves its `.lock` companion itself:
+
+```bash
+python scripts/inspect_store_lock.py \
+  data/event_history.json \
+  --recover-if-owner-dead
+python scripts/inspect_store_lock.py \
+  data/runtime/ares_standby_voice.runtime \
+  --recover-if-owner-dead
+```
+
+Lock metadata records the local PID, hostname, creation time, owner kind, and a unique token. Recovery is allowed only for an expired lock whose local owner can be proved dead; a live owner, remote owner, malformed lock, or same-boot legacy timestamp lock is never stolen. `run_ares_standby_voice.py` holds the separate runtime lock for its whole foreground lifetime, releases it on normal shutdown and Ctrl+C, and reports `ARES is already running` if a second process starts.
+
+`EventHistoryStore` is operational telemetry, not owner state. The production runtime injects one authoritative instance into `BrainRuntime`, `BrainSessionManager`, `CoreService`, its resource manager, `SkillManager`, and `SingleTurnVoicePipeline`. A lock or expected persistence failure while appending produces a visible `WARNING: event history append skipped: ...`, increments the in-memory dropped-event count, and does not stop wake activation, acknowledgement, commands, standby, or shutdown. Unexpected programming errors still surface. Owner-memory and other critical durable stores retain strict lock behavior.
+
+Wake acknowledgement now uses the pipeline's output-only TTS/playback route. It does not create a fake user input turn or emit `voice_single_turn_started`; the active microphone is acquired only after acknowledgement playback and the settling gate complete.
+
 Owner-local wake diagnostics are separately opt-in:
 
 ```bash
@@ -666,7 +685,7 @@ python scripts/run_ares_standby_voice.py --diagnostic-wake --retain-diagnostic-a
 
 The second form retains at most the configured number of wake candidates (one by default) and prints a manual `aplay` command. Neither form automatically plays captured microphone audio.
 
-It uses `plughw:2,0`, `plughw:CARD=Device,DEV=0`, `vosk-model-small-en-us-0.15` for bounded standby wake recognition, `ggml-base.en.bin` for full active commands, and `en_US-hfc_male-medium` by default. Say `Ares` once for one `Yes Gabi.` acknowledgement. The constrained grammar is generated from exact aliases `ares`, `aris`, and `aries` with the empty, `hey`, `hello`, and `wake up` prefixes, plus exact lifecycle controls and `[unk]`. `Aries` is a name only in the exact final alias slot of one configured complete phrase. Confidence at or above `0.55` accepts an exact wake immediately; `0.40` through less than `0.55` requires two identical exact recognitions within eight seconds; below `0.40`, wrong, or unknown-token results reject. Missing confidence is accepted only for a single exact permitted activation phrase whose VAD and canonical audio checks succeeded; missing-confidence controls and malformed candidates reject. `okay`, `bye`, `alrighty`, `areas`, `air`, partial words, zodiac questions, and sentences that merely mention Ares remain rejected. Issue multiple commands under one session, use an exact `goodbye Ares`/`Aris`/`Aries` form for standby, or an exact `shutdown`/`shut down` form for full shutdown. After acknowledgement, the terminal reports waiting, capture start, speech detection, command capture, transcription, and processing stages. A bounded no-speech result prints `No command heard; still active`; manager-owned inactivity still returns the session to standby at 30 seconds. With `--diagnostic-wake`, wake and active-command transcripts are printed in separate owner-terminal sections and remain absent from events, memory, and persistent logs.
+It uses `plughw:2,0`, `plughw:CARD=Device,DEV=0`, `vosk-model-small-en-us-0.15` for bounded standby wake recognition, `ggml-base.en.bin` for full active commands, and `en_US-hfc_male-medium` by default. Say `Ares` once for one `Yes Gabi.` acknowledgement. The constrained grammar is generated from exact aliases `ares`, `aris`, and `aries` with the empty, `hey`, `hello`, and `wake up` prefixes, plus exact lifecycle controls and `[unk]`. `Aries` is a name only in the exact final alias slot of one configured complete phrase. Confidence at or above `0.55` accepts an exact wake immediately; `0.40` through less than `0.55` requires two identical exact recognitions within eight seconds. The hardware verifier now prints `Low-confidence wake detected. Say Ares once more.` and consumes that immediate second candidate before scoring the prompted attempt. Below `0.40`, wrong, or unknown-token results reject. Missing confidence is accepted only for a single exact permitted activation phrase whose VAD and canonical audio checks succeeded; missing-confidence controls and malformed candidates reject. `okay`, `bye`, `alrighty`, `areas`, `air`, partial words, zodiac questions, and sentences that merely mention Ares remain rejected. Issue multiple commands under one session, use an exact `goodbye Ares`/`Aris`/`Aries` form for standby, or an exact `shutdown`/`shut down` form for full shutdown. After acknowledgement, the terminal reports waiting, capture start, speech detection, command capture, transcription, and processing stages. A bounded no-speech result prints `No command heard; still active`; manager-owned inactivity still returns the session to standby at 30 seconds. With `--diagnostic-wake`, wake and active-command transcripts are printed in separate owner-terminal sections and remain absent from events, memory, and persistent logs.
 
 Standby does not run Whisper. It opens one `arecord` stream for the whole standby epoch, performs a 0.6-second calibration once, reuses those thresholds for up to 300 seconds unless manual recalibration or device recovery is requested, and keeps only a bounded rolling frame history. Wake VAD uses 20 ms frames, two-frame speech-start evidence, three-frame resume hysteresis, 0.4 seconds of pre-roll, 0.65 seconds of terminal silence, 0.12 seconds of retained end padding, and a two-second active-utterance cap. Ordinary rejected candidates do not close or recalibrate ALSA. The reliability phase deliberately classifies all ten prompts without activation, so its normal cumulative result is one stream open and one calibration. A real activation deliberately closes standby capture before acknowledgement/active capture; returning after playback and the 0.35-second settling delay opens and calibrates one new standby epoch. Every open, close, calibration, and handoff carries an owner-visible reason and identifiers in diagnostics. The shared ownership gate prevents simultaneous standby and active capture. Full-command VAD and Whisper defaults remain unchanged. Candidate audio is removed by default; explicit retention keeps only the latest candidate and never implies playback. The process is foreground-only: systemd, boot startup, daemonization, barge-in, GPT, cloud fallback, and autonomous City activation remain unimplemented.
 
@@ -2422,7 +2441,7 @@ Phase 97
 - Added strict standby/shutdown interception before `CoreService`, `IntentParser`, `SkillManager`, planner, and skills. Recognized controls transition lifecycle directly, clear the session once for standby, and never produce the unknown-command fallback.
 - Corrected the hardware verifier to read the current active-command capture diagnostics rather than stale standby-wake timing, and separated wake transcript summaries from active-command transcript summaries. Command VAD defaults remain unchanged; deterministic PCM tests cover terminal-silence completion, room noise, internal pauses, and the absolute maximum.
 - Raspberry Pi verification of the complete wake, calculator, standby, second-wake, and shutdown sequence remains owner-run after pulling this checkpoint.
-- Current pytest collection is 1903 tests.
+- Historical Phase 97 pytest collection was 1903 tests.
 
 Phase 98
 
@@ -2437,7 +2456,15 @@ Phase 99
 - The verifier now classifies all reliability prompts through one listener while remaining in standby, so normal reliability diagnostics are one stream open and one calibration. Actual activation continues to use explicit, reason-labelled ownership handoffs for speaker and active Whisper capture.
 - Exact wake confidence `>= 0.55` now activates; `0.40 <= confidence < 0.55` requires two identical exact recognitions within eight seconds; lower or non-wake results reject. Missing confidence is accepted only for one exact activation phrase backed by a validated VAD/canonical-audio candidate.
 - Active production output now reports command wait, microphone acquisition, speech detection, capture, transcription, processing, and bounded no-speech status without changing the manager-owned 30-second inactivity policy.
-- Current deterministic collection is 1951 tests. Quiet-room 9/10 reliability and the complete production sequence still require owner-run Raspberry Pi verification.
+- Historical Phase 99 collection was 1951 tests. Quiet-room 9/10 reliability and the complete production sequence still require owner-run Raspberry Pi verification.
+
+Phase 100
+
+- Real Raspberry Pi activation crashed before acknowledgement because a legacy event-history lock raised `MigrationError` inside a fake single-turn output path.
+- Event-history append locking is now non-fatal telemetry with visible warning/drop accounting; owner-memory and other critical stores remain fail-closed.
+- Production reuses one event-history instance, acknowledgement uses output-only TTS/playback, store locks carry owner metadata with proven-dead recovery, and the foreground launcher rejects a second live runtime.
+- Medium-confidence hardware verification now visibly prompts for and consumes the required immediate second exact wake candidate.
+- Current deterministic collection is 1967 tests. Raspberry Pi 9/10 wake reliability and the complete production lifecycle remain owner-run requirements.
 
 Future phases retain camera understanding, face/object recognition, ROS2, Jetson Orin migration, and autonomous navigation as unimplemented plans.
 

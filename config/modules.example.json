@@ -16,7 +16,16 @@
     "input_polling_interval_seconds": 0.25,
     "command_timeout_seconds": 30,
     "standby_response": "",
-    "shutdown_response": "ARES is shutting down."
+    "shutdown_response": "ARES is shutting down.",
+    "process_lock_path": "data/runtime/ares_standby_voice.runtime",
+    "process_lock_stale_seconds": 30
+  },
+  "event_history": {
+    "path": "data/event_history.json",
+    "store_instance_policy": "one_per_production_process",
+    "append_failure_policy": "warn_count_and_continue",
+    "store_lock_stale_seconds": 30,
+    "critical_owner_memory_failure_policy": "fail_closed"
   },
   "standby_wake_listener": {
     "enabled": true,
