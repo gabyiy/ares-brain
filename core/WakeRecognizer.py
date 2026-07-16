@@ -33,6 +33,9 @@ class WakeRecognizerLocalDiagnostics:
     """Ephemeral recognizer details for an explicitly enabled owner terminal."""
 
     recognizer_name: str = ""
+    attempt_id: str = ""
+    stream_generation: int = 0
+    candidate_number: int = 0
     raw_recognition_result: str = ""
     recognized_text: str = ""
     normalized_phrase: str = ""
@@ -54,6 +57,22 @@ class WakeRecognizerLocalDiagnostics:
     model_path: str = ""
     grammar_phrase_count: int = 0
     processing_time_seconds: float = 0.0
+
+
+@dataclass(frozen=True)
+class WakeRecognitionAttempt:
+    """A recognition result and its terminal-only diagnostics from one call."""
+
+    result: WakeRecognizerResultV1
+    diagnostics: WakeRecognizerLocalDiagnostics
+
+    def __post_init__(self) -> None:
+        if self.result.attempt_id != self.diagnostics.attempt_id:
+            raise ValueError("wake recognition attempt IDs do not match")
+        if self.result.stream_generation != self.diagnostics.stream_generation:
+            raise ValueError("wake recognition stream generations do not match")
+        if self.result.candidate_number != self.diagnostics.candidate_number:
+            raise ValueError("wake recognition candidate numbers do not match")
 
 
 @runtime_checkable

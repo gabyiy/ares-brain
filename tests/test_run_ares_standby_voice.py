@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import signal
 from types import SimpleNamespace
 
 import pytest
@@ -9,6 +10,7 @@ from core import (
     ActiveCommandLocalDiagnostics,
     SingleTurnVoiceRequestV1,
     StandbyListenResultV1,
+    WakeAttemptResult,
     WakeLocalDiagnostics,
 )
 from events import EventHistoryStore
@@ -321,6 +323,69 @@ def test_runtime_error_releases_production_lock_and_resources(tmp_path):
     assert any("failed and cleaned up" in line for line in output)
 
 
+def test_sigterm_request_releases_production_lock_and_resources(tmp_path):
+    lock_target = tmp_path / "ares_standby_voice.runtime"
+    pipeline = FakePipeline()
+
+    class TerminatedRuntime(FakeRuntime):
+        def run(self):
+            raise run_ares_standby_voice.RuntimeTerminationRequested(signal.SIGTERM)
+
+    runtime = TerminatedRuntime()
+
+    def factory(args, output_func=print):
+        return runtime, pipeline, SingleTurnVoiceRequestV1()
+
+    output = []
+    code = run_ares_standby_voice.run_standby_voice(
+        ["--runtime-lock-path", str(lock_target)],
+        output_func=output.append,
+        runtime_factory=factory,
+    )
+    assert code == 128 + signal.SIGTERM
+    assert runtime.shutdown_count == 1
+    assert not store_lock_path(lock_target).exists()
+    assert any("cleaned up" in line for line in output)
+
+
+@pytest.mark.parametrize(
+    ("interruption", "expected_code"),
+    [
+        (KeyboardInterrupt(), 130),
+        (
+            run_ares_standby_voice.RuntimeTerminationRequested(signal.SIGTERM),
+            128 + signal.SIGTERM,
+        ),
+    ],
+)
+def test_preflight_interruption_releases_runtime_and_process_lock(
+    interruption,
+    expected_code,
+    tmp_path,
+):
+    lock_target = tmp_path / "ares_standby_voice.runtime"
+    pipeline = FakePipeline()
+    runtime = FakeRuntime()
+
+    def interrupted_start(runtime_id=""):
+        raise interruption
+
+    runtime.standby_wake_listener.start = interrupted_start
+
+    def factory(args, output_func=print):
+        return runtime, pipeline, SingleTurnVoiceRequestV1()
+
+    code = run_ares_standby_voice.run_standby_voice(
+        ["--runtime-lock-path", str(lock_target)],
+        output_func=lambda _line: None,
+        runtime_factory=factory,
+    )
+
+    assert code == expected_code
+    assert runtime.shutdown_count == 1
+    assert not store_lock_path(lock_target).exists()
+
+
 def test_production_composition_reuses_one_event_history_store(tmp_path):
     history = EventHistoryStore(path=tmp_path / "events.json")
     captured = {}
@@ -573,6 +638,46 @@ def test_hardware_reliability_mode_fails_on_unexpected_stream_reopen():
     assert any("stream changed" in line for line in output)
 
 
+def test_hardware_reliability_excludes_bounded_infrastructure_failure_from_denominator():
+    class RecoveringListener(ReliabilityListener):
+        def __init__(self):
+            super().__init__([True] * 10)
+            self.infrastructure_emitted = False
+
+        def listen_once(self, request):
+            if not self.infrastructure_emitted:
+                self.infrastructure_emitted = True
+                self.last_result = StandbyListenResultV1(
+                    success=False,
+                    status="failed",
+                    infrastructure_failure=True,
+                    error_code="calibration_failed",
+                    stop_reason="calibration_failed",
+                    stream_open_count=1,
+                    calibration_count=1,
+                    stream_instance_id=self.stream_id,
+                )
+                self.last_diagnostics = WakeLocalDiagnostics(
+                    infrastructure_failure=True,
+                )
+                return self.last_result
+            return super().listen_once(request)
+
+    output = []
+    runtime = ReliabilityRuntime([])
+    runtime.standby_wake_listener = RecoveringListener()
+    assert manual_verify_standby_wake_hardware._run_wake_reliability(
+        runtime,
+        10,
+        output_func=output.append,
+        diagnostic_enabled=True,
+        wake_transcripts=[],
+    )
+    assert any("excluded from recognition denominator" in line for line in output)
+    assert any("10/10 accepted" in line for line in output)
+    assert any("infrastructure_failures=1" in line for line in output)
+
+
 def test_hardware_reliability_mode_prompts_and_consumes_second_confirmation_candidate():
     class ConfirmingListener(ReliabilityListener):
         def __init__(self):
@@ -630,6 +735,72 @@ def test_hardware_reliability_mode_prompts_and_consumes_second_confirmation_cand
     assert any("1/1 accepted" in line for line in output)
 
 
+def test_hardware_reliability_excludes_confirmation_infrastructure_failure():
+    class ConfirmationRecoveryListener(ReliabilityListener):
+        def __init__(self):
+            super().__init__([])
+
+        def listen_once(self, request):
+            self.index += 1
+            if self.index == 1:
+                self.last_result = StandbyListenResultV1(
+                    success=True,
+                    status="non_wake_speech",
+                    speech_detected=True,
+                    confirmation_required=True,
+                    confirmation_count=1,
+                    confirmation_required_count=2,
+                    recognition_confidence=0.464,
+                    classification_reason="medium_confidence_confirmation_required",
+                    duration_seconds=0.8,
+                    stream_open_count=1,
+                    calibration_count=1,
+                    stream_instance_id=self.stream_id,
+                )
+            elif self.index == 2:
+                self.last_result = StandbyListenResultV1(
+                    success=False,
+                    status="failed",
+                    infrastructure_failure=True,
+                    error_code="device_error",
+                    stop_reason="device_error",
+                    stream_open_count=1,
+                    calibration_count=1,
+                    stream_instance_id=self.stream_id,
+                )
+            else:
+                self.last_result = StandbyListenResultV1(
+                    success=True,
+                    status="wake_detected",
+                    speech_detected=True,
+                    wake_detected=True,
+                    recognition_confidence=0.8,
+                    classification_reason="accepted_vosk_constrained_grammar",
+                    duration_seconds=0.8,
+                    stream_open_count=1,
+                    calibration_count=1,
+                    stream_instance_id=self.stream_id,
+                )
+            self.last_diagnostics = WakeLocalDiagnostics(raw_transcript="ares")
+            return self.last_result
+
+    output = []
+    runtime = ReliabilityRuntime([])
+    runtime.standby_wake_listener = ConfirmationRecoveryListener()
+
+    assert manual_verify_standby_wake_hardware._run_wake_reliability(
+        runtime,
+        1,
+        output_func=output.append,
+        diagnostic_enabled=True,
+        wake_transcripts=[],
+    )
+    assert runtime.standby_wake_listener.index == 3
+    assert any("Confirmation infrastructure failure" in line for line in output)
+    assert any("infrastructure_failures=1" in line for line in output)
+    assert any("1/1 accepted" in line for line in output)
+
+
 def test_hardware_helper_active_summary_uses_active_diagnostics_not_stale_wake_result():
     output = []
     diagnostics = ActiveCommandLocalDiagnostics(
@@ -677,6 +848,105 @@ def test_hardware_helper_active_summary_uses_active_diagnostics_not_stale_wake_r
         "Wake transcripts: ares",
         "Active-command transcripts: goodbye aris",
     ]
+
+
+def test_hardware_verifier_uses_exact_completed_attempt_not_mutable_last_fields():
+    no_speech = StandbyListenResultV1(
+        success=True,
+        status="no_speech",
+        attempt_id="attempt-current",
+        candidate_id="candidate-current",
+        stream_generation=2,
+        candidate_number=4,
+        stream_instance_id="stream-two",
+        capture_valid=False,
+        recognizer_invoked=False,
+        speech_detected=False,
+        duration_seconds=0.0,
+        cleanup_status="removed",
+    )
+    diagnostics = WakeLocalDiagnostics(
+        attempt_id="attempt-current",
+        candidate_id="candidate-current",
+        stream_generation=2,
+        capture_valid=False,
+        recognizer_invoked=False,
+    )
+    exact = WakeAttemptResult(
+        attempt_id="attempt-current",
+        candidate_id="candidate-current",
+        stream_instance_id="stream-two",
+        stream_generation=2,
+        candidate_number=4,
+        capture_valid=False,
+        recognizer_invoked=False,
+        infrastructure_failure=False,
+        lifecycle_state_before="STANDBY",
+        lifecycle_state_after="STANDBY",
+        cleanup_status="removed",
+        result=no_speech,
+        diagnostics=diagnostics,
+    )
+
+    class Listener:
+        last_result = StandbyListenResultV1(
+            success=True,
+            status="wake_detected",
+            speech_detected=True,
+            wake_detected=True,
+        )
+        last_diagnostics = WakeLocalDiagnostics(raw_transcript="stale ares")
+
+        def completed_attempt(self, attempt_id):
+            return exact if attempt_id == exact.attempt_id else None
+
+    attempt = manual_verify_standby_wake_hardware._completed_runtime_attempt(
+        Listener(),
+        SimpleNamespace(data={"wake_attempt_id": "attempt-current"}),
+        "STANDBY",
+        "STANDBY",
+    )
+    assert attempt is exact
+    assert attempt.diagnostics.raw_transcript == ""
+    assert manual_verify_standby_wake_hardware._wake_attempt_consistency_error(
+        attempt
+    ) == ""
+
+
+def test_wake_attempt_contract_rejects_recognition_with_zero_duration_audio():
+    result = StandbyListenResultV1(
+        success=True,
+        status="wake_detected",
+        attempt_id="attempt-invalid",
+        candidate_id="candidate-invalid",
+        stream_generation=1,
+        candidate_number=1,
+        stream_instance_id="stream-one",
+        capture_valid=True,
+        recognizer_invoked=True,
+        speech_detected=True,
+        wake_detected=True,
+        sample_rate_hz=16000,
+        channels=1,
+        sample_width_bytes=2,
+        duration_seconds=0.0,
+        cleanup_status="removed",
+    )
+    with pytest.raises(ValueError, match="non-empty audio"):
+        WakeAttemptResult(
+            attempt_id="attempt-invalid",
+            candidate_id="candidate-invalid",
+            stream_instance_id="stream-one",
+            stream_generation=1,
+            candidate_number=1,
+            capture_valid=True,
+            recognizer_invoked=True,
+            infrastructure_failure=False,
+            lifecycle_state_before="STANDBY",
+            lifecycle_state_after="STANDBY",
+            cleanup_status="removed",
+            result=result,
+        )
 
 
 def test_wake_diagnostic_rendering_is_explicit_and_prints_manual_playback_only():
@@ -967,6 +1237,101 @@ def test_hardware_verifier_fails_nonzero_after_bounded_attempts():
     assert runtime.shutdown_count == 1
     assert any("Test A: PASS" in line for line in output)
     assert any("Test B: FAIL after 1 attempts" in line for line in output)
+
+
+def test_hardware_verifier_preflight_interrupt_releases_runtime_and_lock():
+    runtime = FakeRuntime()
+    pipeline = FakePipeline()
+
+    def interrupted_start(runtime_id=""):
+        raise KeyboardInterrupt
+
+    runtime.standby_wake_listener.start = interrupted_start
+
+    def factory(args, output_func=print):
+        return runtime, pipeline, SingleTurnVoiceRequestV1()
+
+    output = []
+    code = manual_verify_standby_wake_hardware.run_hardware_verification(
+        [],
+        output_func=output.append,
+        runtime_factory=factory,
+    )
+
+    assert code == 130
+    assert runtime.shutdown_count == 1
+    assert any("during preflight" in line for line in output)
+
+
+def test_hardware_verifier_uses_isolated_event_history_not_production_store(monkeypatch):
+    class NoSpeechRuntime:
+        def __init__(self):
+            self.runtime_id = "isolated-history-runtime"
+            self.standby_wake_listener = FakeWakeListener()
+            self.standby_wake_listener.last_result = StandbyListenResultV1(
+                success=True,
+                status="no_speech",
+                speech_detected=False,
+            )
+            self.shutdown_count = 0
+
+        def start(self):
+            return SimpleNamespace(success=True, status="standby", error_code="")
+
+        def poll_once(self):
+            return SimpleNamespace(
+                success=True,
+                status="standby_listening",
+                response_text="",
+                data={"speech_detected": False},
+            )
+
+        def snapshot(self):
+            return SimpleNamespace(current_lifecycle_state="STANDBY", session_id="")
+
+        def shutdown(self, reason=""):
+            self.shutdown_count += 1
+
+    runtime = NoSpeechRuntime()
+    pipeline = FakePipeline()
+    captured = {}
+
+    def default_factory(args, output_func=print, event_history_store=None):
+        captured["history"] = event_history_store
+        return runtime, pipeline, SingleTurnVoiceRequestV1()
+
+    monkeypatch.setattr(
+        manual_verify_standby_wake_hardware.standby_voice,
+        "_validate_static_dependencies",
+        lambda _args: "",
+    )
+    monkeypatch.setattr(
+        manual_verify_standby_wake_hardware.standby_voice,
+        "create_runtime",
+        default_factory,
+    )
+    monkeypatch.setattr(
+        manual_verify_standby_wake_hardware,
+        "inspect_ares_runtime_state",
+        lambda **_kwargs: SimpleNamespace(live_runtime_conflict=False),
+    )
+    monkeypatch.setattr(
+        manual_verify_standby_wake_hardware,
+        "render_runtime_state_report",
+        lambda _report, _output: None,
+    )
+
+    code = manual_verify_standby_wake_hardware.run_hardware_verification(
+        ["--attempts-per-test", "1"],
+        output_func=lambda _line: None,
+    )
+    history = captured["history"]
+    assert code == 1
+    assert isinstance(history, EventHistoryStore)
+    assert history.path.name == "event_history.json"
+    assert "ares-wake-verifier-lock-" in str(history.path.parent)
+    assert history.path.resolve() != EventHistoryStore().path.resolve()
+    assert runtime.shutdown_count == 1
 
 
 def test_production_and_hardware_scripts_never_replay_capture_or_daemonize():

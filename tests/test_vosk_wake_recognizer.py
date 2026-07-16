@@ -14,6 +14,8 @@ from core import (
     CONTRACT_WAKE_RECOGNIZER_RESULT,
     DEFAULT_CONTRACT_REGISTRY,
     WakeListenerConfig,
+    WakeRecognitionAttempt,
+    WakeRecognizerLocalDiagnostics,
     WakeRecognizerRequestV1,
     WakeRecognizerResultV1,
     VoskWakeRecognizer,
@@ -348,6 +350,79 @@ def test_vosk_adapter_loads_model_once_uses_constrained_grammar_and_unk(tmp_path
     ]
     assert adapter.last_diagnostics.raw_recognition_result
     assert adapter.stop().success
+
+
+def test_vosk_model_health_probe_is_deterministic_and_requires_no_microphone(tmp_path):
+    model = tmp_path / "vosk-model"
+    model.mkdir()
+    module = FakeVoskModule({"text": "", "result": []})
+    adapter = VoskWakeRecognizer(model_path=model, vosk_module=module)
+    assert adapter.start().success
+    health = adapter.health_check()
+    assert health.success
+    assert health.status == "healthy"
+    assert module.grammars[-1][2] == ["ares", "[unk]"]
+
+
+def test_vosk_recognize_attempt_consumes_candidate_diagnostics_and_uses_fresh_recognizer(tmp_path):
+    model = tmp_path / "vosk-model"
+    model.mkdir()
+    wav = tmp_path / "wake.wav"
+    _write_wav(wav)
+    module = FakeVoskModule(
+        {"text": "ares", "result": _word_results("ares")}
+    )
+    adapter = VoskWakeRecognizer(model_path=model, vosk_module=module)
+    assert adapter.start().success
+    request = replace(
+        _recognizer_request(wav),
+        attempt_id="wake-attempt-one",
+        stream_generation=3,
+        candidate_number=7,
+    )
+    first = adapter.recognize_attempt(request)
+    second = adapter.recognize_attempt(
+        replace(request, attempt_id="wake-attempt-two", candidate_number=8)
+    )
+    assert first.result.wake_detected
+    assert first.diagnostics.attempt_id == "wake-attempt-one"
+    assert first.diagnostics.stream_generation == 3
+    assert first.diagnostics.candidate_number == 7
+    assert second.diagnostics.attempt_id == "wake-attempt-two"
+    assert adapter.last_diagnostics is None
+    assert len(module.grammars) == 2
+
+
+def test_recognition_attempt_rejects_mixed_candidate_metadata():
+    result = WakeRecognizerResultV1(
+        attempt_id="attempt-one",
+        stream_generation=4,
+        candidate_number=9,
+    )
+    diagnostics = WakeRecognizerLocalDiagnostics(
+        attempt_id="attempt-two",
+        stream_generation=4,
+        candidate_number=9,
+    )
+
+    with pytest.raises(ValueError, match="attempt IDs"):
+        WakeRecognitionAttempt(result=result, diagnostics=diagnostics)
+
+
+def test_vosk_failure_resets_candidate_local_diagnostics(tmp_path):
+    model = tmp_path / "vosk-model"
+    model.mkdir()
+    missing = tmp_path / "missing.wav"
+    adapter = VoskWakeRecognizer(
+        model_path=model,
+        vosk_module=FakeVoskModule({"text": "ares", "result": _word_results("ares")}),
+    )
+    assert adapter.start().success
+    adapter.last_diagnostics = SimpleNamespace(recognized_text="stale ares")
+    attempt = adapter.recognize_attempt(_recognizer_request(missing))
+    assert not attempt.result.success
+    assert attempt.diagnostics.recognized_text == ""
+    assert adapter.last_diagnostics is None
 
 
 def test_medium_confidence_requires_repeated_identical_exact_wake(tmp_path):

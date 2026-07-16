@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 import shutil
-from threading import RLock
+from threading import Lock, RLock
 import tempfile
 import time
 from typing import Any, Callable, Dict, Optional
@@ -29,12 +29,13 @@ from core.StandbyWakeListener import (
     WAKE_STATUS_FAILED,
     WAKE_STATUS_NO_SPEECH,
     WAKE_STATUS_NON_WAKE_SPEECH,
+    WakeAttemptResult,
     WakeLocalDiagnostics,
     WakeListenerConfig,
     clean_wake_transcript,
     normalize_wake_phrase,
 )
-from core.WakeRecognizer import WakeRecognizerLocalDiagnostics
+from core.WakeRecognizer import WakeRecognitionAttempt, WakeRecognizerLocalDiagnostics
 from core.WakeAudio import WakeAudioTrimResult, trim_canonical_wake_wav
 from core.VoiceActivityDetection import (
     VAD_STATUS_CANCELLED,
@@ -45,6 +46,27 @@ from core.VoiceActivityDetection import (
 
 
 STANDBY_STREAM_OWNER = "standby_wake_listener"
+STREAM_CLOSED = "CLOSED"
+STREAM_OPENING = "OPENING"
+STREAM_CALIBRATING = "CALIBRATING"
+STREAM_HEALTHY = "HEALTHY"
+STREAM_FAILED = "FAILED"
+
+
+@dataclass
+class _WakeAttemptContext:
+    attempt_id: str
+    candidate_id: str
+    candidate_number: int
+    lifecycle_state_before: str
+    stream_generation: int = 0
+    stream_instance_id: str = ""
+    capture_valid: bool = False
+    recognizer_invoked: bool = False
+    infrastructure_failure: bool = False
+    recognizer_input_path: str = ""
+    recognition_diagnostics: Optional[WakeRecognizerLocalDiagnostics] = None
+    cleanup_status: str = "not_required"
 
 
 class LinuxStandbyWakeListener:
@@ -89,6 +111,7 @@ class LinuxStandbyWakeListener:
         self.sleeper = sleeper
         self.diagnostic_callback = diagnostic_callback
         self._lock = RLock()
+        self._attempt_lock = Lock()
         self._state = WAKE_LISTENER_STOPPED
         self._runtime_id = ""
         self._cancelled = False
@@ -100,12 +123,13 @@ class LinuxStandbyWakeListener:
         self._last_cleanup_status = "not_required"
         self._active_turn_directory: Optional[Path] = None
         self._retained_directories: list[str] = []
-        self._pending_diagnostics: Optional[WakeLocalDiagnostics] = None
         self._stream_handle: Any = None
         self._stream_open_count = 0
         self._stream_close_count = 0
         self._calibration_count = 0
         self._candidate_count = 0
+        self._stream_generation = 0
+        self._stream_state = STREAM_CLOSED
         self._calibration_at: Optional[float] = None
         self._calibration_thresholds: Any = None
         self._calibration_statistics: Any = None
@@ -125,6 +149,7 @@ class LinuxStandbyWakeListener:
         self._last_candidate_stale_frames = 0
         self.last_result: Optional[StandbyListenResultV1] = None
         self.last_diagnostics: Optional[WakeLocalDiagnostics] = None
+        self.last_attempt: Optional[WakeAttemptResult] = None
 
     def start(self, *, runtime_id: str = "") -> WakeListenerResultV1:
         with self._lock:
@@ -158,7 +183,7 @@ class LinuxStandbyWakeListener:
         if not _result_success(microphone):
             _safe_call(self.wake_recognizer, "stop")
             return self._start_failure("microphone_start_failed", _result_error(microphone))
-        health = self.health(runtime_id=self._runtime_id)
+        health = self._dependency_health(runtime_id=self._runtime_id)
         if not health.success:
             _safe_call(self.microphone_adapter, "stop")
             _safe_call(self.wake_recognizer, "stop")
@@ -175,24 +200,120 @@ class LinuxStandbyWakeListener:
             with self._lock:
                 self._state = WAKE_LISTENER_ERROR
             return entered
-        return self._result(True, "started", data=self._stream_metrics())
+        health = self.health(runtime_id=self._runtime_id)
+        if not health.success:
+            self._close_standby_stream("post_start_health_failed", final_state=STREAM_FAILED)
+            _safe_call(self.microphone_adapter, "stop")
+            _safe_call(self.wake_recognizer, "stop")
+            return health
+        return self._result(True, "started", data=health.data)
 
     def health(self, *, runtime_id: str = "") -> WakeListenerResultV1:
-        with self._lock:
-            if runtime_id:
-                self._runtime_id = str(runtime_id)
-        microphone = _safe_call(self.microphone_adapter, "health_check")
-        if not _result_success(microphone):
-            return self._health_failure("microphone_unhealthy", _result_error(microphone))
-        recognizer = _safe_call(self.wake_recognizer, "health_check")
-        if not _result_success(recognizer):
-            return self._health_failure("wake_recognizer_unhealthy", _result_error(recognizer))
+        dependencies = self._dependency_health(runtime_id=runtime_id)
+        if not dependencies.success:
+            return dependencies
+        stream = self._stream_metrics()
+        stream_healthy = bool(
+            stream["stream_state"] == STREAM_HEALTHY
+            and stream["stream_active"]
+            and stream["calibration_healthy"]
+        )
+        if not stream_healthy:
+            return self._health_failure(
+                "standby_stream_unhealthy",
+                "standby microphone stream is not open and calibrated",
+                data={
+                    **dependencies.data,
+                    **stream,
+                    "failing_subsystem": "standby_stream",
+                },
+            )
         return self._result(
             True,
             "healthy",
             data={
-                "microphone_status": _result_status(microphone),
-                "recognizer_status": _result_status(recognizer),
+                **dependencies.data,
+                **stream,
+                "wake_model_healthy": True,
+                "microphone_adapter_healthy": True,
+                "alsa_device_open": True,
+                "calibration_healthy": True,
+                "failing_subsystem": "",
+            },
+        )
+
+    def component_health(self, *, runtime_id: str = "") -> WakeListenerResultV1:
+        """Report model, adapter, stream, and calibration health independently."""
+
+        dependencies = self._dependency_health(runtime_id=runtime_id)
+        stream = self._stream_metrics()
+        return self._result(
+            dependencies.success and stream["stream_state"] == STREAM_HEALTHY,
+            "healthy" if dependencies.success and stream["stream_state"] == STREAM_HEALTHY else "unhealthy",
+            dependencies.error_code,
+            dependencies.error_message,
+            data={
+                **dependencies.data,
+                **stream,
+                "wake_model_healthy": bool(
+                    dependencies.data.get("wake_model_healthy", False)
+                ),
+                "microphone_adapter_healthy": bool(
+                    dependencies.data.get("microphone_adapter_healthy", False)
+                ),
+                "alsa_device_open": bool(stream["stream_active"]),
+                "calibration_healthy": bool(stream["calibration_healthy"]),
+                "failing_subsystem": (
+                    dependencies.data.get("failing_subsystem", "")
+                    or ("standby_stream" if stream["stream_state"] != STREAM_HEALTHY else "")
+                ),
+            },
+        )
+
+    def _dependency_health(self, *, runtime_id: str = "") -> WakeListenerResultV1:
+        with self._lock:
+            if runtime_id:
+                self._runtime_id = str(runtime_id)
+        microphone = _safe_call(self.microphone_adapter, "health_check")
+        recognizer = _safe_call(self.wake_recognizer, "health_check")
+        microphone_healthy = _result_success(microphone)
+        recognizer_healthy = _result_success(recognizer)
+        health_data = {
+            "microphone_status": _result_status(microphone),
+            "recognizer_status": _result_status(recognizer),
+            "wake_model_healthy": recognizer_healthy,
+            "microphone_adapter_healthy": microphone_healthy,
+            "recognizer_error_code": str(
+                getattr(recognizer, "error_code", "") or ""
+            ),
+            "microphone_error_code": str(
+                getattr(microphone, "error_code", "") or ""
+            ),
+        }
+        if not recognizer_healthy:
+            return self._health_failure(
+                "wake_recognizer_unhealthy",
+                _result_error(recognizer),
+                data={
+                    **health_data,
+                    "failing_subsystem": "wake_recognizer_model",
+                },
+            )
+        if not microphone_healthy:
+            return self._health_failure(
+                "microphone_unhealthy",
+                _result_error(microphone),
+                data={
+                    **health_data,
+                    "failing_subsystem": "microphone_adapter",
+                },
+            )
+        return self._result(
+            True,
+            "dependencies_healthy",
+            data={
+                **health_data,
+                "failing_subsystem": "",
                 "recognizer_name": str(
                     getattr(self.wake_recognizer, "recognizer_name", "")
                     or "wake_recognizer"
@@ -246,6 +367,8 @@ class LinuxStandbyWakeListener:
             )
         with self._lock:
             self._capture_gate_owned = True
+            self._stream_state = STREAM_OPENING
+        self._reset_recognizer_attempt_state("standby_stream_opening")
         try:
             open_reason = str(reason or "standby_entered")[:80]
             handle = self.microphone_adapter.open_persistent_stream(
@@ -255,6 +378,8 @@ class LinuxStandbyWakeListener:
             with self._lock:
                 self._stream_handle = handle
                 self._stream_open_count += 1
+                self._stream_generation += 1
+                self._stream_state = STREAM_CALIBRATING
                 self._last_stream_instance_id = str(
                     getattr(handle, "stream_id", "") or ""
                 )[:96]
@@ -275,7 +400,11 @@ class LinuxStandbyWakeListener:
                 reason=f"{open_reason}:initial_calibration",
             )
             if not bool(getattr(calibration, "success", False)):
-                self._close_standby_stream("calibration_failed")
+                self._reset_recognizer_attempt_state("calibration_failed")
+                self._close_standby_stream(
+                    "calibration_failed",
+                    final_state=STREAM_FAILED,
+                )
                 return self._result(
                     False,
                     "calibration_failed",
@@ -285,19 +414,42 @@ class LinuxStandbyWakeListener:
                         or getattr(calibration, "status", "")
                         or "wake calibration failed"
                     ),
+                    data={
+                        **self._stream_metrics(),
+                        "wake_model_healthy": True,
+                        "microphone_adapter_healthy": True,
+                        "alsa_device_open": False,
+                        "calibration_healthy": False,
+                        "failing_subsystem": "standby_calibration",
+                    },
                 )
+            with self._lock:
+                self._stream_state = STREAM_HEALTHY
+                self._state = WAKE_LISTENER_READY
             return self._result(
                 True,
                 "standby_stream_ready",
                 data=self._stream_metrics(),
             )
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
-            self._close_standby_stream("stream_open_failed")
+            self._reset_recognizer_attempt_state("stream_open_failed")
+            self._close_standby_stream(
+                "stream_open_failed",
+                final_state=STREAM_FAILED,
+            )
             return self._result(
                 False,
                 "stream_open_failed",
                 "wake_stream_open_failed",
                 f"{error.__class__.__name__}:{str(error)[:120]}",
+                data={
+                    **self._stream_metrics(),
+                    "wake_model_healthy": True,
+                    "microphone_adapter_healthy": True,
+                    "alsa_device_open": False,
+                    "calibration_healthy": False,
+                    "failing_subsystem": "alsa_stream_open",
+                },
             )
 
     def leave_standby(
@@ -325,28 +477,139 @@ class LinuxStandbyWakeListener:
         return self._result(True, "recalibration_requested")
 
     def listen_once(self, request: WakeListenerRequestV1) -> StandbyListenResultV1:
+        return self.listen_attempt(request).result
+
+    def listen_attempt(self, request: WakeListenerRequestV1) -> WakeAttemptResult:
+        with self._attempt_lock:
+            return self._listen_attempt_serialized(request)
+
+    def _listen_attempt_serialized(
+        self,
+        request: WakeListenerRequestV1,
+    ) -> WakeAttemptResult:
+        if not isinstance(request, WakeListenerRequestV1):
+            raise TypeError("request must be WakeListenerRequestV1")
         with self._lock:
             self._last_cleanup_status = "not_required"
-            self._pending_diagnostics = None
             self._last_candidate_stale_frames = 0
+            self._listen_count += 1
+            self._candidate_count += 1
+            candidate_number = self._candidate_count
+            generation = self._stream_generation
+            stream_instance_id = (
+                str(getattr(self._stream_handle, "stream_id", "") or "")
+                if self._stream_handle is not None
+                else self._last_stream_instance_id
+            )
+        attempt_id = new_correlation_id("wake-attempt")
+        context = _WakeAttemptContext(
+            attempt_id=attempt_id,
+            candidate_id=f"wake-candidate-{candidate_number}-{attempt_id[-12:]}",
+            candidate_number=candidate_number,
+            lifecycle_state_before=request.lifecycle_state,
+            stream_generation=generation,
+            stream_instance_id=stream_instance_id,
+        )
         try:
-            result = self._listen_once_unfinalized(request)
+            result = self._listen_once_unfinalized(request, context)
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
+            context.infrastructure_failure = True
+            self._reset_recognizer_attempt_state("wake_listener_exception")
             result = self._listen_failure(
                 request,
                 "wake_listener_exception",
                 f"{error.__class__.__name__}:{str(error)[:120]}",
+                context=context,
             )
+        cleanup_status = context.cleanup_status
+        result = replace(
+            result,
+            cleanup_status=cleanup_status,
+            attempt_id=context.attempt_id,
+            candidate_id=context.candidate_id,
+            stream_generation=context.stream_generation,
+            candidate_number=context.candidate_number,
+            stream_instance_id=context.stream_instance_id,
+            capture_valid=context.capture_valid,
+            recognizer_invoked=context.recognizer_invoked,
+            infrastructure_failure=context.infrastructure_failure,
+        )
+        diagnostics = None
+        if bool(request.diagnostic_wake or self.config.diagnostic_wake):
+            diagnostics = self._build_local_diagnostics(
+                request=request,
+                result=result,
+                recognition=context.recognition_diagnostics,
+                recognizer_input_path=context.recognizer_input_path,
+            )
+        attempt = WakeAttemptResult(
+            attempt_id=context.attempt_id,
+            candidate_id=context.candidate_id,
+            stream_instance_id=result.stream_instance_id,
+            stream_generation=context.stream_generation,
+            candidate_number=context.candidate_number,
+            capture_valid=context.capture_valid,
+            recognizer_invoked=context.recognizer_invoked,
+            infrastructure_failure=context.infrastructure_failure,
+            lifecycle_state_before=request.lifecycle_state,
+            lifecycle_state_after=request.lifecycle_state,
+            cleanup_status=cleanup_status,
+            result=result,
+            diagnostics=diagnostics,
+        )
         with self._lock:
-            cleanup_status = self._last_cleanup_status
-        result = replace(result, cleanup_status=cleanup_status)
-        self._finalize_local_diagnostics(result)
-        self.last_result = result
-        return result
+            self.last_attempt = attempt
+            self.last_result = result
+            self.last_diagnostics = diagnostics
+        if diagnostics is not None and callable(self.diagnostic_callback):
+            try:
+                self.diagnostic_callback(diagnostics)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                pass
+        return attempt
 
-    def _listen_once_unfinalized(self, request: WakeListenerRequestV1) -> StandbyListenResultV1:
-        if not isinstance(request, WakeListenerRequestV1):
-            raise TypeError("request must be WakeListenerRequestV1")
+    def completed_attempt(self, attempt_id: str) -> Optional[WakeAttemptResult]:
+        """Return only the exact immutable attempt requested; never a fallback."""
+
+        normalized = str(attempt_id or "").strip()
+        with self._lock:
+            attempt = self.last_attempt
+        if not normalized or attempt is None or attempt.attempt_id != normalized:
+            return None
+        return attempt
+
+    def complete_attempt_lifecycle(
+        self,
+        attempt_id: str,
+        lifecycle_state_after: str,
+    ) -> Optional[WakeAttemptResult]:
+        """Attach the external lifecycle outcome to one exact completed attempt."""
+
+        normalized = str(attempt_id or "").strip()
+        lifecycle_after = str(lifecycle_state_after or "").strip()
+        if not normalized or not lifecycle_after:
+            return None
+        with self._lock:
+            current = self.last_attempt
+            if current is None or current.attempt_id != normalized:
+                return None
+            diagnostics = current.diagnostics
+            if diagnostics is not None:
+                diagnostics = replace(diagnostics, lifecycle_state=lifecycle_after)
+            completed = replace(
+                current,
+                lifecycle_state_after=lifecycle_after,
+                diagnostics=diagnostics,
+            )
+            self.last_attempt = completed
+            self.last_diagnostics = diagnostics
+            return completed
+
+    def _listen_once_unfinalized(
+        self,
+        request: WakeListenerRequestV1,
+        context: _WakeAttemptContext,
+    ) -> StandbyListenResultV1:
         if request.retain_diagnostic_audio and not (
             request.diagnostic_wake or self.config.diagnostic_wake
         ):
@@ -354,15 +617,20 @@ class LinuxStandbyWakeListener:
                 request,
                 "wake_diagnostic_retention_not_authorized",
                 "wake diagnostic retention requires diagnostic wake mode",
+                context=context,
             )
         with self._lock:
-            self._listen_count += 1
             if self._state == WAKE_LISTENER_STOPPED:
-                return self._listen_failure(request, "listener_not_started", "wake listener is stopped")
+                context.infrastructure_failure = True
+                return self._listen_failure(
+                    request,
+                    "listener_not_started",
+                    "wake listener is stopped",
+                    context=context,
+                )
             if self._cancelled:
-                return self._cancelled_result(request)
+                return self._cancelled_result(request, context=context)
             self._state = WAKE_LISTENER_LISTENING
-            self._candidate_count += 1
         started_at = self.clock()
         turn_directory = self._create_turn_directory()
         output_path = turn_directory / "wake_candidate.wav"
@@ -370,15 +638,34 @@ class LinuxStandbyWakeListener:
             self._active_turn_directory = turn_directory
         try:
             stream_error = self._ensure_standby_stream(request.runtime_id)
+            with self._lock:
+                context.stream_generation = self._stream_generation
+                context.stream_instance_id = str(
+                    getattr(self._stream_handle, "stream_id", "")
+                    or self._last_stream_instance_id
+                )
             if stream_error:
+                context.infrastructure_failure = True
+                self._reset_recognizer_attempt_state("wake_stream_unavailable")
                 return self._listen_failure(
                     request,
                     "wake_stream_unavailable",
                     stream_error,
+                    context=context,
                 )
             with self._lock:
                 handle = self._stream_handle
                 thresholds = self._calibration_thresholds
+                stream_state = self._stream_state
+            if handle is None or thresholds is None or stream_state != STREAM_HEALTHY:
+                context.infrastructure_failure = True
+                self._reset_recognizer_attempt_state("stream_not_calibrated")
+                return self._listen_failure(
+                    request,
+                    "wake_stream_not_calibrated",
+                    "standby stream is not healthy and calibrated",
+                    context=context,
+                )
             capture = self.microphone_adapter.record_persistent_until_silence(
                 handle,
                 output_path,
@@ -425,11 +712,13 @@ class LinuxStandbyWakeListener:
                 session_id=request.session_id,
             )
             if self._is_cancelled() or str(getattr(capture, "status", "")) == VAD_STATUS_CANCELLED:
-                return self._cancelled_result(request)
+                self._reset_recognizer_attempt_state("capture_cancelled")
+                return self._cancelled_result(request, context=context)
             capture_status = str(getattr(capture, "status", "") or "")
             if capture_status == VAD_STATUS_NO_SPEECH_TIMEOUT and not bool(
                 getattr(capture, "speech_detected", False)
             ):
+                self._reset_recognizer_attempt_state("no_speech")
                 return self._standby_result(
                     request,
                     success=True,
@@ -437,15 +726,24 @@ class LinuxStandbyWakeListener:
                     stop_reason=capture_status,
                     capture=capture,
                     started_at=started_at,
+                    context=context,
                 )
             if not _result_success(capture) or not bool(getattr(capture, "speech_detected", False)):
+                context.infrastructure_failure = capture_status != VAD_STATUS_NO_SPEECH_TIMEOUT
+                self._reset_recognizer_attempt_state(capture_status or "capture_failed")
                 if capture_status in {VAD_STATUS_DEVICE_ERROR, VAD_STATUS_TIMEOUT}:
                     self._close_standby_stream(
                         capture_status,
                         handoff_source=STANDBY_STREAM_OWNER,
                         handoff_destination="device_recovery",
+                        final_state=STREAM_FAILED,
                     )
-                return self._capture_failure(request, capture, started_at)
+                return self._capture_failure(
+                    request,
+                    capture,
+                    started_at,
+                    context=context,
+                )
             with self._lock:
                 self._speech_count += 1
             self._reset_candidate_stream(handle)
@@ -455,13 +753,22 @@ class LinuxStandbyWakeListener:
                 or getattr(capture, "wav_path", "")
             )
             if not wav_path or not Path(wav_path).is_file():
-                return self._listen_failure(request, "wake_audio_missing", "validated wake WAV is missing")
+                context.infrastructure_failure = True
+                self._reset_recognizer_attempt_state("wake_audio_missing")
+                return self._listen_failure(
+                    request,
+                    "wake_audio_missing",
+                    "validated wake WAV is missing",
+                    context=context,
+                )
             duration_error = self._validate_capture_durations(
                 capture,
                 Path(wav_path),
                 listener_timeout_seconds=request.listener_timeout_seconds,
             )
             if duration_error:
+                context.infrastructure_failure = True
+                self._reset_recognizer_attempt_state("wake_audio_duration_invalid")
                 return self._standby_result(
                     request,
                     success=False,
@@ -471,6 +778,7 @@ class LinuxStandbyWakeListener:
                     error_message=duration_error,
                     capture=capture,
                     started_at=started_at,
+                    context=context,
                 )
             recognizer_input_path = turn_directory / "wake_recognizer_input.wav"
             try:
@@ -483,6 +791,8 @@ class LinuxStandbyWakeListener:
                     trailing_padding_seconds=self.config.trim_trailing_padding_seconds,
                 )
             except (OSError, ValueError, wave.Error) as error:
+                context.infrastructure_failure = True
+                self._reset_recognizer_attempt_state("wake_audio_trim_failed")
                 return self._standby_result(
                     request,
                     success=False,
@@ -492,51 +802,132 @@ class LinuxStandbyWakeListener:
                     error_message=f"{error.__class__.__name__}:{str(error)[:120]}",
                     capture=capture,
                     started_at=started_at,
+                    context=context,
                 )
-            recognition = self.wake_recognizer.recognize_wav(
-                WakeRecognizerRequestV1(
-                    runtime_id=request.runtime_id,
-                    lifecycle_state=request.lifecycle_state,
-                    audio_path=str(recognizer_input_path),
-                    sample_rate_hz=16000,
-                    channels=1,
-                    sample_width_bytes=2,
-                    wake_phrases=list(request.wake_phrases or self.config.wake_phrases),
-                    wake_phrase_aliases=list(
-                        request.wake_phrase_aliases or self.config.wake_phrase_aliases
-                    ),
-                    standby_phrases=list(request.standby_phrases),
-                    shutdown_phrases=list(request.shutdown_phrases),
-                    canonical_wake_phrase=self.config.wake_phrase_aliases[0],
-                    minimum_confidence=self.config.minimum_recognition_confidence,
-                    medium_confidence=self.config.medium_recognition_confidence,
-                    allow_exact_wake_without_confidence=(
-                        self.config.allow_exact_wake_without_confidence
-                    ),
-                    validated_speech_candidate=True,
-                    medium_confirmation_repetitions=(
-                        self.config.medium_confidence_confirmation_count
-                    ),
-                    medium_confirmation_window_seconds=(
-                        self.config.medium_confidence_window_seconds
-                    ),
-                    timeout_seconds=max(0.1, float(request.listener_timeout_seconds)),
-                    audio_duration_seconds=trim.trimmed_duration_seconds,
-                    maximum_duplicate_collapse_audio_seconds=(
-                        self.config.maximum_duplicate_collapse_audio_seconds
-                    ),
-                    correlation_id=request.correlation_id,
-                    metadata={"safe": True, "contains_transcript": False},
-                )
+            context.capture_valid = True
+            context.recognizer_input_path = str(recognizer_input_path)
+            recognizer_request = WakeRecognizerRequestV1(
+                runtime_id=request.runtime_id,
+                lifecycle_state=request.lifecycle_state,
+                attempt_id=context.attempt_id,
+                stream_generation=context.stream_generation,
+                candidate_number=context.candidate_number,
+                audio_path=str(recognizer_input_path),
+                sample_rate_hz=16000,
+                channels=1,
+                sample_width_bytes=2,
+                wake_phrases=list(request.wake_phrases or self.config.wake_phrases),
+                wake_phrase_aliases=list(
+                    request.wake_phrase_aliases or self.config.wake_phrase_aliases
+                ),
+                standby_phrases=list(request.standby_phrases),
+                shutdown_phrases=list(request.shutdown_phrases),
+                canonical_wake_phrase=self.config.wake_phrase_aliases[0],
+                minimum_confidence=self.config.minimum_recognition_confidence,
+                medium_confidence=self.config.medium_recognition_confidence,
+                allow_exact_wake_without_confidence=(
+                    self.config.allow_exact_wake_without_confidence
+                ),
+                validated_speech_candidate=True,
+                medium_confirmation_repetitions=(
+                    self.config.medium_confidence_confirmation_count
+                ),
+                medium_confirmation_window_seconds=(
+                    self.config.medium_confidence_window_seconds
+                ),
+                timeout_seconds=max(0.1, float(request.listener_timeout_seconds)),
+                audio_duration_seconds=trim.trimmed_duration_seconds,
+                maximum_duplicate_collapse_audio_seconds=(
+                    self.config.maximum_duplicate_collapse_audio_seconds
+                ),
+                correlation_id=request.correlation_id,
+                metadata={"safe": True, "contains_transcript": False},
             )
+            context.recognizer_invoked = True
+            recognize_attempt = getattr(self.wake_recognizer, "recognize_attempt", None)
+            if callable(recognize_attempt):
+                recognized_attempt = recognize_attempt(recognizer_request)
+                if not isinstance(recognized_attempt, WakeRecognitionAttempt):
+                    raise TypeError("wake recognizer returned malformed attempt")
+                recognition = recognized_attempt.result
+                context.recognition_diagnostics = recognized_attempt.diagnostics
+            else:
+                self._reset_recognizer_attempt_state(
+                    "recognition_started",
+                    preserve_medium_confirmation=True,
+                )
+                recognition = self.wake_recognizer.recognize_wav(recognizer_request)
+                local_diagnostics = getattr(
+                    self.wake_recognizer,
+                    "last_diagnostics",
+                    None,
+                )
+                if isinstance(local_diagnostics, WakeRecognizerLocalDiagnostics):
+                    local_attempt_id = str(local_diagnostics.attempt_id or "")
+                    local_generation = int(local_diagnostics.stream_generation or 0)
+                    local_candidate = int(local_diagnostics.candidate_number or 0)
+                    if (
+                        local_attempt_id not in {"", context.attempt_id}
+                        or local_generation not in {0, context.stream_generation}
+                        or local_candidate not in {0, context.candidate_number}
+                    ):
+                        local_diagnostics = None
+                    else:
+                        local_diagnostics = replace(
+                            local_diagnostics,
+                            attempt_id=context.attempt_id,
+                            stream_generation=context.stream_generation,
+                            candidate_number=context.candidate_number,
+                        )
+                context.recognition_diagnostics = local_diagnostics
+                try:
+                    setattr(self.wake_recognizer, "last_diagnostics", None)
+                except (AttributeError, TypeError):
+                    pass
             self._reset_candidate_stream(handle)
+            with self._lock:
+                current_generation = self._stream_generation
+            recognition_generation = int(
+                getattr(recognition, "stream_generation", 0) or 0
+            )
+            recognition_attempt_id = str(
+                getattr(recognition, "attempt_id", "") or ""
+            )
+            if (
+                current_generation != context.stream_generation
+                or recognition_generation not in {0, context.stream_generation}
+                or recognition_attempt_id not in {"", context.attempt_id}
+            ):
+                context.infrastructure_failure = True
+                context.recognition_diagnostics = None
+                self._reset_recognizer_attempt_state("stale_stream_generation_result")
+                return self._standby_result(
+                    request,
+                    success=False,
+                    status=WAKE_STATUS_FAILED,
+                    stop_reason="stale_stream_generation_result",
+                    error_code="stale_stream_generation_result",
+                    error_message="recognition result did not match the capture attempt generation",
+                    capture=capture,
+                    started_at=started_at,
+                    context=context,
+                    trim=trim,
+                )
+            recognition = replace(
+                recognition,
+                attempt_id=context.attempt_id,
+                stream_generation=context.stream_generation,
+                candidate_number=context.candidate_number,
+            )
             if not _result_success(recognition):
+                context.infrastructure_failure = True
                 return self._recognition_failure(
                     request,
                     recognition,
                     capture,
                     started_at,
                     trim=trim,
+                    context=context,
                 )
             if bool(getattr(recognition, "wake_detected", False)):
                 with self._lock:
@@ -570,17 +961,22 @@ class LinuxStandbyWakeListener:
                     "recognizer_name": str(getattr(recognition, "recognizer_name", "")),
                     "contains_transcript": False,
                 },
+                context=context,
             )
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
             self._close_standby_stream(
                 "capture_exception",
                 handoff_source=STANDBY_STREAM_OWNER,
                 handoff_destination="device_recovery",
+                final_state=STREAM_FAILED,
             )
+            context.infrastructure_failure = True
+            self._reset_recognizer_attempt_state("capture_exception")
             return self._listen_failure(
                 request,
                 "wake_listener_exception",
                 f"{error.__class__.__name__}:{str(error)[:120]}",
+                context=context,
             )
         finally:
             retain = bool(request.retain_diagnostic_audio or self.config.retain_diagnostic_audio)
@@ -597,7 +993,12 @@ class LinuxStandbyWakeListener:
                 self._last_cleanup_status = cleanup_status
                 self._active_turn_directory = None
                 if self._state != WAKE_LISTENER_STOPPED:
-                    self._state = WAKE_LISTENER_READY
+                    self._state = (
+                        WAKE_LISTENER_READY
+                        if self._stream_state == STREAM_HEALTHY
+                        else WAKE_LISTENER_ERROR
+                    )
+            context.cleanup_status = cleanup_status
 
     def cancel(self, reason: str = "cancelled") -> WakeListenerResultV1:
         with self._lock:
@@ -652,6 +1053,12 @@ class LinuxStandbyWakeListener:
                 stream_close_count=self._stream_close_count,
                 calibration_count=self._calibration_count,
                 candidate_count=self._candidate_count,
+                stream_generation=self._stream_generation,
+                stream_state=self._stream_state,
+                calibration_healthy=bool(
+                    self._stream_state == STREAM_HEALTHY
+                    and self._calibration_thresholds is not None
+                ),
                 stream_active=bool(
                     self._stream_handle is not None
                     and not bool(getattr(self._stream_handle, "closed", False))
@@ -745,7 +1152,10 @@ class LinuxStandbyWakeListener:
         calibration = self._calibrate_stream(handle, reason=calibration_reason)
         if bool(getattr(calibration, "success", False)):
             return ""
-        self._close_standby_stream("recalibration_failed")
+        self._close_standby_stream(
+            "recalibration_failed",
+            final_state=STREAM_FAILED,
+        )
         return str(
             getattr(calibration, "error_message", "")
             or getattr(calibration, "status", "")
@@ -777,6 +1187,8 @@ class LinuxStandbyWakeListener:
             self._last_candidate_stale_frames += max(0, stale_frames)
 
     def _calibrate_stream(self, handle: Any, *, reason: str) -> Any:
+        with self._lock:
+            self._stream_state = STREAM_CALIBRATING
         request = VoiceActivityCaptureRequestV1(
             output_wav_path="wake-calibration-not-written.wav",
             microphone_device=self.config.microphone_device,
@@ -839,6 +1251,10 @@ class LinuxStandbyWakeListener:
                     None,
                 )
                 self._recalibration_requested = False
+                self._stream_state = STREAM_HEALTHY
+        else:
+            with self._lock:
+                self._stream_state = STREAM_FAILED
         return result
 
     def _close_standby_stream(
@@ -847,6 +1263,7 @@ class LinuxStandbyWakeListener:
         *,
         handoff_source: str = "",
         handoff_destination: str = "",
+        final_state: str = STREAM_CLOSED,
     ) -> bool:
         close_reason = str(reason or "leaving_standby")[:80]
         with self._lock:
@@ -859,6 +1276,7 @@ class LinuxStandbyWakeListener:
             self._capture_gate_owned = False
             self._last_stop_reason = close_reason
             self._last_close_reason = close_reason
+            self._stream_state = final_state
             if handle is not None:
                 _append_bounded(self._stream_close_reasons, close_reason)
             if handoff_source or handoff_destination:
@@ -870,6 +1288,13 @@ class LinuxStandbyWakeListener:
         success = True
         if handle is not None and not bool(getattr(handle, "closed", False)):
             try:
+                clear_history = getattr(
+                    getattr(handle, "frame_source", None),
+                    "clear_history",
+                    None,
+                )
+                if callable(clear_history):
+                    clear_history()
                 result = self.microphone_adapter.close_persistent_stream(
                     handle,
                     owner=STANDBY_STREAM_OWNER,
@@ -882,6 +1307,7 @@ class LinuxStandbyWakeListener:
                     self._stream_close_count += 1
         if gate_owned:
             self._end_capture_gate()
+        self._reset_recognizer_attempt_state(close_reason)
         return success
 
     def _stream_metrics(self) -> Dict[str, Any]:
@@ -900,6 +1326,12 @@ class LinuxStandbyWakeListener:
                 "stream_close_count": self._stream_close_count,
                 "calibration_count": self._calibration_count,
                 "candidate_count": self._candidate_count,
+                "stream_generation": self._stream_generation,
+                "stream_state": self._stream_state,
+                "calibration_healthy": bool(
+                    self._stream_state == STREAM_HEALTHY
+                    and thresholds is not None
+                ),
                 "stream_instance_id": (
                     str(getattr(handle, "stream_id", "") or "")
                     if handle is not None
@@ -971,12 +1403,25 @@ class LinuxStandbyWakeListener:
             self._failure_count += 1
         return self._result(False, "start_failed", code, message)
 
-    def _health_failure(self, code: str, message: str) -> WakeListenerResultV1:
+    def _health_failure(
+        self,
+        code: str,
+        message: str,
+        *,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> WakeListenerResultV1:
         with self._lock:
             self._failure_count += 1
-        return self._result(False, "unhealthy", code, message)
+        return self._result(False, "unhealthy", code, message, data=data)
 
-    def _capture_failure(self, request: WakeListenerRequestV1, capture: Any, started_at: float) -> StandbyListenResultV1:
+    def _capture_failure(
+        self,
+        request: WakeListenerRequestV1,
+        capture: Any,
+        started_at: float,
+        *,
+        context: _WakeAttemptContext,
+    ) -> StandbyListenResultV1:
         with self._lock:
             self._failure_count += 1
         self._bounded_retry_pause()
@@ -989,6 +1434,7 @@ class LinuxStandbyWakeListener:
             error_message=_result_error(capture),
             capture=capture,
             started_at=started_at,
+            context=context,
         )
 
     def _recognition_failure(
@@ -999,6 +1445,7 @@ class LinuxStandbyWakeListener:
         started_at: float,
         *,
         trim: Optional[WakeAudioTrimResult] = None,
+        context: _WakeAttemptContext,
     ) -> StandbyListenResultV1:
         with self._lock:
             self._failure_count += 1
@@ -1014,25 +1461,41 @@ class LinuxStandbyWakeListener:
             started_at=started_at,
             recognition=recognition,
             trim=trim,
+            context=context,
             data={"recognition_status": _result_status(recognition)},
         )
 
-    def _cancelled_result(self, request: WakeListenerRequestV1) -> StandbyListenResultV1:
+    def _cancelled_result(
+        self,
+        request: WakeListenerRequestV1,
+        *,
+        context: _WakeAttemptContext,
+    ) -> StandbyListenResultV1:
         result = StandbyListenResultV1(
             success=False,
             status=WAKE_STATUS_CANCELLED,
             runtime_id=request.runtime_id,
             lifecycle_state=request.lifecycle_state,
             listener_state=WAKE_LISTENER_CANCELLING,
+            attempt_id=context.attempt_id,
+            candidate_id=context.candidate_id,
+            stream_generation=context.stream_generation,
+            candidate_number=context.candidate_number,
             stop_reason="cancelled",
             error_code="wake_listener_cancelled",
             correlation_id=request.correlation_id,
             metadata={"safe": True, "contains_transcript": False},
         )
-        self.last_result = result
         return result
 
-    def _listen_failure(self, request: WakeListenerRequestV1, code: str, message: str) -> StandbyListenResultV1:
+    def _listen_failure(
+        self,
+        request: WakeListenerRequestV1,
+        code: str,
+        message: str,
+        *,
+        context: _WakeAttemptContext,
+    ) -> StandbyListenResultV1:
         with self._lock:
             self._failure_count += 1
         self._bounded_retry_pause()
@@ -1042,13 +1505,19 @@ class LinuxStandbyWakeListener:
             runtime_id=request.runtime_id,
             lifecycle_state=request.lifecycle_state,
             listener_state=self._state,
+            attempt_id=context.attempt_id,
+            candidate_id=context.candidate_id,
+            stream_generation=context.stream_generation,
+            candidate_number=context.candidate_number,
+            capture_valid=context.capture_valid,
+            recognizer_invoked=context.recognizer_invoked,
+            infrastructure_failure=True,
             stop_reason=code,
             error_code=code,
             error_message=str(message or code)[:160],
             correlation_id=request.correlation_id,
             metadata={"safe": True, "contains_transcript": False},
         )
-        self.last_result = result
         return result
 
     def _bounded_retry_pause(self) -> None:
@@ -1090,6 +1559,7 @@ class LinuxStandbyWakeListener:
         recognition: Any = None,
         trim: Optional[WakeAudioTrimResult] = None,
         data: Optional[Dict[str, Any]] = None,
+        context: _WakeAttemptContext,
     ) -> StandbyListenResultV1:
         audio = _capture_audio_metadata(capture)
         if trim is not None:
@@ -1120,6 +1590,12 @@ class LinuxStandbyWakeListener:
             runtime_id=request.runtime_id,
             lifecycle_state=request.lifecycle_state,
             listener_state=WAKE_LISTENER_READY,
+            attempt_id=context.attempt_id,
+            candidate_id=context.candidate_id,
+            stream_generation=context.stream_generation,
+            capture_valid=context.capture_valid,
+            recognizer_invoked=context.recognizer_invoked,
+            infrastructure_failure=context.infrastructure_failure,
             speech_detected=(
                 bool(getattr(capture, "speech_detected", False))
                 if speech_detected is None
@@ -1195,7 +1671,7 @@ class LinuxStandbyWakeListener:
             stream_open_count=int(stream["stream_open_count"]),
             stream_close_count=int(stream["stream_close_count"]),
             calibration_count=int(stream["calibration_count"]),
-            candidate_number=int(stream["candidate_count"]),
+            candidate_number=context.candidate_number,
             stream_instance_id=str(stream["stream_instance_id"]),
             alsa_handle_id=str(stream["alsa_handle_id"]),
             stream_open_reason=str(stream["stream_open_reason"]),
@@ -1271,18 +1747,6 @@ class LinuxStandbyWakeListener:
         if success:
             with self._lock:
                 self._failure_count = 0
-        if bool(request.diagnostic_wake or self.config.diagnostic_wake) and bool(
-            getattr(capture, "speech_detected", False)
-        ):
-            self._remember_local_diagnostics(
-                request=request,
-                result=result,
-                audio=audio,
-                capture=capture,
-                recognition=recognition_metadata,
-                recognizer_input_path=(trim.output_path if trim is not None else ""),
-            )
-        self.last_result = result
         return result
 
     def _validate_capture_durations(
@@ -1345,28 +1809,47 @@ class LinuxStandbyWakeListener:
             return f"wake_raw_duration_exceeded:actual={raw_duration:.3f}:limit={raw_limit:.3f}"
         return ""
 
-    def _remember_local_diagnostics(
+    def _build_local_diagnostics(
         self,
         *,
         request: WakeListenerRequestV1,
         result: StandbyListenResultV1,
-        audio: Dict[str, Any],
-        capture: Any,
-        recognition: Dict[str, Any],
+        recognition: Optional[WakeRecognizerLocalDiagnostics],
         recognizer_input_path: str,
-    ) -> None:
+    ) -> WakeLocalDiagnostics:
+        """Build terminal diagnostics only from one completed attempt."""
+
+        audio = dict(result.audio_metadata or {})
         stream = self._stream_metrics()
-        recognizer_input = str(
-            recognizer_input_path
-            or getattr(capture, "normalized_wav_path", "")
-            or getattr(capture, "final_whisper_input_path", "")
-            or getattr(capture, "wav_path", "")
-            or ""
+        same_attempt = bool(
+            recognition is not None
+            and recognition.attempt_id == result.attempt_id
+            and recognition.stream_generation == result.stream_generation
+            and recognition.candidate_number == result.candidate_number
         )
-        local = getattr(self.wake_recognizer, "last_diagnostics", None)
-        raw_text = str(getattr(local, "recognized_text", "") or "")
-        self._pending_diagnostics = WakeLocalDiagnostics(
+        if not same_attempt:
+            recognition = None
+        raw_text = str(recognition.recognized_text if recognition is not None else "")
+        retained_path = str(recognizer_input_path or "")
+        if (
+            result.cleanup_status != "retained_by_explicit_request"
+            or not retained_path
+            or not Path(retained_path).is_file()
+        ):
+            retained_path = ""
+        classification = (
+            "accepted"
+            if result.command_category != WAKE_CATEGORY_NON_WAKE
+            else "rejected"
+        )
+        return WakeLocalDiagnostics(
             raw_transcript=raw_text,
+            attempt_id=result.attempt_id,
+            candidate_id=result.candidate_id,
+            stream_generation=result.stream_generation,
+            capture_valid=result.capture_valid,
+            recognizer_invoked=result.recognizer_invoked,
+            infrastructure_failure=result.infrastructure_failure,
             cleaned_transcript=clean_wake_transcript(raw_text),
             normalized_transcript=normalize_wake_phrase(raw_text),
             selected_alias=result.selected_alias,
@@ -1381,16 +1864,12 @@ class LinuxStandbyWakeListener:
             maximum_prefix_repetition_count=(
                 result.maximum_prefix_repetition_count
             ),
-            classification=(
-                "accepted"
-                if result.command_category != WAKE_CATEGORY_NON_WAKE
-                else "rejected"
-            ),
+            classification=classification,
             rejection_reason=(
                 result.rejection_reason
                 or (
                     ""
-                    if result.command_category != WAKE_CATEGORY_NON_WAKE
+                    if classification == "accepted"
                     else result.stop_reason or "wake_not_detected"
                 )
             ),
@@ -1402,29 +1881,42 @@ class LinuxStandbyWakeListener:
                 audio.get("whisper_input_duration_seconds", 0.0)
             ),
             capture_stop_reason=result.capture_stop_reason,
-            wake_model_path=str(recognition.get("model_path", "") or self.config.vosk_model_path),
+            wake_model_path=str(
+                recognition.model_path if recognition is not None else self.config.vosk_model_path
+            ),
             lifecycle_state=request.lifecycle_state,
-            retained_audio_path=recognizer_input,
-            recognizer_name=str(recognition.get("recognizer_name", "")),
+            retained_audio_path=retained_path,
+            cleanup_status=result.cleanup_status,
+            recognizer_name=str(
+                recognition.recognizer_name if recognition is not None else ""
+            ),
             raw_recognition_result=str(
-                getattr(local, "raw_recognition_result", "") or ""
+                recognition.raw_recognition_result if recognition is not None else ""
             ),
-            recognition_status=str(recognition.get("status", "")),
-            recognition_confidence=recognition.get("confidence"),
+            recognition_status=result.recognition_status,
+            recognition_confidence=(
+                recognition.confidence if recognition is not None else None
+            ),
             recognition_confidence_available=bool(
-                recognition.get("confidence_available", False)
+                recognition.confidence_available if recognition is not None else False
             ),
-            minimum_word_confidence=recognition.get("minimum_word_confidence"),
-            mean_word_confidence=recognition.get("mean_word_confidence"),
-            canonical_confidence=recognition.get("canonical_confidence"),
+            minimum_word_confidence=(
+                recognition.minimum_word_confidence if recognition is not None else None
+            ),
+            mean_word_confidence=(
+                recognition.mean_word_confidence if recognition is not None else None
+            ),
+            canonical_confidence=(
+                recognition.canonical_confidence if recognition is not None else None
+            ),
             duplicate_collapse_used=bool(
-                recognition.get("duplicate_collapse_used", False)
+                recognition.duplicate_collapse_used if recognition is not None else False
             ),
             recognition_processing_time_seconds=float(
-                recognition.get("processing_time_seconds", 0.0)
+                recognition.processing_time_seconds if recognition is not None else 0.0
             ),
             recognizer_model_path=str(
-                recognition.get("model_path", "") or self.config.vosk_model_path
+                recognition.model_path if recognition is not None else self.config.vosk_model_path
             ),
             stream_open_count=int(stream["stream_open_count"]),
             stream_close_count=int(stream["stream_close_count"]),
@@ -1495,26 +1987,23 @@ class LinuxStandbyWakeListener:
             confirmation_required_count=result.confirmation_required_count,
         )
 
-    def _finalize_local_diagnostics(self, result: StandbyListenResultV1) -> None:
-        with self._lock:
-            diagnostics = self._pending_diagnostics
-            self._pending_diagnostics = None
-        if diagnostics is None:
+    def _reset_recognizer_attempt_state(
+        self,
+        reason: str,
+        *,
+        preserve_medium_confirmation: bool = False,
+    ) -> None:
+        reset = getattr(self.wake_recognizer, "reset_attempt_state", None)
+        if callable(reset):
+            reset(
+                str(reason or "attempt_reset")[:96],
+                preserve_medium_confirmation=preserve_medium_confirmation,
+            )
             return
-        retained_path = diagnostics.retained_audio_path
-        if result.cleanup_status != "retained_by_explicit_request" or not Path(retained_path).is_file():
-            retained_path = ""
-        diagnostics = replace(
-            diagnostics,
-            retained_audio_path=retained_path,
-            cleanup_status=result.cleanup_status,
-        )
-        self.last_diagnostics = diagnostics
-        if callable(self.diagnostic_callback):
-            try:
-                self.diagnostic_callback(diagnostics)
-            except (OSError, RuntimeError, TypeError, ValueError):
-                return
+        try:
+            setattr(self.wake_recognizer, "last_diagnostics", None)
+        except (AttributeError, TypeError):
+            pass
 
     def _result(
         self,

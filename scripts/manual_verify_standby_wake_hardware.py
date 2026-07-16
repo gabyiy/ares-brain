@@ -19,7 +19,13 @@ from core import (  # noqa: E402
     BRAIN_STOPPED,
     inspect_linux_alsa_capture,
 )
+from core.StandbyWakeListener import WakeAttemptResult  # noqa: E402
+from events import EventHistoryStore  # noqa: E402
 from memory.schema_migrations import StoreWriteLock  # noqa: E402
+from scripts.inspect_ares_runtime_state import (  # noqa: E402
+    inspect_ares_runtime_state,
+    render_runtime_state_report,
+)
 from scripts import run_ares_standby_voice as standby_voice  # noqa: E402
 from scripts import run_ares_voice as single_voice_launcher  # noqa: E402
 
@@ -29,6 +35,22 @@ class HardwareTestStage:
     label: str
     instruction: str
     expected: str
+
+
+@dataclass(frozen=True)
+class _VerifierWakeAttempt:
+    attempt_id: str
+    candidate_id: str
+    stream_generation: int
+    capture_valid: bool
+    recognizer_invoked: bool
+    infrastructure_failure: bool
+    lifecycle_state_before: str
+    lifecycle_state_after: str
+    cleanup_status: str
+    result: Any
+    diagnostics: Any
+    strict_consistency: bool = False
 
 
 STAGES = (
@@ -76,16 +98,36 @@ def run_hardware_verification(
     output_func: Callable[[str], None] = print,
     runtime_factory: Optional[Callable[..., tuple[Any, Any, Any]]] = None,
 ) -> int:
-    with TemporaryDirectory(prefix="ares-wake-verifier-lock-") as directory:
-        with StoreWriteLock(
-            Path(directory) / "hardware_verifier.runtime",
-            owner_kind="ares_wake_hardware_verifier",
-        ):
-            return _run_hardware_verification_locked(
-                argv,
-                output_func=output_func,
-                runtime_factory=runtime_factory,
-            )
+    runtime_holder: dict[str, Any] = {}
+    try:
+        with TemporaryDirectory(prefix="ares-wake-verifier-lock-") as directory:
+            support_directory = Path(directory)
+            with StoreWriteLock(
+                support_directory / "hardware_verifier.runtime",
+                owner_kind="ares_wake_hardware_verifier",
+            ):
+                with standby_voice._termination_signal_scope():
+                    return _run_hardware_verification_locked(
+                        argv,
+                        output_func=output_func,
+                        runtime_factory=runtime_factory,
+                        support_directory=support_directory,
+                        runtime_holder=runtime_holder,
+                    )
+    except standby_voice.RuntimeTerminationRequested as error:
+        runtime = runtime_holder.get("runtime")
+        if runtime is not None:
+            runtime.shutdown(reason=f"signal_{error.signum}_during_preflight")
+        output_func(
+            f"Verification terminated by signal {error.signum}; verifier lock released."
+        )
+        return 128 + error.signum
+    except KeyboardInterrupt:
+        runtime = runtime_holder.get("runtime")
+        if runtime is not None:
+            runtime.shutdown(reason="keyboard_interrupt_during_preflight")
+        output_func("Verification cancelled during preflight; resources and locks cleaned up.")
+        return 130
 
 
 def _run_hardware_verification_locked(
@@ -93,6 +135,8 @@ def _run_hardware_verification_locked(
     *,
     output_func: Callable[[str], None] = print,
     runtime_factory: Optional[Callable[..., tuple[Any, Any, Any]]] = None,
+    support_directory: Optional[Path] = None,
+    runtime_holder: Optional[dict[str, Any]] = None,
 ) -> int:
     args = build_parser().parse_args(argv)
     if isinstance(args.attempts_per_test, bool) or not 1 <= args.attempts_per_test <= 5:
@@ -127,9 +171,38 @@ def _run_hardware_verification_locked(
     if issue:
         output_func(f"Dependency error: {issue}")
         return 2
+    if runtime_factory is None:
+        try:
+            process_report = inspect_ares_runtime_state(
+                recover_if_owner_dead=True,
+            )
+        except (OSError, ValueError) as error:
+            output_func(f"Process and lock preflight failed: {error}")
+            return 3
+        render_runtime_state_report(process_report, output_func)
+        if process_report.live_runtime_conflict:
+            output_func(
+                "Preflight stopped: another live ARES production runtime owns "
+                "or may own the microphone."
+            )
+            return 3
     try:
         factory = runtime_factory or standby_voice.create_runtime
-        runtime, pipeline, request = factory(args, output_func=output_func)
+        if runtime_factory is None:
+            support = support_directory or Path(".")
+            verifier_history = EventHistoryStore(
+                support / "event_history.json",
+                warning_callback=output_func,
+            )
+            runtime, pipeline, request = factory(
+                args,
+                output_func=output_func,
+                event_history_store=verifier_history,
+            )
+        else:
+            runtime, pipeline, request = factory(args, output_func=output_func)
+        if runtime_holder is not None:
+            runtime_holder["runtime"] = runtime
     except (OSError, RuntimeError, TypeError, ValueError) as error:
         output_func(f"Setup failed: {error}")
         return 2
@@ -138,12 +211,29 @@ def _run_hardware_verification_locked(
         output_func("Command voice pipeline health check failed before capture.")
         return 3
     wake_started = runtime.standby_wake_listener.start(runtime_id=runtime.runtime_id)
+    if not wake_started.success:
+        component_health = (
+            wake_started
+            if dict(getattr(wake_started, "data", {}) or {}).get("failing_subsystem")
+            else _component_health(runtime.standby_wake_listener, runtime.runtime_id)
+        )
+        runtime.standby_wake_listener.stop("preflight_failed")
+        output_func(
+            "Wake listener startup failed: "
+            f"{wake_started.error_code or wake_started.status} "
+            f"({wake_started.error_message or wake_started.status})."
+        )
+        _print_component_health(output_func, component_health)
+        return 3
     wake_health = runtime.standby_wake_listener.health(runtime_id=runtime.runtime_id)
-    if not wake_started.success or not wake_health.success:
+    component_health = _component_health(runtime.standby_wake_listener, runtime.runtime_id)
+    _print_component_health(output_func, component_health)
+    if not wake_health.success:
         runtime.standby_wake_listener.stop("preflight_failed")
         output_func(
             "Wake listener health check failed: "
-            f"{wake_health.error_code or wake_started.error_code or 'unhealthy'}."
+            f"{wake_health.error_code or wake_health.status} "
+            f"({wake_health.error_message or wake_health.status})."
         )
         return 3
     _print_capture_hardware_diagnostics(output_func, runtime)
@@ -154,11 +244,21 @@ def _run_hardware_verification_locked(
     started = runtime.start()
     if not started.success:
         output_func(f"Runtime start failed: {started.error_code or started.status}")
+        runtime.shutdown(reason="hardware_verifier_start_failed")
         return 3
 
     first_session = ""
     wake_transcripts: list[str] = []
     active_command_transcripts: list[str] = []
+    cleanup_done = False
+
+    def shutdown_once(reason: str) -> None:
+        nonlocal cleanup_done
+        if cleanup_done:
+            return
+        runtime.shutdown(reason=reason)
+        cleanup_done = True
+
     try:
         stages = (
             STAGES[:2]
@@ -174,16 +274,31 @@ def _run_hardware_verification_locked(
                 result = runtime.poll_once()
                 snapshot = runtime.snapshot()
                 standby_attempt = before.current_lifecycle_state == BRAIN_STANDBY
-                wake_result = (
-                    getattr(runtime.standby_wake_listener, "last_result", None)
+                wake_attempt = (
+                    _completed_runtime_attempt(
+                        runtime.standby_wake_listener,
+                        result,
+                        before.current_lifecycle_state,
+                        snapshot.current_lifecycle_state,
+                    )
                     if standby_attempt
                     else None
                 )
+                wake_result = wake_attempt.result if wake_attempt is not None else None
                 diagnostics = (
-                    getattr(runtime.standby_wake_listener, "last_diagnostics", None)
-                    if standby_attempt
+                    wake_attempt.diagnostics
+                    if wake_attempt is not None
                     else getattr(runtime.input_adapter, "last_diagnostics", None)
                 )
+                if standby_attempt and wake_attempt is not None:
+                    consistency_error = _wake_attempt_consistency_error(wake_attempt)
+                    if consistency_error:
+                        output_func(
+                            "  TEST FRAMEWORK FAILURE: inconsistent wake attempt: "
+                            f"{consistency_error}"
+                        )
+                        shutdown_once("inconsistent_wake_attempt")
+                        return 1
                 if args.diagnostic_wake and diagnostics is not None:
                     transcript = str(getattr(diagnostics, "raw_transcript", "") or "")
                     target = wake_transcripts if standby_attempt else active_command_transcripts
@@ -196,12 +311,22 @@ def _run_hardware_verification_locked(
                 )
                 output_func(
                     f"  Attempt {attempt}/{args.attempts_per_test}: "
-                    f"candidate={'detected' if candidate_detected else 'no_speech'}; "
+                        f"candidate={'detected' if candidate_detected else 'no_speech'}; "
                     f"classification={_classification(wake_result)}; "
                     f"path={getattr(wake_result, 'classification_path', '') or 'none'}; "
                     f"state={before.current_lifecycle_state}->{snapshot.current_lifecycle_state}; "
-                    f"session={snapshot.session_id or 'none'}; status={result.status}"
+                        f"session={snapshot.session_id or 'none'}; status={result.status}"
                 )
+                if wake_attempt is not None:
+                    output_func(
+                        "  Attempt identity: "
+                        f"attempt={wake_attempt.attempt_id}; "
+                        f"generation={wake_attempt.stream_generation}; "
+                        f"candidate={wake_attempt.candidate_id}; "
+                        f"capture_valid={'yes' if wake_attempt.capture_valid else 'no'}; "
+                        f"recognizer_invoked={'yes' if wake_attempt.recognizer_invoked else 'no'}; "
+                        f"cleanup={wake_attempt.cleanup_status}"
+                    )
                 _print_recognition_summary(
                     output_func,
                     diagnostics=diagnostics,
@@ -253,7 +378,7 @@ def _run_hardware_verification_locked(
                         wake_transcripts,
                         active_command_transcripts,
                     )
-                runtime.shutdown(reason=f"hardware_verification_{stage.label}_failed")
+                shutdown_once(f"hardware_verification_{stage.label}_failed")
                 output_func("Cleanup completed; verification did not pass.")
                 return 1
             if stage.label == "B" and reliability_attempts:
@@ -267,11 +392,11 @@ def _run_hardware_verification_locked(
                     sleeper=time.sleep,
                 )
                 if not reliable:
-                    runtime.shutdown(reason="wake_reliability_target_not_met")
+                    shutdown_once("wake_reliability_target_not_met")
                     output_func("Cleanup completed; wake reliability target was not met.")
                     return 1
         if args.verification_mode == "reliability":
-            runtime.shutdown(reason="wake_reliability_verification_complete")
+            shutdown_once("wake_reliability_verification_complete")
             output_func("Wake reliability verification completed; adapters cleaned up.")
             return 0
         if args.diagnostic_wake:
@@ -283,9 +408,30 @@ def _run_hardware_verification_locked(
         output_func("All bounded hardware stages passed; adapters cleaned up.")
         return 0
     except KeyboardInterrupt:
-        runtime.shutdown(reason="keyboard_interrupt")
+        shutdown_once("keyboard_interrupt")
         output_func("Verification cancelled; cleanup completed without replaying captured audio.")
         return 130
+    except standby_voice.RuntimeTerminationRequested as error:
+        shutdown_once(f"signal_{error.signum}")
+        output_func(
+            f"Verification received signal {error.signum}; resources and locks cleaned up."
+        )
+        return 128 + error.signum
+    except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
+        shutdown_once("hardware_verifier_error")
+        output_func(
+            "Verification failed and cleaned up: "
+            f"{error.__class__.__name__}:{str(error)[:160]}"
+        )
+        return 1
+    finally:
+        if not cleanup_done:
+            try:
+                state = runtime.snapshot().current_lifecycle_state
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                state = ""
+            if state != BRAIN_STOPPED:
+                shutdown_once("hardware_verifier_finally")
 
 
 def _run_wake_reliability(
@@ -301,6 +447,8 @@ def _run_wake_reliability(
     required = math.ceil(attempts * 0.9)
     accepted = 0
     rejected = 0
+    infrastructure_failures = 0
+    maximum_infrastructure_failures = 3
     records: list[str] = []
     failure_categories = {
         "no_speech": 0,
@@ -338,15 +486,51 @@ def _run_wake_reliability(
         "so the same standby stream remains owned for all prompts."
     )
     output_func("The silence and unrelated-speech checks above must also remain false-activation free.")
-    for attempt in range(1, attempts + 1):
+    valid_attempt = 0
+    while valid_attempt < attempts:
+        attempt = valid_attempt + 1
         output_func(
             f"Reliability attempt {attempt}/{attempts}: Say 'Ares' once, then remain silent."
         )
         before = runtime.snapshot()
         request = runtime.build_standby_wake_request()
-        wake_result = listener.listen_once(request)
+        wake_attempt = _listen_verifier_attempt(
+            listener,
+            request,
+            lifecycle_state_before=before.current_lifecycle_state,
+        )
+        wake_result = wake_attempt.result
         after = runtime.snapshot()
-        diagnostics = getattr(listener, "last_diagnostics", None)
+        diagnostics = wake_attempt.diagnostics
+        consistency_error = _wake_attempt_consistency_error(wake_attempt)
+        if consistency_error:
+            output_func(
+                "  TEST FRAMEWORK FAILURE: inconsistent wake attempt: "
+                f"{consistency_error}"
+            )
+            return False
+        output_func(
+            "  Attempt identity: "
+            f"attempt={wake_attempt.attempt_id}; "
+            f"generation={wake_attempt.stream_generation}; "
+            f"candidate={wake_attempt.candidate_id}; "
+            f"capture_valid={'yes' if wake_attempt.capture_valid else 'no'}; "
+            f"recognizer_invoked={'yes' if wake_attempt.recognizer_invoked else 'no'}; "
+            f"cleanup={wake_attempt.cleanup_status}"
+        )
+        if wake_attempt.infrastructure_failure:
+            infrastructure_failures += 1
+            output_func(
+                "  Infrastructure failure (excluded from recognition denominator): "
+                f"{getattr(wake_result, 'error_code', '') or getattr(wake_result, 'stop_reason', '') or getattr(wake_result, 'status', '')}"
+            )
+            if infrastructure_failures >= maximum_infrastructure_failures:
+                output_func(
+                    "  Infrastructure retry budget exhausted before ten valid wake attempts."
+                )
+                return False
+            continue
+        valid_attempt += 1
         transcript = str(getattr(diagnostics, "raw_transcript", "") or "")
         if diagnostic_enabled and transcript and transcript not in wake_transcripts:
             wake_transcripts.append(transcript)
@@ -379,9 +563,35 @@ def _run_wake_reliability(
                 )
                 + f":{first_decision}"
             )
-            wake_result = listener.listen_once(request)
+            confirmation_attempt = _listen_verifier_attempt(
+                listener,
+                request,
+                lifecycle_state_before=before.current_lifecycle_state,
+            )
+            consistency_error = _wake_attempt_consistency_error(confirmation_attempt)
+            if consistency_error:
+                output_func(
+                    "  TEST FRAMEWORK FAILURE: inconsistent confirmation attempt: "
+                    f"{consistency_error}"
+                )
+                return False
+            wake_result = confirmation_attempt.result
             after = runtime.snapshot()
-            diagnostics = getattr(listener, "last_diagnostics", None)
+            diagnostics = confirmation_attempt.diagnostics
+            if confirmation_attempt.infrastructure_failure:
+                infrastructure_failures += 1
+                valid_attempt -= 1
+                output_func(
+                    "  Confirmation infrastructure failure "
+                    "(excluded from recognition denominator): "
+                    f"{getattr(wake_result, 'error_code', '') or getattr(wake_result, 'stop_reason', '') or getattr(wake_result, 'status', '')}"
+                )
+                if infrastructure_failures >= maximum_infrastructure_failures:
+                    output_func(
+                        "  Infrastructure retry budget exhausted before ten valid wake attempts."
+                    )
+                    return False
+                continue
             transcript = str(getattr(diagnostics, "raw_transcript", "") or "")
             if diagnostic_enabled and transcript and transcript not in wake_transcripts:
                 wake_transcripts.append(transcript)
@@ -453,14 +663,15 @@ def _run_wake_reliability(
             )
             _print_stream_reason_summary(output_func, current_stream)
             return False
-        if attempt < attempts and pause_seconds > 0:
+        if valid_attempt < attempts and pause_seconds > 0:
             output_func(
                 f"  Pausing {pause_seconds:.2f}s so candidate audio cannot carry into the next prompt."
             )
             sleeper(pause_seconds)
     output_func(
         f"Wake reliability result: {accepted}/{attempts} accepted; "
-        f"rejected={rejected}; target={required}/{attempts}."
+        f"rejected={rejected}; infrastructure_failures={infrastructure_failures}; "
+        f"target={required}/{attempts}."
     )
     final_stream = listener.snapshot(runtime_id=runtime.runtime_id)
     output_func(
@@ -480,6 +691,181 @@ def _run_wake_reliability(
         )
     )
     return accepted >= required
+
+
+def _listen_verifier_attempt(
+    listener: Any,
+    request: Any,
+    *,
+    lifecycle_state_before: str,
+) -> WakeAttemptResult | _VerifierWakeAttempt:
+    listen_attempt = getattr(listener, "listen_attempt", None)
+    if callable(listen_attempt):
+        attempt = listen_attempt(request)
+        if not isinstance(attempt, WakeAttemptResult):
+            raise RuntimeError("wake listener returned malformed WakeAttemptResult")
+        return attempt
+    result = listener.listen_once(request)
+    diagnostics = getattr(listener, "last_diagnostics", None)
+    candidate = int(getattr(result, "candidate_number", 0) or 0)
+    return _VerifierWakeAttempt(
+        attempt_id=str(getattr(result, "attempt_id", "") or f"legacy-attempt-{candidate}"),
+        candidate_id=str(
+            getattr(result, "candidate_id", "") or f"legacy-candidate-{candidate}"
+        ),
+        stream_generation=int(getattr(result, "stream_generation", 0) or 0),
+        capture_valid=bool(
+            getattr(result, "capture_valid", False)
+            or float(getattr(result, "duration_seconds", 0.0) or 0.0) > 0
+        ),
+        recognizer_invoked=bool(
+            getattr(result, "recognizer_invoked", False)
+            or getattr(result, "recognizer_name", "")
+            or getattr(diagnostics, "raw_transcript", "")
+        ),
+        infrastructure_failure=bool(
+            getattr(result, "infrastructure_failure", False)
+        ),
+        lifecycle_state_before=lifecycle_state_before,
+        lifecycle_state_after=lifecycle_state_before,
+        cleanup_status=str(getattr(result, "cleanup_status", "not_required")),
+        result=result,
+        diagnostics=diagnostics,
+        strict_consistency=False,
+    )
+
+
+def _completed_runtime_attempt(
+    listener: Any,
+    runtime_result: Any,
+    lifecycle_state_before: str,
+    lifecycle_state_after: str,
+) -> Optional[WakeAttemptResult | _VerifierWakeAttempt]:
+    data = dict(getattr(runtime_result, "data", {}) or {})
+    attempt_id = str(data.get("wake_attempt_id") or "")
+    completed = getattr(listener, "completed_attempt", None)
+    if attempt_id and callable(completed):
+        attempt = completed(attempt_id)
+        if not isinstance(attempt, WakeAttemptResult):
+            raise RuntimeError(
+                f"completed wake attempt {attempt_id} is unavailable or malformed"
+            )
+        return attempt
+    current = getattr(listener, "last_attempt", None)
+    if isinstance(current, WakeAttemptResult):
+        if attempt_id and current.attempt_id != attempt_id:
+            raise RuntimeError("runtime wake attempt ID does not match listener result")
+        return current
+    result = getattr(listener, "last_result", None)
+    if result is None:
+        return None
+    diagnostics = getattr(listener, "last_diagnostics", None)
+    candidate = int(getattr(result, "candidate_number", 0) or 0)
+    return _VerifierWakeAttempt(
+        attempt_id=str(getattr(result, "attempt_id", "") or f"legacy-attempt-{candidate}"),
+        candidate_id=str(
+            getattr(result, "candidate_id", "") or f"legacy-candidate-{candidate}"
+        ),
+        stream_generation=int(getattr(result, "stream_generation", 0) or 0),
+        capture_valid=bool(
+            getattr(result, "capture_valid", False)
+            or float(getattr(result, "duration_seconds", 0.0) or 0.0) > 0
+        ),
+        recognizer_invoked=bool(
+            getattr(result, "recognizer_invoked", False)
+            or getattr(diagnostics, "raw_transcript", "")
+        ),
+        infrastructure_failure=bool(
+            getattr(result, "infrastructure_failure", False)
+        ),
+        lifecycle_state_before=lifecycle_state_before,
+        lifecycle_state_after=lifecycle_state_after,
+        cleanup_status=str(getattr(result, "cleanup_status", "not_required")),
+        result=result,
+        diagnostics=diagnostics,
+        strict_consistency=False,
+    )
+
+
+def _wake_attempt_consistency_error(attempt: Any) -> str:
+    if not isinstance(attempt, WakeAttemptResult):
+        return ""
+    result = attempt.result
+    diagnostics = attempt.diagnostics
+    if result.attempt_id != attempt.attempt_id:
+        return "result_attempt_id_mismatch"
+    if result.candidate_id != attempt.candidate_id:
+        return "result_candidate_id_mismatch"
+    if result.stream_generation != attempt.stream_generation:
+        return "result_stream_generation_mismatch"
+    if diagnostics is not None:
+        if diagnostics.attempt_id != attempt.attempt_id:
+            return "diagnostic_attempt_id_mismatch"
+        if diagnostics.candidate_id != attempt.candidate_id:
+            return "diagnostic_candidate_id_mismatch"
+        if diagnostics.stream_generation != attempt.stream_generation:
+            return "diagnostic_stream_generation_mismatch"
+    raw_text = str(getattr(diagnostics, "raw_transcript", "") or "")
+    raw_result = str(getattr(diagnostics, "raw_recognition_result", "") or "")
+    if not attempt.capture_valid:
+        if attempt.recognizer_invoked:
+            return "recognizer_invoked_for_invalid_capture"
+        if raw_text or raw_result:
+            return "recognition_leaked_into_invalid_capture"
+        if result.recognition_confidence is not None:
+            return "confidence_leaked_into_invalid_capture"
+    if attempt.recognizer_invoked:
+        if not attempt.capture_valid:
+            return "recognizer_invoked_without_valid_capture"
+        if float(result.duration_seconds or 0.0) <= 0:
+            return "recognition_has_zero_duration_audio"
+        if (
+            result.sample_rate_hz != 16000
+            or result.channels != 1
+            or result.sample_width_bytes != 2
+        ):
+            return "recognition_audio_format_not_canonical"
+    if result.wake_detected and not attempt.recognizer_invoked:
+        return "wake_detected_without_recognizer"
+    return ""
+
+
+def _component_health(listener: Any, runtime_id: str) -> Any:
+    component_health = getattr(listener, "component_health", None)
+    if callable(component_health):
+        return component_health(runtime_id=runtime_id)
+    return listener.health(runtime_id=runtime_id)
+
+
+def _print_component_health(
+    output_func: Callable[[str], None],
+    health: Any,
+) -> None:
+    data = dict(getattr(health, "data", {}) or {})
+    output_func("Wake component health:")
+    output_func(
+        "  Vosk model healthy: "
+        f"{'yes' if data.get('wake_model_healthy') else 'no'}"
+    )
+    output_func(
+        "  Microphone adapter healthy: "
+        f"{'yes' if data.get('microphone_adapter_healthy') else 'no'}"
+    )
+    output_func(
+        "  ALSA device open: "
+        f"{'yes' if data.get('alsa_device_open') else 'no'}"
+    )
+    output_func(
+        "  Calibration successful: "
+        f"{'yes' if data.get('calibration_healthy') else 'no'}"
+    )
+    output_func(
+        "  Stream state: "
+        f"{data.get('stream_state') or 'unknown'}; "
+        f"generation={data.get('stream_generation', 0)}; "
+        f"last recovery={data.get('stream_open_reason') or 'none'}; "
+        f"failing subsystem={data.get('failing_subsystem') or 'none'}"
+    )
 
 
 def _print_wake_capture_metrics(

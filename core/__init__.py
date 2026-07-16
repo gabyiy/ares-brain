@@ -174,6 +174,7 @@ from core.StandbyWakeListener import (
     WAKE_STATUS_NON_WAKE_SPEECH,
     QueuedStandbyWakeListener,
     StandbyWakeListener,
+    WakeAttemptResult,
     WakeLocalDiagnostics,
     WakeListenerConfig,
     build_accepted_wake_phrases,
@@ -186,6 +187,7 @@ from core.LinuxStandbyWakeListener import LinuxStandbyWakeListener
 from core.LinuxAlsaCaptureDiagnostics import inspect_linux_alsa_capture
 from core.WakeAudio import WakeAudioTrimResult, trim_canonical_wake_wav
 from core.WakeRecognizer import (
+    WakeRecognitionAttempt,
     WakeRecognizer,
     WakeRecognizerLocalDiagnostics,
     classify_constrained_recognition,
@@ -776,7 +778,9 @@ __all__ = [
     "QueuedStandbyWakeListener",
     "WakeListenerConfig",
     "WakeLocalDiagnostics",
+    "WakeAttemptResult",
     "WakeRecognizer",
+    "WakeRecognitionAttempt",
     "WakeRecognizerLocalDiagnostics",
     "WakeAudioTrimResult",
     "trim_canonical_wake_wav",

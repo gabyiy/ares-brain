@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from math import isfinite
 import re
@@ -64,6 +64,7 @@ from core.StandbyWakeListener import (
     WAKE_CATEGORY_STANDBY,
     WAKE_STATUS_CANCELLED,
     StandbyWakeListener,
+    WakeAttemptResult,
     validate_wake_control_phrases,
 )
 
@@ -1444,8 +1445,51 @@ class BrainRuntime:
         assert self.standby_wake_listener is not None
         request = self.build_standby_wake_request()
         correlation = request.correlation_id
+        attempt: Optional[WakeAttemptResult] = None
+
+        def completed(runtime_result: BrainRuntimeResultV1) -> BrainRuntimeResultV1:
+            if attempt is None:
+                return runtime_result
+            complete_lifecycle = getattr(
+                self.standby_wake_listener,
+                "complete_attempt_lifecycle",
+                None,
+            )
+            if callable(complete_lifecycle):
+                finalized = complete_lifecycle(
+                    attempt.attempt_id,
+                    runtime_result.current_lifecycle_state,
+                )
+            else:
+                finalized = attempt
+            if finalized is None:
+                finalized = attempt
+            return replace(
+                runtime_result,
+                data={
+                    **dict(runtime_result.data or {}),
+                    "wake_attempt_id": finalized.attempt_id,
+                    "wake_candidate_id": finalized.candidate_id,
+                    "wake_stream_generation": finalized.stream_generation,
+                    "wake_capture_valid": finalized.capture_valid,
+                    "wake_recognizer_invoked": finalized.recognizer_invoked,
+                    "wake_infrastructure_failure": finalized.infrastructure_failure,
+                },
+            )
+
         try:
-            listened = self.standby_wake_listener.listen_once(request)
+            listen_attempt = getattr(self.standby_wake_listener, "listen_attempt", None)
+            if callable(listen_attempt):
+                attempt = listen_attempt(request)
+                if not isinstance(attempt, WakeAttemptResult):
+                    return self._handle_wake_listener_failure(
+                        correlation,
+                        "malformed_wake_attempt_result",
+                        "wake listener did not return WakeAttemptResult",
+                    )
+                listened = attempt.result
+            else:
+                listened = self.standby_wake_listener.listen_once(request)
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
             return self._handle_wake_listener_failure(
                 correlation,
@@ -1474,24 +1518,27 @@ class BrainRuntime:
                     "processing_time_ms": round(
                         listened.processing_time_seconds * 1000.0, 3
                     ),
+                    "attempt_id": listened.attempt_id,
+                    "stream_generation": listened.stream_generation,
+                    "candidate_number": listened.candidate_number,
                 },
             )
         if listened.status == WAKE_STATUS_CANCELLED:
             self.shutdown(correlation_id=correlation, reason="wake_listener_cancelled")
-            return self._result(
+            return completed(self._result(
                 False,
                 "cancelled",
                 correlation_id=correlation,
                 stop_reason="wake_listener_cancelled",
                 error_code="wake_listener_cancelled",
                 error_message="standby wake listening was cancelled",
-            )
+            ))
         if not listened.success:
-            return self._handle_wake_listener_failure(
+            return completed(self._handle_wake_listener_failure(
                 correlation,
                 listened.error_code or "wake_listener_failed",
                 listened.error_message or listened.status,
-            )
+            ))
         self._wake_listener_failure_count = 0
         if listened.speech_detected:
             self._publish(
@@ -1513,9 +1560,11 @@ class BrainRuntime:
                 correlation,
                 {"status": "verified", "matched_phrase": phrase},
             )
-            return self.handle_text(phrase, correlation_id=correlation)
+            return completed(self.handle_text(phrase, correlation_id=correlation))
         if listened.command_category in {WAKE_CATEGORY_SHUTDOWN, WAKE_CATEGORY_STANDBY}:
-            return self.handle_text(listened.matched_phrase, correlation_id=correlation)
+            return completed(
+                self.handle_text(listened.matched_phrase, correlation_id=correlation)
+            )
         if listened.speech_detected:
             self._publish(
                 EVENT_WAKE_REJECTED,
@@ -1526,7 +1575,7 @@ class BrainRuntime:
                     "classification_path": listened.classification_path,
                 },
             )
-        return self._result(
+        return completed(self._result(
             True,
             "standby_listening",
             correlation_id=correlation,
@@ -1544,7 +1593,7 @@ class BrainRuntime:
                 "assembled_duration_seconds": listened.assembled_duration_seconds,
                 "normalized_duration_seconds": listened.normalized_duration_seconds,
             },
-        )
+        ))
 
     def _handle_wake_listener_failure(
         self,

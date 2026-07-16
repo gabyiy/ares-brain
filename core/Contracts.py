@@ -981,6 +981,9 @@ class WakeListenerSnapshotV1(VersionedContract):
     stream_close_count: int = 0
     calibration_count: int = 0
     candidate_count: int = 0
+    stream_generation: int = 0
+    stream_state: str = "CLOSED"
+    calibration_healthy: bool = False
     stream_active: bool = False
     capture_owner: str = ""
     stream_instance_id: str = ""
@@ -1006,6 +1009,12 @@ class StandbyListenResultV1(VersionedContract):
     runtime_id: str = ""
     lifecycle_state: str = "STANDBY"
     listener_state: str = "ready"
+    attempt_id: str = ""
+    candidate_id: str = ""
+    stream_generation: int = 0
+    capture_valid: bool = False
+    recognizer_invoked: bool = False
+    infrastructure_failure: bool = False
     speech_detected: bool = False
     wake_detected: bool = False
     command_category: str = "non_wake"
@@ -1094,6 +1103,9 @@ class WakeRecognizerRequestV1(VersionedContract):
     contract_name: str = CONTRACT_WAKE_RECOGNIZER_REQUEST
     runtime_id: str = ""
     lifecycle_state: str = "STANDBY"
+    attempt_id: str = ""
+    stream_generation: int = 0
+    candidate_number: int = 0
     audio_path: str = ""
     sample_rate_hz: int = 16000
     channels: int = 1
@@ -1121,6 +1133,9 @@ class WakeRecognizerResultV1(VersionedContract):
     status: str = ""
     runtime_id: str = ""
     lifecycle_state: str = "STANDBY"
+    attempt_id: str = ""
+    stream_generation: int = 0
+    candidate_number: int = 0
     recognizer_name: str = ""
     wake_detected: bool = False
     command_category: str = "non_wake"

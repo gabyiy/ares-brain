@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import replace
 import importlib.util
 import math
 from pathlib import Path
+import signal
 import shutil
 import shlex
 import sys
+from threading import current_thread, main_thread
 from typing import Any, Callable, Optional, Sequence
 
 
@@ -53,6 +56,12 @@ DEFAULT_TIMEOUT_SECONDS = 300.0
 DEFAULT_ACTIVE_TRANSCRIPTION_TIMEOUT_SECONDS = 30.0
 DEFAULT_RUNTIME_LOCK_PATH = REPO_ROOT / "data" / "runtime" / "ares_standby_voice.runtime"
 DEFAULT_RUNTIME_LOCK_STALE_SECONDS = 30.0
+
+
+class RuntimeTerminationRequested(Exception):
+    def __init__(self, signum: int) -> None:
+        super().__init__(f"termination signal {signum}")
+        self.signum = int(signum)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -247,6 +256,7 @@ def run_standby_voice(
     runtime_factory: Optional[Callable[..., tuple[BrainRuntime, Any, Any]]] = None,
 ) -> int:
     args = build_parser().parse_args(argv)
+    runtime_holder: dict[str, Any] = {}
     try:
         runtime_lock_path = _repo_path(args.runtime_lock_path)
         with StoreWriteLock(
@@ -255,11 +265,13 @@ def run_standby_voice(
             stale_after_seconds=args.runtime_lock_stale_seconds,
             owner_kind="ares_standby_voice_runtime",
         ):
-            return _run_standby_voice_locked(
-                args,
-                output_func=output_func,
-                runtime_factory=runtime_factory,
-            )
+            with _termination_signal_scope():
+                return _run_standby_voice_locked(
+                    args,
+                    output_func=output_func,
+                    runtime_factory=runtime_factory,
+                    runtime_holder=runtime_holder,
+                )
     except MigrationError as error:
         error_path = Path(error.path).resolve() if error.path else None
         if error.status == "store_locked" and error_path == runtime_lock_path.resolve():
@@ -273,6 +285,21 @@ def run_standby_voice(
     except OSError as error:
         output_func(f"ARES runtime lock failed: {error}")
         return 2
+    except RuntimeTerminationRequested as error:
+        runtime = runtime_holder.get("runtime")
+        if runtime is not None:
+            runtime.shutdown(reason=f"signal_{error.signum}_during_preflight")
+        output_func(
+            f"ARES standby voice runtime terminated by signal {error.signum}; "
+            "ownership lock released."
+        )
+        return 128 + error.signum
+    except KeyboardInterrupt:
+        runtime = runtime_holder.get("runtime")
+        if runtime is not None:
+            runtime.shutdown(reason="keyboard_interrupt_during_preflight")
+        output_func("ARES standby voice runtime cancelled and cleaned up.")
+        return 130
     except ValueError as error:
         output_func(f"ARES standby voice configuration error: {error}")
         return 2
@@ -283,6 +310,7 @@ def _run_standby_voice_locked(
     *,
     output_func: Callable[[str], None],
     runtime_factory: Optional[Callable[..., tuple[BrainRuntime, Any, Any]]],
+    runtime_holder: Optional[dict[str, Any]] = None,
 ) -> int:
     if (
         isinstance(args.active_transcription_timeout, bool)
@@ -307,6 +335,8 @@ def _run_standby_voice_locked(
     try:
         factory = runtime_factory or create_runtime
         runtime, pipeline, request = factory(args, output_func=output_func)
+        if runtime_holder is not None:
+            runtime_holder["runtime"] = runtime
     except (OSError, RuntimeError, TypeError, ValueError) as error:
         output_func(f"ARES standby voice setup failed: {error}")
         return 2
@@ -318,13 +348,21 @@ def _run_standby_voice_locked(
             output_func(f"- {issue.component}: {issue.status} ({issue.reason}).")
         return 3
     wake_started = runtime.standby_wake_listener.start(runtime_id=runtime.runtime_id)
-    wake_health = runtime.standby_wake_listener.health(runtime_id=runtime.runtime_id)
-    if not wake_started.success or not wake_health.success:
-        issue = wake_health if not wake_health.success else wake_started
+    if not wake_started.success:
         runtime.standby_wake_listener.stop("preflight_failed")
         output_func(
             "ARES wake listener dependency check failed before capture: "
-            f"{issue.error_code or issue.status} ({issue.error_message or issue.status})."
+            f"{wake_started.error_code or wake_started.status} "
+            f"({wake_started.error_message or wake_started.status})."
+        )
+        return 3
+    wake_health = runtime.standby_wake_listener.health(runtime_id=runtime.runtime_id)
+    if not wake_health.success:
+        runtime.standby_wake_listener.stop("preflight_failed")
+        output_func(
+            "ARES wake listener dependency check failed before capture: "
+            f"{wake_health.error_code or wake_health.status} "
+            f"({wake_health.error_message or wake_health.status})."
         )
         return 3
 
@@ -336,6 +374,12 @@ def _run_standby_voice_locked(
         runtime.shutdown(reason="keyboard_interrupt")
         output_func("ARES standby voice runtime cancelled and cleaned up.")
         return 130
+    except RuntimeTerminationRequested as error:
+        runtime.shutdown(reason=f"signal_{error.signum}")
+        output_func(
+            f"ARES standby voice runtime received signal {error.signum} and cleaned up."
+        )
+        return 128 + error.signum
     except (OSError, RuntimeError, TimeoutError) as error:
         runtime.shutdown(reason="foreground_runtime_error")
         output_func(
@@ -351,6 +395,25 @@ def _run_standby_voice_locked(
         f"{result.error_code or result.stop_reason}."
     )
     return 1
+
+
+@contextmanager
+def _termination_signal_scope():
+    """Turn SIGTERM into normal exception cleanup on the foreground main thread."""
+
+    if current_thread() is not main_thread() or not hasattr(signal, "SIGTERM"):
+        yield
+        return
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def request_termination(signum, _frame):
+        raise RuntimeTerminationRequested(int(signum))
+
+    signal.signal(signal.SIGTERM, request_termination)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def _command_pipeline_args(args: argparse.Namespace) -> argparse.Namespace:
@@ -527,6 +590,13 @@ def render_wake_diagnostics(
     )
     lines = [
         "Wake diagnostic:",
+        f"  Attempt ID: {diagnostics.attempt_id or 'unknown'}",
+        f"  Candidate ID: {diagnostics.candidate_id or 'unknown'}",
+        f"  Stream generation: {diagnostics.stream_generation}",
+        "  Capture valid / recognizer invoked / infrastructure failure: "
+        f"{'yes' if diagnostics.capture_valid else 'no'} / "
+        f"{'yes' if diagnostics.recognizer_invoked else 'no'} / "
+        f"{'yes' if diagnostics.infrastructure_failure else 'no'}",
         f"  Recognizer used: {diagnostics.recognizer_name or 'unknown'}",
         "  Raw recognition result: "
         f"{diagnostics.raw_recognition_result or '<empty>'}",

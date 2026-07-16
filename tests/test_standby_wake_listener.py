@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 import wave
@@ -17,6 +18,8 @@ from core import (
     QueuedStandbyWakeListener,
     StandbyListenResultV1,
     WakeDetectionResultV1,
+    WakeAttemptResult,
+    WakeLocalDiagnostics,
     WakeListenerConfig,
     WakeListenerRequestV1,
     WakeListenerResultV1,
@@ -700,10 +703,153 @@ def test_linux_listener_reopens_after_device_failure_on_next_poll(tmp_path):
     assert recovered.success
     assert listener.snapshot().stream_open_count == 2
     assert listener.snapshot().calibration_count == 2
+    assert listener.snapshot().stream_generation == 2
+    assert listener.snapshot().stream_state == "HEALTHY"
     assert listener.snapshot().stream_open_reasons[-1] == "device_recovery"
     assert listener.snapshot().calibration_reasons[-1] == (
         "device_recovery:initial_calibration"
     )
+    listener.stop()
+
+
+def test_recognizer_candidate_state_resets_after_no_speech_and_alsa_recovery(tmp_path):
+    class TrackingRecognizer(FakeWakeRecognizer):
+        def __init__(self):
+            super().__init__("Ares")
+            self.reset_reasons = []
+
+        def reset_attempt_state(
+            self,
+            reason="attempt_reset",
+            *,
+            preserve_medium_confirmation=False,
+        ):
+            self.reset_reasons.append((reason, preserve_medium_confirmation))
+            self.last_diagnostics = None
+            return _ok("attempt_state_reset")
+
+    microphone = FakeMicrophone(capture_status="no_speech_timeout", speech=False)
+    recognizer = TrackingRecognizer()
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=microphone,
+        wake_recognizer=recognizer,
+        config=WakeListenerConfig(retry_delay_seconds=0),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+    no_speech = listener.listen_attempt(_request())
+    assert no_speech.result.status == "no_speech"
+    assert recognizer.last_diagnostics is None
+    assert any(reason == "no_speech" for reason, _ in recognizer.reset_reasons)
+
+    microphone.capture_status = "device_error"
+    failed = listener.listen_attempt(_request())
+    assert failed.infrastructure_failure
+    assert listener.snapshot().stream_state == "FAILED"
+    assert any(reason == "device_error" for reason, _ in recognizer.reset_reasons)
+
+    microphone.capture_status = "no_speech_timeout"
+    recovered = listener.listen_attempt(_request())
+    assert not recovered.infrastructure_failure
+    assert recovered.stream_generation == 2
+    assert listener.snapshot().stream_state == "HEALTHY"
+    assert any(
+        reason == "standby_stream_opening"
+        for reason, _ in recognizer.reset_reasons
+    )
+    listener.stop()
+
+
+def test_calibration_failure_closes_stream_and_listener_never_reports_healthy(tmp_path):
+    class FailedCalibrationMicrophone(FakeMicrophone):
+        def __init__(self):
+            super().__init__()
+            self.history_clear_count = 0
+
+        def open_persistent_stream(self, *, owner, device=None):
+            handle = super().open_persistent_stream(owner=owner, device=device)
+            handle.frame_source = SimpleNamespace(
+                clear_history=self._clear_history,
+            )
+            return handle
+
+        def _clear_history(self):
+            self.history_clear_count += 1
+
+        def calibrate_persistent_stream(self, handle, request, **_kwargs):
+            return SimpleNamespace(
+                success=False,
+                status="calibration_failed",
+                thresholds=None,
+                ambient_statistics=None,
+                error_code="ambient_not_quiet",
+                error_message="confirmed non-speech calibration was unavailable",
+            )
+
+    microphone = FailedCalibrationMicrophone()
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=microphone,
+        wake_recognizer=FakeWakeRecognizer(),
+        project_root=tmp_path,
+    )
+    started = listener.start()
+    snapshot = listener.snapshot()
+    components = listener.component_health()
+    assert not started.success
+    assert started.status == "calibration_failed"
+    assert microphone.stream_open_count == 1
+    assert microphone.stream_close_count == 1
+    assert microphone.history_clear_count == 1
+    assert snapshot.stream_state == "FAILED"
+    assert not snapshot.stream_active
+    assert not snapshot.calibration_healthy
+    assert not components.success
+    assert components.data["wake_model_healthy"] is False
+    assert components.data["alsa_device_open"] is False
+    assert components.data["calibration_healthy"] is False
+
+
+def test_recovery_calibration_failure_is_bound_to_new_stream_generation(tmp_path):
+    class RecoveryCalibrationMicrophone(FakeMicrophone):
+        def __init__(self):
+            super().__init__(capture_status="device_error", speech=False)
+            self.fail_calibration = False
+
+        def calibrate_persistent_stream(self, handle, request, **kwargs):
+            if self.fail_calibration:
+                return SimpleNamespace(
+                    success=False,
+                    status="calibration_failed",
+                    thresholds=None,
+                    ambient_statistics=None,
+                    error_code="ambient_not_quiet",
+                    error_message="confirmed non-speech calibration was unavailable",
+                )
+            return super().calibrate_persistent_stream(handle, request, **kwargs)
+
+    microphone = RecoveryCalibrationMicrophone()
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=microphone,
+        wake_recognizer=FakeWakeRecognizer(),
+        config=WakeListenerConfig(diagnostic_wake=True, retry_delay_seconds=0),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+    first = listener.listen_attempt(_request(diagnostic_wake=True))
+    assert first.stream_generation == 1
+    assert first.infrastructure_failure
+
+    microphone.fail_calibration = True
+    recovered = listener.listen_attempt(_request(diagnostic_wake=True))
+    assert recovered.stream_generation == 2
+    assert recovered.stream_instance_id == "fake-stream-2"
+    assert recovered.result.stream_generation == 2
+    assert recovered.result.stream_instance_id == "fake-stream-2"
+    assert recovered.infrastructure_failure
+    assert recovered.result.error_code == "wake_stream_unavailable"
+    assert recovered.diagnostics.raw_transcript == ""
+    assert listener.snapshot().stream_state == "FAILED"
+    assert not listener.snapshot().stream_active
     listener.stop()
 
 
@@ -743,6 +889,213 @@ def test_linux_listener_no_speech_does_not_invoke_wake_recognizer(tmp_path):
     assert result.success
     assert result.status == "no_speech"
     assert stt.paths == []
+    listener.stop()
+
+
+def test_wake_attempt_is_unique_immutable_and_contains_one_candidate(tmp_path):
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(),
+        wake_recognizer=FakeWakeRecognizer("Ares"),
+        config=WakeListenerConfig(diagnostic_wake=True),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+    first = listener.listen_attempt(_request(diagnostic_wake=True))
+    second = listener.listen_attempt(_request(diagnostic_wake=True))
+
+    assert isinstance(first, WakeAttemptResult)
+    assert first.attempt_id != second.attempt_id
+    assert first.candidate_id != second.candidate_id
+    assert first.stream_generation == second.stream_generation == 1
+    assert first.result.attempt_id == first.attempt_id
+    assert first.result.candidate_id == first.candidate_id
+    assert first.diagnostics.attempt_id == first.attempt_id
+    assert first.diagnostics.raw_transcript == "Ares"
+    assert listener.completed_attempt(first.attempt_id) is None
+    assert listener.completed_attempt(second.attempt_id) == second
+    with pytest.raises(Exception):
+        first.attempt_id = "changed"
+    listener.stop()
+
+
+@pytest.mark.parametrize(
+    ("result_change", "diagnostic_change", "message"),
+    [
+        ({"capture_valid": False}, {}, "capture validity"),
+        ({"recognizer_invoked": False}, {}, "recognizer state"),
+        ({"infrastructure_failure": True}, {}, "infrastructure state"),
+        ({"cleanup_status": "failed"}, {}, "cleanup status"),
+        ({"stream_instance_id": "other-stream"}, {}, "stream instance"),
+        ({}, {"capture_valid": False}, "diagnostics capture validity"),
+        ({}, {"recognizer_invoked": False}, "diagnostics recognizer state"),
+        ({}, {"infrastructure_failure": True}, "diagnostics infrastructure state"),
+    ],
+)
+def test_wake_attempt_rejects_mismatched_enclosed_state(
+    result_change,
+    diagnostic_change,
+    message,
+):
+    result = StandbyListenResultV1(
+        attempt_id="attempt-one",
+        candidate_id="candidate-one",
+        stream_generation=2,
+        candidate_number=3,
+        stream_instance_id="stream-one",
+        capture_valid=True,
+        recognizer_invoked=True,
+        infrastructure_failure=False,
+        cleanup_status="removed",
+        duration_seconds=0.4,
+        sample_rate_hz=16000,
+        channels=1,
+        sample_width_bytes=2,
+    )
+    diagnostics = WakeLocalDiagnostics(
+        attempt_id="attempt-one",
+        candidate_id="candidate-one",
+        stream_generation=2,
+        capture_valid=True,
+        recognizer_invoked=True,
+        infrastructure_failure=False,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        WakeAttemptResult(
+            attempt_id="attempt-one",
+            candidate_id="candidate-one",
+            stream_instance_id="stream-one",
+            stream_generation=2,
+            candidate_number=3,
+            capture_valid=True,
+            recognizer_invoked=True,
+            infrastructure_failure=False,
+            lifecycle_state_before="STANDBY",
+            lifecycle_state_after="STANDBY",
+            cleanup_status="removed",
+            result=replace(result, **result_change),
+            diagnostics=replace(diagnostics, **diagnostic_change),
+        )
+
+
+def test_no_speech_cannot_reuse_previous_recognition_diagnostics(tmp_path):
+    microphone = FakeMicrophone()
+    recognizer = FakeWakeRecognizer("Ares")
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=microphone,
+        wake_recognizer=recognizer,
+        config=WakeListenerConfig(diagnostic_wake=True),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+    recognized = listener.listen_attempt(_request(diagnostic_wake=True))
+    microphone.capture_status = "no_speech_timeout"
+    microphone.speech = False
+    empty = listener.listen_attempt(_request(diagnostic_wake=True))
+
+    assert recognized.diagnostics.raw_transcript == "Ares"
+    assert empty.attempt_id != recognized.attempt_id
+    assert not empty.capture_valid
+    assert not empty.recognizer_invoked
+    assert empty.result.status == "no_speech"
+    assert empty.result.duration_seconds == 0
+    assert empty.result.recognition_confidence is None
+    assert empty.diagnostics.raw_transcript == ""
+    assert empty.diagnostics.raw_recognition_result == ""
+    assert len(recognizer.paths) == 1
+    listener.stop()
+
+
+def test_missing_or_invalid_audio_never_invokes_vosk(tmp_path):
+    class MissingAudioMicrophone(FakeMicrophone):
+        def record_persistent_until_silence(self, handle, output_path, **kwargs):
+            assert handle is self.stream_handle
+            return SimpleNamespace(
+                success=True,
+                status="completed_after_silence",
+                speech_detected=True,
+                normalized_wav_path=str(Path(output_path).with_name("missing.wav")),
+                duration_seconds=0.5,
+                raw_duration_seconds=0.8,
+            )
+
+    recognizer = FakeWakeRecognizer("Ares")
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=MissingAudioMicrophone(),
+        wake_recognizer=recognizer,
+        config=WakeListenerConfig(diagnostic_wake=True, retry_delay_seconds=0),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+    attempt = listener.listen_attempt(_request(diagnostic_wake=True))
+    assert attempt.infrastructure_failure
+    assert not attempt.capture_valid
+    assert not attempt.recognizer_invoked
+    assert attempt.result.error_code == "wake_audio_missing"
+    assert attempt.diagnostics.raw_transcript == ""
+    assert recognizer.paths == []
+    listener.stop()
+
+
+def test_header_only_wav_is_rejected_before_vosk(tmp_path):
+    class HeaderOnlyMicrophone(FakeMicrophone):
+        def record_persistent_until_silence(self, handle, output_path, **kwargs):
+            path = Path(output_path).with_name("header-only.wav")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(path), "wb") as output:
+                output.setnchannels(1)
+                output.setsampwidth(2)
+                output.setframerate(16000)
+            return SimpleNamespace(
+                success=True,
+                status="completed_after_silence",
+                speech_detected=True,
+                normalized_wav_path=str(path),
+                final_whisper_input_path=str(path),
+                wav_path=str(path),
+                raw_wav_path=str(path),
+                duration_seconds=0.0,
+                raw_duration_seconds=0.0,
+                assembled_duration_seconds=0.0,
+                normalized_duration_seconds=0.0,
+                whisper_input_duration_seconds=0.0,
+            )
+
+    recognizer = FakeWakeRecognizer("Ares")
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=HeaderOnlyMicrophone(),
+        wake_recognizer=recognizer,
+        config=WakeListenerConfig(diagnostic_wake=True, retry_delay_seconds=0),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+    attempt = listener.listen_attempt(_request(diagnostic_wake=True))
+    assert attempt.infrastructure_failure
+    assert not attempt.capture_valid
+    assert not attempt.recognizer_invoked
+    assert attempt.diagnostics.raw_transcript == ""
+    assert recognizer.paths == []
+    listener.stop()
+
+
+def test_stale_recognition_generation_is_rejected_and_not_rendered(tmp_path):
+    class StaleRecognizer(FakeWakeRecognizer):
+        def recognize_wav(self, request):
+            result = super().recognize_wav(request)
+            return replace(result, stream_generation=request.stream_generation + 1)
+
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(),
+        wake_recognizer=StaleRecognizer("Ares"),
+        config=WakeListenerConfig(diagnostic_wake=True, retry_delay_seconds=0),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+    attempt = listener.listen_attempt(_request(diagnostic_wake=True))
+    assert attempt.infrastructure_failure
+    assert attempt.result.error_code == "stale_stream_generation_result"
+    assert not attempt.result.wake_detected
+    assert attempt.diagnostics.raw_transcript == ""
     listener.stop()
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +20,8 @@ from core import (
     QueuedStandbyWakeListener,
     RuntimeInputResult,
     StandbyListenResultV1,
+    WakeAttemptResult,
+    WakeLocalDiagnostics,
     WakeListenerConfig,
 )
 from scripts import manual_verify_standby_wake_runtime as manual_wake
@@ -74,6 +77,89 @@ def test_verified_wake_phrase_activates_and_acknowledges_exactly_once(phrase, tm
     assert runtime.session_manager.session_id
     assert output.texts == ["Yes Gabi."]
     assert runtime.snapshot().activation_count == 1
+
+
+def test_runtime_carries_exact_immutable_wake_attempt_through_activation(tmp_path):
+    class AttemptListener(QueuedStandbyWakeListener):
+        def __init__(self):
+            super().__init__()
+            result = StandbyListenResultV1(
+                success=True,
+                status="wake_detected",
+                attempt_id="wake-attempt-runtime",
+                candidate_id="wake-candidate-runtime",
+                    stream_generation=4,
+                    candidate_number=9,
+                    stream_instance_id="stream-four",
+                    capture_valid=True,
+                    recognizer_invoked=True,
+                speech_detected=True,
+                wake_detected=True,
+                command_category="activation",
+                normalized_wake_phrase="ares",
+                matched_phrase="ares",
+                duration_seconds=0.6,
+                    sample_rate_hz=16000,
+                    channels=1,
+                    sample_width_bytes=2,
+                    cleanup_status="removed",
+                )
+            diagnostics = WakeLocalDiagnostics(
+                attempt_id="wake-attempt-runtime",
+                candidate_id="wake-candidate-runtime",
+                stream_generation=4,
+                capture_valid=True,
+                recognizer_invoked=True,
+                raw_transcript="Ares",
+                normalized_transcript="ares",
+            )
+            self.attempt = WakeAttemptResult(
+                attempt_id="wake-attempt-runtime",
+                candidate_id="wake-candidate-runtime",
+                stream_instance_id="stream-four",
+                stream_generation=4,
+                candidate_number=9,
+                capture_valid=True,
+                recognizer_invoked=True,
+                infrastructure_failure=False,
+                lifecycle_state_before="STANDBY",
+                lifecycle_state_after="STANDBY",
+                cleanup_status="removed",
+                result=result,
+                diagnostics=diagnostics,
+            )
+
+        def listen_attempt(self, request):
+            return self.attempt
+
+        def completed_attempt(self, attempt_id):
+            return self.attempt if attempt_id == self.attempt.attempt_id else None
+
+        def complete_attempt_lifecycle(self, attempt_id, state):
+            if attempt_id != self.attempt.attempt_id:
+                return None
+            self.attempt = replace(self.attempt, lifecycle_state_after=state)
+            return self.attempt
+
+    manager = BrainSessionManager()
+    service = CoreService(brain_session_manager=manager)
+    output = CollectingRuntimeOutputAdapter()
+    listener = AttemptListener()
+    runtime = BrainRuntime(
+        core_service=service,
+        command_handler=lambda _: SimpleNamespace(text="unused", skill="none"),
+        input_adapter=QueuedRuntimeInputAdapter(),
+        output_adapter=output,
+        standby_wake_listener=listener,
+    )
+    assert runtime.start().success
+    activated = runtime.poll_once()
+    assert activated.status == "activated"
+    assert activated.data["wake_attempt_id"] == "wake-attempt-runtime"
+    assert activated.data["wake_candidate_id"] == "wake-candidate-runtime"
+    assert activated.data["wake_stream_generation"] == 4
+    assert listener.attempt.lifecycle_state_after == "ACTIVE"
+    assert output.texts == ["Yes Gabi."]
 
 
 def test_constrained_aris_alias_activates_once_without_core_routing(tmp_path):

@@ -20,6 +20,7 @@ from core.WakeRecognizer import (
     WAKE_RECOGNIZER_READY,
     WAKE_RECOGNIZER_RECOGNIZING,
     WAKE_RECOGNIZER_STOPPED,
+    WakeRecognitionAttempt,
     WakeRecognizerLocalDiagnostics,
     classify_constrained_recognition,
 )
@@ -121,11 +122,79 @@ class VoskWakeRecognizer:
     def health_check(self) -> WakeRecognizerResultV1:
         with self._lock:
             healthy = self._state == WAKE_RECOGNIZER_READY and self._model is not None
+            model = self._model
+        if not healthy:
+            return self._lifecycle_result(
+                False,
+                "unhealthy",
+                error_code="vosk_recognizer_not_ready",
+                error_message="Vosk wake recognizer is not started.",
+            )
+        try:
+            module = self._load_module()
+            factory = self._recognizer_factory or getattr(module, "KaldiRecognizer", None)
+            if not callable(factory):
+                raise RuntimeError("vosk_recognizer_factory_unavailable")
+            probe = factory(model, 16000.0, json.dumps(["ares", "[unk]"]))
+            set_words = getattr(probe, "SetWords", None)
+            accept = getattr(probe, "AcceptWaveform", None)
+            final_result = getattr(probe, "FinalResult", None)
+            if not callable(set_words) or not callable(accept) or not callable(final_result):
+                raise RuntimeError("vosk_health_probe_methods_unavailable")
+            set_words(True)
+            accept(b"\x00\x00" * 320)
+            _parse_payload(final_result())
+        except (ImportError, json.JSONDecodeError, OSError, RuntimeError, TypeError, ValueError) as error:
+            return self._lifecycle_result(
+                False,
+                "unhealthy",
+                error_code="vosk_model_probe_failed",
+                error_message=f"Vosk model probe failed: {error.__class__.__name__}:{str(error)[:160]}",
+            )
         return self._lifecycle_result(
-            healthy,
-            "healthy" if healthy else "unhealthy",
-            error_code="" if healthy else "vosk_recognizer_not_ready",
-            error_message="" if healthy else "Vosk wake recognizer is not started.",
+            True,
+            "healthy",
+        )
+
+    def recognize_attempt(
+        self,
+        request: WakeRecognizerRequestV1,
+    ) -> WakeRecognitionAttempt:
+        """Run one fresh KaldiRecognizer and return its exact diagnostics atomically."""
+
+        result = self.recognize_wav(request)
+        with self._lock:
+            diagnostics = self.last_diagnostics
+            self.last_diagnostics = None
+        if diagnostics is None:
+            diagnostics = WakeRecognizerLocalDiagnostics(
+                recognizer_name=self.recognizer_name,
+                attempt_id=request.attempt_id,
+                stream_generation=request.stream_generation,
+                candidate_number=request.candidate_number,
+                classification="rejected",
+                classification_reason=result.error_code or result.status,
+                rejection_reason=result.error_code or result.status,
+                model_path=str(self.model_path),
+            )
+        return WakeRecognitionAttempt(result=result, diagnostics=diagnostics)
+
+    def reset_attempt_state(
+        self,
+        reason: str = "attempt_reset",
+        *,
+        preserve_medium_confirmation: bool = False,
+    ) -> WakeRecognizerResultV1:
+        """Clear candidate-local state; the loaded model remains reusable."""
+
+        with self._lock:
+            self.last_diagnostics = None
+            if not preserve_medium_confirmation:
+                self._clear_medium_confirmation_locked()
+        return self._lifecycle_result(
+            True,
+            "attempt_state_reset",
+            error_message=str(reason or "attempt_reset")[:160],
         )
 
     def recognize_wav(self, request: WakeRecognizerRequestV1) -> WakeRecognizerResultV1:
@@ -214,6 +283,12 @@ class VoskWakeRecognizer:
                     request.maximum_duplicate_collapse_audio_seconds
                 ),
             )
+            result = replace(
+                result,
+                attempt_id=request.attempt_id,
+                stream_generation=request.stream_generation,
+                candidate_number=request.candidate_number,
+            )
             result = self._apply_medium_confidence_confirmation(
                 result,
                 at_time=started_at + elapsed,
@@ -222,6 +297,9 @@ class VoskWakeRecognizer:
             )
             self.last_diagnostics = WakeRecognizerLocalDiagnostics(
                 recognizer_name=self.recognizer_name,
+                attempt_id=request.attempt_id,
+                stream_generation=request.stream_generation,
+                candidate_number=request.candidate_number,
                 raw_recognition_result=json.dumps(payloads, sort_keys=True),
                 recognized_text=combined["text"],
                 normalized_phrase=_normalize_for_diagnostics(combined["text"]),
@@ -250,12 +328,14 @@ class VoskWakeRecognizer:
             )
             return result
         except TimeoutError as error:
+            self.reset_attempt_state("recognition_timeout")
             return self._failure(
                 request,
                 "vosk_recognition_timeout",
                 str(error),
             )
         except (EOFError, json.JSONDecodeError, OSError, RuntimeError, TypeError, ValueError, wave.Error) as error:
+            self.reset_attempt_state("recognition_failed")
             return self._failure(
                 request,
                 "vosk_recognition_failed",
@@ -368,6 +448,9 @@ class VoskWakeRecognizer:
             status="recognition_failed",
             runtime_id=request.runtime_id,
             lifecycle_state=request.lifecycle_state,
+            attempt_id=request.attempt_id,
+            stream_generation=request.stream_generation,
+            candidate_number=request.candidate_number,
             recognizer_name=self.recognizer_name,
             minimum_confidence=request.minimum_confidence,
             medium_confidence=request.medium_confidence,

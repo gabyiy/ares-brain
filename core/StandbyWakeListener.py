@@ -65,6 +65,12 @@ class WakeLocalDiagnostics:
     """Ephemeral owner-terminal diagnostics; never included in runtime events."""
 
     raw_transcript: str = ""
+    attempt_id: str = ""
+    candidate_id: str = ""
+    stream_generation: int = 0
+    capture_valid: bool = False
+    recognizer_invoked: bool = False
+    infrastructure_failure: bool = False
     cleaned_transcript: str = ""
     normalized_transcript: str = ""
     selected_alias: str = ""
@@ -141,6 +147,83 @@ class WakeLocalDiagnostics:
     stream_close_reasons: tuple[str, ...] = ()
     calibration_reasons: tuple[str, ...] = ()
     ownership_handoffs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class WakeAttemptResult:
+    """One immutable, internally consistent standby candidate outcome."""
+
+    attempt_id: str
+    candidate_id: str
+    stream_instance_id: str
+    stream_generation: int
+    candidate_number: int
+    capture_valid: bool
+    recognizer_invoked: bool
+    infrastructure_failure: bool
+    lifecycle_state_before: str
+    lifecycle_state_after: str
+    cleanup_status: str
+    result: StandbyListenResultV1
+    diagnostics: Optional[WakeLocalDiagnostics] = None
+
+    def __post_init__(self) -> None:
+        if not self.attempt_id or not self.candidate_id:
+            raise ValueError("wake attempt and candidate identifiers are required")
+        if self.stream_generation < 0 or self.candidate_number < 0:
+            raise ValueError("wake attempt generation and candidate number cannot be negative")
+        if self.result.attempt_id != self.attempt_id:
+            raise ValueError("wake result attempt ID does not match its attempt")
+        if self.result.candidate_id != self.candidate_id:
+            raise ValueError("wake result candidate ID does not match its attempt")
+        if self.result.stream_generation != self.stream_generation:
+            raise ValueError("wake result stream generation does not match its attempt")
+        if self.result.candidate_number != self.candidate_number:
+            raise ValueError("wake result candidate number does not match its attempt")
+        if self.result.stream_instance_id != self.stream_instance_id:
+            raise ValueError("wake result stream instance does not match its attempt")
+        if self.result.capture_valid != self.capture_valid:
+            raise ValueError("wake result capture validity does not match its attempt")
+        if self.result.recognizer_invoked != self.recognizer_invoked:
+            raise ValueError("wake result recognizer state does not match its attempt")
+        if self.result.infrastructure_failure != self.infrastructure_failure:
+            raise ValueError("wake result infrastructure state does not match its attempt")
+        if self.result.cleanup_status != self.cleanup_status:
+            raise ValueError("wake result cleanup status does not match its attempt")
+        if self.diagnostics is not None:
+            if self.diagnostics.attempt_id != self.attempt_id:
+                raise ValueError("wake diagnostics attempt ID does not match")
+            if self.diagnostics.candidate_id != self.candidate_id:
+                raise ValueError("wake diagnostics candidate ID does not match")
+            if self.diagnostics.stream_generation != self.stream_generation:
+                raise ValueError("wake diagnostics stream generation does not match")
+            if self.diagnostics.capture_valid != self.capture_valid:
+                raise ValueError("wake diagnostics capture validity does not match")
+            if self.diagnostics.recognizer_invoked != self.recognizer_invoked:
+                raise ValueError("wake diagnostics recognizer state does not match")
+            if self.diagnostics.infrastructure_failure != self.infrastructure_failure:
+                raise ValueError("wake diagnostics infrastructure state does not match")
+        if not self.capture_valid:
+            if self.recognizer_invoked:
+                raise ValueError("wake recognizer cannot run for invalid audio")
+            if self.result.recognition_confidence is not None:
+                raise ValueError("invalid wake audio cannot carry recognition confidence")
+            if self.diagnostics is not None and (
+                self.diagnostics.raw_transcript
+                or self.diagnostics.raw_recognition_result
+            ):
+                raise ValueError("invalid wake audio cannot carry recognition text")
+        if self.recognizer_invoked:
+            if self.result.duration_seconds <= 0:
+                raise ValueError("wake recognition requires non-empty audio")
+            if (
+                self.result.sample_rate_hz != 16000
+                or self.result.channels != 1
+                or self.result.sample_width_bytes != 2
+            ):
+                raise ValueError("wake recognition requires canonical PCM audio")
+        if self.result.wake_detected and not self.recognizer_invoked:
+            raise ValueError("wake detection requires recognizer invocation")
 
 
 @dataclass(frozen=True)
@@ -352,6 +435,19 @@ class StandbyWakeListener(Protocol):
         ...
 
     def listen_once(self, request: WakeListenerRequestV1) -> StandbyListenResultV1:
+        ...
+
+    def listen_attempt(self, request: WakeListenerRequestV1) -> WakeAttemptResult:
+        ...
+
+    def completed_attempt(self, attempt_id: str) -> Optional[WakeAttemptResult]:
+        ...
+
+    def complete_attempt_lifecycle(
+        self,
+        attempt_id: str,
+        lifecycle_state_after: str,
+    ) -> Optional[WakeAttemptResult]:
         ...
 
     def enter_standby(
