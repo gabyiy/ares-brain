@@ -1191,9 +1191,18 @@ Phase 98: Persistent Standby Audio and Wake Reliability Hardening
 - Added one explicitly owned ALSA PCM stream per standby epoch, one bounded calibration reused across candidates, timed/manual in-place recalibration, a bounded rolling pre-roll, and device-failure reopen. Ordinary rejected candidates no longer close or recalibrate the device.
 - Added the wake-only 20 ms VAD profile with 0.4-second pre-roll, two-frame start evidence, three-frame resume hysteresis, 0.65-second terminal silence, 0.12-second end padding, and a two-second active cap. Full active-command VAD is unchanged.
 - Extended the one immutable owner-name policy to exact `ares`, `aris`, and `aries` aliases. `Aries` is valid only in an exact configured name slot; zodiac questions, partial words, and sentences with arbitrary extra text remain ordinary input.
-- Added conservative confidence tiers: exact results at or above 0.8 activate immediately; exact 0.72-0.8 results require two identical recognitions within eight seconds; lower, missing-confidence, wrong, and `[unk]` results reject. No fuzzy match or Whisper standby fallback was added.
+- Added conservative confidence tiers, later adjusted in Phase 99 from owner-observed constrained-grammar data. No fuzzy match or Whisper standby fallback was added.
 - Made capture ownership explicit across standby, acknowledgement/playback, active Whisper command capture, return to standby, and shutdown. Added a ten-attempt hardware reliability mode with a required quiet-room target of 9/10 and no false activation during silence/unrelated-speech checks.
 - Deterministic verification passes 1938 tests. Raspberry Pi 9/10 wake reliability and the complete lifecycle sequence remain owner-run requirements.
+
+Phase 99: Hardware-Backed Wake Confidence and Reliability Verification
+
+- A real Raspberry Pi run accepted 6/10 prompts. Exact constrained-grammar `ares` results at confidence `0.574` and `0.616` were incorrectly rejected by the previous `0.8` threshold; another exact result lacked confidence after otherwise valid audio capture.
+- Exact permitted activation phrases now accept at confidence `>= 0.55`; `0.40 <= confidence < 0.55` requires two identical exact recognitions within eight seconds; lower, wrong, `[unk]`, and extra-word results reject. Missing confidence is accepted only for one exact activation phrase after VAD, canonical WAV, and duration validation. Controls and unrestricted Whisper do not receive this exception.
+- Auditing showed the persistent listener already reused its stream across rejected candidates. The verifier's seven opens/calibrations came from six successful activations followed by real standby returns, each of which correctly handed the microphone to acknowledgement/active capture and began a new standby epoch.
+- The ten-prompt reliability phase now classifies through one listener without activation, requires one stable stream ID and one calibration unless explicit device recovery occurs, and prints cumulative handle IDs, counts, reasons, handoffs, confidence decisions, and transcripts. The separate lifecycle phase still verifies real ownership handoff and session transitions.
+- Production active mode now prints waiting, microphone acquisition, speech detection, command capture, transcription, processing, and bounded no-speech status. No-speech remains active until the existing 30-second manager timeout; no second timer or capture path was added.
+- Deterministic verification passes 1951 tests. Raspberry Pi 9/10 wake reliability and the complete calculator/standby sequence remain owner-run requirements.
 
 Current State
 
@@ -1287,8 +1296,9 @@ Phase 3 Real Voice Integration
 30. Verify the hardware-free Brain Runtime scripts after pulling on Raspberry Pi. Pending owner run.
 31. Add one bounded real microphone wake activation adapter without moving runtime ownership out of Capital/Core. Completed in deterministic CI; real Raspberry Pi wake verification remains owner-run.
 32. Replace per-poll ALSA reopen/recalibration with one persistent standby stream, wake-only rolling pre-roll/VAD, exact `Ares`/`Aris`/`Aries` name slots, and bounded confidence tiers. Completed in deterministic CI.
-33. Pull this checkpoint and run `python scripts/manual_verify_standby_wake_hardware.py --diagnostic-wake --wake-reliability-attempts 10`. Require at least 9/10 quiet-room wakes, no silence/unrelated-speech false activation, exact lifecycle bypass, calculator response, standby return, second activation, and clean shutdown before recording hardware proof.
-34. Only after that stable hardware proof consider a separately reviewed systemd/boot-startup checkpoint. Wider background listening and autonomous City activation remain out of scope.
+33. Correct the verifier so its reliability phase reuses one standby stream without activating, adopt the owner-observed `0.55`/`0.40` confidence policy, and expose bounded active-command wait states. Completed in deterministic CI.
+34. Pull this checkpoint and run `python scripts/manual_verify_standby_wake_hardware.py --diagnostic-wake --wake-reliability-attempts 10`. Require at least 9/10 quiet-room wakes, normally one stream open/calibration during the reliability phase, no silence/unrelated-speech false activation, exact lifecycle bypass, calculator response, standby return, second activation, and clean shutdown before recording hardware proof.
+35. Only after that stable hardware proof consider a separately reviewed systemd/boot-startup checkpoint. Wider background listening and autonomous City activation remain out of scope.
 
 What Must Not Be Started Yet
 
