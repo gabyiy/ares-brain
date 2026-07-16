@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
@@ -64,6 +65,18 @@ class PcmFrameSource(Protocol):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
+class VoiceActivityStreamCalibration:
+    success: bool
+    status: str
+    frame_count: int = 0
+    duration_seconds: float = 0.0
+    ambient_statistics: Optional[AmbientStatistics] = None
+    thresholds: Optional[VoiceActivityThresholds] = None
+    error_code: str = ""
+    error_message: str = ""
+
+
 class RmsVoiceActivityCapture:
     """Hardware-neutral energy VAD over mono signed 16-bit PCM frames."""
 
@@ -91,6 +104,126 @@ class RmsVoiceActivityCapture:
     def stop(self) -> VoiceActivityCaptureResultV1:
         self.state = VAD_STATE_STOPPED
         return self._lifecycle_result(True, "stopped")
+
+    def calibrate_stream(
+        self,
+        request: VoiceActivityCaptureRequestV1,
+        frame_source: PcmFrameSource,
+        cancel_requested: Optional[CancelCheck | Any] = None,
+    ) -> VoiceActivityStreamCalibration:
+        """Calibrate one already-open PCM stream without closing or capturing it."""
+
+        try:
+            request = validate_voice_activity_request(request)
+        except (TypeError, ValueError) as error:
+            return VoiceActivityStreamCalibration(
+                False,
+                "invalid_calibration_request",
+                error_code="invalid_calibration_request",
+                error_message=str(error),
+            )
+        if self.state != VAD_STATE_READY:
+            return VoiceActivityStreamCalibration(
+                False,
+                "not_ready",
+                error_code="voice_activity_capture_not_ready",
+                error_message="voice activity capture is not ready",
+            )
+        if not request.calibration_enabled or request.calibration_duration_seconds <= 0:
+            return VoiceActivityStreamCalibration(
+                True,
+                "manual_thresholds",
+                thresholds=manual_thresholds(request),
+            )
+
+        self.state = VAD_STATE_BUSY
+        frame_seconds = request.frame_duration_ms / 1000.0
+        frame_count = max(
+            1,
+            math.ceil(request.calibration_duration_seconds / frame_seconds),
+        )
+        samples_per_frame = pcm_frame_sample_count(
+            request.sample_rate_hz,
+            request.frame_duration_ms,
+        )
+        frame_bytes = samples_per_frame * request.channels * request.sample_width_bytes
+        levels: list[float] = []
+        try:
+            for _ in range(frame_count):
+                if _is_cancelled(cancel_requested):
+                    return VoiceActivityStreamCalibration(
+                        False,
+                        VAD_STATUS_CANCELLED,
+                        frame_count=len(levels),
+                        duration_seconds=round(len(levels) * frame_seconds, 6),
+                        error_code=VAD_STATUS_CANCELLED,
+                        error_message="voice activity calibration cancelled",
+                    )
+                try:
+                    frame = frame_source.read_frame(
+                        frame_bytes,
+                        request.frame_read_timeout_seconds,
+                    )
+                except TimeoutError:
+                    return VoiceActivityStreamCalibration(
+                        False,
+                        VAD_STATUS_TIMEOUT,
+                        frame_count=len(levels),
+                        duration_seconds=round(len(levels) * frame_seconds, 6),
+                        error_code=VAD_STATUS_TIMEOUT,
+                        error_message="pcm frame read timeout during calibration",
+                    )
+                except (EOFError, OSError, RuntimeError) as error:
+                    return VoiceActivityStreamCalibration(
+                        False,
+                        VAD_STATUS_DEVICE_ERROR,
+                        frame_count=len(levels),
+                        duration_seconds=round(len(levels) * frame_seconds, 6),
+                        error_code=VAD_STATUS_DEVICE_ERROR,
+                        error_message=f"pcm_stream_error:{error.__class__.__name__}",
+                    )
+                if not isinstance(frame, (bytes, bytearray)) or len(frame) != frame_bytes:
+                    return VoiceActivityStreamCalibration(
+                        False,
+                        VAD_STATUS_INVALID_AUDIO,
+                        frame_count=len(levels),
+                        duration_seconds=round(len(levels) * frame_seconds, 6),
+                        error_code=VAD_STATUS_INVALID_AUDIO,
+                        error_message="invalid PCM frame during calibration",
+                    )
+                try:
+                    signal = analyze_pcm_audio(bytes(frame), request.sample_width_bytes)
+                except ValueError as error:
+                    return VoiceActivityStreamCalibration(
+                        False,
+                        VAD_STATUS_INVALID_AUDIO,
+                        frame_count=len(levels),
+                        duration_seconds=round(len(levels) * frame_seconds, 6),
+                        error_code=VAD_STATUS_INVALID_AUDIO,
+                        error_message=str(error),
+                    )
+                levels.append(float(signal["rms_amplitude"]))
+            statistics = calculate_ambient_statistics(levels)
+            thresholds = derive_thresholds(statistics, request)
+            return VoiceActivityStreamCalibration(
+                True,
+                "calibrated",
+                frame_count=len(levels),
+                duration_seconds=round(len(levels) * frame_seconds, 6),
+                ambient_statistics=statistics,
+                thresholds=thresholds,
+            )
+        except ValueError as error:
+            return VoiceActivityStreamCalibration(
+                False,
+                VAD_STATUS_INVALID_AUDIO,
+                frame_count=len(levels),
+                duration_seconds=round(len(levels) * frame_seconds, 6),
+                error_code=VAD_STATUS_INVALID_AUDIO,
+                error_message=str(error),
+            )
+        finally:
+            self.state = VAD_STATE_READY
 
     def execute(
         self,
@@ -139,6 +272,10 @@ class RmsVoiceActivityCapture:
         wait_frames = max(1, math.ceil(request.speech_wait_timeout_seconds / frame_seconds))
         maximum_frames = max(1, math.ceil(request.maximum_utterance_seconds / frame_seconds))
         silence_frames = max(1, math.ceil(request.silence_duration_seconds / frame_seconds))
+        speech_end_padding_frames = max(
+            0,
+            math.ceil(request.speech_end_padding_seconds / frame_seconds),
+        )
         calibration_frames = (
             max(1, math.ceil(request.calibration_duration_seconds / frame_seconds))
             if request.calibration_enabled
@@ -432,10 +569,15 @@ class RmsVoiceActivityCapture:
                     silence_frames,
                     request.required_silence_frames,
                 ):
-                    trailing_silence_frames_trimmed = consecutive_below_silence
-                    retained_pending = pending_silence[
-                        :-trailing_silence_frames_trimmed
-                    ]
+                    trailing_silence_frames_trimmed = max(
+                        0,
+                        consecutive_below_silence - speech_end_padding_frames,
+                    )
+                    retained_pending = (
+                        pending_silence[:-trailing_silence_frames_trimmed]
+                        if trailing_silence_frames_trimmed
+                        else list(pending_silence)
+                    )
                     captured.extend(item[0] for item in retained_pending)
                     retained_speech_levels = [
                         level
@@ -450,7 +592,7 @@ class RmsVoiceActivityCapture:
                             retained_pending[-1][2],
                         )
                     stop_reason = VAD_STATUS_COMPLETED_AFTER_SILENCE
-                    silence_at_stop = trailing_silence_frames_trimmed * frame_seconds
+                    silence_at_stop = consecutive_below_silence * frame_seconds
                     _record_transition(
                         transitions,
                         DETECTION_STATE_POSSIBLE_SILENCE,
@@ -631,6 +773,7 @@ class RmsVoiceActivityCapture:
                 "speech_start_status": VAD_STATUS_SPEECH_DETECTED,
                 "silence_frames_required": silence_frames,
                 "pre_roll_frames": pre_roll_frames,
+                "speech_end_padding_frames": speech_end_padding_frames,
                 "pre_roll_frames_retained": pre_roll_frames_retained,
                 "speech_frames_retained": speech_frame_count,
                 "possible_silence_frames_retained": possible_silence_frames_retained,
@@ -806,6 +949,8 @@ def validate_voice_activity_request(
         raise ValueError("maximum_utterance_seconds_out_of_range")
     if not 0.0 <= request.pre_roll_seconds <= 2.0:
         raise ValueError("pre_roll_seconds_out_of_range")
+    if not 0.0 <= request.speech_end_padding_seconds <= request.silence_duration_seconds:
+        raise ValueError("speech_end_padding_seconds_out_of_range")
     if not 0.01 <= request.frame_read_timeout_seconds <= 30.0:
         raise ValueError("frame_read_timeout_seconds_out_of_range")
     if not 0.0 <= request.duration_loss_tolerance_seconds <= 2.0:

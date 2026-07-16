@@ -34,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=defaults.minimum_recognition_confidence,
     )
+    parser.add_argument(
+        "--wake-medium-confidence",
+        type=float,
+        default=defaults.medium_recognition_confidence,
+    )
     parser.add_argument("--language", default=defaults.language)
     parser.add_argument("--diagnostic-wake", action="store_true")
     parser.add_argument("--retain-diagnostic-audio", action="store_true")
@@ -65,6 +70,7 @@ def run_diagnostic(
         microphone_device=args.microphone_device,
         vosk_model_path=str(standby_voice._repo_path(args.vosk_model)),
         minimum_recognition_confidence=args.wake_min_confidence,
+        medium_recognition_confidence=args.wake_medium_confidence,
         language=args.language,
         diagnostic_wake=True,
         retain_diagnostic_audio=bool(args.retain_diagnostic_audio),
@@ -172,10 +178,13 @@ def _rejection_suggestion(reason: str, *, normalized_transcript: str = "") -> st
             "say only 'Ares' once, then remain silent; [unk] and unrelated words are rejected"
         ),
         "exact_constrained_phrase_not_matched": (
-            "say one configured phrase: 'Ares', 'Hey Ares', or 'Okay Ares'"
+            "say one configured phrase: 'Ares', 'Hey Ares', 'Hello Ares', or 'Wake up Ares'"
         ),
-        "wake_confidence_below_threshold": (
+        "wake_confidence_below_medium_threshold": (
             "speak clearly and closer to the microphone; confidence was below the safe threshold"
+        ),
+        "medium_confidence_confirmation_required": (
+            "repeat the same configured wake phrase once within the bounded confirmation window"
         ),
         "missing_word_confidence": (
             "the recognizer returned no usable word confidence, so activation was refused"

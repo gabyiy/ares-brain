@@ -60,8 +60,8 @@ def test_unrelated_standby_speech_is_silently_rejected_without_core_route(tmp_pa
         "ARES.",
         "Hey, Ares",
         "Hey Aris",
-        "Okay Ares",
-        "Okay, Aris",
+        "Hello Aries",
+        "Wake up, Aris",
     ],
 )
 def test_verified_wake_phrase_activates_and_acknowledges_exactly_once(phrase, tmp_path):
@@ -87,6 +87,7 @@ def test_constrained_aris_alias_activates_once_without_core_routing(tmp_path):
     assert runtime.snapshot().activation_count == 1
     assert runtime.snapshot().command_count == 0
     assert output.texts == ["Yes Gabi."]
+    assert wake.snapshot().stream_active is False
 
     active.push("calculate 2 plus 2")
     command = runtime.poll_once()
@@ -99,11 +100,29 @@ def test_constrained_aris_alias_activates_once_without_core_routing(tmp_path):
     assert standby.data["core_service_bypassed"] is True
     assert runtime.session_manager.session_id == ""
     assert wake.snapshot().listener_state == "ready"
-    wake.push("okay ares")
+    assert wake.snapshot().stream_active is True
+    wake.push("hello ares")
     assert runtime.poll_once().status == "activated"
     assert runtime.session_manager.session_id != first_session
     active.push("shutdown Aris")
     assert runtime.poll_once().status == "stopped"
+
+
+def test_runtime_serializes_standby_and_active_microphone_ownership(tmp_path):
+    runtime, active, _, wake = _runtime(tmp_path)
+    runtime.start()
+    initial = wake.snapshot()
+    assert initial.stream_active
+    assert initial.stream_open_count == 1
+    wake.push("Aries")
+    assert runtime.poll_once().status == "activated"
+    assert not wake.snapshot().stream_active
+    active.push("goodbye Aries")
+    assert runtime.poll_once().status == "standby_entered"
+    resumed = wake.snapshot()
+    assert resumed.stream_active
+    assert resumed.stream_open_count == 2
+    assert resumed.stream_close_count == 1
 
 
 def test_active_repeated_activation_keeps_session_and_uses_active_acknowledgement(tmp_path):

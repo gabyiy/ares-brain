@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+import math
 import re
 import select
 import shutil
 import subprocess
 import tempfile
+from threading import RLock
 import time
 import wave
 from typing import Any, Dict, List, Optional, Sequence
@@ -17,6 +20,8 @@ from core.VoiceActivityDetection import (
     RmsVoiceActivityCapture,
     VAD_STATUS_DEVICE_ERROR,
     VAD_STATUS_INVALID_AUDIO,
+    VAD_STATUS_TIMEOUT,
+    VoiceActivityStreamCalibration,
     validate_voice_activity_request,
 )
 from core.WavAudio import (
@@ -78,6 +83,20 @@ class CaptureStagePaths:
     raw: Path
     assembled: Path
     normalized: Path
+
+
+@dataclass
+class PersistentPcmStreamHandle:
+    """One explicitly owned ALSA PCM stream used across bounded VAD polls."""
+
+    stream_id: str
+    owner: str
+    requested_device: str
+    resolved_device: str
+    command: tuple[str, ...]
+    frame_source: Any
+    opened_at: float
+    closed: bool = False
 
 
 class SafeSubprocessRunner:
@@ -196,10 +215,17 @@ class SafePcmStreamRunner:
 class DiagnosticPcmFrameSource:
     """Bounded tee used only when owner-requested audio diagnostics are enabled."""
 
-    def __init__(self, source: Any, maximum_bytes: int):
+    def __init__(
+        self,
+        source: Any,
+        maximum_bytes: int,
+        *,
+        close_source: bool = True,
+    ):
         self.source = source
         self.maximum_bytes = max(1, int(maximum_bytes))
         self.captured = bytearray()
+        self.close_source = bool(close_source)
 
     def read_frame(self, frame_bytes: int, timeout_seconds: float) -> bytes:
         frame = self.source.read_frame(frame_bytes, timeout_seconds)
@@ -209,6 +235,66 @@ class DiagnosticPcmFrameSource:
         return frame
 
     def close(self) -> None:
+        if self.close_source:
+            self.source.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.source, name)
+
+
+class RollingPcmFrameSource:
+    """Bounded replay of recent live frames across foreground VAD windows."""
+
+    def __init__(self, source: Any, *, maximum_history_frames: int = 100):
+        if maximum_history_frames < 1 or maximum_history_frames > 250:
+            raise ValueError("maximum_history_frames must be between 1 and 250")
+        self.source = source
+        self.maximum_history_frames = int(maximum_history_frames)
+        self._history: deque[bytes] = deque(maxlen=self.maximum_history_frames)
+        self._replay: deque[bytes] = deque()
+        self.live_frame_count = 0
+        self.replayed_frame_count = 0
+        self.closed = False
+
+    def begin_window(self, pre_roll_frames: int) -> int:
+        count = max(0, min(int(pre_roll_frames), self.maximum_history_frames))
+        retained = list(self._history)[-count:] if count else []
+        self._replay = deque(retained)
+        return len(retained)
+
+    def read_frame(self, frame_bytes: int, timeout_seconds: float) -> bytes:
+        if self.closed:
+            raise EOFError("persistent PCM stream is closed")
+        if self._replay:
+            frame = self._replay.popleft()
+            if len(frame) != frame_bytes:
+                raise ValueError("replayed PCM frame size changed")
+            self.replayed_frame_count += 1
+            return frame
+        frame = self.source.read_frame(frame_bytes, timeout_seconds)
+        self._history.append(bytes(frame))
+        self.live_frame_count += 1
+        return frame
+
+    def clear_history(self) -> None:
+        self._history.clear()
+        self._replay.clear()
+
+    def snapshot(self) -> Dict[str, int | bool]:
+        return {
+            "history_frame_count": len(self._history),
+            "pending_replay_frame_count": len(self._replay),
+            "live_frame_count": self.live_frame_count,
+            "replayed_frame_count": self.replayed_frame_count,
+            "closed": self.closed,
+        }
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self._history.clear()
+        self._replay.clear()
         self.source.close()
 
     def __getattr__(self, name: str) -> Any:
@@ -219,8 +305,8 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
     """Linux ALSA microphone adapter backed by arecord.
 
     This adapter is hardware-specific and remains outside the Brain. It performs
-    one-shot capture only; it does not start STT, wake-word detection, background
-    listeners, internet access, or speaker output.
+    bounded one-shot capture and an explicitly owned foreground PCM stream. It
+    does not start STT, classify wake words, access the internet, or emit audio.
     """
 
     def __init__(
@@ -258,7 +344,12 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         self.read_count = 0
         self.record_count = 0
         self.audio_hardware_accessed = False
+        self._stream_lock = RLock()
         self._active_stream: Optional[Any] = None
+        self._active_stream_owner = ""
+        self._persistent_stream: Optional[PersistentPcmStreamHandle] = None
+        self.persistent_stream_open_count = 0
+        self.persistent_stream_close_count = 0
 
     def start(self) -> MicrophoneResult:
         self.start_count += 1
@@ -292,13 +383,198 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         )
 
     def cancel_current(self) -> None:
-        stream = self._active_stream
-        self._active_stream = None
+        with self._stream_lock:
+            stream = self._active_stream
+            handle = self._persistent_stream
+            self._active_stream = None
+            self._active_stream_owner = ""
+            self._persistent_stream = None
         if stream is not None:
             try:
                 stream.close()
             except (OSError, RuntimeError):
                 pass
+        if handle is not None and not handle.closed:
+            handle.closed = True
+            self.persistent_stream_close_count += 1
+
+    def open_persistent_stream(
+        self,
+        *,
+        owner: str,
+        device: Optional[str] = None,
+    ) -> PersistentPcmStreamHandle:
+        """Open one canonical raw PCM stream for a named foreground owner."""
+
+        clean_owner = _normalize_stream_owner(owner)
+        requested_device = (
+            _normalize_optional_device(device) if device is not None else self.device
+        )
+        resolved_device = resolve_alsa_capture_device(
+            requested_device,
+            require_conversion=True,
+        )
+        with self._stream_lock:
+            current = self._persistent_stream
+            if (
+                current is not None
+                and not current.closed
+                and current.owner == clean_owner
+                and current.resolved_device == (resolved_device or "")
+            ):
+                return current
+            if self._active_stream is not None:
+                raise RuntimeError(
+                    "microphone_capture_already_owned:"
+                    f"{self._active_stream_owner or 'unknown'}"
+                )
+            if not self.started:
+                raise RuntimeError("microphone_not_started")
+            if self.sample_format.upper() != DEFAULT_ALSA_SAMPLE_FORMAT:
+                raise ValueError("persistent_pcm_stream_requires_s16_le")
+            arecord_path = self._find_arecord()
+            if not arecord_path:
+                raise FileNotFoundError("arecord_missing")
+            command = self._stream_command(
+                arecord_path=arecord_path,
+                device=resolved_device,
+            )
+            raw_source = self.stream_runner.start(command)
+            source = RollingPcmFrameSource(raw_source)
+            self.persistent_stream_open_count += 1
+            handle = PersistentPcmStreamHandle(
+                stream_id=f"alsa-pcm-stream-{self.persistent_stream_open_count}",
+                owner=clean_owner,
+                requested_device=requested_device or "",
+                resolved_device=resolved_device or "",
+                command=tuple(command),
+                frame_source=source,
+                opened_at=time.monotonic(),
+            )
+            self._active_stream = source
+            self._active_stream_owner = clean_owner
+            self._persistent_stream = handle
+            self.audio_hardware_accessed = True
+            return handle
+
+    def close_persistent_stream(
+        self,
+        handle: PersistentPcmStreamHandle,
+        *,
+        owner: str,
+    ) -> MicrophoneResult:
+        clean_owner = _normalize_stream_owner(owner)
+        if not isinstance(handle, PersistentPcmStreamHandle):
+            return self._failure(
+                status="invalid_stream_handle",
+                text="Persistent ALSA stream handle is invalid.",
+                error_message="invalid_persistent_pcm_stream_handle",
+            )
+        with self._stream_lock:
+            if handle.closed:
+                return self._success(
+                    status="already_closed",
+                    text="Persistent ALSA stream was already closed.",
+                )
+            if handle.owner != clean_owner:
+                return self._failure(
+                    status="stream_owner_mismatch",
+                    text="Persistent ALSA stream owner did not match.",
+                    error_message="persistent_pcm_stream_owner_mismatch",
+                )
+            if self._persistent_stream is not handle:
+                return self._failure(
+                    status="stream_not_active",
+                    text="Persistent ALSA stream is not the active stream.",
+                    error_message="persistent_pcm_stream_not_active",
+                )
+            self._active_stream = None
+            self._active_stream_owner = ""
+            self._persistent_stream = None
+        try:
+            handle.frame_source.close()
+        except (OSError, RuntimeError) as error:
+            handle.closed = True
+            self.persistent_stream_close_count += 1
+            return self._failure(
+                status="stream_close_failed",
+                text="Persistent ALSA stream failed to close cleanly.",
+                error_message=f"{error.__class__.__name__}:{str(error)[:120]}",
+            )
+        handle.closed = True
+        self.persistent_stream_close_count += 1
+        return self._success(
+            status="closed",
+            text="Persistent ALSA stream closed.",
+            data={"stream_id": handle.stream_id, "owner": clean_owner},
+        )
+
+    def persistent_stream_snapshot(self) -> Dict[str, Any]:
+        with self._stream_lock:
+            handle = self._persistent_stream
+            frame_source = handle.frame_source if handle is not None else None
+            rolling = getattr(frame_source, "snapshot", None)
+            return {
+                "active": bool(handle is not None and not handle.closed),
+                "stream_id": handle.stream_id if handle is not None else "",
+                "owner": self._active_stream_owner,
+                "requested_device": handle.requested_device if handle is not None else "",
+                "resolved_device": handle.resolved_device if handle is not None else "",
+                "open_count": self.persistent_stream_open_count,
+                "close_count": self.persistent_stream_close_count,
+                "rolling_pre_roll": rolling() if callable(rolling) else {},
+                "shell": False,
+                "safe": True,
+            }
+
+    def calibrate_persistent_stream(
+        self,
+        handle: PersistentPcmStreamHandle,
+        request: VoiceActivityCaptureRequestV1,
+        *,
+        cancel_requested: Optional[CancelCheck | Any] = None,
+    ) -> VoiceActivityStreamCalibration:
+        source = self._validated_persistent_stream(
+            handle,
+            requested_device=request.microphone_device,
+        )
+        return self.voice_activity_capture.calibrate_stream(
+            request,
+            source,
+            cancel_requested=cancel_requested,
+        )
+
+    def record_persistent_until_silence(
+        self,
+        handle: PersistentPcmStreamHandle,
+        output_path: str | Path,
+        **kwargs: Any,
+    ) -> VoiceActivityCaptureResultV1:
+        if "persistent_stream" in kwargs:
+            raise ValueError("persistent_stream is supplied by the stream handle")
+        frame_duration_ms = int(kwargs.get("frame_duration_ms", 20))
+        pre_roll_seconds = float(kwargs.get("pre_roll_seconds", 0.0))
+        pre_roll_frames = max(
+            0,
+            math.ceil(pre_roll_seconds / (frame_duration_ms / 1000.0)),
+        )
+        prepare = getattr(handle.frame_source, "begin_window", None)
+        if callable(prepare):
+            prepare(pre_roll_frames)
+        result = self.record_until_silence(
+            output_path,
+            persistent_stream=handle,
+            **kwargs,
+        )
+        if str(getattr(result, "status", "")) in {
+            VAD_STATUS_DEVICE_ERROR,
+            VAD_STATUS_INVALID_AUDIO,
+            VAD_STATUS_TIMEOUT,
+        }:
+            clear = getattr(handle.frame_source, "clear_history", None)
+            if callable(clear):
+                clear()
+        return result
 
     def read_chunk(
         self,
@@ -661,6 +937,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         speech_wait_timeout_seconds: float = 10.0,
         maximum_utterance_seconds: float = 15.0,
         pre_roll_seconds: float = 0.25,
+        speech_end_padding_seconds: float = 0.0,
         frame_duration_ms: int = 20,
         frame_read_timeout_seconds: float = 1.0,
         minimum_speech_start_rms: float = 200.0,
@@ -675,6 +952,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         cancel_requested: Optional[CancelCheck | Any] = None,
         correlation_id: str = "",
         session_id: str = "",
+        persistent_stream: Optional[PersistentPcmStreamHandle] = None,
     ) -> VoiceActivityCaptureResultV1:
         """Capture one foreground utterance and trim terminal silence."""
 
@@ -683,6 +961,8 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         requested_device = self.device
         resolved_device = self.device
         stage_paths: Optional[CaptureStagePaths] = None
+        stream: Optional[Any] = None
+        owns_stream = False
         try:
             requested_device = (
                 _normalize_optional_device(device) if device is not None else self.device
@@ -718,6 +998,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 speech_wait_timeout_seconds=speech_wait_timeout_seconds,
                 maximum_utterance_seconds=maximum_utterance_seconds,
                 pre_roll_seconds=pre_roll_seconds,
+                speech_end_padding_seconds=speech_end_padding_seconds,
                 frame_read_timeout_seconds=frame_read_timeout_seconds,
                 minimum_speech_start_rms=minimum_speech_start_rms,
                 maximum_speech_start_rms=maximum_speech_start_rms,
@@ -739,11 +1020,29 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 },
             )
             validate_voice_activity_request(request)
-            command = self._stream_command(
-                arecord_path=arecord_path,
-                device=resolved_device,
-            )
-            source = self.stream_runner.start(command)
+            if persistent_stream is not None:
+                source = self._validated_persistent_stream(
+                    persistent_stream,
+                    requested_device=requested_device,
+                )
+                requested_device = persistent_stream.requested_device
+                resolved_device = persistent_stream.resolved_device
+                command = list(persistent_stream.command)
+            else:
+                command = self._stream_command(
+                    arecord_path=arecord_path,
+                    device=resolved_device,
+                )
+                with self._stream_lock:
+                    if self._active_stream is not None:
+                        raise RuntimeError(
+                            "microphone_capture_already_owned:"
+                            f"{self._active_stream_owner or 'unknown'}"
+                        )
+                    source = self.stream_runner.start(command)
+                    self._active_stream = source
+                    self._active_stream_owner = "one_shot_voice_activity"
+                    owns_stream = True
             if diagnostic_audio:
                 maximum_seconds = (
                     (calibration_duration_seconds if calibration_enabled else 0.0)
@@ -759,18 +1058,22 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                         * CANONICAL_CHANNELS
                         * CANONICAL_SAMPLE_WIDTH_BYTES
                     ),
+                    close_source=owns_stream,
                 )
             else:
                 stream = source
-            self._active_stream = stream
             self.audio_hardware_accessed = True
             result = self.voice_activity_capture.execute(
                 request,
                 stream,
                 cancel_requested=cancel_requested,
             )
-            stream.close()
-            self._active_stream = None
+            if owns_stream:
+                stream.close()
+                with self._stream_lock:
+                    if self._active_stream is source:
+                        self._active_stream = None
+                        self._active_stream_owner = ""
             raw_wav_path = ""
             raw_wav: Dict[str, Any] = {}
             if diagnostic_audio and isinstance(stream, DiagnosticPcmFrameSource):
@@ -995,13 +1298,43 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 },
             )
         finally:
-            stream = self._active_stream
-            self._active_stream = None
-            if stream is not None:
+            if owns_stream:
+                with self._stream_lock:
+                    active = self._active_stream
+                    if active is not None:
+                        self._active_stream = None
+                        self._active_stream_owner = ""
+                stream_to_close = active or stream
+            else:
+                stream_to_close = (
+                    stream if isinstance(stream, DiagnosticPcmFrameSource) else None
+                )
+            if stream_to_close is not None:
                 try:
-                    stream.close()
+                    stream_to_close.close()
                 except (OSError, RuntimeError):
                     pass
+
+    def _validated_persistent_stream(
+        self,
+        handle: PersistentPcmStreamHandle,
+        *,
+        requested_device: Optional[str],
+    ) -> Any:
+        if not isinstance(handle, PersistentPcmStreamHandle) or handle.closed:
+            raise RuntimeError("persistent_pcm_stream_not_active")
+        with self._stream_lock:
+            if self._persistent_stream is not handle:
+                raise RuntimeError("persistent_pcm_stream_not_active")
+            if self._active_stream is not handle.frame_source:
+                raise RuntimeError("persistent_pcm_stream_source_mismatch")
+            resolved = resolve_alsa_capture_device(
+                requested_device,
+                require_conversion=True,
+            )
+            if (resolved or "") != handle.resolved_device:
+                raise RuntimeError("persistent_pcm_stream_device_mismatch")
+            return handle.frame_source
 
     def _find_arecord(self) -> str:
         found = self.runner.which(self.arecord_command)
@@ -1189,6 +1522,13 @@ def _normalize_optional_device(device: Optional[str]) -> Optional[str]:
     if not re.fullmatch(r"[A-Za-z0-9_.,:+\-=]+", clean):
         raise ValueError("invalid ALSA device identifier")
     return clean
+
+
+def _normalize_stream_owner(value: Any) -> str:
+    owner = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", owner):
+        raise ValueError("persistent PCM stream owner is invalid")
+    return owner
 
 
 def _device_looks_like_hw(device: str) -> bool:

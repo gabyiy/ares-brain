@@ -11,6 +11,7 @@ from uuid import uuid4
 from core.AresIdentity import (
     DEFAULT_ARES_NAME_ALIASES,
     canonicalize_ares_name_tokens,
+    match_ares_alias_phrase,
     normalize_spoken_phrase,
     validate_ares_name_aliases,
 )
@@ -298,7 +299,16 @@ class BrainRuntime:
         self.input_adapter = input_adapter
         self.output_adapter = output_adapter
         if standby_wake_listener is not None:
-            required_wake_methods = ("start", "listen_once", "cancel", "stop", "snapshot", "health")
+            required_wake_methods = (
+                "start",
+                "enter_standby",
+                "leave_standby",
+                "listen_once",
+                "cancel",
+                "stop",
+                "snapshot",
+                "health",
+            )
             missing_wake_methods = [
                 name for name in required_wake_methods if not callable(getattr(standby_wake_listener, name, None))
             ]
@@ -422,6 +432,11 @@ class BrainRuntime:
             shutdown_phrases=self.config.shutdown_phrases,
             ares_name_aliases=self.config.ares_name_aliases,
         )
+        activation_match = match_ares_alias_phrase(
+            text,
+            self.config.activation_phrases,
+            self.config.ares_name_aliases,
+        )
         normalized = control.canonicalized_input
         state = self.session_manager.state
         category = RUNTIME_COMMAND_ORDINARY
@@ -434,9 +449,10 @@ class BrainRuntime:
         elif control.action == LIFECYCLE_ACTION_STANDBY:
             category = RUNTIME_COMMAND_STANDBY
             matched = control.matched_phrase
-        elif normalized in self.config.activation_phrases:
+        elif activation_match:
             category = RUNTIME_COMMAND_ACTIVATION
-            matched = normalized
+            normalized = activation_match
+            matched = activation_match
         return BrainRuntimeCommandClassificationV1(
             success=True,
             status="classified",
@@ -794,11 +810,38 @@ class BrainRuntime:
         state = self.session_manager.state
         self._publish(EVENT_ACTIVATION_REQUESTED, correlation, {"state": state})
         if state == BRAIN_STANDBY:
+            if self.standby_wake_listener is not None:
+                released = self.standby_wake_listener.leave_standby(
+                    "runtime_activation_requested"
+                )
+                if not bool(getattr(released, "success", False)):
+                    self._publish(
+                        EVENT_ACTIVATION_REJECTED,
+                        correlation,
+                        {"state": state, "reason": "standby_stream_release_failed"},
+                    )
+                    return self._result(
+                        False,
+                        "activation_rejected",
+                        correlation_id=correlation,
+                        command_category=RUNTIME_COMMAND_ACTIVATION,
+                        normalized_input=classification.normalized_input,
+                        error_code="standby_stream_release_failed",
+                        error_message=str(
+                            getattr(released, "error_message", "")
+                            or getattr(released, "status", "")
+                            or "standby capture could not be released"
+                        )[:160],
+                    )
             activated = self.session_manager.activate_session(
                 correlation_id=correlation,
                 reason="runtime_activation_phrase",
             )
             if not activated.success:
+                if self.standby_wake_listener is not None:
+                    self.standby_wake_listener.enter_standby(
+                        runtime_id=self.runtime_id
+                    )
                 self._publish(
                     EVENT_ACTIVATION_REJECTED,
                     correlation,
@@ -1078,6 +1121,36 @@ class BrainRuntime:
                     data={
                         "core_service_bypassed": bool(normalized_input),
                         "lifecycle_action": "standby" if normalized_input else "inactivity",
+                        "lifecycle_state_before": lifecycle_state_before,
+                        "session_id_before": session_id_before,
+                    },
+                )
+        if self.standby_wake_listener is not None:
+            entered = self.standby_wake_listener.enter_standby(
+                runtime_id=self.runtime_id
+            )
+            if not bool(getattr(entered, "success", False)):
+                return self._result(
+                    False,
+                    "standby_listener_failed",
+                    correlation_id=correlation,
+                    command_category=RUNTIME_COMMAND_STANDBY,
+                    normalized_input=normalized_input,
+                    stop_reason=reason,
+                    error_code=str(
+                        getattr(entered, "error_code", "")
+                        or "standby_listener_start_failed"
+                    ),
+                    error_message=str(
+                        getattr(entered, "error_message", "")
+                        or getattr(entered, "status", "")
+                        or "standby listener failed to resume"
+                    )[:160],
+                    data={
+                        "core_service_bypassed": bool(normalized_input),
+                        "lifecycle_action": (
+                            "standby" if normalized_input else "inactivity"
+                        ),
                         "lifecycle_state_before": lifecycle_state_before,
                         "session_id_before": session_id_before,
                     },

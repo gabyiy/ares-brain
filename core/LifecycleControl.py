@@ -5,7 +5,7 @@ from typing import Sequence
 
 from core.AresIdentity import (
     DEFAULT_ARES_NAME_ALIASES,
-    canonicalize_ares_name_tokens,
+    match_ares_alias_phrase,
     normalize_spoken_phrase,
 )
 
@@ -38,31 +38,35 @@ def classify_lifecycle_control(
     """Classify only a complete, configured lifecycle-control phrase."""
 
     cleaned = normalize_spoken_phrase(text)
-    canonicalized = canonicalize_ares_name_tokens(cleaned, ares_name_aliases)
     standby = {
-        canonicalize_ares_name_tokens(value, ares_name_aliases)
+        match_ares_alias_phrase(value, (value,), ares_name_aliases)
         for value in standby_phrases
     }
     shutdown = {
-        canonicalize_ares_name_tokens(value, ares_name_aliases)
+        match_ares_alias_phrase(value, (value,), ares_name_aliases)
         for value in shutdown_phrases
     }
+    standby.discard("")
+    shutdown.discard("")
     if standby & shutdown:
         raise ValueError("standby and shutdown lifecycle phrases must not overlap")
-    if canonicalized in shutdown:
+    shutdown_match = match_ares_alias_phrase(cleaned, tuple(shutdown), ares_name_aliases)
+    standby_match = match_ares_alias_phrase(cleaned, tuple(standby), ares_name_aliases)
+    canonicalized = shutdown_match or standby_match or cleaned
+    if shutdown_match:
         return LifecycleControlClassification(
             cleaned_input=cleaned,
             canonicalized_input=canonicalized,
             action=LIFECYCLE_ACTION_SHUTDOWN,
-            matched_phrase=canonicalized,
+            matched_phrase=shutdown_match,
             routing_reason="exact_shutdown_phrase_after_alias_canonicalization",
         )
-    if canonicalized in standby:
+    if standby_match:
         return LifecycleControlClassification(
             cleaned_input=cleaned,
             canonicalized_input=canonicalized,
             action=LIFECYCLE_ACTION_STANDBY,
-            matched_phrase=canonicalized,
+            matched_phrase=standby_match,
             routing_reason="exact_standby_phrase_after_alias_canonicalization",
         )
     return LifecycleControlClassification(

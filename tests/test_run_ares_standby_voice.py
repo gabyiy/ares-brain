@@ -99,6 +99,9 @@ def test_production_standby_voice_cli_defaults_match_verified_raspberry_pi_stack
     assert args.speaker_device == "plughw:CARD=Device,DEV=0"
     assert args.vosk_model == "models/vosk/vosk-model-small-en-us-0.15"
     assert args.wake_min_confidence == 0.8
+    assert args.wake_medium_confidence == 0.72
+    assert args.wake_medium_confirmations == 2
+    assert args.wake_recalibration_seconds == 300.0
     assert args.command_whisper_model == "models/whisper/ggml-base.en.bin"
     assert args.voice_profile == "en_US-hfc_male-medium"
     assert args.inactivity_seconds == 30
@@ -115,6 +118,9 @@ def test_production_standby_voice_cli_supports_required_overrides():
             "--speaker-device", "plughw:CARD=Other,DEV=0",
             "--vosk-model", "models/vosk/custom",
             "--wake-min-confidence", "0.9",
+            "--wake-medium-confidence", "0.75",
+            "--wake-medium-confirmations", "3",
+            "--wake-recalibration-seconds", "600",
             "--command-whisper-command", "command-cli",
             "--command-whisper-model", "command.bin",
             "--voice-profile", "alternate",
@@ -128,6 +134,9 @@ def test_production_standby_voice_cli_supports_required_overrides():
     assert args.speaker_device == "plughw:CARD=Other,DEV=0"
     assert args.vosk_model == "models/vosk/custom"
     assert args.wake_min_confidence == 0.9
+    assert args.wake_medium_confidence == 0.75
+    assert args.wake_medium_confirmations == 3
+    assert args.wake_recalibration_seconds == 600
     assert args.command_whisper_model == "command.bin"
     assert args.voice_profile == "alternate"
     assert args.inactivity_seconds == 45
@@ -206,6 +215,8 @@ def test_deterministic_manual_wake_runtime_script_passes_and_is_hardware_free():
 def test_hardware_helper_is_bounded_and_uses_production_runtime_parser():
     defaults = manual_verify_standby_wake_hardware.build_parser().parse_args([])
     assert defaults.attempts_per_test == 3
+    assert defaults.wake_reliability_attempts == 0
+    assert defaults.verification_mode == "all"
     assert defaults.microphone_device == "plughw:2,0"
     assert defaults.vosk_model.endswith("vosk-model-small-en-us-0.15")
     output = []
@@ -249,6 +260,81 @@ def test_hardware_helper_stage_e_requires_bypass_and_does_not_retry_unknown_fall
     )
 
 
+class ReliabilityRuntime:
+    def __init__(self, accepted):
+        self.accepted = list(accepted)
+        self.index = 0
+        self.state = "STANDBY"
+        self.session_id = ""
+        self.standby_wake_listener = SimpleNamespace(
+            last_result=None,
+            last_diagnostics=None,
+        )
+
+    def snapshot(self):
+        return SimpleNamespace(
+            current_lifecycle_state=self.state,
+            session_id=self.session_id,
+        )
+
+    def poll_once(self):
+        accepted = self.accepted[self.index]
+        self.index += 1
+        self.standby_wake_listener.last_result = StandbyListenResultV1(
+            success=True,
+            status="wake_detected" if accepted else "non_wake_speech",
+            speech_detected=True,
+            wake_detected=accepted,
+            recognition_confidence=0.83 if accepted else 0.6,
+            recognition_confidence_available=True,
+            duration_seconds=0.8,
+            stream_open_count=self.index,
+            calibration_count=self.index,
+            candidate_number=self.index,
+        )
+        self.standby_wake_listener.last_diagnostics = WakeLocalDiagnostics(
+            raw_transcript="ares" if accepted else "go to",
+            beginning_clipped=False,
+        )
+        if accepted:
+            self.state = "ACTIVE"
+            self.session_id = f"reliability-session-{self.index}"
+        return SimpleNamespace(success=True, status="activated" if accepted else "standby_listening")
+
+    def handle_text(self, text):
+        assert text == "goodbye ares"
+        self.state = "STANDBY"
+        self.session_id = ""
+        return SimpleNamespace(success=True, status="standby_entered")
+
+
+def test_hardware_reliability_mode_reports_nine_of_ten_without_hiding_misses():
+    output = []
+    runtime = ReliabilityRuntime([True] * 9 + [False])
+    assert manual_verify_standby_wake_hardware._run_wake_reliability(
+        runtime,
+        10,
+        output_func=output.append,
+        diagnostic_enabled=True,
+        wake_transcripts=[],
+    )
+    assert any("9/10 accepted" in line for line in output)
+    assert any("rejected" in line for line in output)
+
+
+def test_hardware_reliability_mode_fails_below_nine_of_ten():
+    output = []
+    runtime = ReliabilityRuntime([True] * 8 + [False] * 2)
+    assert not manual_verify_standby_wake_hardware._run_wake_reliability(
+        runtime,
+        10,
+        output_func=output.append,
+        diagnostic_enabled=True,
+        wake_transcripts=[],
+    )
+    assert any("8/10 accepted" in line for line in output)
+
+
 def test_hardware_helper_active_summary_uses_active_diagnostics_not_stale_wake_result():
     output = []
     diagnostics = ActiveCommandLocalDiagnostics(
@@ -283,10 +369,10 @@ def test_hardware_helper_active_summary_uses_active_diagnostics_not_stale_wake_r
 
 def test_wake_diagnostic_rendering_is_explicit_and_prints_manual_playback_only():
     diagnostics = WakeLocalDiagnostics(
-        raw_transcript="Okay, Aris.",
-        normalized_transcript="okay aris",
-        selected_alias="aris",
-        selected_wake_phrase="okay aris",
+        raw_transcript="Hello, Aries.",
+        normalized_transcript="hello aries",
+        selected_alias="aries",
+        selected_wake_phrase="hello aries",
         canonical_wake_phrase="ares",
         classification_path="vosk_constrained_grammar",
         classification_reason="accepted_vosk_constrained_grammar",
@@ -298,7 +384,7 @@ def test_wake_diagnostic_rendering_is_explicit_and_prints_manual_playback_only()
         whisper_input_duration_seconds=0.8,
         capture_stop_reason="completed_after_silence",
         recognizer_name="vosk_constrained_grammar",
-        raw_recognition_result='[{"text": "okay aris"}]',
+        raw_recognition_result='[{"text": "hello aries"}]',
         recognition_status="wake_detected",
         recognition_confidence=0.94,
         recognition_confidence_available=True,
@@ -312,10 +398,10 @@ def test_wake_diagnostic_rendering_is_explicit_and_prints_manual_playback_only()
     )
     text = "\n".join(lines)
     assert "Recognizer used: vosk_constrained_grammar" in text
-    assert 'Raw recognition result: [{"text": "okay aris"}]' in text
-    assert "Normalized phrase: okay aris" in text
+    assert 'Raw recognition result: [{"text": "hello aries"}]' in text
+    assert "Normalized phrase: hello aries" in text
     assert "Confidence: 0.940" in text
-    assert "Selected alias: aris" in text
+    assert "Selected alias: aries" in text
     assert "Wake classification: accepted" in text
     assert "Classification path: vosk_constrained_grammar" in text
     assert "aplay -D" in text

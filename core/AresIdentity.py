@@ -7,7 +7,7 @@ import unicodedata
 
 
 CANONICAL_ARES_NAME = "ares"
-DEFAULT_ARES_NAME_ALIASES = (CANONICAL_ARES_NAME, "aris")
+DEFAULT_ARES_NAME_ALIASES = (CANONICAL_ARES_NAME, "aris", "aries")
 MAX_ARES_NAME_ALIASES = 8
 MAX_ARES_NAME_ALIAS_LENGTH = 24
 
@@ -108,3 +108,19 @@ def expand_ares_alias_phrases(
                 )
             )
     return tuple(dict.fromkeys(expanded))
+
+
+def match_ares_alias_phrase(
+    value: Any,
+    canonical_phrases: Sequence[str],
+    aliases: Sequence[str] = DEFAULT_ARES_NAME_ALIASES,
+) -> str:
+    """Return a canonical phrase only for an exact configured alias-slot match."""
+
+    normalized = normalize_spoken_phrase(value)
+    normalized_aliases = validate_ares_name_aliases(aliases)
+    for phrase in canonical_phrases:
+        canonical = canonicalize_ares_name_tokens(phrase, normalized_aliases)
+        if normalized in expand_ares_alias_phrases((canonical,), normalized_aliases):
+            return canonical
+    return ""

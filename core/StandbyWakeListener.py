@@ -44,7 +44,7 @@ WAKE_CATEGORY_SHUTDOWN = "shutdown"
 WAKE_CATEGORY_NON_WAKE = "non_wake"
 
 DEFAULT_WAKE_PHRASE_ALIASES = DEFAULT_ARES_NAME_ALIASES
-DEFAULT_WAKE_PHRASE_PREFIXES = ("", "hey", "okay")
+DEFAULT_WAKE_PHRASE_PREFIXES = ("", "hey", "hello", "wake up")
 DEFAULT_WAKE_FILLER_PREFIXES: tuple[str, ...] = ()
 DEFAULT_WAKE_PHRASES = tuple(
     " ".join(part for part in (prefix, alias) if part)
@@ -54,6 +54,7 @@ DEFAULT_WAKE_PHRASES = tuple(
 DEFAULT_WAKE_MICROPHONE_DEVICE = "plughw:2,0"
 DEFAULT_WAKE_VOSK_MODEL = "models/vosk/vosk-model-small-en-us-0.15"
 DEFAULT_WAKE_MINIMUM_CONFIDENCE = 0.8
+DEFAULT_WAKE_MEDIUM_CONFIDENCE = 0.72
 
 _CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
 _PREFIX_PATTERN = re.compile(r"^[a-z0-9]+(?: [a-z0-9]+){0,2}$")
@@ -98,6 +99,20 @@ class WakeLocalDiagnostics:
     recognition_confidence_available: bool = False
     recognition_processing_time_seconds: float = 0.0
     recognizer_model_path: str = ""
+    stream_open_count: int = 0
+    stream_close_count: int = 0
+    calibration_count: int = 0
+    candidate_number: int = 0
+    pre_roll_frames_retained: int = 0
+    expected_pre_roll_frames: int = 0
+    beginning_clipped: bool = False
+    first_speech_frame: int = 0
+    terminal_silence_duration_seconds: float = 0.0
+    vad_transitions: tuple[Dict[str, Any], ...] = ()
+    speech_to_activation_seconds: float = 0.0
+    confidence_tier: str = ""
+    confirmation_count: int = 0
+    confirmation_required_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -106,12 +121,16 @@ class WakeListenerConfig:
     microphone_device: str = DEFAULT_WAKE_MICROPHONE_DEVICE
     vosk_model_path: str = DEFAULT_WAKE_VOSK_MODEL
     minimum_recognition_confidence: float = DEFAULT_WAKE_MINIMUM_CONFIDENCE
+    medium_recognition_confidence: float = DEFAULT_WAKE_MEDIUM_CONFIDENCE
+    medium_confidence_confirmation_count: int = 2
+    medium_confidence_window_seconds: float = 8.0
     language: str = "en"
     wake_phrase_aliases: tuple[str, ...] = DEFAULT_WAKE_PHRASE_ALIASES
     wake_phrase_prefixes: tuple[str, ...] = DEFAULT_WAKE_PHRASE_PREFIXES
     filler_prefixes: tuple[str, ...] = DEFAULT_WAKE_FILLER_PREFIXES
     calibration_enabled: bool = True
-    calibration_duration_seconds: float = 0.75
+    calibration_duration_seconds: float = 0.6
+    recalibration_interval_seconds: float = 300.0
     speech_start_rms: float = 200.0
     speech_continue_rms: float = 160.0
     silence_rms: float = 120.0
@@ -122,12 +141,13 @@ class WakeListenerConfig:
     minimum_silence_rms: float = 120.0
     maximum_silence_rms: float = 600.0
     required_speech_frames: int = 2
-    required_continue_frames: int = 2
+    required_continue_frames: int = 3
     required_silence_frames: int = 5
     speech_wait_timeout_seconds: float = 3.0
     maximum_utterance_seconds: float = 2.0
-    silence_duration_seconds: float = 0.7
-    pre_roll_seconds: float = 0.25
+    silence_duration_seconds: float = 0.65
+    pre_roll_seconds: float = 0.4
+    speech_end_padding_seconds: float = 0.12
     frame_duration_ms: int = 20
     frame_read_timeout_seconds: float = 1.0
     playback_settle_delay_seconds: float = 0.35
@@ -182,6 +202,7 @@ class WakeListenerConfig:
         )
         numeric_bounds = {
             "calibration_duration_seconds": (0.0, 3.0),
+            "recalibration_interval_seconds": (0.0, 3600.0),
             "speech_start_rms": (1.0, 32767.0),
             "speech_continue_rms": (1.0, 32767.0),
             "silence_rms": (1.0, 32767.0),
@@ -195,11 +216,14 @@ class WakeListenerConfig:
             "maximum_utterance_seconds": (0.25, 5.0),
             "silence_duration_seconds": (0.1, 2.0),
             "pre_roll_seconds": (0.0, 0.75),
+            "speech_end_padding_seconds": (0.0, 0.5),
             "frame_read_timeout_seconds": (0.05, 3.0),
             "playback_settle_delay_seconds": (0.0, 3.0),
             "retry_delay_seconds": (0.0, 5.0),
             "duration_tolerance_seconds": (0.0, 0.5),
             "minimum_recognition_confidence": (0.5, 1.0),
+            "medium_recognition_confidence": (0.5, 1.0),
+            "medium_confidence_window_seconds": (1.0, 30.0),
         }
         for name, (minimum, maximum) in numeric_bounds.items():
             object.__setattr__(self, name, _bounded_number(getattr(self, name), name, minimum, maximum))
@@ -210,6 +234,7 @@ class WakeListenerConfig:
             ("frame_duration_ms", 10, 40),
             ("consecutive_failure_limit", 1, 10),
             ("maximum_retained_candidates", 1, 3),
+            ("medium_confidence_confirmation_count", 2, 3),
         ):
             object.__setattr__(self, name, _bounded_integer(getattr(self, name), name, minimum, maximum))
         if not self.speech_start_rms > self.speech_continue_rms >= self.silence_rms:
@@ -223,6 +248,14 @@ class WakeListenerConfig:
                 raise ValueError(f"{minimum_name} cannot exceed {maximum_name}")
         if self.calibration_enabled and self.calibration_duration_seconds <= 0:
             raise ValueError("calibration_duration_seconds must be positive when calibration is enabled")
+        if self.medium_recognition_confidence >= self.minimum_recognition_confidence:
+            raise ValueError(
+                "medium_recognition_confidence must be below minimum_recognition_confidence"
+            )
+        if self.speech_end_padding_seconds >= self.silence_duration_seconds:
+            raise ValueError(
+                "speech_end_padding_seconds must be below silence_duration_seconds"
+            )
 
     @classmethod
     def from_mapping(cls, value: Optional["WakeListenerConfig | Mapping[str, Any]"] = None) -> "WakeListenerConfig":
@@ -261,6 +294,12 @@ class StandbyWakeListener(Protocol):
         ...
 
     def listen_once(self, request: WakeListenerRequestV1) -> StandbyListenResultV1:
+        ...
+
+    def enter_standby(self, *, runtime_id: str = "") -> WakeListenerResultV1:
+        ...
+
+    def leave_standby(self, reason: str = "leaving_standby") -> WakeListenerResultV1:
         ...
 
     def cancel(self, reason: str = "cancelled") -> WakeListenerResultV1:
@@ -419,6 +458,10 @@ class QueuedStandbyWakeListener:
         self._speech_count = 0
         self._wake_count = 0
         self._failure_count = 0
+        self._stream_active = False
+        self._stream_open_count = 0
+        self._stream_close_count = 0
+        self._calibration_count = 0
         self._last_stop_reason = ""
         self.last_result: Optional[StandbyListenResultV1] = None
 
@@ -431,7 +474,28 @@ class QueuedStandbyWakeListener:
             self._runtime_id = str(runtime_id or self._runtime_id)
             self._cancelled = False
             self._state = WAKE_LISTENER_READY
-            return self._lifecycle(True, "started")
+        self.enter_standby(runtime_id=self._runtime_id)
+        return self._lifecycle(True, "started")
+
+    def enter_standby(self, *, runtime_id: str = "") -> WakeListenerResultV1:
+        with self._lock:
+            if runtime_id:
+                self._runtime_id = str(runtime_id)
+            if self._state == WAKE_LISTENER_STOPPED:
+                return self._lifecycle(False, "listener_not_started")
+            if not self._stream_active:
+                self._stream_active = True
+                self._stream_open_count += 1
+                self._calibration_count += 1
+            return self._lifecycle(True, "standby_stream_ready")
+
+    def leave_standby(self, reason: str = "leaving_standby") -> WakeListenerResultV1:
+        with self._lock:
+            if self._stream_active:
+                self._stream_active = False
+                self._stream_close_count += 1
+            self._last_stop_reason = str(reason or "leaving_standby")[:80]
+            return self._lifecycle(True, "standby_stream_closed")
 
     def health(self, *, runtime_id: str = "") -> WakeListenerResultV1:
         with self._lock:
@@ -510,6 +574,9 @@ class QueuedStandbyWakeListener:
 
     def cancel(self, reason: str = "cancelled") -> WakeListenerResultV1:
         with self._lock:
+            if self._stream_active:
+                self._stream_active = False
+                self._stream_close_count += 1
             self._cancelled = True
             self._state = WAKE_LISTENER_CANCELLING
             self._last_stop_reason = str(reason or "cancelled")[:80]
@@ -517,6 +584,9 @@ class QueuedStandbyWakeListener:
 
     def stop(self, reason: str = "stopped") -> WakeListenerResultV1:
         with self._lock:
+            if self._stream_active:
+                self._stream_active = False
+                self._stream_close_count += 1
             self._cancelled = True
             self._state = WAKE_LISTENER_STOPPED
             self._last_stop_reason = str(reason or "stopped")[:80]
@@ -536,6 +606,12 @@ class QueuedStandbyWakeListener:
                 speech_candidate_count=self._speech_count,
                 wake_detection_count=self._wake_count,
                 consecutive_failure_count=self._failure_count,
+                stream_open_count=self._stream_open_count,
+                stream_close_count=self._stream_close_count,
+                calibration_count=self._calibration_count,
+                candidate_count=self._listen_count,
+                stream_active=self._stream_active,
+                capture_owner="queued_standby" if self._stream_active else "",
                 last_stop_reason=self._last_stop_reason,
                 metadata={"safe": True},
             )

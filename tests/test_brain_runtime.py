@@ -214,7 +214,7 @@ def test_runtime_contracts_are_versioned_and_registered(contract_name, contract_
 def test_runtime_configuration_defaults_are_bounded_and_explicit():
     config = BrainRuntimeConfig()
 
-    assert config.ares_name_aliases == ("ares", "aris")
+    assert config.ares_name_aliases == ("ares", "aris", "aries")
     assert config.activation_phrases == ("ares", "hey ares", "hello ares", "wake up ares")
     assert config.standby_phrases == (
         "goodbye ares",
@@ -336,10 +336,11 @@ def test_runtime_alias_canonicalization_is_whole_token_only():
     assert runtime.classify_command("Aris").normalized_input == "ares"
     assert runtime.classify_command("goodbye Aris").normalized_input == "goodbye ares"
     assert runtime.classify_command("shutdown Aris").normalized_input == "shutdown ares"
-    for value in ("Paris", "Harris", "Aries"):
+    for value in ("Paris", "Harris", "various"):
         classification = runtime.classify_command(value)
         assert classification.normalized_input == value.casefold()
         assert classification.command_category == RUNTIME_COMMAND_ORDINARY
+    assert runtime.classify_command("Aries").normalized_input == "ares"
 
 
 def test_runtime_boots_once_through_manager_to_standby():
@@ -465,11 +466,13 @@ def test_unsupported_active_command_returns_safe_response_and_runtime_survives(t
     [
         "goodbye Ares",
         "goodbye, Aris",
+        "goodbye Aries",
         "go to standby Ares",
         "go to standby Aris",
         "go to sleep Ares",
         "standby Ares",
         "standby Aris",
+        "standby Aries",
         "sleep Ares",
     ],
 )
@@ -500,8 +503,10 @@ def test_standby_phrase_while_standby_is_noop_and_creates_no_session():
     [
         "shutdown Ares",
         "shutdown Aris",
+        "shutdown Aries",
         "shut down Ares",
         "shut down Aris",
+        "shut down Aries",
         "stop Ares completely",
     ],
 )
@@ -539,7 +544,8 @@ def test_goodbye_is_not_full_shutdown():
         "Ares remember this",
         "Paris",
         "Harris",
-        "Aries",
+        "tell me about Aries",
+        "what is the Aries zodiac sign",
         "please goodbye Ares now",
     ],
 )
@@ -574,7 +580,7 @@ def test_shutdown_alias_bypasses_core_route_and_releases_runtime():
     runtime, _ = _runtime(handler=lambda text: calls.append(text))
     _start_active(runtime)
 
-    result = runtime.handle_text("Shut down, Aris.")
+    result = runtime.handle_text("Shut down, Aries.")
 
     assert result.status == "stopped"
     assert result.normalized_input == "shut down ares"

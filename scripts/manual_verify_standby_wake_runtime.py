@@ -474,7 +474,7 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
             return 1
         output_func("Inactivity 30.000s: STANDBY; session cleared")
 
-        wake.push("okay Ares")
+        wake.push("hello Aries")
         runtime.poll_once()
         microphone.push_speech()
         whisper.push("shutdown Aris")

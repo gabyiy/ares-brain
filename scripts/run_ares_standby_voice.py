@@ -40,6 +40,7 @@ DEFAULT_MICROPHONE_DEVICE = _WAKE_DEFAULTS.microphone_device
 DEFAULT_SPEAKER_DEVICE = single_turn.DEFAULT_SPEAKER_DEVICE
 DEFAULT_WAKE_VOSK_MODEL = _WAKE_DEFAULTS.vosk_model_path
 DEFAULT_WAKE_MINIMUM_CONFIDENCE = _WAKE_DEFAULTS.minimum_recognition_confidence
+DEFAULT_WAKE_MEDIUM_CONFIDENCE = _WAKE_DEFAULTS.medium_recognition_confidence
 DEFAULT_COMMAND_WHISPER_COMMAND = single_turn.DEFAULT_WHISPER_COMMAND
 DEFAULT_COMMAND_WHISPER_MODEL = single_turn.DEFAULT_WHISPER_MODEL
 DEFAULT_VOICE_PROFILE = single_voice_launcher._configured_default_voice_profile()
@@ -59,6 +60,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--wake-min-confidence",
         type=float,
         default=DEFAULT_WAKE_MINIMUM_CONFIDENCE,
+    )
+    parser.add_argument(
+        "--wake-medium-confidence",
+        type=float,
+        default=DEFAULT_WAKE_MEDIUM_CONFIDENCE,
+    )
+    parser.add_argument(
+        "--wake-medium-confirmations",
+        type=int,
+        default=_WAKE_DEFAULTS.medium_confidence_confirmation_count,
+    )
+    parser.add_argument(
+        "--wake-recalibration-seconds",
+        type=float,
+        default=_WAKE_DEFAULTS.recalibration_interval_seconds,
     )
     parser.add_argument("--command-whisper-command", default=DEFAULT_COMMAND_WHISPER_COMMAND)
     parser.add_argument("--command-whisper-model", default=DEFAULT_COMMAND_WHISPER_MODEL)
@@ -137,6 +153,9 @@ def create_runtime(
         microphone_device=args.microphone_device,
         vosk_model_path=str(_repo_path(args.vosk_model)),
         minimum_recognition_confidence=args.wake_min_confidence,
+        medium_recognition_confidence=args.wake_medium_confidence,
+        medium_confidence_confirmation_count=args.wake_medium_confirmations,
+        recalibration_interval_seconds=args.wake_recalibration_seconds,
         language=args.language,
         wake_phrase_aliases=name_policy.aliases,
         playback_settle_delay_seconds=gate.settle_delay_seconds,
@@ -396,6 +415,9 @@ def render_wake_diagnostics(
         f"  Raw recognized phrase: {diagnostics.raw_transcript or '<empty>'}",
         f"  Normalized phrase: {diagnostics.normalized_transcript or '<empty>'}",
         f"  Confidence: {confidence}",
+        f"  Confidence tier: {diagnostics.confidence_tier or 'none'}",
+        "  Medium-confidence confirmation: "
+        f"{diagnostics.confirmation_count}/{diagnostics.confirmation_required_count}",
         f"  Selected alias: {diagnostics.selected_alias or 'none'}",
         f"  Selected wake phrase: {diagnostics.selected_wake_phrase or 'none'}",
         f"  Wake classification: {diagnostics.classification}",
@@ -403,6 +425,19 @@ def render_wake_diagnostics(
         f"  Classification reason: {diagnostics.classification_reason or 'none'}",
         f"  Rejection reason: {diagnostics.rejection_reason or 'none'}",
         f"  Candidate duration: {diagnostics.capture_duration_seconds:.3f}s",
+        f"  Candidate number: {diagnostics.candidate_number}",
+        f"  Stream open count: {diagnostics.stream_open_count}",
+        f"  Stream close count: {diagnostics.stream_close_count}",
+        f"  Calibration count: {diagnostics.calibration_count}",
+        "  Pre-roll frames retained: "
+        f"{diagnostics.pre_roll_frames_retained}/{diagnostics.expected_pre_roll_frames}",
+        f"  Beginning clipped: {'yes' if diagnostics.beginning_clipped else 'no'}",
+        f"  First speech frame: {diagnostics.first_speech_frame}",
+        "  Terminal silence duration: "
+        f"{diagnostics.terminal_silence_duration_seconds:.3f}s",
+        "  Speech-start to activation: "
+        f"{diagnostics.speech_to_activation_seconds:.3f}s",
+        f"  VAD transition count: {len(diagnostics.vad_transitions)}",
         f"  Raw capture duration: {diagnostics.raw_capture_duration_seconds:.3f}s",
         f"  Assembled duration: {diagnostics.assembled_duration_seconds:.3f}s",
         f"  Normalized duration: {diagnostics.normalized_duration_seconds:.3f}s",

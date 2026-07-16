@@ -368,6 +368,7 @@ class VoiceActivityCaptureRequestV1(VersionedContract):
     speech_wait_timeout_seconds: float = 10.0
     maximum_utterance_seconds: float = 15.0
     pre_roll_seconds: float = 0.25
+    speech_end_padding_seconds: float = 0.0
     frame_read_timeout_seconds: float = 1.0
     minimum_speech_start_rms: float = 200.0
     maximum_speech_start_rms: float = 1200.0
@@ -976,6 +977,12 @@ class WakeListenerSnapshotV1(VersionedContract):
     speech_candidate_count: int = 0
     wake_detection_count: int = 0
     consecutive_failure_count: int = 0
+    stream_open_count: int = 0
+    stream_close_count: int = 0
+    calibration_count: int = 0
+    candidate_count: int = 0
+    stream_active: bool = False
+    capture_owner: str = ""
     last_stop_reason: str = ""
     timestamp: str = field(default_factory=utc_contract_timestamp)
 
@@ -1019,6 +1026,18 @@ class StandbyListenResultV1(VersionedContract):
     recognition_confidence: Optional[float] = None
     recognition_confidence_available: bool = False
     recognition_processing_time_seconds: float = 0.0
+    confidence_tier: str = ""
+    confirmation_count: int = 0
+    confirmation_required_count: int = 0
+    stream_open_count: int = 0
+    stream_close_count: int = 0
+    calibration_count: int = 0
+    candidate_number: int = 0
+    pre_roll_frames_retained: int = 0
+    expected_pre_roll_frames: int = 0
+    first_speech_frame: int = 0
+    terminal_silence_duration_seconds: float = 0.0
+    speech_to_activation_seconds: float = 0.0
     sample_rate_hz: int = 0
     channels: int = 0
     sample_width_bytes: int = 0
@@ -1046,6 +1065,9 @@ class WakeRecognizerRequestV1(VersionedContract):
     shutdown_phrases: List[str] = field(default_factory=list)
     canonical_wake_phrase: str = "ares"
     minimum_confidence: float = 0.8
+    medium_confidence: float = 0.72
+    medium_confirmation_repetitions: int = 2
+    medium_confirmation_window_seconds: float = 8.0
     timeout_seconds: float = 3.0
 
 
@@ -1067,6 +1089,11 @@ class WakeRecognizerResultV1(VersionedContract):
     confidence: Optional[float] = None
     confidence_available: bool = False
     minimum_confidence: float = 0.0
+    medium_confidence: float = 0.0
+    confidence_tier: str = ""
+    confirmation_required: bool = False
+    confirmation_count: int = 0
+    confirmation_required_count: int = 0
     classification_reason: str = ""
     rejection_reason: str = ""
     unknown_token_detected: bool = False

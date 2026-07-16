@@ -29,7 +29,7 @@ SHUTDOWN = ("shutdown ares", "shut down ares")
         ("shutdown aris", "shutdown ares"),
         ("paris", "paris"),
         ("harris", "harris"),
-        ("aries", "aries"),
+        ("aries", "ares"),
     ],
 )
 def test_shared_name_policy_canonicalizes_complete_alias_tokens_only(text, expected):
@@ -52,6 +52,9 @@ def test_name_policy_is_immutable_normalized_and_requires_canonical_alias():
         "go to standby aris",
         "standby ares",
         "standby aris",
+        "goodbye aries",
+        "go to standby aries",
+        "standby aries",
     ],
 )
 def test_lifecycle_parser_accepts_exact_standby_alias_forms(text):
@@ -66,7 +69,14 @@ def test_lifecycle_parser_accepts_exact_standby_alias_forms(text):
 
 @pytest.mark.parametrize(
     "text",
-    ["shutdown ares", "shutdown aris", "shut down ares", "shut down aris"],
+    [
+        "shutdown ares",
+        "shutdown aris",
+        "shutdown aries",
+        "shut down ares",
+        "shut down aris",
+        "shut down aries",
+    ],
 )
 def test_lifecycle_parser_accepts_exact_shutdown_alias_forms(text):
     result = classify_lifecycle_control(

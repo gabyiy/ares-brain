@@ -38,6 +38,9 @@ class WakeRecognizerLocalDiagnostics:
     normalized_phrase: str = ""
     confidence: Optional[float] = None
     confidence_available: bool = False
+    confidence_tier: str = ""
+    confirmation_count: int = 0
+    confirmation_required_count: int = 0
     classification: str = "rejected"
     classification_reason: str = ""
     rejection_reason: str = ""
@@ -79,6 +82,8 @@ def classify_constrained_recognition(
     shutdown_phrases: Sequence[str] = (),
     canonical_wake_phrase: str = "ares",
     minimum_confidence: float = 0.8,
+    medium_confidence: float = 0.72,
+    medium_confirmation_repetitions: int = 2,
     recognizer_name: str = "vosk_constrained_grammar",
     runtime_id: str = "",
     lifecycle_state: str = "STANDBY",
@@ -94,6 +99,15 @@ def classify_constrained_recognition(
     """
 
     threshold = _bounded_confidence(minimum_confidence)
+    medium_threshold = _bounded_confidence(medium_confidence)
+    if medium_threshold >= threshold:
+        raise ValueError("medium_confidence must be below minimum_confidence")
+    if (
+        isinstance(medium_confirmation_repetitions, bool)
+        or not isinstance(medium_confirmation_repetitions, int)
+        or not 2 <= medium_confirmation_repetitions <= 3
+    ):
+        raise ValueError("medium_confirmation_repetitions must be between 2 and 3")
     normalized = normalize_wake_phrase(recognized_text)
     wake = _normalized_unique(wake_phrases, "wake_phrases", required=True)
     aliases = _normalized_unique(wake_phrase_aliases, "wake_phrase_aliases", required=True)
@@ -136,6 +150,8 @@ def classify_constrained_recognition(
     matched = ""
     selected_alias = ""
     wake_detected = False
+    confidence_tier = ""
+    confirmation_required = False
     rejection_reason = ""
     reason = ""
 
@@ -148,6 +164,15 @@ def classify_constrained_recognition(
         if normalized in wake
         else WAKE_CATEGORY_NON_WAKE
     )
+    if confidence_value is None:
+        confidence_tier = "missing"
+    elif confidence_value >= threshold:
+        confidence_tier = "high"
+    elif confidence_value >= medium_threshold:
+        confidence_tier = "medium"
+    else:
+        confidence_tier = "low"
+
     if unknown:
         rejection_reason = reason = "unknown_token_result"
     elif intended_category == WAKE_CATEGORY_NON_WAKE:
@@ -158,8 +183,25 @@ def classify_constrained_recognition(
         rejection_reason = reason = "missing_word_confidence"
     elif tuple(normalized.split()) != tuple(normalized_words):
         rejection_reason = reason = "recognition_word_result_mismatch"
-    elif confidence_value is None or confidence_value < threshold:
-        rejection_reason = reason = "wake_confidence_below_threshold"
+    elif confidence_value is None:
+        rejection_reason = reason = "missing_word_confidence"
+    elif confidence_value < medium_threshold:
+        rejection_reason = reason = "wake_confidence_below_medium_threshold"
+    elif confidence_value < threshold:
+        if intended_category == WAKE_CATEGORY_ACTIVATION:
+            matched = normalized
+            selected_alias = next(
+                (alias for alias in aliases if alias in normalized.split()),
+                "",
+            )
+            confirmation_required = bool(selected_alias)
+            rejection_reason = reason = (
+                "medium_confidence_confirmation_required"
+                if selected_alias
+                else "wake_alias_missing"
+            )
+        else:
+            rejection_reason = reason = "control_confidence_below_high_threshold"
     else:
         category = intended_category
         matched = normalized
@@ -202,6 +244,13 @@ def classify_constrained_recognition(
         confidence=(round(confidence_value, 6) if confidence_value is not None else None),
         confidence_available=bool(confidences) and not confidence_error,
         minimum_confidence=threshold,
+        medium_confidence=medium_threshold,
+        confidence_tier=confidence_tier,
+        confirmation_required=confirmation_required,
+        confirmation_count=1 if confirmation_required else 0,
+        confirmation_required_count=(
+            medium_confirmation_repetitions if confirmation_required else 0
+        ),
         classification_reason=reason,
         rejection_reason=rejection_reason,
         unknown_token_detected=unknown,

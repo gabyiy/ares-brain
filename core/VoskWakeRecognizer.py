@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import importlib
 import json
 from math import isfinite
@@ -68,6 +69,9 @@ class VoskWakeRecognizer:
         self._state = WAKE_RECOGNIZER_STOPPED
         self._model: Any = None
         self._cancelled = False
+        self._pending_medium_phrase = ""
+        self._pending_medium_count = 0
+        self._pending_medium_at = 0.0
         self.last_diagnostics: Optional[WakeRecognizerLocalDiagnostics] = None
 
     def start(self) -> WakeRecognizerResultV1:
@@ -75,6 +79,7 @@ class VoskWakeRecognizer:
             if self._state == WAKE_RECOGNIZER_READY and self._model is not None:
                 return self._lifecycle_result(True, "already_started")
             self._cancelled = False
+            self._clear_medium_confirmation_locked()
         if not self.model_path.is_dir():
             with self._lock:
                 self._state = WAKE_RECOGNIZER_ERROR
@@ -186,6 +191,10 @@ class VoskWakeRecognizer:
                 shutdown_phrases=request.shutdown_phrases,
                 canonical_wake_phrase=request.canonical_wake_phrase,
                 minimum_confidence=request.minimum_confidence,
+                medium_confidence=request.medium_confidence,
+                medium_confirmation_repetitions=(
+                    request.medium_confirmation_repetitions
+                ),
                 recognizer_name=self.recognizer_name,
                 runtime_id=request.runtime_id,
                 lifecycle_state=request.lifecycle_state,
@@ -194,6 +203,12 @@ class VoskWakeRecognizer:
                 grammar_phrase_count=len(grammar),
                 processing_time_seconds=elapsed,
             )
+            result = self._apply_medium_confidence_confirmation(
+                result,
+                at_time=started_at + elapsed,
+                required_count=request.medium_confirmation_repetitions,
+                window_seconds=request.medium_confirmation_window_seconds,
+            )
             self.last_diagnostics = WakeRecognizerLocalDiagnostics(
                 recognizer_name=self.recognizer_name,
                 raw_recognition_result=json.dumps(payloads, sort_keys=True),
@@ -201,6 +216,9 @@ class VoskWakeRecognizer:
                 normalized_phrase=_normalize_for_diagnostics(combined["text"]),
                 confidence=result.confidence,
                 confidence_available=result.confidence_available,
+                confidence_tier=result.confidence_tier,
+                confirmation_count=result.confirmation_count,
+                confirmation_required_count=result.confirmation_required_count,
                 classification=(
                     "accepted"
                     if result.command_category != "non_wake"
@@ -242,6 +260,7 @@ class VoskWakeRecognizer:
         with self._lock:
             self._cancelled = True
             self._model = None
+            self._clear_medium_confirmation_locked()
             self._state = WAKE_RECOGNIZER_STOPPED
         return self._lifecycle_result(True, "stopped")
 
@@ -256,6 +275,73 @@ class VoskWakeRecognizer:
         with self._lock:
             return self._cancelled
 
+    def _apply_medium_confidence_confirmation(
+        self,
+        result: WakeRecognizerResultV1,
+        *,
+        at_time: float,
+        required_count: int,
+        window_seconds: float,
+    ) -> WakeRecognizerResultV1:
+        if not result.confirmation_required or not result.matched_phrase:
+            with self._lock:
+                self._clear_medium_confirmation_locked()
+            return result
+        if (
+            isinstance(window_seconds, bool)
+            or not isinstance(window_seconds, (int, float))
+            or not isfinite(float(window_seconds))
+            or not 1.0 <= float(window_seconds) <= 30.0
+        ):
+            raise ValueError(
+                "medium_confirmation_window_seconds must be between 1 and 30"
+            )
+        if (
+            isinstance(required_count, bool)
+            or not isinstance(required_count, int)
+            or not 2 <= required_count <= 3
+        ):
+            raise ValueError(
+                "medium_confirmation_repetitions must be between 2 and 3"
+            )
+        with self._lock:
+            elapsed = float(at_time) - self._pending_medium_at
+            same_phrase = self._pending_medium_phrase == result.matched_phrase
+            within_window = 0.0 <= elapsed <= float(window_seconds)
+            if same_phrase and within_window:
+                self._pending_medium_count += 1
+            else:
+                self._pending_medium_phrase = result.matched_phrase
+                self._pending_medium_count = 1
+            self._pending_medium_at = float(at_time)
+            count = self._pending_medium_count
+            if count >= required_count:
+                self._clear_medium_confirmation_locked()
+        if count < required_count:
+            return replace(
+                result,
+                confirmation_count=count,
+                confirmation_required_count=required_count,
+            )
+        return replace(
+            result,
+            status="wake_detected",
+            wake_detected=True,
+            command_category="activation",
+            normalized_wake_phrase=result.canonical_wake_phrase or "ares",
+            selected_wake_phrase=result.matched_phrase,
+            classification_reason="accepted_medium_confidence_repetition",
+            rejection_reason="",
+            confirmation_required=False,
+            confirmation_count=count,
+            confirmation_required_count=required_count,
+        )
+
+    def _clear_medium_confirmation_locked(self) -> None:
+        self._pending_medium_phrase = ""
+        self._pending_medium_count = 0
+        self._pending_medium_at = 0.0
+
     def _failure(
         self,
         request: WakeRecognizerRequestV1,
@@ -269,6 +355,7 @@ class VoskWakeRecognizer:
             lifecycle_state=request.lifecycle_state,
             recognizer_name=self.recognizer_name,
             minimum_confidence=request.minimum_confidence,
+            medium_confidence=request.medium_confidence,
             model_path=str(self.model_path),
             error_code=code,
             error_message=str(message or code)[:1024],
@@ -318,8 +405,8 @@ def _build_grammar(request: WakeRecognizerRequestV1) -> list[str]:
     unique = list(dict.fromkeys(phrases))
     if "[unk]" not in unique:
         unique.append("[unk]")
-    if len(unique) < 2 or len(unique) > 33:
-        raise ValueError("Vosk wake grammar must contain between 1 and 32 phrases plus [unk]")
+    if len(unique) < 2 or len(unique) > 65:
+        raise ValueError("Vosk wake grammar must contain between 1 and 64 phrases plus [unk]")
     return unique
 
 

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from core import (
     LinuxAlsaMicrophoneAdapter,
     SafeProcessResult,
     VAD_STATUS_COMPLETED_AFTER_SILENCE,
     VAD_STATUS_DEVICE_ERROR,
     VAD_STATUS_NO_SPEECH_TIMEOUT,
+    VoiceActivityCaptureRequestV1,
 )
 
 
@@ -55,6 +58,149 @@ class StreamRunner:
         if self.failure:
             raise self.failure
         return self.source
+
+
+def test_persistent_stream_opens_once_across_rejected_and_accepted_candidates(tmp_path):
+    source = FrameSource(
+        [
+            *([frame(20)] * 5),
+            frame(400),
+            frame(450),
+            *([frame(20)] * 5),
+        ]
+    )
+    stream_runner = StreamRunner(source)
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=stream_runner,
+    )
+    assert adapter.start().success
+    handle = adapter.open_persistent_stream(owner="standby_wake_listener")
+
+    silent = adapter.record_persistent_until_silence(
+        handle,
+        tmp_path / "silent.wav",
+        calibration_enabled=False,
+        required_speech_frames=2,
+        silence_seconds=0.1,
+        speech_wait_timeout_seconds=0.1,
+        maximum_utterance_seconds=0.2,
+        pre_roll_seconds=0.0,
+    )
+    speech = adapter.record_persistent_until_silence(
+        handle,
+        tmp_path / "speech.wav",
+        calibration_enabled=False,
+        required_speech_frames=2,
+        silence_seconds=0.1,
+        speech_wait_timeout_seconds=0.1,
+        maximum_utterance_seconds=0.2,
+        pre_roll_seconds=0.0,
+    )
+
+    assert silent.status == VAD_STATUS_NO_SPEECH_TIMEOUT
+    assert speech.status == VAD_STATUS_COMPLETED_AFTER_SILENCE
+    assert len(stream_runner.calls) == 1
+    assert adapter.persistent_stream_snapshot()["open_count"] == 1
+    assert source.closed is False
+    assert adapter.close_persistent_stream(
+        handle,
+        owner="standby_wake_listener",
+    ).success
+    assert source.closed is True
+    assert adapter.persistent_stream_snapshot()["close_count"] == 1
+
+
+def test_persistent_stream_calibrates_without_reopening_or_closing_source(tmp_path):
+    source = FrameSource([*([frame(40)] * 5), *([frame(20)] * 5)])
+    stream_runner = StreamRunner(source)
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=stream_runner,
+    )
+    assert adapter.start().success
+    handle = adapter.open_persistent_stream(owner="standby_wake_listener")
+    calibration = adapter.calibrate_persistent_stream(
+        handle,
+        VoiceActivityCaptureRequestV1(
+            output_wav_path=str(tmp_path / "unused.wav"),
+            microphone_device="hw:2,0",
+            calibration_duration_seconds=0.1,
+            frame_duration_ms=20,
+        ),
+    )
+    assert calibration.success
+    assert calibration.frame_count == 5
+    assert calibration.thresholds.speech_start_rms > calibration.thresholds.speech_continue_rms
+    assert len(stream_runner.calls) == 1
+    assert source.closed is False
+    adapter.close_persistent_stream(handle, owner="standby_wake_listener")
+
+
+def test_persistent_stream_rejects_second_capture_owner():
+    source = FrameSource([frame(20)] * 5)
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(source),
+    )
+    assert adapter.start().success
+    handle = adapter.open_persistent_stream(owner="standby_wake_listener")
+    with pytest.raises(RuntimeError, match="microphone_capture_already_owned"):
+        adapter.open_persistent_stream(owner="active_command")
+    snapshot = adapter.persistent_stream_snapshot()
+    assert snapshot["owner"] == "standby_wake_listener"
+    assert snapshot["open_count"] == 1
+    adapter.close_persistent_stream(handle, owner="standby_wake_listener")
+
+
+def test_rolling_pre_roll_recovers_speech_split_across_poll_boundary(tmp_path):
+    source = FrameSource(
+        [
+            frame(20),
+            frame(20),
+            frame(20),
+            frame(20),
+            frame(500),
+            frame(550),
+            *([frame(20)] * 5),
+        ]
+    )
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(source),
+    )
+    assert adapter.start().success
+    handle = adapter.open_persistent_stream(owner="standby_wake_listener")
+    first = adapter.record_persistent_until_silence(
+        handle,
+        tmp_path / "boundary-one.wav",
+        calibration_enabled=False,
+        required_speech_frames=2,
+        silence_seconds=0.1,
+        speech_wait_timeout_seconds=0.1,
+        maximum_utterance_seconds=0.2,
+        pre_roll_seconds=0.4,
+    )
+    second = adapter.record_persistent_until_silence(
+        handle,
+        tmp_path / "boundary-two.wav",
+        calibration_enabled=False,
+        required_speech_frames=2,
+        silence_seconds=0.1,
+        speech_wait_timeout_seconds=0.2,
+        maximum_utterance_seconds=0.2,
+        pre_roll_seconds=0.4,
+    )
+    assert first.status == VAD_STATUS_NO_SPEECH_TIMEOUT
+    assert second.status == VAD_STATUS_COMPLETED_AFTER_SILENCE
+    assert second.pre_roll_frames_retained >= 4
+    rolling = adapter.persistent_stream_snapshot()["rolling_pre_roll"]
+    assert rolling["replayed_frame_count"] >= 4
+    adapter.close_persistent_stream(handle, owner="standby_wake_listener")
 
 
 def test_linux_alsa_auto_stop_streams_raw_pcm_with_argument_list(tmp_path):

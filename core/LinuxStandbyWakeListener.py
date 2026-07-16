@@ -11,6 +11,7 @@ import wave
 
 from core.Contracts import (
     StandbyListenResultV1,
+    VoiceActivityCaptureRequestV1,
     WakeListenerRequestV1,
     WakeListenerResultV1,
     WakeListenerSnapshotV1,
@@ -36,9 +37,13 @@ from core.StandbyWakeListener import (
 from core.WakeRecognizer import WakeRecognizerLocalDiagnostics
 from core.VoiceActivityDetection import (
     VAD_STATUS_CANCELLED,
+    VAD_STATUS_DEVICE_ERROR,
     VAD_STATUS_NO_SPEECH_TIMEOUT,
     VAD_STATUS_TIMEOUT,
 )
+
+
+STANDBY_STREAM_OWNER = "standby_wake_listener"
 
 
 class LinuxStandbyWakeListener:
@@ -56,8 +61,22 @@ class LinuxStandbyWakeListener:
         sleeper: Callable[[float], None] = time.sleep,
         diagnostic_callback: Optional[Callable[[WakeLocalDiagnostics], None]] = None,
     ) -> None:
-        if not callable(getattr(microphone_adapter, "record_until_silence", None)):
-            raise ValueError("microphone_adapter must support record_until_silence")
+        required_microphone_methods = (
+            "open_persistent_stream",
+            "calibrate_persistent_stream",
+            "record_persistent_until_silence",
+            "close_persistent_stream",
+        )
+        missing = [
+            name
+            for name in required_microphone_methods
+            if not callable(getattr(microphone_adapter, name, None))
+        ]
+        if missing:
+            raise ValueError(
+                "microphone_adapter must support persistent standby capture: "
+                + ", ".join(missing)
+            )
         if not callable(getattr(wake_recognizer, "recognize_wav", None)):
             raise ValueError("wake_recognizer must support recognize_wav")
         self.microphone_adapter = microphone_adapter
@@ -81,6 +100,16 @@ class LinuxStandbyWakeListener:
         self._active_turn_directory: Optional[Path] = None
         self._retained_directories: list[str] = []
         self._pending_diagnostics: Optional[WakeLocalDiagnostics] = None
+        self._stream_handle: Any = None
+        self._stream_open_count = 0
+        self._stream_close_count = 0
+        self._calibration_count = 0
+        self._candidate_count = 0
+        self._calibration_at: Optional[float] = None
+        self._calibration_thresholds: Any = None
+        self._calibration_statistics: Any = None
+        self._recalibration_requested = False
+        self._capture_gate_owned = False
         self.last_result: Optional[StandbyListenResultV1] = None
         self.last_diagnostics: Optional[WakeLocalDiagnostics] = None
 
@@ -88,10 +117,21 @@ class LinuxStandbyWakeListener:
         with self._lock:
             self._runtime_id = str(runtime_id or self._runtime_id)
             if self._state == WAKE_LISTENER_READY:
-                return self._result(True, "already_started")
+                already_started = True
+            else:
+                already_started = False
             if not self.config.enabled:
                 return self._result(False, "disabled", "wake_listener_disabled", "wake listener is disabled")
             self._cancelled = False
+        if already_started:
+            entered = self.enter_standby(runtime_id=self._runtime_id)
+            return self._result(
+                entered.success,
+                "already_started" if entered.success else entered.status,
+                entered.error_code,
+                entered.error_message,
+                data=self._stream_metrics(),
+            )
         recognizer = _safe_call(self.wake_recognizer, "start")
         if not _result_success(recognizer):
             return self._start_failure(
@@ -109,7 +149,14 @@ class LinuxStandbyWakeListener:
             return health
         with self._lock:
             self._state = WAKE_LISTENER_READY
-        return self._result(True, "started")
+        entered = self.enter_standby(runtime_id=self._runtime_id)
+        if not entered.success:
+            _safe_call(self.microphone_adapter, "stop")
+            _safe_call(self.wake_recognizer, "stop")
+            with self._lock:
+                self._state = WAKE_LISTENER_ERROR
+            return entered
+        return self._result(True, "started", data=self._stream_metrics())
 
     def health(self, *, runtime_id: str = "") -> WakeListenerResultV1:
         with self._lock:
@@ -135,6 +182,94 @@ class LinuxStandbyWakeListener:
                 "background_thread": False,
             },
         )
+
+    def enter_standby(self, *, runtime_id: str = "") -> WakeListenerResultV1:
+        """Acquire one continuous ALSA stream for the current standby epoch."""
+
+        with self._lock:
+            if runtime_id:
+                self._runtime_id = str(runtime_id)
+            if self._state == WAKE_LISTENER_STOPPED:
+                return self._result(
+                    False,
+                    "listener_not_started",
+                    "wake_listener_not_started",
+                    "wake listener must be started before entering standby",
+                )
+            if self._cancelled:
+                return self._result(
+                    False,
+                    "cancelled",
+                    "wake_listener_cancelled",
+                    "wake listener is cancelled",
+                )
+            if self._stream_handle is not None and not bool(
+                getattr(self._stream_handle, "closed", False)
+            ):
+                return self._result(
+                    True,
+                    "standby_stream_already_open",
+                    data=self._stream_metrics(),
+                )
+        gate_error = self._begin_capture_gate(self.config.speech_wait_timeout_seconds)
+        if gate_error:
+            return self._result(
+                False,
+                "capture_gate_unavailable",
+                "capture_gate_unavailable",
+                gate_error,
+            )
+        with self._lock:
+            self._capture_gate_owned = True
+        try:
+            handle = self.microphone_adapter.open_persistent_stream(
+                owner=STANDBY_STREAM_OWNER,
+                device=self.config.microphone_device,
+            )
+            with self._lock:
+                self._stream_handle = handle
+                self._stream_open_count += 1
+            calibration = self._calibrate_stream(handle)
+            if not bool(getattr(calibration, "success", False)):
+                self._close_standby_stream("calibration_failed")
+                return self._result(
+                    False,
+                    "calibration_failed",
+                    str(getattr(calibration, "error_code", "") or "wake_calibration_failed"),
+                    str(
+                        getattr(calibration, "error_message", "")
+                        or getattr(calibration, "status", "")
+                        or "wake calibration failed"
+                    ),
+                )
+            return self._result(
+                True,
+                "standby_stream_ready",
+                data=self._stream_metrics(),
+            )
+        except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
+            self._close_standby_stream("stream_open_failed")
+            return self._result(
+                False,
+                "stream_open_failed",
+                "wake_stream_open_failed",
+                f"{error.__class__.__name__}:{str(error)[:120]}",
+            )
+
+    def leave_standby(self, reason: str = "leaving_standby") -> WakeListenerResultV1:
+        closed = self._close_standby_stream(reason)
+        return self._result(
+            closed,
+            "standby_stream_closed" if closed else "standby_stream_close_failed",
+            "" if closed else "wake_stream_close_failed",
+            "" if closed else "persistent standby stream did not close cleanly",
+            data=self._stream_metrics(),
+        )
+
+    def request_recalibration(self) -> WakeListenerResultV1:
+        with self._lock:
+            self._recalibration_requested = True
+        return self._result(True, "recalibration_requested")
 
     def listen_once(self, request: WakeListenerRequestV1) -> StandbyListenResultV1:
         with self._lock:
@@ -173,25 +308,32 @@ class LinuxStandbyWakeListener:
             if self._cancelled:
                 return self._cancelled_result(request)
             self._state = WAKE_LISTENER_LISTENING
+            self._candidate_count += 1
         started_at = self.clock()
         turn_directory = self._create_turn_directory()
         output_path = turn_directory / "wake_candidate.wav"
         with self._lock:
             self._active_turn_directory = turn_directory
-        capture_started = False
         try:
-            gate_result = self._begin_capture_gate(request.listener_timeout_seconds)
-            if gate_result:
-                return self._listen_failure(request, "capture_gate_unavailable", gate_result)
-            capture_started = True
-            capture = self.microphone_adapter.record_until_silence(
+            stream_error = self._ensure_standby_stream(request.runtime_id)
+            if stream_error:
+                return self._listen_failure(
+                    request,
+                    "wake_stream_unavailable",
+                    stream_error,
+                )
+            with self._lock:
+                handle = self._stream_handle
+                thresholds = self._calibration_thresholds
+            capture = self.microphone_adapter.record_persistent_until_silence(
+                handle,
                 output_path,
                 device=request.microphone_device or self.config.microphone_device,
-                calibration_enabled=self.config.calibration_enabled,
-                calibration_duration_seconds=self.config.calibration_duration_seconds,
-                speech_start_rms=self.config.speech_start_rms,
-                speech_continue_rms=self.config.speech_continue_rms,
-                silence_rms=self.config.silence_rms,
+                calibration_enabled=False,
+                calibration_duration_seconds=0.0,
+                speech_start_rms=float(thresholds.speech_start_rms),
+                speech_continue_rms=float(thresholds.speech_continue_rms),
+                silence_rms=float(thresholds.silence_rms),
                 required_speech_frames=self.config.required_speech_frames,
                 required_continue_frames=self.config.required_continue_frames,
                 required_silence_frames=self.config.required_silence_frames,
@@ -202,6 +344,7 @@ class LinuxStandbyWakeListener:
                 ),
                 maximum_utterance_seconds=self.config.maximum_utterance_seconds,
                 pre_roll_seconds=self.config.pre_roll_seconds,
+                speech_end_padding_seconds=self.config.speech_end_padding_seconds,
                 frame_duration_ms=self.config.frame_duration_ms,
                 frame_read_timeout_seconds=self.config.frame_read_timeout_seconds,
                 minimum_speech_start_rms=self.config.minimum_speech_start_rms,
@@ -220,7 +363,7 @@ class LinuxStandbyWakeListener:
             if self._is_cancelled() or str(getattr(capture, "status", "")) == VAD_STATUS_CANCELLED:
                 return self._cancelled_result(request)
             capture_status = str(getattr(capture, "status", "") or "")
-            if capture_status in {VAD_STATUS_NO_SPEECH_TIMEOUT, VAD_STATUS_TIMEOUT} and not bool(
+            if capture_status == VAD_STATUS_NO_SPEECH_TIMEOUT and not bool(
                 getattr(capture, "speech_detected", False)
             ):
                 return self._standby_result(
@@ -232,6 +375,8 @@ class LinuxStandbyWakeListener:
                     started_at=started_at,
                 )
             if not _result_success(capture) or not bool(getattr(capture, "speech_detected", False)):
+                if capture_status in {VAD_STATUS_DEVICE_ERROR, VAD_STATUS_TIMEOUT}:
+                    self._close_standby_stream(capture_status)
                 return self._capture_failure(request, capture, started_at)
             with self._lock:
                 self._speech_count += 1
@@ -274,6 +419,13 @@ class LinuxStandbyWakeListener:
                     shutdown_phrases=list(request.shutdown_phrases),
                     canonical_wake_phrase=self.config.wake_phrase_aliases[0],
                     minimum_confidence=self.config.minimum_recognition_confidence,
+                    medium_confidence=self.config.medium_recognition_confidence,
+                    medium_confirmation_repetitions=(
+                        self.config.medium_confidence_confirmation_count
+                    ),
+                    medium_confirmation_window_seconds=(
+                        self.config.medium_confidence_window_seconds
+                    ),
                     timeout_seconds=max(0.1, float(request.listener_timeout_seconds)),
                     correlation_id=request.correlation_id,
                     metadata={"safe": True, "contains_transcript": False},
@@ -310,14 +462,13 @@ class LinuxStandbyWakeListener:
                 },
             )
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
+            self._close_standby_stream("capture_exception")
             return self._listen_failure(
                 request,
                 "wake_listener_exception",
                 f"{error.__class__.__name__}:{str(error)[:120]}",
             )
         finally:
-            if capture_started:
-                self._end_capture_gate()
             retain = bool(request.retain_diagnostic_audio or self.config.retain_diagnostic_audio)
             if retain:
                 cleanup_status = "retained_by_explicit_request"
@@ -339,6 +490,7 @@ class LinuxStandbyWakeListener:
             self._cancelled = True
             self._state = WAKE_LISTENER_CANCELLING
             self._last_stop_reason = str(reason or "cancelled")[:80]
+        self._close_standby_stream(reason)
         cancel = getattr(self.microphone_adapter, "cancel_current", None)
         if callable(cancel):
             try:
@@ -378,12 +530,24 @@ class LinuxStandbyWakeListener:
                 speech_candidate_count=self._speech_count,
                 wake_detection_count=self._wake_count,
                 consecutive_failure_count=self._failure_count,
+                stream_open_count=self._stream_open_count,
+                stream_close_count=self._stream_close_count,
+                calibration_count=self._calibration_count,
+                candidate_count=self._candidate_count,
+                stream_active=bool(
+                    self._stream_handle is not None
+                    and not bool(getattr(self._stream_handle, "closed", False))
+                ),
+                capture_owner=(
+                    STANDBY_STREAM_OWNER if self._stream_handle is not None else ""
+                ),
                 last_stop_reason=self._last_stop_reason,
                 metadata={
                     "safe": True,
                     "background_thread": False,
                     "retained_turn_count": len(self._retained_directories),
                     "last_cleanup_status": self._last_cleanup_status,
+                    "persistent_stream": True,
                 },
             )
 
@@ -404,6 +568,134 @@ class LinuxStandbyWakeListener:
     def _is_cancelled(self) -> bool:
         with self._lock:
             return self._cancelled
+
+    def _ensure_standby_stream(self, runtime_id: str) -> str:
+        with self._lock:
+            handle = self._stream_handle
+            calibrated_at = self._calibration_at
+            recalibration_requested = self._recalibration_requested
+        if handle is None or bool(getattr(handle, "closed", False)):
+            entered = self.enter_standby(runtime_id=runtime_id)
+            return "" if entered.success else entered.error_message or entered.status
+        now = self.clock()
+        interval = self.config.recalibration_interval_seconds
+        recalibration_due = bool(
+            recalibration_requested
+            or calibrated_at is None
+            or now < calibrated_at
+            or (interval > 0 and now - calibrated_at >= interval)
+        )
+        if not recalibration_due:
+            return ""
+        calibration = self._calibrate_stream(handle)
+        if bool(getattr(calibration, "success", False)):
+            return ""
+        self._close_standby_stream("recalibration_failed")
+        return str(
+            getattr(calibration, "error_message", "")
+            or getattr(calibration, "status", "")
+            or "wake recalibration failed"
+        )
+
+    def _calibrate_stream(self, handle: Any) -> Any:
+        request = VoiceActivityCaptureRequestV1(
+            output_wav_path="wake-calibration-not-written.wav",
+            microphone_device=self.config.microphone_device,
+            sample_rate_hz=16000,
+            channels=1,
+            sample_width_bytes=2,
+            frame_duration_ms=self.config.frame_duration_ms,
+            calibration_enabled=self.config.calibration_enabled,
+            calibration_duration_seconds=self.config.calibration_duration_seconds,
+            speech_start_rms=self.config.speech_start_rms,
+            speech_continue_rms=self.config.speech_continue_rms,
+            silence_rms=self.config.silence_rms,
+            required_speech_frames=self.config.required_speech_frames,
+            required_continue_frames=self.config.required_continue_frames,
+            required_silence_frames=self.config.required_silence_frames,
+            silence_duration_seconds=self.config.silence_duration_seconds,
+            speech_wait_timeout_seconds=self.config.speech_wait_timeout_seconds,
+            maximum_utterance_seconds=self.config.maximum_utterance_seconds,
+            pre_roll_seconds=self.config.pre_roll_seconds,
+            speech_end_padding_seconds=self.config.speech_end_padding_seconds,
+            frame_read_timeout_seconds=self.config.frame_read_timeout_seconds,
+            minimum_speech_start_rms=self.config.minimum_speech_start_rms,
+            maximum_speech_start_rms=self.config.maximum_speech_start_rms,
+            minimum_speech_continue_rms=self.config.minimum_speech_continue_rms,
+            maximum_speech_continue_rms=self.config.maximum_speech_continue_rms,
+            minimum_silence_rms=self.config.minimum_silence_rms,
+            maximum_silence_rms=self.config.maximum_silence_rms,
+            metadata={"safe": True, "source": "persistent_standby_calibration"},
+        )
+        result = self.microphone_adapter.calibrate_persistent_stream(
+            handle,
+            request,
+            cancel_requested=self._is_cancelled,
+        )
+        if bool(getattr(result, "success", False)):
+            with self._lock:
+                self._calibration_count += 1
+                self._calibration_at = self.clock()
+                self._calibration_thresholds = getattr(result, "thresholds", None)
+                self._calibration_statistics = getattr(
+                    result,
+                    "ambient_statistics",
+                    None,
+                )
+                self._recalibration_requested = False
+        return result
+
+    def _close_standby_stream(self, reason: str) -> bool:
+        with self._lock:
+            handle = self._stream_handle
+            self._stream_handle = None
+            self._calibration_at = None
+            self._calibration_thresholds = None
+            self._calibration_statistics = None
+            gate_owned = self._capture_gate_owned
+            self._capture_gate_owned = False
+            self._last_stop_reason = str(reason or "leaving_standby")[:80]
+        success = True
+        if handle is not None and not bool(getattr(handle, "closed", False)):
+            try:
+                result = self.microphone_adapter.close_persistent_stream(
+                    handle,
+                    owner=STANDBY_STREAM_OWNER,
+                )
+                success = _result_success(result)
+            except (OSError, RuntimeError, TimeoutError, TypeError, ValueError):
+                success = False
+            finally:
+                with self._lock:
+                    self._stream_close_count += 1
+        if gate_owned:
+            self._end_capture_gate()
+        return success
+
+    def _stream_metrics(self) -> Dict[str, Any]:
+        with self._lock:
+            handle = self._stream_handle
+            thresholds = self._calibration_thresholds
+            statistics = self._calibration_statistics
+            return {
+                "stream_active": bool(
+                    handle is not None and not bool(getattr(handle, "closed", False))
+                ),
+                "capture_owner": (
+                    STANDBY_STREAM_OWNER if handle is not None else ""
+                ),
+                "stream_open_count": self._stream_open_count,
+                "stream_close_count": self._stream_close_count,
+                "calibration_count": self._calibration_count,
+                "candidate_count": self._candidate_count,
+                "calibration_thresholds": (
+                    thresholds.to_dict() if thresholds is not None else {}
+                ),
+                "ambient_statistics": (
+                    statistics.to_dict() if statistics is not None else {}
+                ),
+                "safe": True,
+            }
 
     def _begin_capture_gate(self, timeout_seconds: float) -> str:
         if self.voice_io_gate is None:
@@ -553,6 +845,7 @@ class LinuxStandbyWakeListener:
     ) -> StandbyListenResultV1:
         audio = _capture_audio_metadata(capture)
         recognition_metadata = _recognition_metadata(recognition)
+        stream = self._stream_metrics()
         candidate_duration = float(
             audio.get("whisper_input_duration_seconds", 0.0)
             or audio.get("normalized_duration_seconds", 0.0)
@@ -608,6 +901,39 @@ class LinuxStandbyWakeListener:
             recognition_processing_time_seconds=float(
                 recognition_metadata.get("processing_time_seconds", 0.0)
             ),
+            confidence_tier=str(recognition_metadata.get("confidence_tier", "")),
+            confirmation_count=int(
+                recognition_metadata.get("confirmation_count", 0) or 0
+            ),
+            confirmation_required_count=int(
+                recognition_metadata.get("confirmation_required_count", 0) or 0
+            ),
+            stream_open_count=int(stream["stream_open_count"]),
+            stream_close_count=int(stream["stream_close_count"]),
+            calibration_count=int(stream["calibration_count"]),
+            candidate_number=int(stream["candidate_count"]),
+            pre_roll_frames_retained=int(
+                audio.get("pre_roll_frames_retained", 0) or 0
+            ),
+            expected_pre_roll_frames=int(
+                audio.get("expected_pre_roll_frames", 0) or 0
+            ),
+            first_speech_frame=int(audio.get("first_speech_frame", 0) or 0),
+            terminal_silence_duration_seconds=float(
+                audio.get("terminal_silence_duration_seconds", 0.0) or 0.0
+            ),
+            speech_to_activation_seconds=(
+                round(
+                    max(
+                        0.0,
+                        processing_time
+                        - float(audio.get("speech_start_offset_seconds", 0.0) or 0.0),
+                    ),
+                    6,
+                )
+                if wake_detected
+                else 0.0
+            ),
             sample_rate_hz=int(audio.get("sample_rate_hz", 0)),
             channels=int(audio.get("channels", 0)),
             sample_width_bytes=int(audio.get("sample_width_bytes", 0)),
@@ -616,7 +942,12 @@ class LinuxStandbyWakeListener:
             error_message=str(error_message or "")[:160],
             correlation_id=request.correlation_id,
             audio_metadata=audio,
-            data={"safe": True, "contains_transcript": False, **dict(data or {})},
+            data={
+                "safe": True,
+                "contains_transcript": False,
+                "stream": stream,
+                **dict(data or {}),
+            },
             metadata={"safe": True, "contains_transcript": False, "contains_audio": False},
         )
         if success:
@@ -683,8 +1014,7 @@ class LinuxStandbyWakeListener:
             except (OSError, EOFError, ValueError, wave.Error) as error:
                 return f"invalid_raw_wake_wav:{error.__class__.__name__}"
         raw_limit = (
-            (self.config.calibration_duration_seconds if self.config.calibration_enabled else 0.0)
-            + min(
+            min(
                 self.config.speech_wait_timeout_seconds,
                 max(0.1, float(listener_timeout_seconds)),
             )
@@ -705,6 +1035,7 @@ class LinuxStandbyWakeListener:
         capture: Any,
         recognition: Dict[str, Any],
     ) -> None:
+        stream = self._stream_metrics()
         recognizer_input = str(
             getattr(capture, "normalized_wav_path", "")
             or getattr(capture, "final_whisper_input_path", "")
@@ -768,6 +1099,29 @@ class LinuxStandbyWakeListener:
             recognizer_model_path=str(
                 recognition.get("model_path", "") or self.config.vosk_model_path
             ),
+            stream_open_count=int(stream["stream_open_count"]),
+            stream_close_count=int(stream["stream_close_count"]),
+            calibration_count=int(stream["calibration_count"]),
+            candidate_number=int(stream["candidate_count"]),
+            pre_roll_frames_retained=int(
+                audio.get("pre_roll_frames_retained", 0) or 0
+            ),
+            expected_pre_roll_frames=int(
+                audio.get("expected_pre_roll_frames", 0) or 0
+            ),
+            beginning_clipped=(
+                int(audio.get("pre_roll_frames_retained", 0) or 0)
+                < int(audio.get("expected_pre_roll_frames", 0) or 0)
+            ),
+            first_speech_frame=int(audio.get("first_speech_frame", 0) or 0),
+            terminal_silence_duration_seconds=float(
+                audio.get("terminal_silence_duration_seconds", 0.0) or 0.0
+            ),
+            vad_transitions=tuple(audio.get("vad_transitions", ())),
+            speech_to_activation_seconds=result.speech_to_activation_seconds,
+            confidence_tier=result.confidence_tier,
+            confirmation_count=result.confirmation_count,
+            confirmation_required_count=result.confirmation_required_count,
         )
 
     def _finalize_local_diagnostics(self, result: StandbyListenResultV1) -> None:
@@ -816,6 +1170,26 @@ class LinuxStandbyWakeListener:
 
 
 def _capture_audio_metadata(capture: Any) -> Dict[str, Any]:
+    data = getattr(capture, "data", {})
+    if not isinstance(data, dict):
+        data = {}
+    transitions = data.get("transitions", [])
+    if not isinstance(transitions, list):
+        transitions = []
+    first_speech_frame = next(
+        (
+            int(item.get("frame", 0) or 0)
+            for item in transitions
+            if isinstance(item, dict) and item.get("to") == "SPEECH"
+        ),
+        0,
+    )
+    frame_duration_seconds = float(data.get("frame_duration_ms", 0) or 0) / 1000.0
+    expected_pre_roll_frames = (
+        int(round(float(data.get("pre_roll_frames", 0) or 0)))
+        if data.get("pre_roll_frames") is not None
+        else 0
+    )
     metadata = {
         "sample_rate_hz": int(
             getattr(capture, "normalized_sample_rate_hz", 0)
@@ -853,6 +1227,21 @@ def _capture_audio_metadata(capture: Any) -> Dict[str, Any]:
             getattr(capture, "normalized_sample_count", 0) or 0
         ),
         "capture_stop_reason": str(getattr(capture, "stop_reason", "") or ""),
+        "pre_roll_frames_retained": int(
+            getattr(capture, "pre_roll_frames_retained", 0) or 0
+        ),
+        "expected_pre_roll_frames": expected_pre_roll_frames,
+        "first_speech_frame": first_speech_frame,
+        "terminal_silence_duration_seconds": float(
+            getattr(capture, "silence_duration_at_stop_seconds", 0.0) or 0.0
+        ),
+        "speech_start_offset_seconds": float(
+            getattr(capture, "speech_start_offset_seconds", 0.0) or 0.0
+        ),
+        "frame_duration_seconds": frame_duration_seconds,
+        "vad_transitions": tuple(
+            dict(item) for item in transitions if isinstance(item, dict)
+        ),
         "speech_detected": bool(getattr(capture, "speech_detected", False)),
         "ambient_rms": round(float(getattr(capture, "ambient_rms", 0.0) or 0.0), 3),
         "speech_rms": round(float(getattr(capture, "speech_rms", 0.0) or 0.0), 3),
@@ -931,6 +1320,15 @@ def _recognition_metadata(recognition: Any) -> Dict[str, Any]:
         "confidence": getattr(recognition, "confidence", None),
         "confidence_available": bool(
             getattr(recognition, "confidence_available", False)
+        ),
+        "confidence_tier": str(
+            getattr(recognition, "confidence_tier", "") or ""
+        ),
+        "confirmation_count": int(
+            getattr(recognition, "confirmation_count", 0) or 0
+        ),
+        "confirmation_required_count": int(
+            getattr(recognition, "confirmation_required_count", 0) or 0
         ),
         "processing_time_seconds": float(
             getattr(recognition, "processing_time_seconds", 0.0) or 0.0

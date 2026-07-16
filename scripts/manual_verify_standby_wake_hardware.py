@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import sys
 from typing import Any, Callable, Optional, Sequence
@@ -41,6 +42,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = standby_voice.build_parser()
     parser.description = "Run a bounded Raspberry Pi standby-wake hardware verification."
     parser.add_argument("--attempts-per-test", type=int, default=3)
+    parser.add_argument(
+        "--wake-reliability-attempts",
+        type=int,
+        default=0,
+        help="Run the quiet-room wake reliability check with this many prompts (1-20).",
+    )
+    parser.add_argument(
+        "--verification-mode",
+        choices=("all", "reliability", "lifecycle"),
+        default="all",
+    )
     return parser
 
 
@@ -54,6 +66,17 @@ def run_hardware_verification(
     if isinstance(args.attempts_per_test, bool) or not 1 <= args.attempts_per_test <= 5:
         output_func("Configuration error: --attempts-per-test must be between 1 and 5.")
         return 2
+    if (
+        isinstance(args.wake_reliability_attempts, bool)
+        or not 0 <= args.wake_reliability_attempts <= 20
+    ):
+        output_func(
+            "Configuration error: --wake-reliability-attempts must be between 1 and 20, or 0 to skip."
+        )
+        return 2
+    reliability_attempts = args.wake_reliability_attempts
+    if args.verification_mode == "reliability" and reliability_attempts == 0:
+        reliability_attempts = 10
     if args.retain_diagnostic_audio and not args.diagnostic_wake:
         output_func(
             "Configuration error: --retain-diagnostic-audio requires --diagnostic-wake."
@@ -95,7 +118,12 @@ def run_hardware_verification(
     wake_transcripts: list[str] = []
     active_command_transcripts: list[str] = []
     try:
-        for index, stage in enumerate(STAGES, start=1):
+        stages = (
+            STAGES[:2]
+            if args.verification_mode == "reliability"
+            else STAGES
+        )
+        for index, stage in enumerate(stages, start=1):
             output_func(f"Test {index}/{len(STAGES)} ({stage.label}): {stage.instruction}")
             output_func(f"Expected: {stage.expected}.")
             passed = False
@@ -186,6 +214,22 @@ def run_hardware_verification(
                 runtime.shutdown(reason=f"hardware_verification_{stage.label}_failed")
                 output_func("Cleanup completed; verification did not pass.")
                 return 1
+            if stage.label == "B" and reliability_attempts:
+                reliable = _run_wake_reliability(
+                    runtime,
+                    reliability_attempts,
+                    output_func=output_func,
+                    diagnostic_enabled=bool(args.diagnostic_wake),
+                    wake_transcripts=wake_transcripts,
+                )
+                if not reliable:
+                    runtime.shutdown(reason="wake_reliability_target_not_met")
+                    output_func("Cleanup completed; wake reliability target was not met.")
+                    return 1
+        if args.verification_mode == "reliability":
+            runtime.shutdown(reason="wake_reliability_verification_complete")
+            output_func("Wake reliability verification completed; adapters cleaned up.")
+            return 0
         if args.diagnostic_wake:
             _print_transcript_summary(
                 output_func,
@@ -198,6 +242,78 @@ def run_hardware_verification(
         runtime.shutdown(reason="keyboard_interrupt")
         output_func("Verification cancelled; cleanup completed without replaying captured audio.")
         return 130
+
+
+def _run_wake_reliability(
+    runtime: Any,
+    attempts: int,
+    *,
+    output_func: Callable[[str], None],
+    diagnostic_enabled: bool,
+    wake_transcripts: list[str],
+) -> bool:
+    required = math.ceil(attempts * 0.9)
+    accepted = 0
+    output_func(
+        f"Wake reliability test: {attempts} prompted attempts; required acceptance={required}."
+    )
+    output_func("The silence and unrelated-speech checks above must also remain false-activation free.")
+    for attempt in range(1, attempts + 1):
+        output_func(
+            f"Reliability attempt {attempt}/{attempts}: Say 'Ares' once, then remain silent."
+        )
+        before = runtime.snapshot()
+        result = runtime.poll_once()
+        after = runtime.snapshot()
+        wake_result = getattr(runtime.standby_wake_listener, "last_result", None)
+        diagnostics = getattr(runtime.standby_wake_listener, "last_diagnostics", None)
+        transcript = str(getattr(diagnostics, "raw_transcript", "") or "")
+        if diagnostic_enabled and transcript and transcript not in wake_transcripts:
+            wake_transcripts.append(transcript)
+        success = bool(
+            getattr(wake_result, "wake_detected", False)
+            and after.current_lifecycle_state == BRAIN_ACTIVE
+            and after.session_id
+        )
+        if success:
+            accepted += 1
+        confidence = getattr(wake_result, "recognition_confidence", None)
+        clipped = bool(getattr(diagnostics, "beginning_clipped", False))
+        output_func(
+            "  Result: "
+            f"{'accepted' if success else 'rejected'}; "
+            f"transcript={transcript if diagnostic_enabled and transcript else '<local diagnostics disabled>'}; "
+            f"confidence={float(confidence):.3f}"
+            if confidence is not None
+            else "  Result: "
+            f"{'accepted' if success else 'rejected'}; "
+            f"transcript={transcript if diagnostic_enabled and transcript else '<local diagnostics disabled>'}; "
+            "confidence=unavailable"
+        )
+        output_func(
+            "  Capture: "
+            f"candidate={float(getattr(wake_result, 'duration_seconds', 0.0)):.3f}s; "
+            f"beginning_clipped={'yes' if clipped else 'no'}; "
+            f"stream_opens={int(getattr(wake_result, 'stream_open_count', 0))}; "
+            f"calibrations={int(getattr(wake_result, 'calibration_count', 0))}"
+        )
+        output_func(
+            "  Lifecycle: "
+            f"{before.current_lifecycle_state}->{after.current_lifecycle_state}; "
+            f"session_created={'yes' if success else 'no'}"
+        )
+        if success:
+            standby = runtime.handle_text("goodbye ares")
+            if (
+                not standby.success
+                or runtime.snapshot().current_lifecycle_state != BRAIN_STANDBY
+            ):
+                output_func("  Reliability reset failed: runtime did not return to STANDBY.")
+                return False
+    output_func(
+        f"Wake reliability result: {accepted}/{attempts} accepted; target={required}/{attempts}."
+    )
+    return accepted >= required
 
 
 def _classification(wake_result: Any) -> str:
@@ -282,6 +398,11 @@ def _print_recognition_summary(
         )
         rejection = str(getattr(wake_result, "rejection_reason", "") or "none")
         classification = _classification(wake_result)
+        confidence_tier = str(
+            getattr(diagnostics, "confidence_tier", "")
+            or getattr(wake_result, "confidence_tier", "")
+            or "none"
+        )
     else:
         recognizer = "whisper_active_command"
         raw = str(getattr(diagnostics, "raw_transcript", "") or "")
@@ -294,6 +415,7 @@ def _print_recognition_summary(
         available = False
         rejection = str(getattr(result, "error_code", "") or "none")
         classification = str(getattr(result, "command_category", "") or "ordinary")
+        confidence_tier = "not_applicable"
     output_func(f"  Recognizer used: {recognizer}")
     output_func(
         "  Raw recognition result: "
@@ -305,7 +427,15 @@ def _print_recognition_summary(
         + (f"{float(confidence):.3f}" if available and confidence is not None else "unavailable")
     )
     output_func(f"  Classification result: {classification}")
+    output_func(f"  Confidence tier: {confidence_tier}")
     output_func(f"  Rejection reason: {rejection}")
+    if before_state == BRAIN_STANDBY:
+        output_func(
+            "  Standby stream: "
+            f"opens={int(getattr(wake_result, 'stream_open_count', 0) or 0)}; "
+            f"calibrations={int(getattr(wake_result, 'calibration_count', 0) or 0)}; "
+            f"candidate={int(getattr(wake_result, 'candidate_number', 0) or 0)}"
+        )
 
 
 def _retry_allowed(label: str, result: Any) -> bool:

@@ -37,6 +37,8 @@ def _classify(text: str, *, confidence: float = 0.95, words=None):
         standby_phrases=("goodbye ares",),
         shutdown_phrases=("shutdown ares",),
         minimum_confidence=config.minimum_recognition_confidence,
+        medium_confidence=config.medium_recognition_confidence,
+        medium_confirmation_repetitions=config.medium_confidence_confirmation_count,
     )
 
 
@@ -45,10 +47,11 @@ def _classify(text: str, *, confidence: float = 0.95, words=None):
     [
         "ares",
         "aris",
+        "aries",
         "hey ares",
         "hey aris",
-        "okay ares",
-        "okay aris",
+        "hello aries",
+        "wake up aris",
         "ARES.",
         "Hey, Aris!",
     ],
@@ -76,7 +79,9 @@ def test_exact_constrained_wake_phrases_are_accepted(text):
         "ares is a greek god",
         "paris",
         "harris",
-        "aries",
+        "okay",
+        "tell me about aries",
+        "what is the aries zodiac sign",
     ],
 )
 def test_unrelated_or_partial_phrases_are_rejected_without_substring_matching(text):
@@ -97,9 +102,13 @@ def test_unknown_token_result_is_rejected_even_when_text_looks_like_wake():
 
 
 def test_low_confidence_and_missing_confidence_fail_closed():
-    low = _classify("ares", confidence=0.79)
+    low = _classify("ares", confidence=0.70)
+    medium = _classify("ares", confidence=0.79)
     missing = _classify("ares", words=[{"word": "ares"}])
-    assert low.rejection_reason == "wake_confidence_below_threshold"
+    assert low.rejection_reason == "wake_confidence_below_medium_threshold"
+    assert medium.rejection_reason == "medium_confidence_confirmation_required"
+    assert medium.confirmation_required
+    assert medium.confidence_tier == "medium"
     assert low.confidence_available
     assert missing.rejection_reason == "missing_word_confidence"
     assert not missing.confidence_available
@@ -109,12 +118,14 @@ def test_low_confidence_and_missing_confidence_fail_closed():
 def test_controls_require_exact_phrase_and_usable_confidence():
     accepted = _classify("shutdown ares")
     alias = _classify("shutdown aris")
+    aries = _classify("shutdown aries")
     missing = _classify("shutdown ares", words=[])
     unrelated = _classify("please shutdown ares")
     assert accepted.command_category == "shutdown"
     assert accepted.status == "control_detected"
     assert alias.command_category == "shutdown"
     assert alias.status == "control_detected"
+    assert aries.command_category == "shutdown"
     assert missing.command_category == "non_wake"
     assert missing.rejection_reason == "missing_word_confidence"
     assert unrelated.command_category == "non_wake"
@@ -187,6 +198,7 @@ def _recognizer_request(path: Path):
         standby_phrases=["goodbye ares"],
         shutdown_phrases=["shutdown ares"],
         minimum_confidence=0.8,
+        medium_confidence=0.72,
         correlation_id="recognizer-test",
     )
 
@@ -197,32 +209,94 @@ def test_vosk_adapter_loads_model_once_uses_constrained_grammar_and_unk(tmp_path
     wav = tmp_path / "wake.wav"
     _write_wav(wav)
     module = FakeVoskModule(
-        {"text": "okay aris", "result": _word_results("okay aris")}
+        {"text": "hello aries", "result": _word_results("hello aries")}
     )
     adapter = VoskWakeRecognizer(model_path=model, vosk_module=module)
     assert adapter.start().success
     assert adapter.start().status == "already_started"
     result = adapter.recognize_wav(_recognizer_request(wav))
     assert result.wake_detected
-    assert result.selected_alias == "aris"
+    assert result.selected_alias == "aries"
     assert result.normalized_wake_phrase == "ares"
     assert module.model_paths == [str(model.resolve())]
     grammar = module.grammars[0][2]
     assert grammar == [
         "ares",
         "aris",
+        "aries",
         "hey ares",
         "hey aris",
-        "okay ares",
-        "okay aris",
+        "hey aries",
+        "hello ares",
+        "hello aris",
+        "hello aries",
+        "wake up ares",
+        "wake up aris",
+        "wake up aries",
         "goodbye ares",
         "goodbye aris",
+        "goodbye aries",
         "shutdown ares",
         "shutdown aris",
+        "shutdown aries",
         "[unk]",
     ]
     assert adapter.last_diagnostics.raw_recognition_result
     assert adapter.stop().success
+
+
+def test_medium_confidence_requires_repeated_identical_exact_wake(tmp_path):
+    model = tmp_path / "vosk-model"
+    model.mkdir()
+    wav = tmp_path / "wake.wav"
+    _write_wav(wav)
+    payload = {"text": "aris", "result": _word_results("aris", 0.79)}
+    adapter = VoskWakeRecognizer(model_path=model, vosk_module=FakeVoskModule(payload))
+    assert adapter.start().success
+    first = adapter.recognize_wav(_recognizer_request(wav))
+    second = adapter.recognize_wav(_recognizer_request(wav))
+    assert not first.wake_detected
+    assert first.classification_reason == "medium_confidence_confirmation_required"
+    assert first.confirmation_count == 1
+    assert second.wake_detected
+    assert second.classification_reason == "accepted_medium_confidence_repetition"
+    assert second.confirmation_count == 2
+
+
+def test_medium_confidence_wrong_phrase_never_enters_confirmation(tmp_path):
+    model = tmp_path / "vosk-model"
+    model.mkdir()
+    wav = tmp_path / "wake.wav"
+    _write_wav(wav)
+    payload = {"text": "go to", "result": _word_results("go to", 0.99)}
+    adapter = VoskWakeRecognizer(model_path=model, vosk_module=FakeVoskModule(payload))
+    assert adapter.start().success
+    for _ in range(3):
+        result = adapter.recognize_wav(_recognizer_request(wav))
+        assert not result.wake_detected
+        assert not result.confirmation_required
+        assert result.rejection_reason == "exact_constrained_phrase_not_matched"
+
+
+def test_medium_confidence_confirmation_expires_deterministically(tmp_path):
+    model = tmp_path / "vosk-model"
+    model.mkdir()
+    wav = tmp_path / "wake.wav"
+    _write_wav(wav)
+    now = [0.0]
+    payload = {"text": "ares", "result": _word_results("ares", 0.79)}
+    adapter = VoskWakeRecognizer(
+        model_path=model,
+        vosk_module=FakeVoskModule(payload),
+        clock=lambda: now[0],
+    )
+    assert adapter.start().success
+    first = adapter.recognize_wav(_recognizer_request(wav))
+    now[0] = 9.0
+    second = adapter.recognize_wav(_recognizer_request(wav))
+    assert first.confirmation_count == 1
+    assert second.confirmation_count == 1
+    assert not second.wake_detected
 
 
 def test_missing_vosk_model_returns_actionable_error_without_loading_module(tmp_path):
