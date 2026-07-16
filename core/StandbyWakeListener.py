@@ -53,8 +53,8 @@ DEFAULT_WAKE_PHRASES = tuple(
 )
 DEFAULT_WAKE_MICROPHONE_DEVICE = "plughw:2,0"
 DEFAULT_WAKE_VOSK_MODEL = "models/vosk/vosk-model-small-en-us-0.15"
-DEFAULT_WAKE_MINIMUM_CONFIDENCE = 0.8
-DEFAULT_WAKE_MEDIUM_CONFIDENCE = 0.72
+DEFAULT_WAKE_MINIMUM_CONFIDENCE = 0.55
+DEFAULT_WAKE_MEDIUM_CONFIDENCE = 0.40
 
 _CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
 _PREFIX_PATTERN = re.compile(r"^[a-z0-9]+(?: [a-z0-9]+){0,2}$")
@@ -113,6 +113,17 @@ class WakeLocalDiagnostics:
     confidence_tier: str = ""
     confirmation_count: int = 0
     confirmation_required_count: int = 0
+    stream_instance_id: str = ""
+    alsa_handle_id: str = ""
+    stream_open_reason: str = ""
+    stream_close_reason: str = ""
+    calibration_reason: str = ""
+    ownership_handoff_source: str = ""
+    ownership_handoff_destination: str = ""
+    stream_open_reasons: tuple[str, ...] = ()
+    stream_close_reasons: tuple[str, ...] = ()
+    calibration_reasons: tuple[str, ...] = ()
+    ownership_handoffs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -122,6 +133,7 @@ class WakeListenerConfig:
     vosk_model_path: str = DEFAULT_WAKE_VOSK_MODEL
     minimum_recognition_confidence: float = DEFAULT_WAKE_MINIMUM_CONFIDENCE
     medium_recognition_confidence: float = DEFAULT_WAKE_MEDIUM_CONFIDENCE
+    allow_exact_wake_without_confidence: bool = True
     medium_confidence_confirmation_count: int = 2
     medium_confidence_window_seconds: float = 8.0
     language: str = "en"
@@ -168,6 +180,8 @@ class WakeListenerConfig:
             raise ValueError("diagnostic_wake must be a boolean")
         if not isinstance(self.retain_diagnostic_audio, bool):
             raise ValueError("retain_diagnostic_audio must be a boolean")
+        if not isinstance(self.allow_exact_wake_without_confidence, bool):
+            raise ValueError("allow_exact_wake_without_confidence must be a boolean")
         if self.retain_diagnostic_audio and not self.diagnostic_wake:
             raise ValueError("retain_diagnostic_audio requires diagnostic_wake")
         object.__setattr__(self, "microphone_device", _safe_path_text(self.microphone_device, "microphone_device"))
@@ -221,8 +235,8 @@ class WakeListenerConfig:
             "playback_settle_delay_seconds": (0.0, 3.0),
             "retry_delay_seconds": (0.0, 5.0),
             "duration_tolerance_seconds": (0.0, 0.5),
-            "minimum_recognition_confidence": (0.5, 1.0),
-            "medium_recognition_confidence": (0.5, 1.0),
+            "minimum_recognition_confidence": (0.4, 1.0),
+            "medium_recognition_confidence": (0.1, 0.9),
             "medium_confidence_window_seconds": (1.0, 30.0),
         }
         for name, (minimum, maximum) in numeric_bounds.items():
@@ -296,10 +310,21 @@ class StandbyWakeListener(Protocol):
     def listen_once(self, request: WakeListenerRequestV1) -> StandbyListenResultV1:
         ...
 
-    def enter_standby(self, *, runtime_id: str = "") -> WakeListenerResultV1:
+    def enter_standby(
+        self,
+        *,
+        runtime_id: str = "",
+        reason: str = "standby_entered",
+        handoff_source: str = "",
+    ) -> WakeListenerResultV1:
         ...
 
-    def leave_standby(self, reason: str = "leaving_standby") -> WakeListenerResultV1:
+    def leave_standby(
+        self,
+        reason: str = "leaving_standby",
+        *,
+        handoff_destination: str = "active_command",
+    ) -> WakeListenerResultV1:
         ...
 
     def cancel(self, reason: str = "cancelled") -> WakeListenerResultV1:
@@ -463,6 +488,12 @@ class QueuedStandbyWakeListener:
         self._stream_close_count = 0
         self._calibration_count = 0
         self._last_stop_reason = ""
+        self._last_open_reason = ""
+        self._last_close_reason = ""
+        self._last_calibration_reason = ""
+        self._last_handoff_source = ""
+        self._last_handoff_destination = ""
+        self._stream_instance_id = ""
         self.last_result: Optional[StandbyListenResultV1] = None
 
     def push(self, item: Optional[str] | StandbyListenResultV1 | WakeDetectionResultV1) -> None:
@@ -477,7 +508,13 @@ class QueuedStandbyWakeListener:
         self.enter_standby(runtime_id=self._runtime_id)
         return self._lifecycle(True, "started")
 
-    def enter_standby(self, *, runtime_id: str = "") -> WakeListenerResultV1:
+    def enter_standby(
+        self,
+        *,
+        runtime_id: str = "",
+        reason: str = "standby_entered",
+        handoff_source: str = "",
+    ) -> WakeListenerResultV1:
         with self._lock:
             if runtime_id:
                 self._runtime_id = str(runtime_id)
@@ -487,14 +524,31 @@ class QueuedStandbyWakeListener:
                 self._stream_active = True
                 self._stream_open_count += 1
                 self._calibration_count += 1
+                self._stream_instance_id = f"queued-stream-{self._stream_open_count}"
+                self._last_open_reason = str(reason or "standby_entered")[:80]
+                self._last_calibration_reason = (
+                    f"{self._last_open_reason}:initial_calibration"
+                )[:96]
+                self._last_handoff_source = str(handoff_source or "")[:64]
+                self._last_handoff_destination = (
+                    "queued_standby" if handoff_source else ""
+                )
             return self._lifecycle(True, "standby_stream_ready")
 
-    def leave_standby(self, reason: str = "leaving_standby") -> WakeListenerResultV1:
+    def leave_standby(
+        self,
+        reason: str = "leaving_standby",
+        *,
+        handoff_destination: str = "active_command",
+    ) -> WakeListenerResultV1:
         with self._lock:
             if self._stream_active:
                 self._stream_active = False
                 self._stream_close_count += 1
             self._last_stop_reason = str(reason or "leaving_standby")[:80]
+            self._last_close_reason = self._last_stop_reason
+            self._last_handoff_source = "queued_standby"
+            self._last_handoff_destination = str(handoff_destination or "")[:64]
             return self._lifecycle(True, "standby_stream_closed")
 
     def health(self, *, runtime_id: str = "") -> WakeListenerResultV1:
@@ -612,6 +666,13 @@ class QueuedStandbyWakeListener:
                 candidate_count=self._listen_count,
                 stream_active=self._stream_active,
                 capture_owner="queued_standby" if self._stream_active else "",
+                stream_instance_id=self._stream_instance_id,
+                alsa_handle_id=f"{self._stream_instance_id}-handle" if self._stream_instance_id else "",
+                stream_open_reason=self._last_open_reason,
+                stream_close_reason=self._last_close_reason,
+                calibration_reason=self._last_calibration_reason,
+                ownership_handoff_source=self._last_handoff_source,
+                ownership_handoff_destination=self._last_handoff_destination,
                 last_stop_reason=self._last_stop_reason,
                 metadata={"safe": True},
             )

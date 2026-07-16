@@ -141,6 +141,7 @@ def create_runtime(
             if args.diagnostic_wake
             else None
         ),
+        status_callback=output_func,
     )
     voice_output = SingleTurnPipelineRuntimeOutputAdapter(
         pipeline=pipeline,
@@ -294,9 +295,9 @@ def _validate_static_dependencies(args: argparse.Namespace) -> str:
     if (
         isinstance(confidence, bool)
         or not isinstance(confidence, (int, float))
-        or not 0.5 <= float(confidence) <= 1.0
+        or not 0.4 <= float(confidence) <= 1.0
     ):
-        return "wake minimum confidence must be between 0.5 and 1.0"
+        return "wake minimum confidence must be between 0.4 and 1.0"
     if importlib.util.find_spec("vosk") is None:
         return (
             "Vosk is not installed. Run: python -m pip install -r requirements.txt"
@@ -429,6 +430,14 @@ def render_wake_diagnostics(
         f"  Stream open count: {diagnostics.stream_open_count}",
         f"  Stream close count: {diagnostics.stream_close_count}",
         f"  Calibration count: {diagnostics.calibration_count}",
+        f"  Stream instance ID: {diagnostics.stream_instance_id or 'unknown'}",
+        f"  ALSA handle ID: {diagnostics.alsa_handle_id or 'unknown'}",
+        f"  Stream open reason: {diagnostics.stream_open_reason or 'none'}",
+        f"  Stream close reason: {diagnostics.stream_close_reason or 'none'}",
+        f"  Calibration reason: {diagnostics.calibration_reason or 'none'}",
+        "  Ownership handoff: "
+        f"{diagnostics.ownership_handoff_source or 'none'} -> "
+        f"{diagnostics.ownership_handoff_destination or 'none'}",
         "  Pre-roll frames retained: "
         f"{diagnostics.pre_roll_frames_retained}/{diagnostics.expected_pre_roll_frames}",
         f"  Beginning clipped: {'yes' if diagnostics.beginning_clipped else 'no'}",

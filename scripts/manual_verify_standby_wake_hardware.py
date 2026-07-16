@@ -254,8 +254,34 @@ def _run_wake_reliability(
 ) -> bool:
     required = math.ceil(attempts * 0.9)
     accepted = 0
+    rejected = 0
+    records: list[str] = []
+    listener = runtime.standby_wake_listener
+    initial_runtime = runtime.snapshot()
+    initial_stream = listener.snapshot(runtime_id=runtime.runtime_id)
+    baseline_opens = int(getattr(initial_stream, "stream_open_count", 0) or 0)
+    baseline_calibrations = int(
+        getattr(initial_stream, "calibration_count", 0) or 0
+    )
+    baseline_stream_id = str(
+        getattr(initial_stream, "stream_instance_id", "") or ""
+    )
+    if (
+        initial_runtime.current_lifecycle_state != BRAIN_STANDBY
+        or initial_runtime.session_id
+        or not bool(getattr(initial_stream, "stream_active", False))
+    ):
+        output_func(
+            "Wake reliability setup failed: runtime must remain in STANDBY "
+            "with one active listener stream and no session."
+        )
+        return False
     output_func(
         f"Wake reliability test: {attempts} prompted attempts; required acceptance={required}."
+    )
+    output_func(
+        "Reliability mode classifies wake candidates without activation playback, "
+        "so the same standby stream remains owned for all prompts."
     )
     output_func("The silence and unrelated-speech checks above must also remain false-activation free.")
     for attempt in range(1, attempts + 1):
@@ -263,57 +289,105 @@ def _run_wake_reliability(
             f"Reliability attempt {attempt}/{attempts}: Say 'Ares' once, then remain silent."
         )
         before = runtime.snapshot()
-        result = runtime.poll_once()
+        request = runtime.build_standby_wake_request()
+        wake_result = listener.listen_once(request)
         after = runtime.snapshot()
-        wake_result = getattr(runtime.standby_wake_listener, "last_result", None)
-        diagnostics = getattr(runtime.standby_wake_listener, "last_diagnostics", None)
+        diagnostics = getattr(listener, "last_diagnostics", None)
         transcript = str(getattr(diagnostics, "raw_transcript", "") or "")
         if diagnostic_enabled and transcript and transcript not in wake_transcripts:
             wake_transcripts.append(transcript)
         success = bool(
             getattr(wake_result, "wake_detected", False)
-            and after.current_lifecycle_state == BRAIN_ACTIVE
-            and after.session_id
+            and after.current_lifecycle_state == BRAIN_STANDBY
+            and not after.session_id
         )
         if success:
             accepted += 1
+        else:
+            rejected += 1
         confidence = getattr(wake_result, "recognition_confidence", None)
         clipped = bool(getattr(diagnostics, "beginning_clipped", False))
+        decision = str(
+            getattr(wake_result, "classification_reason", "")
+            or getattr(wake_result, "rejection_reason", "")
+            or "unclassified"
+        )
+        confidence_text = (
+            f"{float(confidence):.3f}" if confidence is not None else "unavailable"
+        )
+        records.append(
+            f"{attempt}:{'accepted' if success else 'rejected'}:"
+            f"{transcript or '<unavailable>'}:{confidence_text}:{decision}"
+        )
         output_func(
             "  Result: "
             f"{'accepted' if success else 'rejected'}; "
             f"transcript={transcript if diagnostic_enabled and transcript else '<local diagnostics disabled>'}; "
-            f"confidence={float(confidence):.3f}"
-            if confidence is not None
-            else "  Result: "
-            f"{'accepted' if success else 'rejected'}; "
-            f"transcript={transcript if diagnostic_enabled and transcript else '<local diagnostics disabled>'}; "
-            "confidence=unavailable"
+            f"confidence={confidence_text}; decision={decision}"
         )
         output_func(
             "  Capture: "
             f"candidate={float(getattr(wake_result, 'duration_seconds', 0.0)):.3f}s; "
             f"beginning_clipped={'yes' if clipped else 'no'}; "
             f"stream_opens={int(getattr(wake_result, 'stream_open_count', 0))}; "
-            f"calibrations={int(getattr(wake_result, 'calibration_count', 0))}"
+            f"calibrations={int(getattr(wake_result, 'calibration_count', 0))}; "
+            f"stream_id={getattr(wake_result, 'stream_instance_id', '') or 'unknown'}; "
+            f"handle_id={getattr(wake_result, 'alsa_handle_id', '') or 'unknown'}"
         )
         output_func(
             "  Lifecycle: "
             f"{before.current_lifecycle_state}->{after.current_lifecycle_state}; "
-            f"session_created={'yes' if success else 'no'}"
+            "session_created=no (classification-only reliability probe)"
         )
-        if success:
-            standby = runtime.handle_text("goodbye ares")
-            if (
-                not standby.success
-                or runtime.snapshot().current_lifecycle_state != BRAIN_STANDBY
-            ):
-                output_func("  Reliability reset failed: runtime did not return to STANDBY.")
-                return False
+        current_stream = listener.snapshot(runtime_id=runtime.runtime_id)
+        opens = int(getattr(current_stream, "stream_open_count", 0) or 0)
+        calibrations = int(getattr(current_stream, "calibration_count", 0) or 0)
+        stream_id = str(getattr(current_stream, "stream_instance_id", "") or "")
+        if (
+            opens != baseline_opens
+            or calibrations != baseline_calibrations
+            or (baseline_stream_id and stream_id != baseline_stream_id)
+        ):
+            output_func(
+                "  FAIL: standby stream changed during classification-only reliability "
+                f"probe (opens {baseline_opens}->{opens}, calibrations "
+                f"{baseline_calibrations}->{calibrations}, stream "
+                f"{baseline_stream_id or 'unknown'}->{stream_id or 'unknown'})."
+            )
+            _print_stream_reason_summary(output_func, current_stream)
+            return False
     output_func(
-        f"Wake reliability result: {accepted}/{attempts} accepted; target={required}/{attempts}."
+        f"Wake reliability result: {accepted}/{attempts} accepted; "
+        f"rejected={rejected}; target={required}/{attempts}."
     )
+    final_stream = listener.snapshot(runtime_id=runtime.runtime_id)
+    output_func(
+        "Wake reliability stream result: "
+        f"opens={getattr(final_stream, 'stream_open_count', 0)}; "
+        f"calibrations={getattr(final_stream, 'calibration_count', 0)}; "
+        f"stream_id={getattr(final_stream, 'stream_instance_id', '') or 'unknown'}."
+    )
+    _print_stream_reason_summary(output_func, final_stream)
+    output_func("Wake reliability attempt decisions:")
+    for record in records:
+        output_func(f"  {record}")
     return accepted >= required
+
+
+def _print_stream_reason_summary(
+    output_func: Callable[[str], None],
+    snapshot: Any,
+) -> None:
+    output_func(
+        "  Stream reasons: opens="
+        f"{list(getattr(snapshot, 'stream_open_reasons', []) or [])}; "
+        f"closes={list(getattr(snapshot, 'stream_close_reasons', []) or [])}; "
+        f"calibrations={list(getattr(snapshot, 'calibration_reasons', []) or [])}"
+    )
+    output_func(
+        "  Ownership handoffs: "
+        f"{list(getattr(snapshot, 'ownership_handoffs', []) or [])}"
+    )
 
 
 def _classification(wake_result: Any) -> str:
@@ -434,7 +508,18 @@ def _print_recognition_summary(
             "  Standby stream: "
             f"opens={int(getattr(wake_result, 'stream_open_count', 0) or 0)}; "
             f"calibrations={int(getattr(wake_result, 'calibration_count', 0) or 0)}; "
-            f"candidate={int(getattr(wake_result, 'candidate_number', 0) or 0)}"
+            f"candidate={int(getattr(wake_result, 'candidate_number', 0) or 0)}; "
+            f"stream_id={getattr(wake_result, 'stream_instance_id', '') or 'unknown'}; "
+            f"handle_id={getattr(wake_result, 'alsa_handle_id', '') or 'unknown'}"
+        )
+        output_func(
+            "  Stream transition: "
+            f"open_reason={getattr(wake_result, 'stream_open_reason', '') or 'none'}; "
+            f"close_reason={getattr(wake_result, 'stream_close_reason', '') or 'none'}; "
+            f"calibration_reason={getattr(wake_result, 'calibration_reason', '') or 'none'}; "
+            f"handoff={getattr(wake_result, 'ownership_handoff_source', '') or 'none'}"
+            "->"
+            f"{getattr(wake_result, 'ownership_handoff_destination', '') or 'none'}"
         )
 
 

@@ -81,8 +81,9 @@ def classify_constrained_recognition(
     standby_phrases: Sequence[str] = (),
     shutdown_phrases: Sequence[str] = (),
     canonical_wake_phrase: str = "ares",
-    minimum_confidence: float = 0.8,
-    medium_confidence: float = 0.72,
+    minimum_confidence: float = 0.55,
+    medium_confidence: float = 0.40,
+    allow_exact_wake_without_confidence: bool = False,
     medium_confirmation_repetitions: int = 2,
     recognizer_name: str = "vosk_constrained_grammar",
     runtime_id: str = "",
@@ -94,14 +95,17 @@ def classify_constrained_recognition(
 ) -> WakeRecognizerResultV1:
     """Classify only a complete constrained-grammar result.
 
-    Confidence is the minimum confidence of all recognized words. This fails
-    closed when one word is uncertain or when Vosk did not return word detail.
+    Confidence is the minimum confidence of all recognized words. Missing word
+    confidence is accepted only for an exact configured activation phrase when
+    the caller has already validated the bounded candidate audio.
     """
 
     threshold = _bounded_confidence(minimum_confidence)
     medium_threshold = _bounded_confidence(medium_confidence)
     if medium_threshold >= threshold:
         raise ValueError("medium_confidence must be below minimum_confidence")
+    if not isinstance(allow_exact_wake_without_confidence, bool):
+        raise ValueError("allow_exact_wake_without_confidence must be a boolean")
     if (
         isinstance(medium_confirmation_repetitions, bool)
         or not isinstance(medium_confirmation_repetitions, int)
@@ -173,16 +177,40 @@ def classify_constrained_recognition(
     else:
         confidence_tier = "low"
 
+    words_match = (
+        not normalized_words
+        or tuple(normalized.split()) == tuple(normalized_words)
+    )
+    missing_confidence = (
+        not confidences or confidence_error == "missing_word_confidence"
+    )
+
     if unknown:
         rejection_reason = reason = "unknown_token_result"
     elif intended_category == WAKE_CATEGORY_NON_WAKE:
         rejection_reason = reason = "exact_constrained_phrase_not_matched"
-    elif confidence_error:
+    elif confidence_error and confidence_error != "missing_word_confidence":
         rejection_reason = reason = confidence_error
-    elif not confidences:
-        rejection_reason = reason = "missing_word_confidence"
-    elif tuple(normalized.split()) != tuple(normalized_words):
+    elif not words_match:
         rejection_reason = reason = "recognition_word_result_mismatch"
+    elif (
+        intended_category == WAKE_CATEGORY_ACTIVATION
+        and missing_confidence
+        and allow_exact_wake_without_confidence
+    ):
+        matched = normalized
+        selected_alias = next(
+            (alias for alias in aliases if alias in normalized.split()),
+            "",
+        )
+        if selected_alias:
+            category = WAKE_CATEGORY_ACTIVATION
+            wake_detected = True
+            reason = "accepted_exact_wake_without_confidence"
+        else:
+            rejection_reason = reason = "wake_alias_missing"
+    elif missing_confidence:
+        rejection_reason = reason = "missing_word_confidence"
     elif confidence_value is None:
         rejection_reason = reason = "missing_word_confidence"
     elif confidence_value < medium_threshold:

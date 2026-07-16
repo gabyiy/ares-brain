@@ -103,6 +103,10 @@ def test_persistent_stream_opens_once_across_rejected_and_accepted_candidates(tm
     assert speech.status == VAD_STATUS_COMPLETED_AFTER_SILENCE
     assert len(stream_runner.calls) == 1
     assert adapter.persistent_stream_snapshot()["open_count"] == 1
+    assert adapter.persistent_stream_snapshot()["stream_id"] == "alsa-pcm-stream-1"
+    assert adapter.persistent_stream_snapshot()["alsa_handle_id"] == (
+        "alsa-pcm-stream-1-handle"
+    )
     assert source.closed is False
     assert adapter.close_persistent_stream(
         handle,

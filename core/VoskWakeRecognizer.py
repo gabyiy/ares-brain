@@ -41,7 +41,7 @@ VOSK_MODEL_INSTALL_COMMAND = (
     "vosk-model-small-en-us-0.15.zip -o /tmp/vosk-model-small-en-us-0.15.zip && "
     "unzip -q /tmp/vosk-model-small-en-us-0.15.zip -d models/vosk"
 )
-DEFAULT_VOSK_WAKE_MINIMUM_CONFIDENCE = 0.8
+DEFAULT_VOSK_WAKE_MINIMUM_CONFIDENCE = 0.55
 
 
 class VoskWakeRecognizer:
@@ -192,6 +192,10 @@ class VoskWakeRecognizer:
                 canonical_wake_phrase=request.canonical_wake_phrase,
                 minimum_confidence=request.minimum_confidence,
                 medium_confidence=request.medium_confidence,
+                allow_exact_wake_without_confidence=(
+                    request.allow_exact_wake_without_confidence
+                    and request.validated_speech_candidate is True
+                ),
                 medium_confirmation_repetitions=(
                     request.medium_confirmation_repetitions
                 ),

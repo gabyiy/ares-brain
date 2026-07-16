@@ -110,6 +110,17 @@ class LinuxStandbyWakeListener:
         self._calibration_statistics: Any = None
         self._recalibration_requested = False
         self._capture_gate_owned = False
+        self._last_stream_instance_id = ""
+        self._last_alsa_handle_id = ""
+        self._last_open_reason = ""
+        self._last_close_reason = ""
+        self._last_calibration_reason = ""
+        self._last_handoff_source = ""
+        self._last_handoff_destination = ""
+        self._stream_open_reasons: list[str] = []
+        self._stream_close_reasons: list[str] = []
+        self._calibration_reasons: list[str] = []
+        self._ownership_handoffs: list[str] = []
         self.last_result: Optional[StandbyListenResultV1] = None
         self.last_diagnostics: Optional[WakeLocalDiagnostics] = None
 
@@ -124,7 +135,10 @@ class LinuxStandbyWakeListener:
                 return self._result(False, "disabled", "wake_listener_disabled", "wake listener is disabled")
             self._cancelled = False
         if already_started:
-            entered = self.enter_standby(runtime_id=self._runtime_id)
+            entered = self.enter_standby(
+                runtime_id=self._runtime_id,
+                reason="listener_start_idempotent",
+            )
             return self._result(
                 entered.success,
                 "already_started" if entered.success else entered.status,
@@ -149,7 +163,10 @@ class LinuxStandbyWakeListener:
             return health
         with self._lock:
             self._state = WAKE_LISTENER_READY
-        entered = self.enter_standby(runtime_id=self._runtime_id)
+        entered = self.enter_standby(
+            runtime_id=self._runtime_id,
+            reason="listener_start",
+        )
         if not entered.success:
             _safe_call(self.microphone_adapter, "stop")
             _safe_call(self.wake_recognizer, "stop")
@@ -183,7 +200,13 @@ class LinuxStandbyWakeListener:
             },
         )
 
-    def enter_standby(self, *, runtime_id: str = "") -> WakeListenerResultV1:
+    def enter_standby(
+        self,
+        *,
+        runtime_id: str = "",
+        reason: str = "standby_entered",
+        handoff_source: str = "",
+    ) -> WakeListenerResultV1:
         """Acquire one continuous ALSA stream for the current standby epoch."""
 
         with self._lock:
@@ -222,6 +245,7 @@ class LinuxStandbyWakeListener:
         with self._lock:
             self._capture_gate_owned = True
         try:
+            open_reason = str(reason or "standby_entered")[:80]
             handle = self.microphone_adapter.open_persistent_stream(
                 owner=STANDBY_STREAM_OWNER,
                 device=self.config.microphone_device,
@@ -229,7 +253,25 @@ class LinuxStandbyWakeListener:
             with self._lock:
                 self._stream_handle = handle
                 self._stream_open_count += 1
-            calibration = self._calibrate_stream(handle)
+                self._last_stream_instance_id = str(
+                    getattr(handle, "stream_id", "") or ""
+                )[:96]
+                self._last_alsa_handle_id = str(
+                    getattr(handle, "alsa_handle_id", "")
+                    or f"{self._last_stream_instance_id}-handle"
+                )[:96]
+                self._last_open_reason = open_reason
+                _append_bounded(self._stream_open_reasons, open_reason)
+                if handoff_source:
+                    self._record_handoff_locked(
+                        str(handoff_source)[:64],
+                        STANDBY_STREAM_OWNER,
+                        open_reason,
+                    )
+            calibration = self._calibrate_stream(
+                handle,
+                reason=f"{open_reason}:initial_calibration",
+            )
             if not bool(getattr(calibration, "success", False)):
                 self._close_standby_stream("calibration_failed")
                 return self._result(
@@ -256,8 +298,17 @@ class LinuxStandbyWakeListener:
                 f"{error.__class__.__name__}:{str(error)[:120]}",
             )
 
-    def leave_standby(self, reason: str = "leaving_standby") -> WakeListenerResultV1:
-        closed = self._close_standby_stream(reason)
+    def leave_standby(
+        self,
+        reason: str = "leaving_standby",
+        *,
+        handoff_destination: str = "active_command",
+    ) -> WakeListenerResultV1:
+        closed = self._close_standby_stream(
+            reason,
+            handoff_source=STANDBY_STREAM_OWNER,
+            handoff_destination=handoff_destination,
+        )
         return self._result(
             closed,
             "standby_stream_closed" if closed else "standby_stream_close_failed",
@@ -376,7 +427,11 @@ class LinuxStandbyWakeListener:
                 )
             if not _result_success(capture) or not bool(getattr(capture, "speech_detected", False)):
                 if capture_status in {VAD_STATUS_DEVICE_ERROR, VAD_STATUS_TIMEOUT}:
-                    self._close_standby_stream(capture_status)
+                    self._close_standby_stream(
+                        capture_status,
+                        handoff_source=STANDBY_STREAM_OWNER,
+                        handoff_destination="device_recovery",
+                    )
                 return self._capture_failure(request, capture, started_at)
             with self._lock:
                 self._speech_count += 1
@@ -420,6 +475,10 @@ class LinuxStandbyWakeListener:
                     canonical_wake_phrase=self.config.wake_phrase_aliases[0],
                     minimum_confidence=self.config.minimum_recognition_confidence,
                     medium_confidence=self.config.medium_recognition_confidence,
+                    allow_exact_wake_without_confidence=(
+                        self.config.allow_exact_wake_without_confidence
+                    ),
+                    validated_speech_candidate=True,
                     medium_confirmation_repetitions=(
                         self.config.medium_confidence_confirmation_count
                     ),
@@ -462,7 +521,11 @@ class LinuxStandbyWakeListener:
                 },
             )
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
-            self._close_standby_stream("capture_exception")
+            self._close_standby_stream(
+                "capture_exception",
+                handoff_source=STANDBY_STREAM_OWNER,
+                handoff_destination="device_recovery",
+            )
             return self._listen_failure(
                 request,
                 "wake_listener_exception",
@@ -490,7 +553,11 @@ class LinuxStandbyWakeListener:
             self._cancelled = True
             self._state = WAKE_LISTENER_CANCELLING
             self._last_stop_reason = str(reason or "cancelled")[:80]
-        self._close_standby_stream(reason)
+        self._close_standby_stream(
+            reason,
+            handoff_source=STANDBY_STREAM_OWNER,
+            handoff_destination="stopped",
+        )
         cancel = getattr(self.microphone_adapter, "cancel_current", None)
         if callable(cancel):
             try:
@@ -541,6 +608,25 @@ class LinuxStandbyWakeListener:
                 capture_owner=(
                     STANDBY_STREAM_OWNER if self._stream_handle is not None else ""
                 ),
+                stream_instance_id=(
+                    str(getattr(self._stream_handle, "stream_id", "") or "")
+                    if self._stream_handle is not None
+                    else self._last_stream_instance_id
+                ),
+                alsa_handle_id=(
+                    str(getattr(self._stream_handle, "alsa_handle_id", "") or "")
+                    if self._stream_handle is not None
+                    else self._last_alsa_handle_id
+                ),
+                stream_open_reason=self._last_open_reason,
+                stream_close_reason=self._last_close_reason,
+                calibration_reason=self._last_calibration_reason,
+                ownership_handoff_source=self._last_handoff_source,
+                ownership_handoff_destination=self._last_handoff_destination,
+                stream_open_reasons=list(self._stream_open_reasons),
+                stream_close_reasons=list(self._stream_close_reasons),
+                calibration_reasons=list(self._calibration_reasons),
+                ownership_handoffs=list(self._ownership_handoffs),
                 last_stop_reason=self._last_stop_reason,
                 metadata={
                     "safe": True,
@@ -575,7 +661,17 @@ class LinuxStandbyWakeListener:
             calibrated_at = self._calibration_at
             recalibration_requested = self._recalibration_requested
         if handle is None or bool(getattr(handle, "closed", False)):
-            entered = self.enter_standby(runtime_id=runtime_id)
+            recovery_reason = (
+                "device_recovery"
+                if self._last_close_reason
+                in {VAD_STATUS_DEVICE_ERROR, VAD_STATUS_TIMEOUT, "capture_exception"}
+                else "standby_stream_missing_recovery"
+            )
+            entered = self.enter_standby(
+                runtime_id=runtime_id,
+                reason=recovery_reason,
+                handoff_source="device_recovery",
+            )
             return "" if entered.success else entered.error_message or entered.status
         now = self.clock()
         interval = self.config.recalibration_interval_seconds
@@ -587,7 +683,15 @@ class LinuxStandbyWakeListener:
         )
         if not recalibration_due:
             return ""
-        calibration = self._calibrate_stream(handle)
+        if recalibration_requested:
+            calibration_reason = "manual_recalibration_request"
+        elif calibrated_at is None:
+            calibration_reason = "missing_calibration_state"
+        elif now < calibrated_at:
+            calibration_reason = "clock_rollback_recalibration"
+        else:
+            calibration_reason = "configured_interval_recalibration"
+        calibration = self._calibrate_stream(handle, reason=calibration_reason)
         if bool(getattr(calibration, "success", False)):
             return ""
         self._close_standby_stream("recalibration_failed")
@@ -597,7 +701,7 @@ class LinuxStandbyWakeListener:
             or "wake recalibration failed"
         )
 
-    def _calibrate_stream(self, handle: Any) -> Any:
+    def _calibrate_stream(self, handle: Any, *, reason: str) -> Any:
         request = VoiceActivityCaptureRequestV1(
             output_wav_path="wake-calibration-not-written.wav",
             microphone_device=self.config.microphone_device,
@@ -635,6 +739,11 @@ class LinuxStandbyWakeListener:
         if bool(getattr(result, "success", False)):
             with self._lock:
                 self._calibration_count += 1
+                self._last_calibration_reason = str(reason or "calibration")[:96]
+                _append_bounded(
+                    self._calibration_reasons,
+                    self._last_calibration_reason,
+                )
                 self._calibration_at = self.clock()
                 self._calibration_thresholds = getattr(result, "thresholds", None)
                 self._calibration_statistics = getattr(
@@ -645,7 +754,14 @@ class LinuxStandbyWakeListener:
                 self._recalibration_requested = False
         return result
 
-    def _close_standby_stream(self, reason: str) -> bool:
+    def _close_standby_stream(
+        self,
+        reason: str,
+        *,
+        handoff_source: str = "",
+        handoff_destination: str = "",
+    ) -> bool:
+        close_reason = str(reason or "leaving_standby")[:80]
         with self._lock:
             handle = self._stream_handle
             self._stream_handle = None
@@ -654,7 +770,16 @@ class LinuxStandbyWakeListener:
             self._calibration_statistics = None
             gate_owned = self._capture_gate_owned
             self._capture_gate_owned = False
-            self._last_stop_reason = str(reason or "leaving_standby")[:80]
+            self._last_stop_reason = close_reason
+            self._last_close_reason = close_reason
+            if handle is not None:
+                _append_bounded(self._stream_close_reasons, close_reason)
+            if handoff_source or handoff_destination:
+                self._record_handoff_locked(
+                    str(handoff_source or STANDBY_STREAM_OWNER)[:64],
+                    str(handoff_destination or "released")[:64],
+                    close_reason,
+                )
         success = True
         if handle is not None and not bool(getattr(handle, "closed", False)):
             try:
@@ -688,6 +813,25 @@ class LinuxStandbyWakeListener:
                 "stream_close_count": self._stream_close_count,
                 "calibration_count": self._calibration_count,
                 "candidate_count": self._candidate_count,
+                "stream_instance_id": (
+                    str(getattr(handle, "stream_id", "") or "")
+                    if handle is not None
+                    else self._last_stream_instance_id
+                ),
+                "alsa_handle_id": (
+                    str(getattr(handle, "alsa_handle_id", "") or "")
+                    if handle is not None
+                    else self._last_alsa_handle_id
+                ),
+                "stream_open_reason": self._last_open_reason,
+                "stream_close_reason": self._last_close_reason,
+                "calibration_reason": self._last_calibration_reason,
+                "ownership_handoff_source": self._last_handoff_source,
+                "ownership_handoff_destination": self._last_handoff_destination,
+                "stream_open_reasons": list(self._stream_open_reasons),
+                "stream_close_reasons": list(self._stream_close_reasons),
+                "calibration_reasons": list(self._calibration_reasons),
+                "ownership_handoffs": list(self._ownership_handoffs),
                 "calibration_thresholds": (
                     thresholds.to_dict() if thresholds is not None else {}
                 ),
@@ -696,6 +840,19 @@ class LinuxStandbyWakeListener:
                 ),
                 "safe": True,
             }
+
+    def _record_handoff_locked(
+        self,
+        source: str,
+        destination: str,
+        reason: str,
+    ) -> None:
+        self._last_handoff_source = source
+        self._last_handoff_destination = destination
+        _append_bounded(
+            self._ownership_handoffs,
+            f"{source}->{destination}:{reason}"[:192],
+        )
 
     def _begin_capture_gate(self, timeout_seconds: float) -> str:
         if self.voice_io_gate is None:
@@ -912,6 +1069,19 @@ class LinuxStandbyWakeListener:
             stream_close_count=int(stream["stream_close_count"]),
             calibration_count=int(stream["calibration_count"]),
             candidate_number=int(stream["candidate_count"]),
+            stream_instance_id=str(stream["stream_instance_id"]),
+            alsa_handle_id=str(stream["alsa_handle_id"]),
+            stream_open_reason=str(stream["stream_open_reason"]),
+            stream_close_reason=str(stream["stream_close_reason"]),
+            calibration_reason=str(stream["calibration_reason"]),
+            ownership_handoff_source=str(stream["ownership_handoff_source"]),
+            ownership_handoff_destination=str(
+                stream["ownership_handoff_destination"]
+            ),
+            stream_open_reasons=list(stream["stream_open_reasons"]),
+            stream_close_reasons=list(stream["stream_close_reasons"]),
+            calibration_reasons=list(stream["calibration_reasons"]),
+            ownership_handoffs=list(stream["ownership_handoffs"]),
             pre_roll_frames_retained=int(
                 audio.get("pre_roll_frames_retained", 0) or 0
             ),
@@ -1103,6 +1273,19 @@ class LinuxStandbyWakeListener:
             stream_close_count=int(stream["stream_close_count"]),
             calibration_count=int(stream["calibration_count"]),
             candidate_number=int(stream["candidate_count"]),
+            stream_instance_id=str(stream["stream_instance_id"]),
+            alsa_handle_id=str(stream["alsa_handle_id"]),
+            stream_open_reason=str(stream["stream_open_reason"]),
+            stream_close_reason=str(stream["stream_close_reason"]),
+            calibration_reason=str(stream["calibration_reason"]),
+            ownership_handoff_source=str(stream["ownership_handoff_source"]),
+            ownership_handoff_destination=str(
+                stream["ownership_handoff_destination"]
+            ),
+            stream_open_reasons=tuple(stream["stream_open_reasons"]),
+            stream_close_reasons=tuple(stream["stream_close_reasons"]),
+            calibration_reasons=tuple(stream["calibration_reasons"]),
+            ownership_handoffs=tuple(stream["ownership_handoffs"]),
             pre_roll_frames_retained=int(
                 audio.get("pre_roll_frames_retained", 0) or 0
             ),
@@ -1345,6 +1528,12 @@ def _remove_turn_directory(path: Path) -> str:
         return "already_removed"
     except OSError:
         return "cleanup_failed"
+
+
+def _append_bounded(values: list[str], value: str, *, limit: int = 32) -> None:
+    values.append(str(value or "")[:192])
+    if len(values) > limit:
+        del values[: len(values) - limit]
 
 
 def _safe_call(adapter: Any, method_name: str) -> Any:

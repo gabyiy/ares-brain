@@ -812,7 +812,8 @@ class BrainRuntime:
         if state == BRAIN_STANDBY:
             if self.standby_wake_listener is not None:
                 released = self.standby_wake_listener.leave_standby(
-                    "runtime_activation_requested"
+                    "runtime_activation_requested",
+                    handoff_destination="acknowledgement_playback",
                 )
                 if not bool(getattr(released, "success", False)):
                     self._publish(
@@ -840,7 +841,9 @@ class BrainRuntime:
             if not activated.success:
                 if self.standby_wake_listener is not None:
                     self.standby_wake_listener.enter_standby(
-                        runtime_id=self.runtime_id
+                        runtime_id=self.runtime_id,
+                        reason="activation_rollback",
+                        handoff_source="activation_rollback",
                     )
                 self._publish(
                     EVENT_ACTIVATION_REJECTED,
@@ -1127,7 +1130,9 @@ class BrainRuntime:
                 )
         if self.standby_wake_listener is not None:
             entered = self.standby_wake_listener.enter_standby(
-                runtime_id=self.runtime_id
+                runtime_id=self.runtime_id,
+                reason="runtime_return_to_standby",
+                handoff_source="active_command",
             )
             if not bool(getattr(entered, "success", False)):
                 return self._result(
@@ -1406,11 +1411,18 @@ class BrainRuntime:
                     self._failure_count += 1
         self._resources_closed = True
 
-    def _poll_standby_wake(self) -> BrainRuntimeResultV1:
-        assert self.standby_wake_listener is not None
-        correlation = new_correlation_id("standby-wake")
+    def build_standby_wake_request(
+        self,
+        *,
+        correlation_id: str = "",
+    ) -> WakeListenerRequestV1:
+        """Build the privacy-safe request shared by runtime and bounded probes."""
+
+        if self.standby_wake_listener is None:
+            raise RuntimeError("standby_wake_listener_not_configured")
+        correlation = correlation_id or new_correlation_id("standby-wake")
         wake_config = self.standby_wake_listener.config
-        request = WakeListenerRequestV1(
+        return WakeListenerRequestV1(
             runtime_id=self.runtime_id,
             lifecycle_state=BRAIN_STANDBY,
             listener_timeout_seconds=wake_config.speech_wait_timeout_seconds,
@@ -1425,6 +1437,11 @@ class BrainRuntime:
             correlation_id=correlation,
             metadata={"safe": True, "contains_transcript": False, "contains_audio": False},
         )
+
+    def _poll_standby_wake(self) -> BrainRuntimeResultV1:
+        assert self.standby_wake_listener is not None
+        request = self.build_standby_wake_request()
+        correlation = request.correlation_id
         try:
             listened = self.standby_wake_listener.listen_once(request)
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:

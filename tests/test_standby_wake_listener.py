@@ -100,6 +100,7 @@ class FakeMicrophone:
             device=device,
             closed=False,
             stream_id=f"fake-stream-{self.stream_open_count}",
+            alsa_handle_id=f"fake-alsa-handle-{self.stream_open_count}",
         )
         return self.stream_handle
 
@@ -261,6 +262,10 @@ class FakeWakeRecognizer:
             shutdown_phrases=request.shutdown_phrases,
             canonical_wake_phrase=request.canonical_wake_phrase,
             minimum_confidence=request.minimum_confidence,
+            medium_confidence=request.medium_confidence,
+            allow_exact_wake_without_confidence=(
+                request.allow_exact_wake_without_confidence
+            ),
             recognizer_name=self.recognizer_name,
             runtime_id=request.runtime_id,
             lifecycle_state=request.lifecycle_state,
@@ -325,7 +330,7 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
     config = WakeListenerConfig()
     assert config.microphone_device == "plughw:2,0"
     assert config.vosk_model_path.endswith("vosk-model-small-en-us-0.15")
-    assert config.minimum_recognition_confidence == 0.8
+    assert config.minimum_recognition_confidence == 0.55
     assert config.frame_duration_ms == 20
     assert config.speech_wait_timeout_seconds == 3.0
     assert config.maximum_utterance_seconds == 2.0
@@ -336,7 +341,8 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
     assert config.pre_roll_seconds == 0.4
     assert config.silence_duration_seconds == 0.65
     assert config.speech_end_padding_seconds == 0.12
-    assert config.medium_recognition_confidence == 0.72
+    assert config.medium_recognition_confidence == 0.40
+    assert config.allow_exact_wake_without_confidence is True
     assert config.medium_confidence_confirmation_count == 2
     assert config.recalibration_interval_seconds == 300.0
     assert config.minimum_speech_continue_rms == 160
@@ -354,9 +360,10 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
         {"speech_wait_timeout_seconds": 0},
         {"maximum_utterance_seconds": 50},
         {"minimum_recognition_confidence": True},
-        {"minimum_recognition_confidence": 0.49},
+        {"minimum_recognition_confidence": 0.39},
         {"minimum_recognition_confidence": float("nan")},
         {"medium_recognition_confidence": 0.8},
+        {"allow_exact_wake_without_confidence": 1},
         {"medium_confidence_confirmation_count": 1},
         {"recalibration_interval_seconds": True},
         {"frame_duration_ms": True},
@@ -535,17 +542,22 @@ def test_linux_listener_reuses_one_stream_and_one_calibration_for_rejections(tmp
         project_root=tmp_path,
     )
     assert listener.start().success
-    first = listener.listen_once(_request())
-    second = listener.listen_once(_request())
+    results = [listener.listen_once(_request()) for _ in range(10)]
     snapshot = listener.snapshot()
-    assert not first.wake_detected and not second.wake_detected
+    assert all(not result.wake_detected for result in results)
     assert microphone.stream_open_count == 1
     assert microphone.calibration_count == 1
     assert microphone.stream_close_count == 0
     assert snapshot.stream_open_count == 1
     assert snapshot.calibration_count == 1
-    assert snapshot.candidate_count == 2
+    assert snapshot.candidate_count == 10
     assert snapshot.stream_active
+    assert snapshot.stream_instance_id == "fake-stream-1"
+    assert snapshot.alsa_handle_id == "fake-alsa-handle-1"
+    assert snapshot.stream_open_reasons == ["listener_start"]
+    assert snapshot.calibration_reasons == [
+        "listener_start:initial_calibration"
+    ]
     listener.stop()
 
 
@@ -600,13 +612,29 @@ def test_linux_listener_closes_on_leave_and_reopens_for_new_standby(tmp_path):
         project_root=tmp_path,
     )
     listener.start(runtime_id="runtime-one")
-    assert listener.leave_standby("activation").success
+    assert listener.leave_standby(
+        "activation",
+        handoff_destination="acknowledgement_playback",
+    ).success
     assert microphone.stream_close_count == 1
-    assert listener.enter_standby(runtime_id="runtime-one").success
+    assert listener.enter_standby(
+        runtime_id="runtime-one",
+        reason="runtime_return_to_standby",
+        handoff_source="active_command",
+    ).success
     snapshot = listener.snapshot()
     assert snapshot.stream_open_count == 2
     assert snapshot.calibration_count == 2
     assert snapshot.stream_active
+    assert snapshot.stream_open_reasons == [
+        "listener_start",
+        "runtime_return_to_standby",
+    ]
+    assert snapshot.stream_close_reasons == ["activation"]
+    assert snapshot.ownership_handoffs == [
+        "standby_wake_listener->acknowledgement_playback:activation",
+        "active_command->standby_wake_listener:runtime_return_to_standby",
+    ]
     listener.stop()
 
 
@@ -649,6 +677,10 @@ def test_linux_listener_reopens_after_device_failure_on_next_poll(tmp_path):
     assert recovered.success
     assert listener.snapshot().stream_open_count == 2
     assert listener.snapshot().calibration_count == 2
+    assert listener.snapshot().stream_open_reasons[-1] == "device_recovery"
+    assert listener.snapshot().calibration_reasons[-1] == (
+        "device_recovery:initial_calibration"
+    )
     listener.stop()
 
 
@@ -758,10 +790,27 @@ def test_linux_listener_reports_recognizer_infrastructure_failures(status, tmp_p
     listener.stop()
 
 
-def test_linux_listener_treats_missing_confidence_as_non_wake(tmp_path):
+def test_linux_listener_accepts_exact_wake_without_confidence_after_audio_validation(tmp_path):
     listener = LinuxStandbyWakeListener(
         microphone_adapter=FakeMicrophone(),
         wake_recognizer=FakeWakeRecognizer("Ares", confidence=None),
+        project_root=tmp_path,
+    )
+    listener.start()
+    result = listener.listen_once(_request())
+    assert result.success
+    assert result.status == "wake_detected"
+    assert result.wake_detected is True
+    assert result.classification_reason == "accepted_exact_wake_without_confidence"
+    assert result.recognition_confidence_available is False
+    listener.stop()
+
+
+def test_linux_listener_can_fail_closed_on_missing_confidence_by_configuration(tmp_path):
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(),
+        wake_recognizer=FakeWakeRecognizer("Ares", confidence=None),
+        config=WakeListenerConfig(allow_exact_wake_without_confidence=False),
         project_root=tmp_path,
     )
     listener.start()

@@ -36,9 +36,27 @@ class FakePipeline:
         self.local_outputs = []
         self.stop_count = 0
         self.output_success = True
+        self.stage_observers = []
+
+    def add_stage_observer(self, observer):
+        self.stage_observers.append(observer)
+
+        def unsubscribe():
+            if observer in self.stage_observers:
+                self.stage_observers.remove(observer)
+
+        return unsubscribe
+
+    def _stage(self, index, label, status):
+        for observer in list(self.stage_observers):
+            observer(index, 6, label, status)
 
     def run_once(self, request, cancellation_token=None, pre_brain_hook=None):
         self.requests.append(request)
+        self._stage(2, "Recording", "running")
+        if self.input_text:
+            self._stage(2, "Recording", "completed")
+            self._stage(3, "Transcribing", "running")
         if pre_brain_hook is not None and self.input_text:
             decision = pre_brain_hook(self.input_text)
             assert decision.handled is True
@@ -106,6 +124,53 @@ def test_active_voice_input_delegates_capture_and_transcription_to_single_turn_p
     assert result.metadata["capture_stop_reason"] == "completed_after_silence"
     assert result.metadata["raw_capture_duration_seconds"] == pytest.approx(2.8)
     assert result.metadata["finalized_candidate_duration_seconds"] == pytest.approx(1.1)
+
+
+def test_active_voice_input_reports_visible_bounded_progress_in_order(tmp_path):
+    pipeline = FakePipeline()
+    statuses = []
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: "session-1",
+        status_callback=statuses.append,
+    )
+
+    result = adapter.wait_for_input(1.0)
+
+    assert result.status == "input"
+    assert statuses == [
+        "ARES is waiting for your command...",
+        "Active microphone capture started",
+        "Speech detected",
+        "Command captured",
+        "Transcribing command",
+        "Processing command",
+    ]
+    assert pipeline.stage_observers == []
+
+
+def test_active_voice_no_speech_timeout_is_visible_and_keeps_adapter_open(tmp_path):
+    pipeline = FakePipeline()
+    pipeline.input_text = ""
+    pipeline.input_status = "no_speech_timeout"
+    pipeline.input_success = False
+    pipeline.input_error_stage = "recording_validation"
+    statuses = []
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: "session-1",
+        status_callback=statuses.append,
+    )
+
+    first = adapter.wait_for_input(1.0)
+    second = adapter.wait_for_input(1.0)
+
+    assert first.status == second.status == "timeout"
+    assert statuses.count("No command heard; still active") == 2
+    assert statuses.count("Active microphone capture started") == 2
+    assert adapter.capture_count == 2
 
 
 def test_active_command_diagnostics_use_current_command_capture_and_runtime_result(tmp_path):

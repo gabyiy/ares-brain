@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import importlib
 import json
 from pathlib import Path
@@ -27,7 +28,13 @@ def _word_results(text: str, confidence: float = 0.95):
     ]
 
 
-def _classify(text: str, *, confidence: float = 0.95, words=None):
+def _classify(
+    text: str,
+    *,
+    confidence: float = 0.95,
+    words=None,
+    allow_exact_wake_without_confidence: bool = True,
+):
     config = WakeListenerConfig()
     return classify_constrained_recognition(
         text,
@@ -38,6 +45,7 @@ def _classify(text: str, *, confidence: float = 0.95, words=None):
         shutdown_phrases=("shutdown ares",),
         minimum_confidence=config.minimum_recognition_confidence,
         medium_confidence=config.medium_recognition_confidence,
+        allow_exact_wake_without_confidence=allow_exact_wake_without_confidence,
         medium_confirmation_repetitions=config.medium_confidence_confirmation_count,
     )
 
@@ -101,18 +109,56 @@ def test_unknown_token_result_is_rejected_even_when_text_looks_like_wake():
     assert result.rejection_reason == "unknown_token_result"
 
 
-def test_low_confidence_and_missing_confidence_fail_closed():
-    low = _classify("ares", confidence=0.70)
-    medium = _classify("ares", confidence=0.79)
-    missing = _classify("ares", words=[{"word": "ares"}])
-    assert low.rejection_reason == "wake_confidence_below_medium_threshold"
-    assert medium.rejection_reason == "medium_confidence_confirmation_required"
-    assert medium.confirmation_required
-    assert medium.confidence_tier == "medium"
-    assert low.confidence_available
-    assert missing.rejection_reason == "missing_word_confidence"
-    assert not missing.confidence_available
-    assert not low.wake_detected and not missing.wake_detected
+@pytest.mark.parametrize(
+    ("confidence", "wake_detected", "confirmation_required", "reason"),
+    [
+        (0.399, False, False, "wake_confidence_below_medium_threshold"),
+        (0.400, False, True, "medium_confidence_confirmation_required"),
+        (0.549, False, True, "medium_confidence_confirmation_required"),
+        (0.550, True, False, "accepted_vosk_constrained_grammar"),
+        (0.616, True, False, "accepted_vosk_constrained_grammar"),
+    ],
+)
+def test_exact_wake_confidence_policy_boundaries(
+    confidence,
+    wake_detected,
+    confirmation_required,
+    reason,
+):
+    result = _classify("ares", confidence=confidence)
+    assert result.wake_detected is wake_detected
+    assert result.confirmation_required is confirmation_required
+    assert result.classification_reason == reason
+
+
+def test_missing_confidence_exact_wake_uses_narrow_validated_policy():
+    accepted = _classify("ares", words=[{"word": "ares"}])
+    accepted_without_word_details = _classify("ares", words=[])
+    fail_closed = _classify(
+        "ares",
+        words=[{"word": "ares"}],
+        allow_exact_wake_without_confidence=False,
+    )
+    wrong = _classify("go to", words=[])
+    assert accepted.wake_detected
+    assert accepted.classification_reason == "accepted_exact_wake_without_confidence"
+    assert accepted.confidence_tier == "missing"
+    assert not accepted.confidence_available
+    assert accepted_without_word_details.wake_detected
+    assert (
+        accepted_without_word_details.classification_reason
+        == "accepted_exact_wake_without_confidence"
+    )
+    assert not fail_closed.wake_detected
+    assert fail_closed.rejection_reason == "missing_word_confidence"
+    assert not wrong.wake_detected
+    assert wrong.rejection_reason == "exact_constrained_phrase_not_matched"
+
+
+def test_high_confidence_wrong_phrase_is_always_rejected():
+    result = _classify("go to", confidence=0.99)
+    assert not result.wake_detected
+    assert result.rejection_reason == "exact_constrained_phrase_not_matched"
 
 
 def test_controls_require_exact_phrase_and_usable_confidence():
@@ -197,8 +243,9 @@ def _recognizer_request(path: Path):
         wake_phrase_aliases=list(config.wake_phrase_aliases),
         standby_phrases=["goodbye ares"],
         shutdown_phrases=["shutdown ares"],
-        minimum_confidence=0.8,
-        medium_confidence=0.72,
+        minimum_confidence=0.55,
+        medium_confidence=0.40,
+        validated_speech_candidate=True,
         correlation_id="recognizer-test",
     )
 
@@ -250,7 +297,7 @@ def test_medium_confidence_requires_repeated_identical_exact_wake(tmp_path):
     model.mkdir()
     wav = tmp_path / "wake.wav"
     _write_wav(wav)
-    payload = {"text": "aris", "result": _word_results("aris", 0.79)}
+    payload = {"text": "aris", "result": _word_results("aris", 0.50)}
     adapter = VoskWakeRecognizer(model_path=model, vosk_module=FakeVoskModule(payload))
     assert adapter.start().success
     first = adapter.recognize_wav(_recognizer_request(wav))
@@ -278,13 +325,34 @@ def test_medium_confidence_wrong_phrase_never_enters_confirmation(tmp_path):
         assert result.rejection_reason == "exact_constrained_phrase_not_matched"
 
 
+def test_missing_confidence_requires_listener_validated_speech_candidate(tmp_path):
+    model = tmp_path / "vosk-model"
+    model.mkdir()
+    wav = tmp_path / "wake.wav"
+    _write_wav(wav)
+    payload = {"text": "ares", "result": []}
+    adapter = VoskWakeRecognizer(
+        model_path=model,
+        vosk_module=FakeVoskModule(payload),
+    )
+    assert adapter.start().success
+    validated = adapter.recognize_wav(_recognizer_request(wav))
+    unvalidated = adapter.recognize_wav(
+        replace(_recognizer_request(wav), validated_speech_candidate=False)
+    )
+    assert validated.wake_detected
+    assert validated.classification_reason == "accepted_exact_wake_without_confidence"
+    assert not unvalidated.wake_detected
+    assert unvalidated.rejection_reason == "missing_word_confidence"
+
+
 def test_medium_confidence_confirmation_expires_deterministically(tmp_path):
     model = tmp_path / "vosk-model"
     model.mkdir()
     wav = tmp_path / "wake.wav"
     _write_wav(wav)
     now = [0.0]
-    payload = {"text": "ares", "result": _word_results("ares", 0.79)}
+    payload = {"text": "ares", "result": _word_results("ares", 0.50)}
     adapter = VoskWakeRecognizer(
         model_path=model,
         vosk_module=FakeVoskModule(payload),

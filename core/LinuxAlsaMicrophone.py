@@ -96,6 +96,7 @@ class PersistentPcmStreamHandle:
     command: tuple[str, ...]
     frame_source: Any
     opened_at: float
+    alsa_handle_id: str = ""
     closed: bool = False
 
 
@@ -442,14 +443,21 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             raw_source = self.stream_runner.start(command)
             source = RollingPcmFrameSource(raw_source)
             self.persistent_stream_open_count += 1
+            process_id = getattr(getattr(raw_source, "process", None), "pid", None)
+            stream_id = f"alsa-pcm-stream-{self.persistent_stream_open_count}"
             handle = PersistentPcmStreamHandle(
-                stream_id=f"alsa-pcm-stream-{self.persistent_stream_open_count}",
+                stream_id=stream_id,
                 owner=clean_owner,
                 requested_device=requested_device or "",
                 resolved_device=resolved_device or "",
                 command=tuple(command),
                 frame_source=source,
                 opened_at=time.monotonic(),
+                alsa_handle_id=(
+                    f"arecord-pid-{int(process_id)}"
+                    if isinstance(process_id, int) and process_id > 0
+                    else f"{stream_id}-handle"
+                ),
             )
             self._active_stream = source
             self._active_stream_owner = clean_owner
@@ -517,6 +525,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             return {
                 "active": bool(handle is not None and not handle.closed),
                 "stream_id": handle.stream_id if handle is not None else "",
+                "alsa_handle_id": handle.alsa_handle_id if handle is not None else "",
                 "owner": self._active_stream_owner,
                 "requested_device": handle.requested_device if handle is not None else "",
                 "resolved_device": handle.resolved_device if handle is not None else "",

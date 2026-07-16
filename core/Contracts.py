@@ -983,6 +983,17 @@ class WakeListenerSnapshotV1(VersionedContract):
     candidate_count: int = 0
     stream_active: bool = False
     capture_owner: str = ""
+    stream_instance_id: str = ""
+    alsa_handle_id: str = ""
+    stream_open_reason: str = ""
+    stream_close_reason: str = ""
+    calibration_reason: str = ""
+    ownership_handoff_source: str = ""
+    ownership_handoff_destination: str = ""
+    stream_open_reasons: List[str] = field(default_factory=list)
+    stream_close_reasons: List[str] = field(default_factory=list)
+    calibration_reasons: List[str] = field(default_factory=list)
+    ownership_handoffs: List[str] = field(default_factory=list)
     last_stop_reason: str = ""
     timestamp: str = field(default_factory=utc_contract_timestamp)
 
@@ -1033,6 +1044,17 @@ class StandbyListenResultV1(VersionedContract):
     stream_close_count: int = 0
     calibration_count: int = 0
     candidate_number: int = 0
+    stream_instance_id: str = ""
+    alsa_handle_id: str = ""
+    stream_open_reason: str = ""
+    stream_close_reason: str = ""
+    calibration_reason: str = ""
+    ownership_handoff_source: str = ""
+    ownership_handoff_destination: str = ""
+    stream_open_reasons: List[str] = field(default_factory=list)
+    stream_close_reasons: List[str] = field(default_factory=list)
+    calibration_reasons: List[str] = field(default_factory=list)
+    ownership_handoffs: List[str] = field(default_factory=list)
     pre_roll_frames_retained: int = 0
     expected_pre_roll_frames: int = 0
     first_speech_frame: int = 0
@@ -1064,8 +1086,10 @@ class WakeRecognizerRequestV1(VersionedContract):
     standby_phrases: List[str] = field(default_factory=list)
     shutdown_phrases: List[str] = field(default_factory=list)
     canonical_wake_phrase: str = "ares"
-    minimum_confidence: float = 0.8
-    medium_confidence: float = 0.72
+    minimum_confidence: float = 0.55
+    medium_confidence: float = 0.40
+    allow_exact_wake_without_confidence: bool = True
+    validated_speech_candidate: bool = False
     medium_confirmation_repetitions: int = 2
     medium_confirmation_window_seconds: float = 8.0
     timeout_seconds: float = 3.0

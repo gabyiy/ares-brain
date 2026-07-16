@@ -123,6 +123,26 @@ def test_runtime_serializes_standby_and_active_microphone_ownership(tmp_path):
     assert resumed.stream_active
     assert resumed.stream_open_count == 2
     assert resumed.stream_close_count == 1
+    assert resumed.stream_open_reason == "runtime_return_to_standby"
+    assert resumed.calibration_reason == (
+        "runtime_return_to_standby:initial_calibration"
+    )
+    assert resumed.ownership_handoff_source == "active_command"
+    assert resumed.ownership_handoff_destination == "queued_standby"
+
+
+def test_runtime_exposes_one_privacy_safe_wake_request_builder(tmp_path):
+    runtime, _, _, wake = _runtime(tmp_path)
+    runtime.start()
+    request = runtime.build_standby_wake_request(
+        correlation_id="wake-probe-correlation"
+    )
+    assert request.runtime_id == runtime.runtime_id
+    assert request.lifecycle_state == BRAIN_STANDBY
+    assert request.correlation_id == "wake-probe-correlation"
+    assert request.wake_phrase_aliases == ["ares", "aris", "aries"]
+    assert request.metadata["contains_transcript"] is False
+    assert wake.snapshot().stream_open_count == 1
 
 
 def test_active_repeated_activation_keeps_session_and_uses_active_acknowledgement(tmp_path):

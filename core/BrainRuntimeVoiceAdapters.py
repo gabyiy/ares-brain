@@ -155,6 +155,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
         diagnostic_callback: Optional[
             Callable[[ActiveCommandLocalDiagnostics], None]
         ] = None,
+        status_callback: Optional[Callable[[str], None]] = None,
     ) -> None:
         if not callable(getattr(pipeline, "run_once", None)):
             raise ValueError("pipeline must support run_once")
@@ -165,6 +166,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
         self.session_id_provider = session_id_provider
         self.voice_io_gate = voice_io_gate or VoiceRuntimeGate(settle_delay_seconds=0.0)
         self.diagnostic_callback = diagnostic_callback
+        self.status_callback = status_callback
         self._lock = RLock()
         self._current_token: Optional[CancellationToken] = None
         self._closed = False
@@ -177,6 +179,15 @@ class SingleTurnPipelineRuntimeInputAdapter:
             if self._closed:
                 return RuntimeInputResult.end()
             self.last_diagnostics = None
+        emitted_statuses: set[str] = set()
+
+        def emit_once(message: str) -> None:
+            if message in emitted_statuses:
+                return
+            emitted_statuses.add(message)
+            self._emit_status(message)
+
+        emit_once("ARES is waiting for your command...")
         if not self.voice_io_gate.wait_for_capture(timeout_seconds=max(0.0, float(timeout_seconds))):
             return RuntimeInputResult.timeout()
         correlation = new_correlation_id("runtime-voice-command")
@@ -209,8 +220,23 @@ class SingleTurnPipelineRuntimeInputAdapter:
         with self._lock:
             self._current_token = token
             self.capture_count += 1
+        unsubscribe: Optional[Callable[[], None]] = None
+
+        def observe_stage(_index: int, _total: int, label: str, status: str) -> None:
+            normalized_label = str(label or "").strip().casefold()
+            normalized_status = str(status or "").strip().casefold()
+            if normalized_label == "recording" and normalized_status == "completed":
+                emit_once("Speech detected")
+                emit_once("Command captured")
+            elif normalized_label == "transcribing" and normalized_status == "running":
+                emit_once("Transcribing command")
+
+        add_observer = getattr(self.pipeline, "add_stage_observer", None)
+        if callable(add_observer):
+            unsubscribe = add_observer(observe_stage)
         try:
             self.voice_io_gate.begin_capture("active_command")
+            emit_once("Active microphone capture started")
             result = self.pipeline.run_once(
                 request,
                 cancellation_token=token,
@@ -226,6 +252,8 @@ class SingleTurnPipelineRuntimeInputAdapter:
                 f"{error.__class__.__name__}:{str(error)[:120]}",
             )
         finally:
+            if unsubscribe is not None:
+                unsubscribe()
             self.voice_io_gate.end_capture("active_command")
             with self._lock:
                 self._current_token = None
@@ -235,6 +263,10 @@ class SingleTurnPipelineRuntimeInputAdapter:
             return RuntimeInputResult.cancelled()
         text = captured.get("text") or str(getattr(result, "recognized_text", "") or "").strip()
         if text and bool(getattr(result, "success", False)):
+            emit_once("Speech detected")
+            emit_once("Command captured")
+            emit_once("Transcribing command")
+            emit_once("Processing command")
             return RuntimeInputResult(
                 status="input",
                 text=text,
@@ -260,6 +292,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
             "transcription",
             "transcript_normalization",
         }:
+            emit_once("No command heard; still active")
             return RuntimeInputResult(
                 status="timeout",
                 metadata={
@@ -273,6 +306,14 @@ class SingleTurnPipelineRuntimeInputAdapter:
             "active_voice_pipeline_failed",
             str(getattr(result, "error_reason", "") or status or "voice input failed")[:160],
         )
+
+    def _emit_status(self, message: str) -> None:
+        if self.status_callback is None:
+            return
+        try:
+            self.status_callback(str(message))
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return
 
     def record_runtime_result(
         self,

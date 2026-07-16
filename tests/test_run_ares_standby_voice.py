@@ -98,8 +98,8 @@ def test_production_standby_voice_cli_defaults_match_verified_raspberry_pi_stack
     assert args.microphone_device == "plughw:2,0"
     assert args.speaker_device == "plughw:CARD=Device,DEV=0"
     assert args.vosk_model == "models/vosk/vosk-model-small-en-us-0.15"
-    assert args.wake_min_confidence == 0.8
-    assert args.wake_medium_confidence == 0.72
+    assert args.wake_min_confidence == 0.55
+    assert args.wake_medium_confidence == 0.40
     assert args.wake_medium_confirmations == 2
     assert args.wake_recalibration_seconds == 300.0
     assert args.command_whisper_model == "models/whisper/ggml-base.en.bin"
@@ -260,15 +260,70 @@ def test_hardware_helper_stage_e_requires_bypass_and_does_not_retry_unknown_fall
     )
 
 
-class ReliabilityRuntime:
-    def __init__(self, accepted):
+class ReliabilityListener:
+    def __init__(self, accepted, *, reopen_on_attempt=0):
         self.accepted = list(accepted)
         self.index = 0
+        self.reopen_on_attempt = reopen_on_attempt
+        self.open_count = 1
+        self.calibration_count = 1
+        self.stream_id = "reliability-stream-1"
+        self.last_result = None
+        self.last_diagnostics = None
+
+    def snapshot(self, runtime_id=""):
+        return SimpleNamespace(
+            stream_active=True,
+            stream_open_count=self.open_count,
+            calibration_count=self.calibration_count,
+            stream_instance_id=self.stream_id,
+            stream_open_reasons=["listener_start"],
+            stream_close_reasons=[],
+            calibration_reasons=["listener_start:initial_calibration"],
+            ownership_handoffs=[],
+        )
+
+    def listen_once(self, request):
+        accepted = self.accepted[self.index]
+        self.index += 1
+        if self.reopen_on_attempt == self.index:
+            self.open_count += 1
+            self.calibration_count += 1
+            self.stream_id = f"reliability-stream-{self.open_count}"
+        self.last_result = StandbyListenResultV1(
+            success=True,
+            status="wake_detected" if accepted else "non_wake_speech",
+            speech_detected=True,
+            wake_detected=accepted,
+            recognition_confidence=0.83 if accepted else 0.6,
+            recognition_confidence_available=True,
+            classification_reason=(
+                "accepted_vosk_constrained_grammar"
+                if accepted
+                else "exact_constrained_phrase_not_matched"
+            ),
+            duration_seconds=0.8,
+            stream_open_count=self.open_count,
+            calibration_count=self.calibration_count,
+            candidate_number=self.index,
+            stream_instance_id=self.stream_id,
+            alsa_handle_id=f"{self.stream_id}-handle",
+        )
+        self.last_diagnostics = WakeLocalDiagnostics(
+            raw_transcript="ares" if accepted else "go to",
+            beginning_clipped=False,
+        )
+        return self.last_result
+
+
+class ReliabilityRuntime:
+    def __init__(self, accepted, *, reopen_on_attempt=0):
+        self.runtime_id = "reliability-runtime"
         self.state = "STANDBY"
         self.session_id = ""
-        self.standby_wake_listener = SimpleNamespace(
-            last_result=None,
-            last_diagnostics=None,
+        self.standby_wake_listener = ReliabilityListener(
+            accepted,
+            reopen_on_attempt=reopen_on_attempt,
         )
 
     def snapshot(self):
@@ -277,35 +332,8 @@ class ReliabilityRuntime:
             session_id=self.session_id,
         )
 
-    def poll_once(self):
-        accepted = self.accepted[self.index]
-        self.index += 1
-        self.standby_wake_listener.last_result = StandbyListenResultV1(
-            success=True,
-            status="wake_detected" if accepted else "non_wake_speech",
-            speech_detected=True,
-            wake_detected=accepted,
-            recognition_confidence=0.83 if accepted else 0.6,
-            recognition_confidence_available=True,
-            duration_seconds=0.8,
-            stream_open_count=self.index,
-            calibration_count=self.index,
-            candidate_number=self.index,
-        )
-        self.standby_wake_listener.last_diagnostics = WakeLocalDiagnostics(
-            raw_transcript="ares" if accepted else "go to",
-            beginning_clipped=False,
-        )
-        if accepted:
-            self.state = "ACTIVE"
-            self.session_id = f"reliability-session-{self.index}"
-        return SimpleNamespace(success=True, status="activated" if accepted else "standby_listening")
-
-    def handle_text(self, text):
-        assert text == "goodbye ares"
-        self.state = "STANDBY"
-        self.session_id = ""
-        return SimpleNamespace(success=True, status="standby_entered")
+    def build_standby_wake_request(self):
+        return SimpleNamespace(correlation_id="reliability-correlation")
 
 
 def test_hardware_reliability_mode_reports_nine_of_ten_without_hiding_misses():
@@ -320,6 +348,7 @@ def test_hardware_reliability_mode_reports_nine_of_ten_without_hiding_misses():
     )
     assert any("9/10 accepted" in line for line in output)
     assert any("rejected" in line for line in output)
+    assert any("opens=1; calibrations=1" in line for line in output)
 
 
 def test_hardware_reliability_mode_fails_below_nine_of_ten():
@@ -333,6 +362,19 @@ def test_hardware_reliability_mode_fails_below_nine_of_ten():
         wake_transcripts=[],
     )
     assert any("8/10 accepted" in line for line in output)
+
+
+def test_hardware_reliability_mode_fails_on_unexpected_stream_reopen():
+    output = []
+    runtime = ReliabilityRuntime([True] * 10, reopen_on_attempt=4)
+    assert not manual_verify_standby_wake_hardware._run_wake_reliability(
+        runtime,
+        10,
+        output_func=output.append,
+        diagnostic_enabled=True,
+        wake_transcripts=[],
+    )
+    assert any("stream changed" in line for line in output)
 
 
 def test_hardware_helper_active_summary_uses_active_diagnostics_not_stale_wake_result():
