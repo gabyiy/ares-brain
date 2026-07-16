@@ -1232,6 +1232,15 @@ Phase 102: Standby Wake Short-Utterance Endpointing
 - Hardware diagnostics now expose noise floor, thresholds, RMS samples, speech/quiet/pre/post-roll counts, duplicate/stale PCM checks, trim durations, token confidences, endpoint reason, and read-only ALSA mixer/AGC information. The helper still requires at least 9/10 on the physical Raspberry Pi and reports failure categories honestly.
 - Deterministic verification passes 2014 tests. Physical microphone reliability remains owner-run and is not inferred from mocks.
 
+Phase 103: Generation-Bound Wake Attempts and Recovery Health
+
+- Real hardware diagnostics exposed an impossible mixed record: Vosk text `ares` at confidence `1.000` was displayed beside a later zero-duration `invalid_audio` capture. The listener and verifier were reading independent mutable result/diagnostic snapshots, and failed recovery did not atomically replace both.
+- One immutable `WakeAttemptResult` now binds unique attempt/candidate IDs, stream instance/generation, capture validity, recognition/classification, lifecycle outcome, infrastructure status, and cleanup. Invalid or empty audio never invokes Vosk or carries old text; old-generation recognition fails closed.
+- Stream recovery is now explicit `CLOSED -> OPENING -> CALIBRATING -> HEALTHY` or `FAILED`. Calibration failure closes ALSA, clears all audio/recognizer state, releases ownership, and remains unhealthy until a later bounded recovery completes.
+- Vosk model probing no longer consumes microphone audio. Model, adapter, open-device, and calibration health are distinct and startup reports the actual failed subsystem. The hardware verifier uses isolated event telemetry, separates infrastructure failures from recognition misses, and renders only completed attempt objects.
+- Added `scripts/inspect_ares_runtime_state.py` for process, runtime-lock, and event-history-lock preflight with proven-dead-only recovery. Live owners are never displaced.
+- Deterministic verification passes 2049 tests. Physical Raspberry Pi 9/10 reliability and the full wake/calculator/standby/reactivation/shutdown sequence remain required.
+
 Current State
 
 ARES is currently at the completed Architecture Hardening foundation plus a central deterministic Brain session state machine and persistent foreground runtime, explicit ALSA microphone/speaker adapters, one persistent and calibrated standby PCM stream, constrained Vosk wake recognition, bounded offline Whisper active-command STT, Piper TTS, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and CoreService-owned general explicit long-term owner memory with confirmation-gated CRUD. The assistant remains deterministic and offline. The foreground runtime can reject multiple candidates without reopening ALSA, activate only from a complete confidence-gated grammar result, process multiple serial Whisper-transcribed voice commands under one session ID, terminate/reap a timed-out command inference without ending that session, return to standby on inactivity or an exact owner stop phrase, and stop on an exact shutdown phrase. One process lock prevents duplicate foreground production runtimes, and event-history append failures degrade to visible telemetry warnings instead of terminating live operation. It still does not activate Cities. Brain/CoreService remain free of ALSA, audio conversion, VAD, Vosk, Whisper, Piper, model paths, and subprocess details; those remain injected adapters. Owner facts and general memories are written only by explicit bounded memory commands, and ordinary transcripts/recordings are not persisted.
@@ -1252,7 +1261,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 2014 tests.
+The current pytest collection is 2049 tests.
 
 The current memory paths are:
 
@@ -1327,8 +1336,9 @@ Phase 3 Real Voice Integration
 33. Correct the verifier so its reliability phase reuses one standby stream without activating, adopt the owner-observed `0.55`/`0.40` confidence policy, and expose bounded active-command wait states. Completed in deterministic CI.
 34. Make event-history append failures non-fatal, remove fake acknowledgement turns, add owner-aware lock recovery/inspection, share one production history store, and prevent duplicate foreground runtimes. Completed in deterministic CI.
 35. Bound active command Whisper at the subprocess boundary, release capture ownership before inference, validate closed canonical WAV input, expose terminal timing/cleanup diagnostics, and recover only proven-dead event locks. Completed in deterministic CI.
-36. Pull this checkpoint and run `python scripts/manual_verify_standby_wake_hardware.py --diagnostic-wake --wake-reliability-attempts 10`. Require at least 9/10 quiet-room wakes, normally one stream open/calibration during the reliability phase, a bounded active transcript for calculator/goodbye/shutdown, no silence/unrelated-speech false activation, exact lifecycle bypass, calculator response, standby return, second activation, and clean shutdown before recording hardware proof.
-37. Only after that stable hardware proof consider a separately reviewed systemd/boot-startup checkpoint. Wider background listening and autonomous City activation remain out of scope.
+36. Bind wake capture, recognition, classification, lifecycle, recovery generation, cleanup, and terminal diagnostics into one immutable attempt result; separate model/device/calibration health and add process/lock preflight. Completed in deterministic CI; physical validation remains owner-run.
+37. Pull this checkpoint and run `python scripts/manual_verify_standby_wake_hardware.py --diagnostic-wake --wake-reliability-attempts 10`. Require at least 9/10 valid quiet-room wakes, normally one stream open/calibration during the reliability phase, zero internally inconsistent attempts, infrastructure failures reported separately, a bounded active transcript for calculator/goodbye/shutdown, no silence/unrelated-speech false activation, exact lifecycle bypass, calculator response, standby return, second activation, and clean shutdown before recording hardware proof.
+38. Only after that stable hardware proof consider a separately reviewed systemd/boot-startup checkpoint. Wider background listening and autonomous City activation remain out of scope.
 
 What Must Not Be Started Yet
 

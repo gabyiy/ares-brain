@@ -574,7 +574,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `2014 tests`.
+Current pytest collection: `2049 tests`.
 
 Manual Brain Session Manager Verification
 
@@ -2485,6 +2485,15 @@ Phase 102
 - Wake-only endpointing now counts every non-continuation frame toward terminal silence, preserves resume hysteresis, bounds retained post-roll, trims excess boundary silence, rejects contaminated calibration windows, and clears stale candidate/backlog PCM without changing full-command VAD.
 - Exact phrase matching remains primary. Only a validated two-token, same-identity alias result can use canonical duplicate collapse; unknown tokens and unrelated repetitions remain rejected.
 - Current deterministic collection is 2014 tests. The 9/10 quiet-room target still requires owner-run Raspberry Pi microphone verification.
+
+Phase 103
+
+- The latest Raspberry Pi verifier combined a prior Vosk `ares` result with a later zero-duration `invalid_audio` capture because diagnostics were read from independent mutable `last_result` and `last_diagnostics` fields. Recovery and failed-calibration paths did not always replace both fields together.
+- Every wake candidate now produces one frozen, generation-bound `WakeAttemptResult` containing its attempt/candidate IDs, stream identity and generation, capture, recognition, classification, lifecycle outcome, infrastructure status, and cleanup result. Invalid or empty capture cannot invoke Vosk or carry transcript/confidence data, and stale-generation recognition is rejected.
+- Standby stream recovery now has explicit `CLOSED -> OPENING -> CALIBRATING -> HEALTHY` or `FAILED` states. Calibration failure closes the handle, clears pre-roll/candidate/recognizer state, releases microphone ownership, and reports a structured infrastructure failure instead of exposing the listener as ready.
+- Vosk model health is tested independently with a deterministic silent probe and consumes no microphone input. ALSA adapter, open-device, and calibration health are reported separately, preserving the actual failing subsystem at startup.
+- The bounded hardware verifier uses an isolated temporary event-history store, excludes infrastructure failures from the recognition denominator, and renders diagnostics from the completed immutable attempt only. `scripts/inspect_ares_runtime_state.py` reports matching ARES processes plus production-instance and event-history lock ownership without stealing live locks.
+- Current deterministic collection is 2049 tests. Raspberry Pi microphone reliability and the complete lifecycle sequence still require owner-run hardware verification.
 
 Future phases retain camera understanding, face/object recognition, ROS2, Jetson Orin migration, and autonomous navigation as unimplemented plans.
 

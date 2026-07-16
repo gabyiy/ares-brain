@@ -26,6 +26,7 @@
   "event_history": {
     "path": "data/event_history.json",
     "store_instance_policy": "one_per_production_process",
+    "hardware_verifier_store_policy": "isolated_temporary_store",
     "append_failure_policy": "warn_count_and_continue",
     "store_lock_stale_seconds": 30,
     "critical_owner_memory_failure_policy": "fail_closed"
