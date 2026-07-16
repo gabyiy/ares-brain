@@ -1223,6 +1223,15 @@ Phase 101: Bounded Active Whisper Transcription
 - Event-history appends now attempt automatic recovery only for expired local locks whose PID is proven dead; live, malformed, remote, and unprovable locks still warn and drop telemetry without blocking the brain. The production runtime lock reports the live PID and releases on normal shutdown, Ctrl+C, and handled runtime errors.
 - Deterministic verification passes 1989 tests. The active timeout and cleanup behavior are automated proof only; real Raspberry Pi transcript completion, calculator, standby, reactivation, and shutdown remain owner-run requirements.
 
+Phase 102: Standby Wake Short-Utterance Endpointing
+
+- Real Raspberry Pi reliability fell to 3/10 with `ares aris`, `aries ares`, and `[unk] aris`; failed candidates commonly reached the 2.4-second pre-roll-plus-active bound with zero terminal silence.
+- The wake-only state machine had a threshold gap: frames below `speech_continue_rms` but above `silence_rms` were not resumed speech, yet they reset terminal-silence accumulation. Wake endpointing now treats every sub-continuation frame as quiet while preserving the three-frame continuation hysteresis needed to resume speech.
+- Wake calibration now requires a bounded clean non-speech window. Wake assembly tracks frame indices, retains bounded post-roll once, trims only excess boundary silence from a closed canonical WAV, and clears rolling/backlogged PCM after each candidate. Full-command VAD and active Whisper are unchanged.
+- Exact constrained-grammar matching remains primary. A residual two-token Vosk artifact may collapse only when both complete tokens map to the same configured ARES identity, no unknown or other token exists, the trimmed candidate is at most 1.4 seconds, and the existing minimum-confidence policy passes.
+- Hardware diagnostics now expose noise floor, thresholds, RMS samples, speech/quiet/pre/post-roll counts, duplicate/stale PCM checks, trim durations, token confidences, endpoint reason, and read-only ALSA mixer/AGC information. The helper still requires at least 9/10 on the physical Raspberry Pi and reports failure categories honestly.
+- Deterministic verification passes 2014 tests. Physical microphone reliability remains owner-run and is not inferred from mocks.
+
 Current State
 
 ARES is currently at the completed Architecture Hardening foundation plus a central deterministic Brain session state machine and persistent foreground runtime, explicit ALSA microphone/speaker adapters, one persistent and calibrated standby PCM stream, constrained Vosk wake recognition, bounded offline Whisper active-command STT, Piper TTS, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and CoreService-owned general explicit long-term owner memory with confirmation-gated CRUD. The assistant remains deterministic and offline. The foreground runtime can reject multiple candidates without reopening ALSA, activate only from a complete confidence-gated grammar result, process multiple serial Whisper-transcribed voice commands under one session ID, terminate/reap a timed-out command inference without ending that session, return to standby on inactivity or an exact owner stop phrase, and stop on an exact shutdown phrase. One process lock prevents duplicate foreground production runtimes, and event-history append failures degrade to visible telemetry warnings instead of terminating live operation. It still does not activate Cities. Brain/CoreService remain free of ALSA, audio conversion, VAD, Vosk, Whisper, Piper, model paths, and subprocess details; those remain injected adapters. Owner facts and general memories are written only by explicit bounded memory commands, and ordinary transcripts/recordings are not persisted.
@@ -1243,7 +1252,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 1989 tests.
+The current pytest collection is 2014 tests.
 
 The current memory paths are:
 
