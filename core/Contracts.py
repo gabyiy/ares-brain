@@ -1029,6 +1029,9 @@ class StandbyListenResultV1(VersionedContract):
     assembled_duration_seconds: float = 0.0
     normalized_duration_seconds: float = 0.0
     whisper_input_duration_seconds: float = 0.0
+    trimmed_duration_seconds: float = 0.0
+    leading_trimmed_seconds: float = 0.0
+    trailing_trimmed_seconds: float = 0.0
     whisper_processing_time_seconds: float = 0.0
     whisper_status: str = ""
     whisper_exit_code: Optional[int] = None
@@ -1060,6 +1063,19 @@ class StandbyListenResultV1(VersionedContract):
     expected_pre_roll_frames: int = 0
     first_speech_frame: int = 0
     terminal_silence_duration_seconds: float = 0.0
+    terminal_quiet_frame_count: int = 0
+    speech_frame_count: int = 0
+    post_roll_frame_count: int = 0
+    duplicate_pcm_frame_count: int = 0
+    stale_pcm_frames_discarded: int = 0
+    ambient_noise_floor: float = 0.0
+    speech_start_threshold: float = 0.0
+    speech_continue_threshold: float = 0.0
+    speech_end_threshold: float = 0.0
+    minimum_word_confidence: Optional[float] = None
+    mean_word_confidence: Optional[float] = None
+    canonical_confidence: Optional[float] = None
+    duplicate_collapse_used: bool = False
     speech_to_activation_seconds: float = 0.0
     sample_rate_hz: int = 0
     channels: int = 0
@@ -1094,6 +1110,8 @@ class WakeRecognizerRequestV1(VersionedContract):
     medium_confirmation_repetitions: int = 2
     medium_confirmation_window_seconds: float = 8.0
     timeout_seconds: float = 3.0
+    audio_duration_seconds: float = 0.0
+    maximum_duplicate_collapse_audio_seconds: float = 1.4
 
 
 @dataclass(frozen=True)
@@ -1113,6 +1131,9 @@ class WakeRecognizerResultV1(VersionedContract):
     canonical_wake_phrase: str = ""
     confidence: Optional[float] = None
     confidence_available: bool = False
+    minimum_word_confidence: Optional[float] = None
+    mean_word_confidence: Optional[float] = None
+    canonical_confidence: Optional[float] = None
     minimum_confidence: float = 0.0
     medium_confidence: float = 0.0
     confidence_tier: str = ""
@@ -1123,6 +1144,9 @@ class WakeRecognizerResultV1(VersionedContract):
     rejection_reason: str = ""
     unknown_token_detected: bool = False
     recognized_token_count: int = 0
+    duplicate_collapse_used: bool = False
+    collapsed_canonical_phrase: str = ""
+    audio_duration_seconds: float = 0.0
     processing_time_seconds: float = 0.0
     model_path: str = ""
     grammar_phrase_count: int = 0

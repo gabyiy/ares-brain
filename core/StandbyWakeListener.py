@@ -44,7 +44,7 @@ WAKE_CATEGORY_SHUTDOWN = "shutdown"
 WAKE_CATEGORY_NON_WAKE = "non_wake"
 
 DEFAULT_WAKE_PHRASE_ALIASES = DEFAULT_ARES_NAME_ALIASES
-DEFAULT_WAKE_PHRASE_PREFIXES = ("", "hey", "hello", "wake up")
+DEFAULT_WAKE_PHRASE_PREFIXES = ("", "hey", "hello", "wake up", "okay")
 DEFAULT_WAKE_FILLER_PREFIXES: tuple[str, ...] = ()
 DEFAULT_WAKE_PHRASES = tuple(
     " ".join(part for part in (prefix, alias) if part)
@@ -97,6 +97,10 @@ class WakeLocalDiagnostics:
     recognition_status: str = ""
     recognition_confidence: Optional[float] = None
     recognition_confidence_available: bool = False
+    minimum_word_confidence: Optional[float] = None
+    mean_word_confidence: Optional[float] = None
+    canonical_confidence: Optional[float] = None
+    duplicate_collapse_used: bool = False
     recognition_processing_time_seconds: float = 0.0
     recognizer_model_path: str = ""
     stream_open_count: int = 0
@@ -108,6 +112,19 @@ class WakeLocalDiagnostics:
     beginning_clipped: bool = False
     first_speech_frame: int = 0
     terminal_silence_duration_seconds: float = 0.0
+    terminal_quiet_frame_count: int = 0
+    speech_frame_count: int = 0
+    post_roll_frame_count: int = 0
+    duplicate_pcm_frame_count: int = 0
+    stale_pcm_frames_discarded: int = 0
+    ambient_noise_floor: float = 0.0
+    speech_start_threshold: float = 0.0
+    speech_continue_threshold: float = 0.0
+    speech_end_threshold: float = 0.0
+    rms_trace: tuple[Dict[str, Any], ...] = ()
+    trimmed_duration_seconds: float = 0.0
+    leading_trimmed_seconds: float = 0.0
+    trailing_trimmed_seconds: float = 0.0
     vad_transitions: tuple[Dict[str, Any], ...] = ()
     speech_to_activation_seconds: float = 0.0
     confidence_tier: str = ""
@@ -142,6 +159,7 @@ class WakeListenerConfig:
     filler_prefixes: tuple[str, ...] = DEFAULT_WAKE_FILLER_PREFIXES
     calibration_enabled: bool = True
     calibration_duration_seconds: float = 0.6
+    calibration_maximum_seconds: float = 1.8
     recalibration_interval_seconds: float = 300.0
     speech_start_rms: float = 200.0
     speech_continue_rms: float = 160.0
@@ -156,10 +174,15 @@ class WakeListenerConfig:
     required_continue_frames: int = 3
     required_silence_frames: int = 5
     speech_wait_timeout_seconds: float = 3.0
-    maximum_utterance_seconds: float = 2.0
-    silence_duration_seconds: float = 0.65
+    maximum_utterance_seconds: float = 1.6
+    minimum_speech_duration_seconds: float = 0.08
+    silence_duration_seconds: float = 0.55
     pre_roll_seconds: float = 0.4
     speech_end_padding_seconds: float = 0.12
+    trim_leading_padding_seconds: float = 0.24
+    trim_trailing_padding_seconds: float = 0.20
+    maximum_duplicate_collapse_audio_seconds: float = 1.4
+    diagnostic_rms_interval_frames: int = 5
     frame_duration_ms: int = 20
     frame_read_timeout_seconds: float = 1.0
     playback_settle_delay_seconds: float = 0.35
@@ -216,6 +239,7 @@ class WakeListenerConfig:
         )
         numeric_bounds = {
             "calibration_duration_seconds": (0.0, 3.0),
+            "calibration_maximum_seconds": (0.1, 5.0),
             "recalibration_interval_seconds": (0.0, 3600.0),
             "speech_start_rms": (1.0, 32767.0),
             "speech_continue_rms": (1.0, 32767.0),
@@ -228,9 +252,13 @@ class WakeListenerConfig:
             "maximum_silence_rms": (1.0, 32767.0),
             "speech_wait_timeout_seconds": (0.1, 10.0),
             "maximum_utterance_seconds": (0.25, 5.0),
+            "minimum_speech_duration_seconds": (0.02, 0.5),
             "silence_duration_seconds": (0.1, 2.0),
             "pre_roll_seconds": (0.0, 0.75),
             "speech_end_padding_seconds": (0.0, 0.5),
+            "trim_leading_padding_seconds": (0.0, 0.5),
+            "trim_trailing_padding_seconds": (0.0, 0.5),
+            "maximum_duplicate_collapse_audio_seconds": (0.25, 2.0),
             "frame_read_timeout_seconds": (0.05, 3.0),
             "playback_settle_delay_seconds": (0.0, 3.0),
             "retry_delay_seconds": (0.0, 5.0),
@@ -249,6 +277,7 @@ class WakeListenerConfig:
             ("consecutive_failure_limit", 1, 10),
             ("maximum_retained_candidates", 1, 3),
             ("medium_confidence_confirmation_count", 2, 3),
+            ("diagnostic_rms_interval_frames", 1, 50),
         ):
             object.__setattr__(self, name, _bounded_integer(getattr(self, name), name, minimum, maximum))
         if not self.speech_start_rms > self.speech_continue_rms >= self.silence_rms:
@@ -262,6 +291,10 @@ class WakeListenerConfig:
                 raise ValueError(f"{minimum_name} cannot exceed {maximum_name}")
         if self.calibration_enabled and self.calibration_duration_seconds <= 0:
             raise ValueError("calibration_duration_seconds must be positive when calibration is enabled")
+        if self.calibration_maximum_seconds < self.calibration_duration_seconds:
+            raise ValueError(
+                "calibration_maximum_seconds cannot be below calibration_duration_seconds"
+            )
         if self.medium_recognition_confidence >= self.minimum_recognition_confidence:
             raise ValueError(
                 "medium_recognition_confidence must be below minimum_recognition_confidence"
@@ -269,6 +302,17 @@ class WakeListenerConfig:
         if self.speech_end_padding_seconds >= self.silence_duration_seconds:
             raise ValueError(
                 "speech_end_padding_seconds must be below silence_duration_seconds"
+            )
+        if self.minimum_speech_duration_seconds >= self.maximum_utterance_seconds:
+            raise ValueError(
+                "minimum_speech_duration_seconds must be below maximum_utterance_seconds"
+            )
+        if (
+            self.maximum_duplicate_collapse_audio_seconds
+            > self.maximum_utterance_seconds + self.pre_roll_seconds
+        ):
+            raise ValueError(
+                "maximum_duplicate_collapse_audio_seconds exceeds the wake capture bound"
             )
 
     @classmethod

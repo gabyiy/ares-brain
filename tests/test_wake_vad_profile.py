@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import math
 
 import pytest
@@ -63,6 +64,16 @@ def wake_request(tmp_path, config: WakeListenerConfig) -> VoiceActivityCaptureRe
         pre_roll_seconds=config.pre_roll_seconds,
         speech_end_padding_seconds=config.speech_end_padding_seconds,
         frame_read_timeout_seconds=config.frame_read_timeout_seconds,
+        frame_debug_enabled=True,
+        metadata={
+            "vad_profile": "standby_wake_short_v1",
+            "minimum_speech_duration_seconds": (
+                config.minimum_speech_duration_seconds
+            ),
+            "diagnostic_rms_interval_frames": (
+                config.diagnostic_rms_interval_frames
+            ),
+        },
     )
 
 
@@ -92,7 +103,10 @@ def test_one_word_wake_completes_after_wake_mode_terminal_silence(tmp_path):
     assert result.success
     assert result.status == VAD_STATUS_COMPLETED_AFTER_SILENCE
     assert result.maximum_duration_reached is False
-    assert result.silence_duration_at_stop_seconds == pytest.approx(0.65, abs=0.02)
+    assert result.silence_duration_at_stop_seconds == pytest.approx(
+        config.silence_duration_seconds,
+        abs=0.02,
+    )
     assert result.duration_seconds < config.maximum_utterance_seconds
 
 
@@ -112,6 +126,88 @@ def test_wake_mode_noise_cannot_extend_capture_beyond_hard_active_bound(tmp_path
         config.maximum_utterance_seconds + config.pre_roll_seconds + 0.04
     )
     assert source.read_count <= calibration_frames + maximum_frames + 2
+
+
+def test_wake_endpoint_counts_noise_between_silence_and_continuation_as_quiet(tmp_path):
+    config = WakeListenerConfig()
+    calibration_frames = math.ceil(config.calibration_duration_seconds / 0.02)
+    quiet_frames = math.ceil(config.silence_duration_seconds / 0.02)
+    frames = (
+        [pcm_frame(40)] * calibration_frames
+        + [pcm_frame(900)] * 8
+        + [pcm_frame(135)] * quiet_frames
+    )
+    result, _ = execute_wake(tmp_path, frames, config)
+    assert result.success
+    assert result.status == VAD_STATUS_COMPLETED_AFTER_SILENCE
+    assert result.data["terminal_quiet_frame_count"] == quiet_frames
+    assert result.silence_duration_at_stop_seconds == pytest.approx(
+        quiet_frames * 0.02
+    )
+
+
+def test_wake_terminal_quiet_counter_resets_on_real_continuation_evidence(tmp_path):
+    config = WakeListenerConfig()
+    calibration_frames = math.ceil(config.calibration_duration_seconds / 0.02)
+    quiet_frames = math.ceil(config.silence_duration_seconds / 0.02)
+    frames = (
+        [pcm_frame(40)] * calibration_frames
+        + [pcm_frame(900)] * 8
+        + [pcm_frame(40)] * 10
+        + [pcm_frame(190)]
+        + [pcm_frame(40)] * quiet_frames
+    )
+    result, _ = execute_wake(tmp_path, frames, config)
+    assert result.success
+    assert result.data["terminal_quiet_frame_count"] == quiet_frames
+    assert result.silence_duration_at_stop_seconds == pytest.approx(
+        quiet_frames * 0.02
+    )
+
+
+def test_wake_pcm_pre_roll_post_roll_and_speech_frames_are_appended_once(tmp_path):
+    config = WakeListenerConfig()
+    calibration_frames = math.ceil(config.calibration_duration_seconds / 0.02)
+    pre_roll_frames = math.ceil(config.pre_roll_seconds / 0.02)
+    quiet_frames = math.ceil(config.silence_duration_seconds / 0.02)
+    post_roll_frames = math.ceil(config.speech_end_padding_seconds / 0.02)
+    frames = (
+        [pcm_frame(40)] * calibration_frames
+        + [pcm_frame(40)] * (pre_roll_frames + 3)
+        + [pcm_frame(900)] * 8
+        + [pcm_frame(40)] * quiet_frames
+    )
+    result, _ = execute_wake(tmp_path, frames, config)
+    assert result.success
+    assert result.pre_roll_frames_retained == pre_roll_frames
+    assert result.data["post_roll_frames_retained"] == post_roll_frames
+    assert result.data["duplicate_frame_append_count"] == 0
+    assert result.data["captured_frame_indexes_unique"] is True
+
+
+def test_guarded_wake_calibration_restarts_after_detected_speech(tmp_path):
+    config = WakeListenerConfig()
+    request = replace(
+        wake_request(tmp_path, config),
+        calibration_duration_seconds=0.6,
+        metadata={
+            "calibration_confirm_non_speech": True,
+            "calibration_maximum_seconds": 1.2,
+        },
+    )
+    source = SyntheticFrameSource(
+        [pcm_frame(40)] * 10
+        + [pcm_frame(900)]
+        + [pcm_frame(40)] * 30
+    )
+    detector = RmsVoiceActivityCapture()
+    detector.start()
+    result = detector.calibrate_stream(request, source)
+    assert result.success
+    assert result.rejected_speech_frames == 1
+    assert result.restart_count == 1
+    assert result.frame_count == 41
+    assert result.ambient_statistics.sample_count == 30
 
 
 def test_single_frame_click_does_not_start_a_wake_candidate(tmp_path):
@@ -151,8 +247,8 @@ def test_wake_candidate_retains_full_configured_pre_roll_and_short_speech(tmp_pa
 def test_wake_profile_does_not_change_full_command_vad_defaults():
     wake = WakeListenerConfig()
     command = VoiceActivityCaptureRequestV1()
-    assert wake.maximum_utterance_seconds == 2.0
-    assert wake.silence_duration_seconds == 0.65
+    assert wake.maximum_utterance_seconds == 1.6
+    assert wake.silence_duration_seconds == 0.55
     assert wake.pre_roll_seconds == 0.4
     assert wake.speech_end_padding_seconds == 0.12
     assert command.maximum_utterance_seconds == 15.0

@@ -6,13 +6,19 @@ import math
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+import time
 from typing import Any, Callable, Optional, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from core import BRAIN_ACTIVE, BRAIN_STANDBY, BRAIN_STOPPED  # noqa: E402
+from core import (  # noqa: E402
+    BRAIN_ACTIVE,
+    BRAIN_STANDBY,
+    BRAIN_STOPPED,
+    inspect_linux_alsa_capture,
+)
 from memory.schema_migrations import StoreWriteLock  # noqa: E402
 from scripts import run_ares_standby_voice as standby_voice  # noqa: E402
 from scripts import run_ares_voice as single_voice_launcher  # noqa: E402
@@ -55,6 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("all", "reliability", "lifecycle"),
         default="all",
     )
+    parser.add_argument(
+        "--wake-attempt-pause-seconds",
+        type=float,
+        default=0.75,
+        help="Quiet pause between reliability candidates (0.25-3.0 seconds).",
+    )
     return parser
 
 
@@ -94,6 +106,15 @@ def _run_hardware_verification_locked(
             "Configuration error: --wake-reliability-attempts must be between 1 and 20, or 0 to skip."
         )
         return 2
+    if (
+        isinstance(args.wake_attempt_pause_seconds, bool)
+        or not math.isfinite(args.wake_attempt_pause_seconds)
+        or not 0.25 <= args.wake_attempt_pause_seconds <= 3.0
+    ):
+        output_func(
+            "Configuration error: --wake-attempt-pause-seconds must be between 0.25 and 3.0."
+        )
+        return 2
     reliability_attempts = args.wake_reliability_attempts
     if args.verification_mode == "reliability" and reliability_attempts == 0:
         reliability_attempts = 10
@@ -125,6 +146,7 @@ def _run_hardware_verification_locked(
             f"{wake_health.error_code or wake_started.error_code or 'unhealthy'}."
         )
         return 3
+    _print_capture_hardware_diagnostics(output_func, runtime)
 
     output_func("ARES bounded standby-wake hardware verification")
     output_func(f"Attempts per test: {args.attempts_per_test}")
@@ -241,6 +263,8 @@ def _run_hardware_verification_locked(
                     output_func=output_func,
                     diagnostic_enabled=bool(args.diagnostic_wake),
                     wake_transcripts=wake_transcripts,
+                    pause_seconds=args.wake_attempt_pause_seconds,
+                    sleeper=time.sleep,
                 )
                 if not reliable:
                     runtime.shutdown(reason="wake_reliability_target_not_met")
@@ -271,11 +295,21 @@ def _run_wake_reliability(
     output_func: Callable[[str], None],
     diagnostic_enabled: bool,
     wake_transcripts: list[str],
+    pause_seconds: float = 0.0,
+    sleeper: Callable[[float], None] = lambda _seconds: None,
 ) -> bool:
     required = math.ceil(attempts * 0.9)
     accepted = 0
     rejected = 0
     records: list[str] = []
+    failure_categories = {
+        "no_speech": 0,
+        "maximum_duration_reached": 0,
+        "unknown_token": 0,
+        "exact_phrase_mismatch": 0,
+        "low_confidence": 0,
+        "other": 0,
+    }
     listener = runtime.standby_wake_listener
     initial_runtime = runtime.snapshot()
     initial_stream = listener.snapshot(runtime_id=runtime.runtime_id)
@@ -357,6 +391,7 @@ def _run_wake_reliability(
                 f"count={int(getattr(wake_result, 'confirmation_count', 0) or 0)}/"
                 f"{int(getattr(wake_result, 'confirmation_required_count', 0) or 0)}"
             )
+        _print_wake_capture_metrics(output_func, wake_result, diagnostics)
         success = bool(
             getattr(wake_result, "wake_detected", False)
             and after.current_lifecycle_state == BRAIN_STANDBY
@@ -366,6 +401,7 @@ def _run_wake_reliability(
             accepted += 1
         else:
             rejected += 1
+            failure_categories[_wake_failure_category(wake_result)] += 1
         confidence = getattr(wake_result, "recognition_confidence", None)
         clipped = bool(getattr(diagnostics, "beginning_clipped", False))
         decision = str(
@@ -417,6 +453,11 @@ def _run_wake_reliability(
             )
             _print_stream_reason_summary(output_func, current_stream)
             return False
+        if attempt < attempts and pause_seconds > 0:
+            output_func(
+                f"  Pausing {pause_seconds:.2f}s so candidate audio cannot carry into the next prompt."
+            )
+            sleeper(pause_seconds)
     output_func(
         f"Wake reliability result: {accepted}/{attempts} accepted; "
         f"rejected={rejected}; target={required}/{attempts}."
@@ -432,7 +473,109 @@ def _run_wake_reliability(
     output_func("Wake reliability attempt decisions:")
     for record in records:
         output_func(f"  {record}")
+    output_func(
+        "Wake reliability failure categories: "
+        + "; ".join(
+            f"{name}={count}" for name, count in failure_categories.items()
+        )
+    )
     return accepted >= required
+
+
+def _print_wake_capture_metrics(
+    output_func: Callable[[str], None],
+    wake_result: Any,
+    diagnostics: Any,
+) -> None:
+    output_func(
+        "  Wake VAD: "
+        f"noise_floor={float(getattr(wake_result, 'ambient_noise_floor', 0.0) or 0.0):.1f}; "
+        f"start={float(getattr(wake_result, 'speech_start_threshold', 0.0) or 0.0):.1f}; "
+        f"continue={float(getattr(wake_result, 'speech_continue_threshold', 0.0) or 0.0):.1f}; "
+        f"end={float(getattr(wake_result, 'speech_end_threshold', 0.0) or 0.0):.1f}; "
+        f"speech_frames={int(getattr(wake_result, 'speech_frame_count', 0) or 0)}; "
+        f"quiet_frames={int(getattr(wake_result, 'terminal_quiet_frame_count', 0) or 0)}; "
+        f"terminal_silence={float(getattr(wake_result, 'terminal_silence_duration_seconds', 0.0) or 0.0):.3f}s"
+    )
+    output_func(
+        "  Wake audio: "
+        f"raw={float(getattr(wake_result, 'raw_capture_duration_seconds', 0.0) or 0.0):.3f}s; "
+        f"assembled={float(getattr(wake_result, 'assembled_duration_seconds', 0.0) or 0.0):.3f}s; "
+        f"trimmed={float(getattr(wake_result, 'trimmed_duration_seconds', 0.0) or 0.0):.3f}s; "
+        f"trim_leading={float(getattr(wake_result, 'leading_trimmed_seconds', 0.0) or 0.0):.3f}s; "
+        f"trim_trailing={float(getattr(wake_result, 'trailing_trimmed_seconds', 0.0) or 0.0):.3f}s; "
+        f"pre_roll={int(getattr(wake_result, 'pre_roll_frames_retained', 0) or 0)}; "
+        f"post_roll={int(getattr(wake_result, 'post_roll_frame_count', 0) or 0)}; "
+        f"duplicate_pcm={int(getattr(wake_result, 'duplicate_pcm_frame_count', 0) or 0)}; "
+        f"stale_discarded={int(getattr(wake_result, 'stale_pcm_frames_discarded', 0) or 0)}; "
+        f"stop={getattr(wake_result, 'capture_stop_reason', '') or 'unknown'}"
+    )
+    output_func(
+        "  Vosk decision: "
+        f"raw_tokens={getattr(diagnostics, 'normalized_transcript', '') or '<unavailable>'}; "
+        f"minimum_confidence={_format_optional_confidence(getattr(wake_result, 'minimum_word_confidence', None))}; "
+        f"mean_confidence={_format_optional_confidence(getattr(wake_result, 'mean_word_confidence', None))}; "
+        f"canonical_confidence={_format_optional_confidence(getattr(wake_result, 'canonical_confidence', None))}; "
+        f"canonical_phrase={getattr(wake_result, 'canonical_wake_phrase', '') or '<none>'}; "
+        f"duplicate_collapse={'yes' if getattr(wake_result, 'duplicate_collapse_used', False) else 'no'}; "
+        f"decision={getattr(wake_result, 'classification_reason', '') or getattr(wake_result, 'rejection_reason', '') or 'unclassified'}"
+    )
+
+
+def _wake_failure_category(wake_result: Any) -> str:
+    if not bool(getattr(wake_result, "speech_detected", False)):
+        return "no_speech"
+    stop = str(getattr(wake_result, "capture_stop_reason", "") or "")
+    reason = str(
+        getattr(wake_result, "rejection_reason", "")
+        or getattr(wake_result, "classification_reason", "")
+        or ""
+    )
+    if stop == "maximum_duration_reached":
+        return "maximum_duration_reached"
+    if "unknown_token" in reason:
+        return "unknown_token"
+    if "exact_constrained_phrase_not_matched" in reason:
+        return "exact_phrase_mismatch"
+    if "confidence" in reason:
+        return "low_confidence"
+    return "other"
+
+
+def _format_optional_confidence(value: Any) -> str:
+    return "unavailable" if value is None else f"{float(value):.3f}"
+
+
+def _print_capture_hardware_diagnostics(
+    output_func: Callable[[str], None],
+    runtime: Any,
+) -> None:
+    listener = getattr(runtime, "standby_wake_listener", None)
+    config = getattr(listener, "config", None)
+    microphone = getattr(listener, "microphone_adapter", None)
+    device = str(
+        getattr(config, "microphone_device", "")
+        or getattr(microphone, "device", "")
+        or ""
+    )
+    diagnostics = inspect_linux_alsa_capture(device)
+    output_func(
+        "ALSA capture diagnostics: "
+        f"device={diagnostics.get('capture_device', 'unknown')}; "
+        f"format={diagnostics.get('sample_rate_hz', 0)}Hz/"
+        f"{diagnostics.get('channels', 0)}ch/"
+        f"{diagnostics.get('sample_width_bytes', 0)}B; "
+        f"mixer={diagnostics.get('status', 'unknown')}"
+    )
+    output_func(
+        "ALSA capture levels: "
+        + (" | ".join(diagnostics.get("mixer_capture_levels", [])) or "not detected")
+    )
+    output_func(
+        "ALSA automatic gain controls: "
+        + (" | ".join(diagnostics.get("automatic_gain_controls", [])) or "not detected")
+    )
+    output_func("ALSA mixer settings were inspected only; no setting was changed.")
 
 
 def _print_stream_reason_summary(

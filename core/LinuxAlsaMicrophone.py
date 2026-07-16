@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import math
+import os
 import re
 import select
 import shutil
@@ -30,6 +31,7 @@ from core.WavAudio import (
     CANONICAL_SAMPLE_WIDTH_BYTES,
     analyze_wav_audio,
     normalize_wav_audio,
+    pcm_frame_sample_count,
     read_audio_chunk_wav,
     validate_duration_invariant,
     validate_canonical_wav,
@@ -182,6 +184,24 @@ class SubprocessPcmFrameSource:
             frame.extend(chunk)
         return bytes(frame)
 
+    def discard_available(self, maximum_bytes: int) -> int:
+        """Discard only PCM already buffered by arecord; never block for new audio."""
+
+        if self.closed or self.process.stdout is None:
+            return 0
+        bounded_maximum = max(0, min(int(maximum_bytes), 16000 * 2 * 3))
+        discarded = 0
+        descriptor = self.process.stdout.fileno()
+        while discarded < bounded_maximum:
+            readable, _, _ = select.select([self.process.stdout], [], [], 0.0)
+            if not readable:
+                break
+            chunk = os.read(descriptor, min(16384, bounded_maximum - discarded))
+            if not chunk:
+                break
+            discarded += len(chunk)
+        return discarded
+
     def close(self) -> None:
         if self.closed:
             return
@@ -255,6 +275,8 @@ class RollingPcmFrameSource:
         self._replay: deque[bytes] = deque()
         self.live_frame_count = 0
         self.replayed_frame_count = 0
+        self.candidate_reset_count = 0
+        self.discarded_stale_byte_count = 0
         self.closed = False
 
     def begin_window(self, pre_roll_frames: int) -> int:
@@ -281,12 +303,27 @@ class RollingPcmFrameSource:
         self._history.clear()
         self._replay.clear()
 
+    def reset_candidate(self, frame_bytes: int, maximum_discard_frames: int) -> int:
+        """Clear candidate history and bounded PCM accumulated during recognition."""
+
+        self.clear_history()
+        self.candidate_reset_count += 1
+        maximum_bytes = max(0, int(frame_bytes) * int(maximum_discard_frames))
+        discard = getattr(self.source, "discard_available", None)
+        discarded_bytes = int(discard(maximum_bytes)) if callable(discard) else 0
+        self.discarded_stale_byte_count += max(0, discarded_bytes)
+        if frame_bytes <= 0:
+            return 0
+        return math.ceil(max(0, discarded_bytes) / frame_bytes)
+
     def snapshot(self) -> Dict[str, int | bool]:
         return {
             "history_frame_count": len(self._history),
             "pending_replay_frame_count": len(self._replay),
             "live_frame_count": self.live_frame_count,
             "replayed_frame_count": self.replayed_frame_count,
+            "candidate_reset_count": self.candidate_reset_count,
+            "discarded_stale_byte_count": self.discarded_stale_byte_count,
             "closed": self.closed,
         }
 
@@ -584,6 +621,49 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             if callable(clear):
                 clear()
         return result
+
+    def reset_persistent_candidate(
+        self,
+        handle: PersistentPcmStreamHandle,
+        *,
+        frame_duration_ms: int = 20,
+        maximum_discard_seconds: float = 2.0,
+    ) -> Dict[str, Any]:
+        """Reset only per-candidate PCM state without reopening the ALSA stream."""
+
+        source = self._validated_persistent_stream(
+            handle,
+            requested_device=handle.requested_device,
+        )
+        if not 10 <= int(frame_duration_ms) <= 40:
+            raise ValueError("frame_duration_ms must be between 10 and 40")
+        if (
+            isinstance(maximum_discard_seconds, bool)
+            or not isinstance(maximum_discard_seconds, (int, float))
+            or not math.isfinite(float(maximum_discard_seconds))
+            or not 0.0 <= float(maximum_discard_seconds) <= 3.0
+        ):
+            raise ValueError("maximum_discard_seconds must be between 0 and 3")
+        frame_bytes = (
+            pcm_frame_sample_count(CANONICAL_SAMPLE_RATE_HZ, int(frame_duration_ms))
+            * CANONICAL_CHANNELS
+            * CANONICAL_SAMPLE_WIDTH_BYTES
+        )
+        maximum_frames = math.ceil(
+            float(maximum_discard_seconds) / (int(frame_duration_ms) / 1000.0)
+        )
+        reset = getattr(source, "reset_candidate", None)
+        stale_frames = (
+            int(reset(frame_bytes, maximum_frames)) if callable(reset) else 0
+        )
+        return {
+            "success": True,
+            "status": "candidate_state_reset",
+            "stale_pcm_frames_discarded": stale_frames,
+            "stream_id": handle.stream_id,
+            "stream_remained_open": True,
+            "safe": True,
+        }
 
     def read_chunk(
         self,
@@ -957,6 +1037,9 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         maximum_silence_rms: float = 600.0,
         duration_loss_tolerance_seconds: float = 0.05,
         frame_debug_enabled: bool = False,
+        capture_profile: str = "",
+        minimum_speech_duration_seconds: float = 0.0,
+        diagnostic_rms_interval_frames: int = 5,
         diagnostic_audio: bool = False,
         cancel_requested: Optional[CancelCheck | Any] = None,
         correlation_id: str = "",
@@ -1026,6 +1109,13 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     "background_listening": False,
                     "requested_device": requested_device or "",
                     "resolved_capture_device": resolved_device or "",
+                    "vad_profile": str(capture_profile or "")[:64],
+                    "minimum_speech_duration_seconds": float(
+                        minimum_speech_duration_seconds
+                    ),
+                    "diagnostic_rms_interval_frames": int(
+                        diagnostic_rms_interval_frames
+                    ),
                 },
             )
             validate_voice_activity_request(request)

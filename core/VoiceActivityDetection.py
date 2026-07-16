@@ -73,6 +73,9 @@ class VoiceActivityStreamCalibration:
     duration_seconds: float = 0.0
     ambient_statistics: Optional[AmbientStatistics] = None
     thresholds: Optional[VoiceActivityThresholds] = None
+    rejected_speech_frames: int = 0
+    restart_count: int = 0
+    maximum_frame_count: int = 0
     error_code: str = ""
     error_message: str = ""
 
@@ -142,20 +145,39 @@ class RmsVoiceActivityCapture:
             1,
             math.ceil(request.calibration_duration_seconds / frame_seconds),
         )
+        guarded = bool(
+            dict(request.metadata or {}).get("calibration_confirm_non_speech", False)
+        )
+        maximum_seconds = float(
+            dict(request.metadata or {}).get(
+                "calibration_maximum_seconds",
+                request.calibration_duration_seconds,
+            )
+        )
+        maximum_frame_count = max(
+            frame_count,
+            math.ceil(maximum_seconds / frame_seconds),
+        )
         samples_per_frame = pcm_frame_sample_count(
             request.sample_rate_hz,
             request.frame_duration_ms,
         )
         frame_bytes = samples_per_frame * request.channels * request.sample_width_bytes
         levels: list[float] = []
+        frames_read = 0
+        rejected_speech_frames = 0
+        restart_count = 0
         try:
-            for _ in range(frame_count):
+            for _ in range(maximum_frame_count):
                 if _is_cancelled(cancel_requested):
                     return VoiceActivityStreamCalibration(
                         False,
                         VAD_STATUS_CANCELLED,
-                        frame_count=len(levels),
-                        duration_seconds=round(len(levels) * frame_seconds, 6),
+                        frame_count=frames_read,
+                        duration_seconds=round(frames_read * frame_seconds, 6),
+                        rejected_speech_frames=rejected_speech_frames,
+                        restart_count=restart_count,
+                        maximum_frame_count=maximum_frame_count,
                         error_code=VAD_STATUS_CANCELLED,
                         error_message="voice activity calibration cancelled",
                     )
@@ -202,16 +224,44 @@ class RmsVoiceActivityCapture:
                         error_code=VAD_STATUS_INVALID_AUDIO,
                         error_message=str(error),
                     )
-                levels.append(float(signal["rms_amplitude"]))
+                frames_read += 1
+                rms = float(signal["rms_amplitude"])
+                if guarded and rms >= request.speech_start_rms:
+                    rejected_speech_frames += 1
+                    if levels:
+                        levels.clear()
+                        restart_count += 1
+                    continue
+                levels.append(rms)
+                if len(levels) >= frame_count:
+                    break
+            if len(levels) < frame_count:
+                return VoiceActivityStreamCalibration(
+                    False,
+                    "calibration_non_speech_window_not_found",
+                    frame_count=frames_read,
+                    duration_seconds=round(frames_read * frame_seconds, 6),
+                    rejected_speech_frames=rejected_speech_frames,
+                    restart_count=restart_count,
+                    maximum_frame_count=maximum_frame_count,
+                    error_code="calibration_non_speech_window_not_found",
+                    error_message=(
+                        "confirmed non-speech calibration window was not found "
+                        "within the configured bound"
+                    ),
+                )
             statistics = calculate_ambient_statistics(levels)
             thresholds = derive_thresholds(statistics, request)
             return VoiceActivityStreamCalibration(
                 True,
                 "calibrated",
-                frame_count=len(levels),
-                duration_seconds=round(len(levels) * frame_seconds, 6),
+                frame_count=frames_read,
+                duration_seconds=round(frames_read * frame_seconds, 6),
                 ambient_statistics=statistics,
                 thresholds=thresholds,
+                rejected_speech_frames=rejected_speech_frames,
+                restart_count=restart_count,
+                maximum_frame_count=maximum_frame_count,
             )
         except ValueError as error:
             return VoiceActivityStreamCalibration(
@@ -276,6 +326,17 @@ class RmsVoiceActivityCapture:
             0,
             math.ceil(request.speech_end_padding_seconds / frame_seconds),
         )
+        request_metadata = dict(request.metadata or {})
+        wake_short_profile = (
+            request_metadata.get("vad_profile") == "standby_wake_short_v1"
+        )
+        minimum_speech_seconds = float(
+            request_metadata.get("minimum_speech_duration_seconds", 0.0) or 0.0
+        )
+        diagnostic_rms_interval = max(
+            1,
+            int(request_metadata.get("diagnostic_rms_interval_frames", 5) or 5),
+        )
         calibration_frames = (
             max(1, math.ceil(request.calibration_duration_seconds / frame_seconds))
             if request.calibration_enabled
@@ -287,11 +348,15 @@ class RmsVoiceActivityCapture:
         )
         pending_silence: list[Tuple[bytes, float, int]] = []
         captured: list[bytes] = []
+        captured_frame_indexes: list[int] = []
+        appended_frame_indexes: set[int] = set()
+        duplicate_frame_append_count = 0
         calibration_levels: list[float] = []
         ambient_levels: list[float] = []
         speech_levels: list[float] = []
         all_levels: list[float] = []
         transitions: list[Dict[str, Any]] = []
+        rms_trace: list[Dict[str, Any]] = []
         thresholds = manual_thresholds(request)
         ambient_statistics: Optional[AmbientStatistics] = None
         noise_floor = 0.0
@@ -310,11 +375,28 @@ class RmsVoiceActivityCapture:
         speech_start_frame = 0
         stop_reason = ""
         silence_at_stop = 0.0
+        terminal_quiet_frame_count = 0
+        post_roll_frames_retained = 0
         detection_state = (
             DETECTION_STATE_CALIBRATING
             if request.calibration_enabled
             else DETECTION_STATE_WAITING
         )
+
+        def append_captured_frame(value: bytes, frame_index: int) -> None:
+            nonlocal duplicate_frame_append_count
+            if frame_index in appended_frame_indexes:
+                duplicate_frame_append_count += 1
+                return
+            appended_frame_indexes.add(frame_index)
+            captured_frame_indexes.append(frame_index)
+            captured.append(value)
+
+        def append_captured_items(
+            values: list[Tuple[bytes, float, int]],
+        ) -> None:
+            for value, _, frame_index in values:
+                append_captured_frame(value, frame_index)
 
         while True:
             if _is_cancelled(cancel_requested):
@@ -404,6 +486,16 @@ class RmsVoiceActivityCapture:
                 )
             rms = float(signal["rms_amplitude"])
             all_levels.append(rms)
+            if request.frame_debug_enabled and (
+                total_frames == 1 or total_frames % diagnostic_rms_interval == 0
+            ) and len(rms_trace) < 128:
+                rms_trace.append(
+                    {
+                        "frame": total_frames,
+                        "rms": round(rms, 3),
+                        "state": detection_state,
+                    }
+                )
 
             if detection_state == DETECTION_STATE_CALIBRATING:
                 calibration_levels.append(rms)
@@ -443,7 +535,7 @@ class RmsVoiceActivityCapture:
                 if consecutive_speech >= request.required_speech_frames:
                     speech_detected = True
                     retained_pre_roll = list(pre_roll)
-                    captured.extend(item[0] for item in retained_pre_roll)
+                    append_captured_items(retained_pre_roll)
                     speech_start_frame = total_frames - request.required_speech_frames + 1
                     pre_roll_frames_retained = sum(
                         frame_index < speech_start_frame
@@ -485,14 +577,22 @@ class RmsVoiceActivityCapture:
                         ambient_levels=ambient_levels or calibration_levels,
                         ambient_statistics=ambient_statistics,
                         thresholds=thresholds,
-                        data={"transitions": transitions},
+                        data={
+                            "transitions": transitions,
+                            "rms_trace": rms_trace,
+                            "vad_profile": (
+                                "standby_wake_short_v1"
+                                if wake_short_profile
+                                else "default"
+                            ),
+                        },
                     )
                 continue
 
             active_frames += 1
             if detection_state == DETECTION_STATE_SPEECH:
                 if rms >= thresholds.speech_continue_rms:
-                    captured.append(frame)
+                    append_captured_frame(frame, total_frames)
                     speech_levels.append(rms)
                     speech_frame_count += 1
                     last_confirmed_speech_frame = total_frames
@@ -506,7 +606,15 @@ class RmsVoiceActivityCapture:
                 else:
                     pending_silence = [(frame, rms, total_frames)]
                     consecutive_resume = 0
-                    consecutive_below_silence = 1 if rms <= thresholds.silence_rms else 0
+                    consecutive_below_silence = (
+                        1
+                        if (
+                            rms < thresholds.speech_continue_rms
+                            if wake_short_profile
+                            else rms <= thresholds.silence_rms
+                        )
+                        else 0
+                    )
                     _record_transition(
                         transitions,
                         DETECTION_STATE_SPEECH,
@@ -539,13 +647,13 @@ class RmsVoiceActivityCapture:
                         _median_or_zero(speech_levels),
                         request,
                     )
-                    if rms <= thresholds.silence_rms:
+                    if wake_short_profile or rms <= thresholds.silence_rms:
                         consecutive_below_silence += 1
                     else:
                         consecutive_below_silence = 0
 
                 if consecutive_resume >= request.required_continue_frames:
-                    captured.extend(item[0] for item in pending_silence)
+                    append_captured_items(pending_silence)
                     resumed_levels = [
                         level
                         for _, level, _ in pending_silence
@@ -569,16 +677,28 @@ class RmsVoiceActivityCapture:
                     silence_frames,
                     request.required_silence_frames,
                 ):
-                    trailing_silence_frames_trimmed = max(
-                        0,
-                        consecutive_below_silence - speech_end_padding_frames,
-                    )
-                    retained_pending = (
-                        pending_silence[:-trailing_silence_frames_trimmed]
-                        if trailing_silence_frames_trimmed
-                        else list(pending_silence)
-                    )
-                    captured.extend(item[0] for item in retained_pending)
+                    if wake_short_profile:
+                        trailing_silence_frames_trimmed = max(
+                            0,
+                            len(pending_silence) - speech_end_padding_frames,
+                        )
+                        retained_pending = (
+                            pending_silence[-speech_end_padding_frames:]
+                            if speech_end_padding_frames
+                            else []
+                        )
+                    else:
+                        trailing_silence_frames_trimmed = max(
+                            0,
+                            consecutive_below_silence - speech_end_padding_frames,
+                        )
+                        retained_pending = (
+                            pending_silence[:-trailing_silence_frames_trimmed]
+                            if trailing_silence_frames_trimmed
+                            else list(pending_silence)
+                        )
+                    post_roll_frames_retained = len(retained_pending)
+                    append_captured_items(retained_pending)
                     retained_speech_levels = [
                         level
                         for _, level, _ in retained_pending
@@ -593,6 +713,7 @@ class RmsVoiceActivityCapture:
                         )
                     stop_reason = VAD_STATUS_COMPLETED_AFTER_SILENCE
                     silence_at_stop = consecutive_below_silence * frame_seconds
+                    terminal_quiet_frame_count = consecutive_below_silence
                     _record_transition(
                         transitions,
                         DETECTION_STATE_POSSIBLE_SILENCE,
@@ -606,16 +727,52 @@ class RmsVoiceActivityCapture:
             if active_frames >= maximum_frames:
                 stop_reason = VAD_STATUS_MAXIMUM_DURATION
                 silence_at_stop = consecutive_below_silence * frame_seconds
-                captured.extend(item[0] for item in pending_silence)
+                terminal_quiet_frame_count = consecutive_below_silence
+                retained_at_maximum = list(pending_silence)
+                if wake_short_profile and pending_silence:
+                    retained_at_maximum = (
+                        pending_silence[-speech_end_padding_frames:]
+                        if speech_end_padding_frames
+                        else []
+                    )
+                    trailing_silence_frames_trimmed = max(
+                        0,
+                        len(pending_silence) - len(retained_at_maximum),
+                    )
+                    post_roll_frames_retained = len(retained_at_maximum)
+                append_captured_items(retained_at_maximum)
                 retained_speech_levels = [
                     level
-                    for _, level, _ in pending_silence
+                    for _, level, _ in retained_at_maximum
                     if level >= thresholds.speech_continue_rms
                 ]
                 speech_levels.extend(retained_speech_levels)
                 speech_frame_count += len(retained_speech_levels)
                 pending_silence.clear()
                 break
+
+        if (
+            wake_short_profile
+            and speech_frame_count * frame_seconds < minimum_speech_seconds
+        ):
+            return self._failure(
+                request,
+                VAD_STATUS_INVALID_AUDIO,
+                "wake_speech_below_minimum_duration",
+                started_at,
+                speech_detected=False,
+                frame_count=total_frames,
+                levels=all_levels,
+                ambient_levels=ambient_levels or calibration_levels,
+                ambient_statistics=ambient_statistics,
+                thresholds=thresholds,
+                data={
+                    "transitions": transitions,
+                    "rms_trace": rms_trace,
+                    "speech_frame_count": speech_frame_count,
+                    "minimum_speech_duration_seconds": minimum_speech_seconds,
+                },
+            )
 
         pcm = b"".join(captured)
         if not pcm:
@@ -778,6 +935,12 @@ class RmsVoiceActivityCapture:
                 "speech_frames_retained": speech_frame_count,
                 "possible_silence_frames_retained": possible_silence_frames_retained,
                 "trailing_silence_frames_trimmed": trailing_silence_frames_trimmed,
+                "terminal_quiet_frame_count": terminal_quiet_frame_count,
+                "post_roll_frames_retained": post_roll_frames_retained,
+                "duplicate_frame_append_count": duplicate_frame_append_count,
+                "captured_frame_indexes_unique": (
+                    len(captured_frame_indexes) == len(set(captured_frame_indexes))
+                ),
                 "leading_silence_frames_trimmed": leading_silence_frames_trimmed,
                 "total_frames_read": total_frames,
                 "total_raw_samples": total_frames * samples_per_frame,
@@ -797,6 +960,10 @@ class RmsVoiceActivityCapture:
                 ),
                 "terminal_silence_trimmed": True,
                 "transitions": transitions,
+                "rms_trace": rms_trace,
+                "vad_profile": (
+                    "standby_wake_short_v1" if wake_short_profile else "default"
+                ),
                 "wav": wav,
             },
             metadata={

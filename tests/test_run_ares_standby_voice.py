@@ -523,6 +523,28 @@ def test_hardware_reliability_mode_reports_nine_of_ten_without_hiding_misses():
     assert any("9/10 accepted" in line for line in output)
     assert any("rejected" in line for line in output)
     assert any("opens=1; calibrations=1" in line for line in output)
+    assert any("exact_phrase_mismatch=1" in line for line in output)
+
+
+def test_hardware_reliability_mode_pauses_between_candidates_and_prints_vad_metrics():
+    output = []
+    pauses = []
+    runtime = ReliabilityRuntime([True, True, True])
+    assert manual_verify_standby_wake_hardware._run_wake_reliability(
+        runtime,
+        3,
+        output_func=output.append,
+        diagnostic_enabled=True,
+        wake_transcripts=[],
+        pause_seconds=0.75,
+        sleeper=pauses.append,
+    )
+    assert pauses == [0.75, 0.75]
+    text = "\n".join(output)
+    assert "Wake VAD: noise_floor=" in text
+    assert "Wake audio: raw=" in text
+    assert "Vosk decision: raw_tokens=" in text
+    assert "duplicate_collapse=" in text
 
 
 def test_hardware_reliability_mode_fails_below_nine_of_ten():

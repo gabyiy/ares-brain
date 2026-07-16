@@ -145,6 +145,9 @@ class VoskWakeRecognizer:
             deadline = started_at + timeout_seconds
             path = Path(str(request.audio_path or "")).expanduser().resolve()
             metadata = _validate_canonical_wav(path)
+            audio_duration_seconds = (
+                metadata["frame_count"] / metadata["sample_rate_hz"]
+            )
             if (
                 request.sample_rate_hz != metadata["sample_rate_hz"]
                 or request.channels != metadata["channels"]
@@ -206,6 +209,10 @@ class VoskWakeRecognizer:
                 model_path=str(self.model_path),
                 grammar_phrase_count=len(grammar),
                 processing_time_seconds=elapsed,
+                audio_duration_seconds=audio_duration_seconds,
+                maximum_duplicate_collapse_audio_seconds=(
+                    request.maximum_duplicate_collapse_audio_seconds
+                ),
             )
             result = self._apply_medium_confidence_confirmation(
                 result,
@@ -220,6 +227,10 @@ class VoskWakeRecognizer:
                 normalized_phrase=_normalize_for_diagnostics(combined["text"]),
                 confidence=result.confidence,
                 confidence_available=result.confidence_available,
+                minimum_word_confidence=result.minimum_word_confidence,
+                mean_word_confidence=result.mean_word_confidence,
+                canonical_confidence=result.canonical_confidence,
+                duplicate_collapse_used=result.duplicate_collapse_used,
                 confidence_tier=result.confidence_tier,
                 confirmation_count=result.confirmation_count,
                 confirmation_required_count=result.confirmation_required_count,

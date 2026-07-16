@@ -35,6 +35,7 @@ from core.StandbyWakeListener import (
     normalize_wake_phrase,
 )
 from core.WakeRecognizer import WakeRecognizerLocalDiagnostics
+from core.WakeAudio import WakeAudioTrimResult, trim_canonical_wake_wav
 from core.VoiceActivityDetection import (
     VAD_STATUS_CANCELLED,
     VAD_STATUS_DEVICE_ERROR,
@@ -121,6 +122,7 @@ class LinuxStandbyWakeListener:
         self._stream_close_reasons: list[str] = []
         self._calibration_reasons: list[str] = []
         self._ownership_handoffs: list[str] = []
+        self._last_candidate_stale_frames = 0
         self.last_result: Optional[StandbyListenResultV1] = None
         self.last_diagnostics: Optional[WakeLocalDiagnostics] = None
 
@@ -326,6 +328,7 @@ class LinuxStandbyWakeListener:
         with self._lock:
             self._last_cleanup_status = "not_required"
             self._pending_diagnostics = None
+            self._last_candidate_stale_frames = 0
         try:
             result = self._listen_once_unfinalized(request)
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
@@ -404,6 +407,16 @@ class LinuxStandbyWakeListener:
                 maximum_speech_continue_rms=self.config.maximum_speech_continue_rms,
                 minimum_silence_rms=self.config.minimum_silence_rms,
                 maximum_silence_rms=self.config.maximum_silence_rms,
+                frame_debug_enabled=bool(
+                    request.diagnostic_wake or self.config.diagnostic_wake
+                ),
+                capture_profile="standby_wake_short_v1",
+                minimum_speech_duration_seconds=(
+                    self.config.minimum_speech_duration_seconds
+                ),
+                diagnostic_rms_interval_frames=(
+                    self.config.diagnostic_rms_interval_frames
+                ),
                 diagnostic_audio=bool(
                     request.retain_diagnostic_audio or self.config.retain_diagnostic_audio
                 ),
@@ -435,6 +448,7 @@ class LinuxStandbyWakeListener:
                 return self._capture_failure(request, capture, started_at)
             with self._lock:
                 self._speech_count += 1
+            self._reset_candidate_stream(handle)
             wav_path = str(
                 getattr(capture, "normalized_wav_path", "")
                 or getattr(capture, "final_whisper_input_path", "")
@@ -458,11 +472,32 @@ class LinuxStandbyWakeListener:
                     capture=capture,
                     started_at=started_at,
                 )
+            recognizer_input_path = turn_directory / "wake_recognizer_input.wav"
+            try:
+                trim = trim_canonical_wake_wav(
+                    wav_path,
+                    recognizer_input_path,
+                    speech_threshold_rms=float(thresholds.speech_continue_rms),
+                    frame_duration_ms=self.config.frame_duration_ms,
+                    leading_padding_seconds=self.config.trim_leading_padding_seconds,
+                    trailing_padding_seconds=self.config.trim_trailing_padding_seconds,
+                )
+            except (OSError, ValueError, wave.Error) as error:
+                return self._standby_result(
+                    request,
+                    success=False,
+                    status=WAKE_STATUS_FAILED,
+                    stop_reason="wake_audio_trim_failed",
+                    error_code="wake_audio_trim_failed",
+                    error_message=f"{error.__class__.__name__}:{str(error)[:120]}",
+                    capture=capture,
+                    started_at=started_at,
+                )
             recognition = self.wake_recognizer.recognize_wav(
                 WakeRecognizerRequestV1(
                     runtime_id=request.runtime_id,
                     lifecycle_state=request.lifecycle_state,
-                    audio_path=wav_path,
+                    audio_path=str(recognizer_input_path),
                     sample_rate_hz=16000,
                     channels=1,
                     sample_width_bytes=2,
@@ -486,12 +521,23 @@ class LinuxStandbyWakeListener:
                         self.config.medium_confidence_window_seconds
                     ),
                     timeout_seconds=max(0.1, float(request.listener_timeout_seconds)),
+                    audio_duration_seconds=trim.trimmed_duration_seconds,
+                    maximum_duplicate_collapse_audio_seconds=(
+                        self.config.maximum_duplicate_collapse_audio_seconds
+                    ),
                     correlation_id=request.correlation_id,
                     metadata={"safe": True, "contains_transcript": False},
                 )
             )
+            self._reset_candidate_stream(handle)
             if not _result_success(recognition):
-                return self._recognition_failure(request, recognition, capture, started_at)
+                return self._recognition_failure(
+                    request,
+                    recognition,
+                    capture,
+                    started_at,
+                    trim=trim,
+                )
             if bool(getattr(recognition, "wake_detected", False)):
                 with self._lock:
                     self._wake_count += 1
@@ -507,13 +553,18 @@ class LinuxStandbyWakeListener:
                 selected_alias=str(getattr(recognition, "selected_alias", "")),
                 selected_wake_phrase=str(getattr(recognition, "selected_wake_phrase", "")),
                 canonical_wake_phrase=str(getattr(recognition, "canonical_wake_phrase", "")),
-                classification_path="vosk_constrained_grammar",
+                classification_path=(
+                    "vosk_constrained_grammar_duplicate_collapse"
+                    if bool(getattr(recognition, "duplicate_collapse_used", False))
+                    else "vosk_constrained_grammar_exact"
+                ),
                 classification_reason=str(getattr(recognition, "classification_reason", "")),
                 rejection_reason=str(getattr(recognition, "rejection_reason", "")),
                 stop_reason=str(getattr(recognition, "status", "") or WAKE_STATUS_NON_WAKE_SPEECH),
                 capture=capture,
                 started_at=started_at,
                 recognition=recognition,
+                trim=trim,
                 data={
                     "recognition_status": _result_status(recognition),
                     "recognizer_name": str(getattr(recognition, "recognizer_name", "")),
@@ -701,6 +752,30 @@ class LinuxStandbyWakeListener:
             or "wake recalibration failed"
         )
 
+    def _reset_candidate_stream(self, handle: Any) -> None:
+        reset = getattr(self.microphone_adapter, "reset_persistent_candidate", None)
+        if not callable(reset):
+            clear = getattr(getattr(handle, "frame_source", None), "clear_history", None)
+            if callable(clear):
+                clear()
+            return
+        result = reset(
+            handle,
+            frame_duration_ms=self.config.frame_duration_ms,
+            maximum_discard_seconds=min(
+                2.0,
+                self.config.maximum_utterance_seconds,
+            ),
+        )
+        if isinstance(result, dict):
+            stale_frames = int(result.get("stale_pcm_frames_discarded", 0) or 0)
+        else:
+            stale_frames = int(
+                getattr(result, "stale_pcm_frames_discarded", 0) or 0
+            )
+        with self._lock:
+            self._last_candidate_stale_frames += max(0, stale_frames)
+
     def _calibrate_stream(self, handle: Any, *, reason: str) -> Any:
         request = VoiceActivityCaptureRequestV1(
             output_wav_path="wake-calibration-not-written.wav",
@@ -729,7 +804,12 @@ class LinuxStandbyWakeListener:
             maximum_speech_continue_rms=self.config.maximum_speech_continue_rms,
             minimum_silence_rms=self.config.minimum_silence_rms,
             maximum_silence_rms=self.config.maximum_silence_rms,
-            metadata={"safe": True, "source": "persistent_standby_calibration"},
+            metadata={
+                "safe": True,
+                "source": "persistent_standby_calibration",
+                "calibration_confirm_non_speech": True,
+                "calibration_maximum_seconds": self.config.calibration_maximum_seconds,
+            },
         )
         result = self.microphone_adapter.calibrate_persistent_stream(
             handle,
@@ -737,6 +817,13 @@ class LinuxStandbyWakeListener:
             cancel_requested=self._is_cancelled,
         )
         if bool(getattr(result, "success", False)):
+            clear_history = getattr(
+                getattr(handle, "frame_source", None),
+                "clear_history",
+                None,
+            )
+            if callable(clear_history):
+                clear_history()
             with self._lock:
                 self._calibration_count += 1
                 self._last_calibration_reason = str(reason or "calibration")[:96]
@@ -910,6 +997,8 @@ class LinuxStandbyWakeListener:
         recognition: Any,
         capture: Any,
         started_at: float,
+        *,
+        trim: Optional[WakeAudioTrimResult] = None,
     ) -> StandbyListenResultV1:
         with self._lock:
             self._failure_count += 1
@@ -924,6 +1013,7 @@ class LinuxStandbyWakeListener:
             capture=capture,
             started_at=started_at,
             recognition=recognition,
+            trim=trim,
             data={"recognition_status": _result_status(recognition)},
         )
 
@@ -998,13 +1088,26 @@ class LinuxStandbyWakeListener:
         error_code: str = "",
         error_message: str = "",
         recognition: Any = None,
+        trim: Optional[WakeAudioTrimResult] = None,
         data: Optional[Dict[str, Any]] = None,
     ) -> StandbyListenResultV1:
         audio = _capture_audio_metadata(capture)
+        if trim is not None:
+            audio.update(
+                {
+                    "trimmed_duration_seconds": trim.trimmed_duration_seconds,
+                    "leading_trimmed_seconds": trim.leading_trimmed_seconds,
+                    "trailing_trimmed_seconds": trim.trailing_trimmed_seconds,
+                    "trim_first_speech_frame": trim.first_speech_frame,
+                    "trim_last_speech_frame": trim.last_speech_frame,
+                    "trim_speech_threshold_rms": trim.speech_threshold_rms,
+                }
+            )
         recognition_metadata = _recognition_metadata(recognition)
         stream = self._stream_metrics()
         candidate_duration = float(
-            audio.get("whisper_input_duration_seconds", 0.0)
+            audio.get("trimmed_duration_seconds", 0.0)
+            or audio.get("whisper_input_duration_seconds", 0.0)
             or audio.get("normalized_duration_seconds", 0.0)
             or audio.get("assembled_duration_seconds", 0.0)
             or audio.get("duration_seconds", 0.0)
@@ -1046,6 +1149,15 @@ class LinuxStandbyWakeListener:
             whisper_input_duration_seconds=float(
                 audio.get("whisper_input_duration_seconds", 0.0)
             ),
+            trimmed_duration_seconds=float(
+                audio.get("trimmed_duration_seconds", 0.0)
+            ),
+            leading_trimmed_seconds=float(
+                audio.get("leading_trimmed_seconds", 0.0)
+            ),
+            trailing_trimmed_seconds=float(
+                audio.get("trailing_trimmed_seconds", 0.0)
+            ),
             whisper_processing_time_seconds=0.0,
             whisper_status="",
             whisper_exit_code=None,
@@ -1054,6 +1166,18 @@ class LinuxStandbyWakeListener:
             recognition_confidence=recognition_metadata.get("confidence"),
             recognition_confidence_available=bool(
                 recognition_metadata.get("confidence_available", False)
+            ),
+            minimum_word_confidence=recognition_metadata.get(
+                "minimum_word_confidence"
+            ),
+            mean_word_confidence=recognition_metadata.get(
+                "mean_word_confidence"
+            ),
+            canonical_confidence=recognition_metadata.get(
+                "canonical_confidence"
+            ),
+            duplicate_collapse_used=bool(
+                recognition_metadata.get("duplicate_collapse_used", False)
             ),
             recognition_processing_time_seconds=float(
                 recognition_metadata.get("processing_time_seconds", 0.0)
@@ -1095,6 +1219,27 @@ class LinuxStandbyWakeListener:
             terminal_silence_duration_seconds=float(
                 audio.get("terminal_silence_duration_seconds", 0.0) or 0.0
             ),
+            terminal_quiet_frame_count=int(
+                audio.get("terminal_quiet_frame_count", 0) or 0
+            ),
+            speech_frame_count=int(audio.get("speech_frame_count", 0) or 0),
+            post_roll_frame_count=int(
+                audio.get("post_roll_frame_count", 0) or 0
+            ),
+            duplicate_pcm_frame_count=int(
+                audio.get("duplicate_pcm_frame_count", 0) or 0
+            ),
+            stale_pcm_frames_discarded=self._last_candidate_stale_frames,
+            ambient_noise_floor=float(audio.get("ambient_noise_floor", 0.0) or 0.0),
+            speech_start_threshold=float(
+                audio.get("speech_start_threshold", 0.0) or 0.0
+            ),
+            speech_continue_threshold=float(
+                audio.get("speech_continue_threshold", 0.0) or 0.0
+            ),
+            speech_end_threshold=float(
+                audio.get("speech_end_threshold", 0.0) or 0.0
+            ),
             speech_to_activation_seconds=(
                 round(
                     max(
@@ -1135,6 +1280,7 @@ class LinuxStandbyWakeListener:
                 audio=audio,
                 capture=capture,
                 recognition=recognition_metadata,
+                recognizer_input_path=(trim.output_path if trim is not None else ""),
             )
         self.last_result = result
         return result
@@ -1207,10 +1353,12 @@ class LinuxStandbyWakeListener:
         audio: Dict[str, Any],
         capture: Any,
         recognition: Dict[str, Any],
+        recognizer_input_path: str,
     ) -> None:
         stream = self._stream_metrics()
         recognizer_input = str(
-            getattr(capture, "normalized_wav_path", "")
+            recognizer_input_path
+            or getattr(capture, "normalized_wav_path", "")
             or getattr(capture, "final_whisper_input_path", "")
             or getattr(capture, "wav_path", "")
             or ""
@@ -1266,6 +1414,12 @@ class LinuxStandbyWakeListener:
             recognition_confidence_available=bool(
                 recognition.get("confidence_available", False)
             ),
+            minimum_word_confidence=recognition.get("minimum_word_confidence"),
+            mean_word_confidence=recognition.get("mean_word_confidence"),
+            canonical_confidence=recognition.get("canonical_confidence"),
+            duplicate_collapse_used=bool(
+                recognition.get("duplicate_collapse_used", False)
+            ),
             recognition_processing_time_seconds=float(
                 recognition.get("processing_time_seconds", 0.0)
             ),
@@ -1302,6 +1456,37 @@ class LinuxStandbyWakeListener:
             first_speech_frame=int(audio.get("first_speech_frame", 0) or 0),
             terminal_silence_duration_seconds=float(
                 audio.get("terminal_silence_duration_seconds", 0.0) or 0.0
+            ),
+            terminal_quiet_frame_count=int(
+                audio.get("terminal_quiet_frame_count", 0) or 0
+            ),
+            speech_frame_count=int(audio.get("speech_frame_count", 0) or 0),
+            post_roll_frame_count=int(
+                audio.get("post_roll_frame_count", 0) or 0
+            ),
+            duplicate_pcm_frame_count=int(
+                audio.get("duplicate_pcm_frame_count", 0) or 0
+            ),
+            stale_pcm_frames_discarded=self._last_candidate_stale_frames,
+            ambient_noise_floor=float(audio.get("ambient_noise_floor", 0.0) or 0.0),
+            speech_start_threshold=float(
+                audio.get("speech_start_threshold", 0.0) or 0.0
+            ),
+            speech_continue_threshold=float(
+                audio.get("speech_continue_threshold", 0.0) or 0.0
+            ),
+            speech_end_threshold=float(
+                audio.get("speech_end_threshold", 0.0) or 0.0
+            ),
+            rms_trace=tuple(audio.get("rms_trace", ())),
+            trimmed_duration_seconds=float(
+                audio.get("trimmed_duration_seconds", 0.0) or 0.0
+            ),
+            leading_trimmed_seconds=float(
+                audio.get("leading_trimmed_seconds", 0.0) or 0.0
+            ),
+            trailing_trimmed_seconds=float(
+                audio.get("trailing_trimmed_seconds", 0.0) or 0.0
             ),
             vad_transitions=tuple(audio.get("vad_transitions", ())),
             speech_to_activation_seconds=result.speech_to_activation_seconds,
@@ -1421,6 +1606,20 @@ def _capture_audio_metadata(capture: Any) -> Dict[str, Any]:
         "terminal_silence_duration_seconds": float(
             getattr(capture, "silence_duration_at_stop_seconds", 0.0) or 0.0
         ),
+        "terminal_quiet_frame_count": int(
+            data.get("terminal_quiet_frame_count", 0) or 0
+        ),
+        "speech_frame_count": int(
+            getattr(capture, "speech_frame_count", 0)
+            or data.get("speech_frames_retained", 0)
+            or 0
+        ),
+        "post_roll_frame_count": int(
+            data.get("post_roll_frames_retained", 0) or 0
+        ),
+        "duplicate_pcm_frame_count": int(
+            data.get("duplicate_frame_append_count", 0) or 0
+        ),
         "speech_start_offset_seconds": float(
             getattr(capture, "speech_start_offset_seconds", 0.0) or 0.0
         ),
@@ -1440,6 +1639,27 @@ def _capture_audio_metadata(capture: Any) -> Dict[str, Any]:
         ),
         "derived_silence_rms": round(
             float(getattr(capture, "derived_silence_rms", 0.0) or 0.0), 3
+        ),
+        "ambient_noise_floor": round(
+            float(getattr(capture, "ambient_noise_floor", 0.0) or 0.0),
+            3,
+        ),
+        "speech_start_threshold": round(
+            float(getattr(capture, "derived_speech_start_rms", 0.0) or 0.0),
+            3,
+        ),
+        "speech_continue_threshold": round(
+            float(getattr(capture, "derived_speech_continue_rms", 0.0) or 0.0),
+            3,
+        ),
+        "speech_end_threshold": round(
+            float(getattr(capture, "derived_speech_continue_rms", 0.0) or 0.0),
+            3,
+        ),
+        "rms_trace": tuple(
+            dict(item)
+            for item in data.get("rms_trace", [])
+            if isinstance(item, dict)
         ),
     }
     whisper_path = Path(
@@ -1506,6 +1726,24 @@ def _recognition_metadata(recognition: Any) -> Dict[str, Any]:
         "confidence": getattr(recognition, "confidence", None),
         "confidence_available": bool(
             getattr(recognition, "confidence_available", False)
+        ),
+        "minimum_word_confidence": getattr(
+            recognition,
+            "minimum_word_confidence",
+            None,
+        ),
+        "mean_word_confidence": getattr(
+            recognition,
+            "mean_word_confidence",
+            None,
+        ),
+        "canonical_confidence": getattr(
+            recognition,
+            "canonical_confidence",
+            None,
+        ),
+        "duplicate_collapse_used": bool(
+            getattr(recognition, "duplicate_collapse_used", False)
         ),
         "confidence_tier": str(
             getattr(recognition, "confidence_tier", "") or ""

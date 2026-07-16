@@ -13,6 +13,7 @@ from core import (
     SafeProcessResult,
     parse_arecord_capture_devices,
     resolve_alsa_capture_device,
+    inspect_linux_alsa_capture,
 )
 from scripts import manual_verify_linux_alsa_microphone as manual_alsa
 
@@ -72,6 +73,27 @@ class FakeArecordRunner:
             args=safe_args,
             returncode=self.record_returncode,
             stderr=self.record_stderr,
+        )
+
+
+class FakeMixerInspectionRunner:
+    def __init__(self):
+        self.calls = []
+
+    def which(self, executable):
+        return f"/usr/bin/{executable}"
+
+    def run(self, args, timeout_seconds):
+        self.calls.append((list(args), timeout_seconds))
+        return SafeProcessResult(
+            args=list(args),
+            returncode=0,
+            stdout=(
+                "Simple mixer control 'Capture',0\n"
+                "  Front Left: Capture 48 [76%] [on]\n"
+                "Simple mixer control 'Auto Gain Control',0\n"
+                "  Mono: Playback [off]\n"
+            ),
         )
 
 
@@ -169,6 +191,27 @@ def test_linux_alsa_plughw_device_maps_to_listed_hardware_for_health_check():
 
     assert result.success is True
     assert result.data["selected_device"] == "plughw:2,0"
+
+
+def test_capture_hardware_diagnostics_reports_mixer_state_without_modifying_it():
+    runner = FakeMixerInspectionRunner()
+    result = inspect_linux_alsa_capture("plughw:2,0", runner=runner)
+    assert result["success"]
+    assert result["capture_device"] == "plughw:2,0"
+    assert result["sample_rate_hz"] == 16000
+    assert result["channels"] == 1
+    assert result["sample_width_bytes"] == 2
+    assert result["mixer_capture_levels"] == [
+        "Front Left: Capture 48 [76%] [on]"
+    ]
+    assert result["automatic_gain_controls"] == [
+        "Simple mixer control 'Auto Gain Control',0"
+    ]
+    assert result["settings_modified"] is False
+    assert result["subprocess_shell"] is False
+    assert runner.calls == [
+        (["/usr/bin/amixer", "-c", "2", "scontents"], 5.0)
+    ]
 
 
 def test_linux_alsa_record_wav_success_uses_argument_list_and_validates_output(tmp_path):

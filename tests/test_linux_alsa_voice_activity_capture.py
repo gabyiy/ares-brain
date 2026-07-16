@@ -47,6 +47,19 @@ class FrameSource:
         self.closed = True
 
 
+class BufferedFrameSource(FrameSource):
+    def __init__(self, frames, *, buffered_bytes=0):
+        super().__init__(frames)
+        self.buffered_bytes = buffered_bytes
+        self.discard_calls = 0
+
+    def discard_available(self, maximum_bytes):
+        self.discard_calls += 1
+        discarded = min(self.buffered_bytes, maximum_bytes)
+        self.buffered_bytes -= discarded
+        return discarded
+
+
 class StreamRunner:
     def __init__(self, source=None, failure=None):
         self.source = source
@@ -204,6 +217,80 @@ def test_rolling_pre_roll_recovers_speech_split_across_poll_boundary(tmp_path):
     assert second.pre_roll_frames_retained >= 4
     rolling = adapter.persistent_stream_snapshot()["rolling_pre_roll"]
     assert rolling["replayed_frame_count"] >= 4
+    adapter.close_persistent_stream(handle, owner="standby_wake_listener")
+
+
+def test_persistent_candidate_reset_clears_history_and_bounded_buffer_without_reopen():
+    source = BufferedFrameSource([frame(20)] * 10, buffered_bytes=3 * 640)
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(source),
+    )
+    assert adapter.start().success
+    handle = adapter.open_persistent_stream(owner="standby_wake_listener")
+    handle.frame_source.read_frame(640, 1.0)
+    assert adapter.persistent_stream_snapshot()["rolling_pre_roll"]["history_frame_count"] == 1
+    reset = adapter.reset_persistent_candidate(
+        handle,
+        frame_duration_ms=20,
+        maximum_discard_seconds=0.2,
+    )
+    rolling = adapter.persistent_stream_snapshot()["rolling_pre_roll"]
+    assert reset["stale_pcm_frames_discarded"] == 3
+    assert reset["stream_remained_open"] is True
+    assert rolling["history_frame_count"] == 0
+    assert rolling["candidate_reset_count"] == 1
+    assert source.discard_calls == 1
+    assert adapter.persistent_stream_snapshot()["open_count"] == 1
+    adapter.close_persistent_stream(handle, owner="standby_wake_listener")
+
+
+def test_candidate_reset_prevents_stale_wake_pcm_from_replaying_next_candidate(tmp_path):
+    source = FrameSource(
+        [
+            frame(500),
+            frame(550),
+            *([frame(20)] * 5),
+            *([frame(20)] * 3),
+            frame(600),
+            frame(650),
+            *([frame(20)] * 5),
+        ]
+    )
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(source),
+    )
+    assert adapter.start().success
+    handle = adapter.open_persistent_stream(owner="standby_wake_listener")
+    common = {
+        "calibration_enabled": False,
+        "required_speech_frames": 2,
+        "silence_seconds": 0.1,
+        "speech_wait_timeout_seconds": 0.2,
+        "maximum_utterance_seconds": 0.3,
+        "pre_roll_seconds": 0.1,
+        "capture_profile": "standby_wake_short_v1",
+        "minimum_speech_duration_seconds": 0.04,
+    }
+    first = adapter.record_persistent_until_silence(
+        handle,
+        tmp_path / "first.wav",
+        **common,
+    )
+    assert first.success
+    adapter.reset_persistent_candidate(handle, maximum_discard_seconds=0)
+    second = adapter.record_persistent_until_silence(
+        handle,
+        tmp_path / "second.wav",
+        **common,
+    )
+    assert second.success
+    assert second.data["duplicate_frame_append_count"] == 0
+    assert second.data["captured_frame_indexes_unique"] is True
+    assert second.pre_roll_frames_retained <= 3
     adapter.close_persistent_stream(handle, owner="standby_wake_listener")
 
 

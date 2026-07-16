@@ -183,6 +183,8 @@ from core.StandbyWakeListener import (
     validate_wake_control_phrases,
 )
 from core.LinuxStandbyWakeListener import LinuxStandbyWakeListener
+from core.LinuxAlsaCaptureDiagnostics import inspect_linux_alsa_capture
+from core.WakeAudio import WakeAudioTrimResult, trim_canonical_wake_wav
 from core.WakeRecognizer import (
     WakeRecognizer,
     WakeRecognizerLocalDiagnostics,
@@ -770,11 +772,14 @@ __all__ = [
     "VoiceRuntimeGate",
     "StandbyWakeListener",
     "LinuxStandbyWakeListener",
+    "inspect_linux_alsa_capture",
     "QueuedStandbyWakeListener",
     "WakeListenerConfig",
     "WakeLocalDiagnostics",
     "WakeRecognizer",
     "WakeRecognizerLocalDiagnostics",
+    "WakeAudioTrimResult",
+    "trim_canonical_wake_wav",
     "VoskWakeRecognizer",
     "VOSK_RECOGNIZER_NAME",
     "DEFAULT_VOSK_WAKE_MODEL",

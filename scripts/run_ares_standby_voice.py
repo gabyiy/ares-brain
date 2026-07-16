@@ -533,6 +533,10 @@ def render_wake_diagnostics(
         f"  Raw recognized phrase: {diagnostics.raw_transcript or '<empty>'}",
         f"  Normalized phrase: {diagnostics.normalized_transcript or '<empty>'}",
         f"  Confidence: {confidence}",
+        "  Minimum/mean/canonical confidence: "
+        f"{_format_wake_confidence(diagnostics.minimum_word_confidence)} / "
+        f"{_format_wake_confidence(diagnostics.mean_word_confidence)} / "
+        f"{_format_wake_confidence(diagnostics.canonical_confidence)}",
         f"  Confidence tier: {diagnostics.confidence_tier or 'none'}",
         "  Medium-confidence confirmation: "
         f"{diagnostics.confirmation_count}/{diagnostics.confirmation_required_count}",
@@ -541,6 +545,8 @@ def render_wake_diagnostics(
         f"  Wake classification: {diagnostics.classification}",
         f"  Classification path: {diagnostics.classification_path or 'none'}",
         f"  Classification reason: {diagnostics.classification_reason or 'none'}",
+        "  Canonical duplicate collapse: "
+        f"{'used' if diagnostics.duplicate_collapse_used else 'not used'}",
         f"  Rejection reason: {diagnostics.rejection_reason or 'none'}",
         f"  Candidate duration: {diagnostics.capture_duration_seconds:.3f}s",
         f"  Candidate number: {diagnostics.candidate_number}",
@@ -561,6 +567,17 @@ def render_wake_diagnostics(
         f"  First speech frame: {diagnostics.first_speech_frame}",
         "  Terminal silence duration: "
         f"{diagnostics.terminal_silence_duration_seconds:.3f}s",
+        f"  Terminal quiet frames: {diagnostics.terminal_quiet_frame_count}",
+        f"  Speech frames: {diagnostics.speech_frame_count}",
+        f"  Post-roll frames: {diagnostics.post_roll_frame_count}",
+        f"  Duplicate PCM appends: {diagnostics.duplicate_pcm_frame_count}",
+        f"  Stale PCM frames discarded: {diagnostics.stale_pcm_frames_discarded}",
+        "  Noise floor/start/continue/end RMS: "
+        f"{diagnostics.ambient_noise_floor:.1f} / "
+        f"{diagnostics.speech_start_threshold:.1f} / "
+        f"{diagnostics.speech_continue_threshold:.1f} / "
+        f"{diagnostics.speech_end_threshold:.1f}",
+        f"  Bounded RMS samples: {len(diagnostics.rms_trace)}",
         "  Speech-start to activation: "
         f"{diagnostics.speech_to_activation_seconds:.3f}s",
         f"  VAD transition count: {len(diagnostics.vad_transitions)}",
@@ -568,6 +585,10 @@ def render_wake_diagnostics(
         f"  Assembled duration: {diagnostics.assembled_duration_seconds:.3f}s",
         f"  Normalized duration: {diagnostics.normalized_duration_seconds:.3f}s",
         f"  Recognizer input duration: {diagnostics.whisper_input_duration_seconds:.3f}s",
+        f"  Trimmed Vosk input duration: {diagnostics.trimmed_duration_seconds:.3f}s",
+        "  Leading/trailing audio trimmed: "
+        f"{diagnostics.leading_trimmed_seconds:.3f}s / "
+        f"{diagnostics.trailing_trimmed_seconds:.3f}s",
         f"  Capture stop reason: {diagnostics.capture_stop_reason or 'unknown'}",
         f"  Recognition status: {diagnostics.recognition_status or 'unknown'}",
         "  Recognition processing duration: "
@@ -585,6 +606,10 @@ def render_wake_diagnostics(
             ]
         )
     return lines
+
+
+def _format_wake_confidence(value: Optional[float]) -> str:
+    return "unavailable" if value is None else f"{float(value):.3f}"
 
 
 def _wake_diagnostic_callback(

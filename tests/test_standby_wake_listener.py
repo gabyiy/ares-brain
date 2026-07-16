@@ -39,14 +39,22 @@ def _failed(status: str, message: str = "failed"):
     return SimpleNamespace(success=False, status=status, error_message=message)
 
 
-def _write_wav(path: Path, *, sample_rate: int = 16000, seconds: float = 0.2) -> None:
+def _write_wav(
+    path: Path,
+    *,
+    sample_rate: int = 16000,
+    seconds: float = 0.2,
+    amplitude: int = 800,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     samples = max(1, int(sample_rate * seconds))
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
         output.setframerate(sample_rate)
-        output.writeframes((b"\x10\x00" * samples))
+        output.writeframes(
+            int(amplitude).to_bytes(2, "little", signed=True) * samples
+        )
 
 
 class FakeMicrophone:
@@ -72,6 +80,7 @@ class FakeMicrophone:
         self.stream_close_count = 0
         self.calibration_count = 0
         self.stream_handle = None
+        self.candidate_reset_count = 0
 
     def start(self):
         self.started = True
@@ -137,6 +146,16 @@ class FakeMicrophone:
             handle.closed = True
             self.stream_close_count += 1
         return _ok("closed")
+
+    def reset_persistent_candidate(self, handle, **_kwargs):
+        assert handle is self.stream_handle
+        assert not handle.closed
+        self.candidate_reset_count += 1
+        return {
+            "success": True,
+            "status": "candidate_state_reset",
+            "stale_pcm_frames_discarded": 0,
+        }
 
     def record_until_silence(self, output_path, **kwargs):
         self.record_calls.append((str(output_path), dict(kwargs)))
@@ -273,6 +292,10 @@ class FakeWakeRecognizer:
             model_path="models/vosk/test-model",
             grammar_phrase_count=len(request.wake_phrases) + 1,
             processing_time_seconds=0.125,
+            audio_duration_seconds=request.audio_duration_seconds,
+            maximum_duplicate_collapse_audio_seconds=(
+                request.maximum_duplicate_collapse_audio_seconds
+            ),
         )
         self.last_diagnostics = WakeRecognizerLocalDiagnostics(
             recognizer_name=self.recognizer_name,
@@ -300,7 +323,7 @@ def _request(**changes) -> WakeListenerRequestV1:
         "lifecycle_state": "STANDBY",
         "listener_timeout_seconds": 3.0,
         "wake_phrase_aliases": ["ares", "aris", "aries"],
-        "wake_phrase_prefixes": ["", "hey", "hello", "wake up"],
+        "wake_phrase_prefixes": ["", "hey", "hello", "wake up", "okay"],
         "standby_phrases": ["goodbye ares"],
         "shutdown_phrases": ["shutdown ares"],
         "correlation_id": "wake-test-correlation",
@@ -333,13 +356,13 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
     assert config.minimum_recognition_confidence == 0.55
     assert config.frame_duration_ms == 20
     assert config.speech_wait_timeout_seconds == 3.0
-    assert config.maximum_utterance_seconds == 2.0
+    assert config.maximum_utterance_seconds == 1.6
     assert config.speech_start_rms > config.speech_continue_rms >= config.silence_rms
     assert config.calibration_enabled is True
     assert config.wake_phrase_aliases == ("ares", "aris", "aries")
-    assert config.wake_phrase_prefixes == ("", "hey", "hello", "wake up")
+    assert config.wake_phrase_prefixes == ("", "hey", "hello", "wake up", "okay")
     assert config.pre_roll_seconds == 0.4
-    assert config.silence_duration_seconds == 0.65
+    assert config.silence_duration_seconds == 0.55
     assert config.speech_end_padding_seconds == 0.12
     assert config.medium_recognition_confidence == 0.40
     assert config.allow_exact_wake_without_confidence is True
@@ -738,7 +761,8 @@ def test_linux_listener_recognizes_only_current_normalized_16khz_wav_and_cleans(
     assert result.sample_rate_hz == 16000
     assert result.channels == 1
     assert result.sample_width_bytes == 2
-    assert stt.paths[0][0] == microphone.normalized_path
+    assert stt.paths[0][0].endswith("wake_recognizer_input.wav")
+    assert stt.paths[0][0] != microphone.normalized_path
     assert stt.paths[0][0] != microphone.raw_path
     assert stt.paths[0][2] is True
     assert not Path(microphone.normalized_path).exists()
@@ -769,10 +793,11 @@ def test_linux_listener_forwards_calibrated_vad_bounds_and_safe_capture_settings
     assert kwargs["speech_continue_rms"] == 180
     assert kwargs["silence_rms"] == 120
     assert kwargs["frame_duration_ms"] == 20
-    assert kwargs["maximum_utterance_seconds"] == 2.0
+    assert kwargs["maximum_utterance_seconds"] == 1.6
+    assert kwargs["capture_profile"] == "standby_wake_short_v1"
     assert kwargs["pre_roll_seconds"] == 0.4
     assert kwargs["speech_end_padding_seconds"] == 0.12
-    assert kwargs["silence_seconds"] == 0.65
+    assert kwargs["silence_seconds"] == 0.55
     listener.stop()
 
 
@@ -803,6 +828,40 @@ def test_linux_listener_accepts_exact_wake_without_confidence_after_audio_valida
     assert result.wake_detected is True
     assert result.classification_reason == "accepted_exact_wake_without_confidence"
     assert result.recognition_confidence_available is False
+
+
+def test_linux_listener_accepts_guarded_two_alias_vosk_duplication(tmp_path):
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(candidate_seconds=0.8),
+        wake_recognizer=FakeWakeRecognizer("Ares Aris", confidence=0.82),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+    result = listener.listen_once(_request())
+    assert result.wake_detected
+    assert result.canonical_wake_phrase == "ares"
+    assert result.duplicate_collapse_used
+    assert result.classification_reason == "accepted_canonical_duplicate_wake"
+    assert result.classification_path == (
+        "vosk_constrained_grammar_duplicate_collapse"
+    )
+    assert result.minimum_word_confidence == pytest.approx(0.82)
+    assert result.mean_word_confidence == pytest.approx(0.82)
+    listener.stop()
+
+
+def test_linux_listener_rejects_unknown_plus_alias_without_duplicate_collapse(tmp_path):
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(candidate_seconds=0.8),
+        wake_recognizer=FakeWakeRecognizer("[unk] Aris", confidence=0.99),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+    result = listener.listen_once(_request())
+    assert not result.wake_detected
+    assert result.rejection_reason == "unknown_token_result"
+    assert not result.duplicate_collapse_used
+    listener.stop()
     listener.stop()
 
 
@@ -892,7 +951,7 @@ def test_local_wake_diagnostics_are_explicit_and_not_returned_in_contract(tmp_pa
     assert diagnostics.normalized_transcript == "hello aries"
     assert diagnostics.selected_alias == "aries"
     assert diagnostics.classification == "accepted"
-    assert diagnostics.classification_path == "vosk_constrained_grammar"
+    assert diagnostics.classification_path == "vosk_constrained_grammar_exact"
     assert diagnostics.classification_reason == "accepted_vosk_constrained_grammar"
     assert diagnostics.recognizer_name == "fake_vosk_constrained_grammar"
     assert diagnostics.recognition_confidence == pytest.approx(0.95)
@@ -915,11 +974,11 @@ def test_local_diagnostics_report_strict_rejection_without_event_payload_text(tm
     listener.start()
     result = listener.listen_once(_request(diagnostic_wake=True))
     assert not result.wake_detected
-    assert result.classification_path == "vosk_constrained_grammar"
+    assert result.classification_path == "vosk_constrained_grammar_exact"
     assert result.classification_reason == "exact_constrained_phrase_not_matched"
     diagnostics = emitted[0]
     assert diagnostics.normalized_transcript == "unrelated speech"
-    assert diagnostics.classification_path == "vosk_constrained_grammar"
+    assert diagnostics.classification_path == "vosk_constrained_grammar_exact"
     assert "unrelated speech" not in str(result.to_dict()).casefold()
     listener.stop()
 
@@ -984,7 +1043,7 @@ def test_maximum_duration_wake_candidate_still_reaches_strict_classifier(tmp_pat
     microphone = FakeMicrophone(
         capture_status="maximum_duration_reached",
         raw_seconds=3.2,
-        candidate_seconds=2.2,
+        candidate_seconds=2.0,
     )
     stt = FakeWakeRecognizer("Ares")
     listener = LinuxStandbyWakeListener(

@@ -34,6 +34,7 @@ def _classify(
     confidence: float = 0.95,
     words=None,
     allow_exact_wake_without_confidence: bool = True,
+    audio_duration_seconds: float = 0.7,
 ):
     config = WakeListenerConfig()
     return classify_constrained_recognition(
@@ -47,6 +48,10 @@ def _classify(
         medium_confidence=config.medium_recognition_confidence,
         allow_exact_wake_without_confidence=allow_exact_wake_without_confidence,
         medium_confirmation_repetitions=config.medium_confidence_confirmation_count,
+        audio_duration_seconds=audio_duration_seconds,
+        maximum_duplicate_collapse_audio_seconds=(
+            config.maximum_duplicate_collapse_audio_seconds
+        ),
     )
 
 
@@ -60,6 +65,8 @@ def _classify(
         "hey aris",
         "hello aries",
         "wake up aris",
+        "okay ares",
+        "okay aries",
         "ARES.",
         "Hey, Aris!",
     ],
@@ -159,6 +166,54 @@ def test_high_confidence_wrong_phrase_is_always_rejected():
     result = _classify("go to", confidence=0.99)
     assert not result.wake_detected
     assert result.rejection_reason == "exact_constrained_phrase_not_matched"
+
+
+@pytest.mark.parametrize("text", ["ares ares", "aries aries", "ares aris", "aries ares"])
+def test_two_token_canonical_wake_identity_collapses_only_with_audio_safeguards(text):
+    result = _classify(text, confidence=0.82, audio_duration_seconds=0.9)
+    assert result.wake_detected
+    assert result.normalized_wake_phrase == "ares"
+    assert result.duplicate_collapse_used
+    assert result.collapsed_canonical_phrase == "ares"
+    assert result.classification_reason == "accepted_canonical_duplicate_wake"
+    assert result.minimum_word_confidence == pytest.approx(0.82)
+    assert result.mean_word_confidence == pytest.approx(0.82)
+    assert result.canonical_confidence == pytest.approx(0.82)
+
+
+@pytest.mark.parametrize(
+    ("text", "words", "duration"),
+    [
+        ("[unk] aris", [{"word": "[unk]", "conf": 0.99}, {"word": "aris", "conf": 0.99}], 0.8),
+        ("ares ares ares", None, 0.8),
+        ("ares hello", None, 0.8),
+        ("ares aris", None, 1.5),
+        ("ares aris", [{"word": "ares"}, {"word": "aris"}], 0.8),
+    ],
+)
+def test_duplicate_wake_collapse_rejects_unknown_length_duration_and_missing_confidence(
+    text,
+    words,
+    duration,
+):
+    result = _classify(text, words=words, audio_duration_seconds=duration)
+    assert not result.wake_detected
+
+
+def test_duplicate_wake_uses_minimum_confidence_and_exposes_mean():
+    result = _classify(
+        "ares aris",
+        words=[
+            {"word": "ares", "conf": 0.90},
+            {"word": "aris", "conf": 0.52},
+        ],
+        audio_duration_seconds=0.8,
+    )
+    assert not result.wake_detected
+    assert result.confirmation_required
+    assert result.minimum_word_confidence == pytest.approx(0.52)
+    assert result.mean_word_confidence == pytest.approx(0.71)
+    assert result.canonical_confidence == pytest.approx(0.52)
 
 
 def test_controls_require_exact_phrase_and_usable_confidence():
@@ -280,6 +335,9 @@ def test_vosk_adapter_loads_model_once_uses_constrained_grammar_and_unk(tmp_path
         "wake up ares",
         "wake up aris",
         "wake up aries",
+        "okay ares",
+        "okay aris",
+        "okay aries",
         "goodbye ares",
         "goodbye aris",
         "goodbye aries",
