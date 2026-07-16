@@ -548,6 +548,7 @@ from core.LinuxPiperTextToSpeech import (
 from core.LinuxWhisperSpeechToText import (
     DEFAULT_WHISPER_MODEL_PATH,
     LinuxWhisperSpeechToTextAdapter,
+    WhisperSubprocessRunner,
     WHISPER_STATUS_AUDIO_BELOW_THRESHOLD,
     WHISPER_STATUS_AUDIO_SILENT,
     WHISPER_STATUS_BINARY_MISSING,
@@ -686,6 +687,7 @@ from core.SingleTurnVoicePipeline import (
     SingleTurnVoicePipeline,
 )
 from core.SingleTurnVoiceSupport import (
+    PIPELINE_CLEANUP_DELETE_ALWAYS,
     PIPELINE_CLEANUP_DELETE_ON_SUCCESS,
     PIPELINE_CLEANUP_KEEP,
     PIPELINE_CLEANUP_PRESERVE_ON_FAILURE,
@@ -1194,6 +1196,7 @@ __all__ = [
     "ALSA_SPEAKER_STATUS_PLAYBACK_TIMEOUT",
     "ALSA_SPEAKER_STATUS_PLAYED",
     "LinuxWhisperSpeechToTextAdapter",
+    "WhisperSubprocessRunner",
     "LinuxPiperTextToSpeechAdapter",
     "LIFECYCLE_BUSY",
     "LIFECYCLE_DEGRADED",
@@ -1355,6 +1358,7 @@ __all__ = [
     "VoiceStageConflict",
     "VoiceStageCoordinator",
     "PIPELINE_CLEANUP_DELETE_ON_SUCCESS",
+    "PIPELINE_CLEANUP_DELETE_ALWAYS",
     "PIPELINE_CLEANUP_KEEP",
     "PIPELINE_CLEANUP_PRESERVE_ON_FAILURE",
     "DEFAULT_BRAIN_FAILURE_RESPONSE",

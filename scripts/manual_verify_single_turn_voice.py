@@ -171,6 +171,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--playback", action="store_true")
     parser.add_argument("--keep-audio", action="store_true")
     parser.add_argument("--timeout", type=float, default=DEFAULT_PIPELINE_TIMEOUT)
+    parser.add_argument(
+        "--transcription-timeout",
+        type=float,
+        default=None,
+        help="hard timeout for the local Whisper subprocess (defaults to --timeout)",
+    )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--text-input", default="")
     parser.add_argument("--recording-output", default=DEFAULT_RECORDING_OUTPUT)
@@ -361,7 +367,7 @@ def create_pipeline(
         model_path=_repo_path(args.whisper_model),
         whisper_command=_repo_path_or_command(args.whisper_command),
         language=args.language,
-        timeout_seconds=args.timeout,
+        timeout_seconds=_transcription_timeout(args),
         minimum_rms=args.min_rms,
     )
     text_to_speech = text_to_speech_adapter or LinuxPiperTextToSpeechAdapter(
@@ -415,7 +421,7 @@ def request_from_args(args: argparse.Namespace) -> SingleTurnVoiceRequestV1:
         playback_enabled=bool(args.playback),
         timeout_seconds=timeout,
         recording_timeout_seconds=min(timeout, _recording_timeout(args)),
-        transcription_timeout_seconds=timeout,
+        transcription_timeout_seconds=_transcription_timeout(args),
         brain_timeout_seconds=min(timeout, 30.0),
         synthesis_timeout_seconds=timeout,
         playback_timeout_seconds=timeout,
@@ -634,6 +640,11 @@ def _recording_timeout(args: argparse.Namespace) -> float:
             + 5.0
         )
     return float(args.record_seconds + 5)
+
+
+def _transcription_timeout(args: argparse.Namespace) -> float:
+    configured = getattr(args, "transcription_timeout", None)
+    return float(args.timeout if configured is None else configured)
 
 
 def _print_capture_diagnostics(

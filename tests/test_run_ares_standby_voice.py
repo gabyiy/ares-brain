@@ -108,6 +108,7 @@ def test_production_standby_voice_cli_defaults_match_verified_raspberry_pi_stack
     assert args.voice_profile == "en_US-hfc_male-medium"
     assert args.inactivity_seconds == 30
     assert args.timeout == 300
+    assert args.active_transcription_timeout == 30
     assert args.diagnostic_routing is False
     assert args.diagnostic_wake is False
     assert args.retain_diagnostic_audio is False
@@ -127,6 +128,7 @@ def test_production_standby_voice_cli_supports_required_overrides():
             "--command-whisper-model", "command.bin",
             "--voice-profile", "alternate",
             "--inactivity-seconds", "45",
+            "--active-transcription-timeout", "22",
             "--diagnostic-routing",
             "--diagnostic-wake",
             "--retain-diagnostic-audio",
@@ -142,7 +144,44 @@ def test_production_standby_voice_cli_supports_required_overrides():
     assert args.command_whisper_model == "command.bin"
     assert args.voice_profile == "alternate"
     assert args.inactivity_seconds == 45
+    assert args.active_transcription_timeout == 22
     assert args.diagnostic_routing and args.diagnostic_wake and args.retain_diagnostic_audio
+
+
+def test_active_command_pipeline_uses_separate_hard_whisper_timeout():
+    args = run_ares_standby_voice.build_parser().parse_args([])
+
+    command_args = run_ares_standby_voice._command_pipeline_args(args)
+    request = run_ares_standby_voice.single_turn.request_from_args(command_args)
+
+    assert command_args.timeout == 300
+    assert command_args.transcription_timeout == 30
+    assert request.timeout_seconds == 300
+    assert request.transcription_timeout_seconds == 30
+
+
+@pytest.mark.parametrize("value", ["0", "nan", "301"])
+def test_active_transcription_timeout_fails_closed_before_runtime_creation(
+    value,
+    tmp_path,
+):
+    factory, runtime, _ = _factory()
+    output = []
+
+    code = run_ares_standby_voice.run_standby_voice(
+        [
+            "--active-transcription-timeout",
+            value,
+            "--runtime-lock-path",
+            str(tmp_path / "runtime"),
+        ],
+        output_func=output.append,
+        runtime_factory=factory,
+    )
+
+    assert code == 2
+    assert "active transcription timeout" in output[0]
+    assert runtime.standby_wake_listener.start_count == 0
 
 
 def test_repo_relative_path_resolution_is_independent_of_current_working_directory(tmp_path, monkeypatch):
@@ -227,7 +266,8 @@ def test_second_production_runtime_is_rejected_without_starting_capture(tmp_path
         )
 
     assert code == 4
-    assert output == ["ARES is already running"]
+    assert len(output) == 1
+    assert output[0].startswith("ARES is already running (PID ")
     assert runtime.standby_wake_listener.start_count == 0
 
 
@@ -253,6 +293,32 @@ def test_keyboard_interrupt_releases_production_runtime_lock(tmp_path):
     assert code == 130
     assert runtime.shutdown_count == 1
     assert not store_lock_path(lock_target).exists()
+
+
+def test_runtime_error_releases_production_lock_and_resources(tmp_path):
+    lock_target = tmp_path / "ares_standby_voice.runtime"
+    pipeline = FakePipeline()
+
+    class FailedRuntime(FakeRuntime):
+        def run(self):
+            raise RuntimeError("injected runtime failure")
+
+    runtime = FailedRuntime()
+
+    def factory(args, output_func=print):
+        return runtime, pipeline, SingleTurnVoiceRequestV1()
+
+    output = []
+    code = run_ares_standby_voice.run_standby_voice(
+        ["--runtime-lock-path", str(lock_target)],
+        output_func=output.append,
+        runtime_factory=factory,
+    )
+
+    assert code == 1
+    assert runtime.shutdown_count == 1
+    assert not store_lock_path(lock_target).exists()
+    assert any("failed and cleaned up" in line for line in output)
 
 
 def test_production_composition_reuses_one_event_history_store(tmp_path):
@@ -547,6 +613,19 @@ def test_hardware_helper_active_summary_uses_active_diagnostics_not_stale_wake_r
     diagnostics = ActiveCommandLocalDiagnostics(
         raw_transcript="goodbye aris",
         alias_canonicalized_transcript="goodbye ares",
+        raw_capture_duration_seconds=2.4,
+        finalized_candidate_duration_seconds=1.1,
+        wav_path="/tmp/runtime-command.wav",
+        wav_byte_size=35244,
+        wav_sample_rate_hz=16000,
+        wav_channels=1,
+        wav_sample_width_bytes=2,
+        transcription_backend="whisper.cpp",
+        transcription_started_at="2026-07-16T10:00:00Z",
+        transcription_completed_at="2026-07-16T10:00:00.5Z",
+        transcription_status="transcribed",
+        whisper_processing_duration_seconds=0.5,
+        temporary_audio_cleanup_status="removed",
     )
     manual_verify_standby_wake_hardware._print_recognition_summary(
         output.append,
@@ -561,6 +640,10 @@ def test_hardware_helper_active_summary_uses_active_diagnostics_not_stale_wake_r
     assert "Raw recognition result: goodbye aris" in text
     assert "Normalized phrase: goodbye ares" in text
     assert "active_command_or_none" not in text
+    assert "Active audio: capture=2.400s; finalized=1.100s" in text
+    assert "format=16000Hz/1ch/2B" in text
+    assert "Active transcription: backend=whisper.cpp" in text
+    assert "cleanup=removed" in text
 
     summary = []
     manual_verify_standby_wake_hardware._print_transcript_summary(
@@ -632,6 +715,23 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
         finalized_candidate_duration_seconds=1.2,
         whisper_processing_duration_seconds=0.6,
         terminal_silence_status="confirmed_terminal_silence",
+        audio_finalization_started_at="2026-07-16T10:00:00Z",
+        audio_finalization_completed_at="2026-07-16T10:00:00.010000Z",
+        wav_path="/tmp/runtime-command.wav",
+        wav_byte_size=38444,
+        wav_sample_rate_hz=16000,
+        wav_channels=1,
+        wav_sample_width_bytes=2,
+        transcription_backend="whisper.cpp",
+        transcription_started_at="2026-07-16T10:00:00.020000Z",
+        transcription_completed_at="2026-07-16T10:00:00.620000Z",
+        transcription_status="transcribed",
+        transcription_timeout_seconds=30.0,
+        transcript_parsing_status="completed",
+        routing_started_at="2026-07-16T10:00:00.630000Z",
+        routing_completed_at="2026-07-16T10:00:00.640000Z",
+        temporary_audio_cleanup_status="removed",
+        microphone_gate_released_before_inference=True,
     )
 
     rendered = "\n".join(
@@ -646,6 +746,11 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
     assert "Active session: session-1 -> none" in rendered
     assert "Raw capture duration: 2.400s" in rendered
     assert "Finalized candidate duration: 1.200s" in rendered
+    assert "WAV byte size: 38444" in rendered
+    assert "WAV format: 16000 Hz, 1 channel(s), 2-byte samples" in rendered
+    assert "Transcription hard timeout: 30.000s" in rendered
+    assert "Microphone gate released before inference: yes" in rendered
+    assert "Temporary audio cleanup: removed" in rendered
 
 
 def test_retention_requires_explicit_wake_diagnostics_before_runtime_creation(tmp_path):

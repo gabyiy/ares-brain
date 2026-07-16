@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,6 +38,7 @@ class FakePipeline:
         self.stop_count = 0
         self.output_success = True
         self.stage_observers = []
+        self.on_transcribing = None
 
     def add_stage_observer(self, observer):
         self.stage_observers.append(observer)
@@ -57,6 +59,8 @@ class FakePipeline:
         if self.input_text:
             self._stage(2, "Recording", "completed")
             self._stage(3, "Transcribing", "running")
+            if self.on_transcribing is not None:
+                self.on_transcribing()
         if pre_brain_hook is not None and self.input_text:
             decision = pre_brain_hook(self.input_text)
             assert decision.handled is True
@@ -78,7 +82,40 @@ class FakePipeline:
                     "raw_duration_seconds": 2.8,
                     "assembled_duration_seconds": 1.1,
                     "normalized_duration_seconds": 1.1,
-                }
+                },
+                "audio_finalization": {
+                    "started_at": "2026-07-16T10:00:00Z",
+                    "completed_at": "2026-07-16T10:00:00.010000Z",
+                    "wav_path": str(request.recording_output_path),
+                    "wav_byte_size": 35244,
+                    "sample_rate_hz": 16000,
+                    "channels": 1,
+                    "sample_width_bytes": 2,
+                },
+                "transcription_boundary": {
+                    "started_at": "2026-07-16T10:00:00.020000Z",
+                    "completed_at": "2026-07-16T10:00:00.440000Z",
+                    "timeout_seconds": request.transcription_timeout_seconds or 30.0,
+                    "microphone_capture_released": True,
+                },
+                "transcription": {
+                    "status": "transcribed" if self.input_success else self.input_status,
+                    "data": {
+                        "transcription_backend": "whisper.cpp",
+                        "transcription_started_at": "2026-07-16T10:00:00.020000Z",
+                        "transcription_completed_at": "2026-07-16T10:00:00.440000Z",
+                        "transcription_timeout_seconds": (
+                            request.transcription_timeout_seconds or 30.0
+                        ),
+                        "transcript_parsing_status": (
+                            "completed" if self.input_success else "not_started"
+                        ),
+                    },
+                },
+                "cleanup": {
+                    "removed": [str(request.recording_output_path)],
+                    "preserved": [],
+                },
             },
         )
 
@@ -150,6 +187,83 @@ def test_active_voice_input_reports_visible_bounded_progress_in_order(tmp_path):
     assert pipeline.stage_observers == []
 
 
+def test_active_microphone_gate_is_released_before_whisper_inference(tmp_path):
+    pipeline = FakePipeline()
+    gate = VoiceRuntimeGate(settle_delay_seconds=0)
+    pipeline.on_transcribing = lambda: (
+        pytest.fail("microphone gate remained active during Whisper")
+        if gate.snapshot()["capture_active"]
+        else None
+    )
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: "session-1",
+        voice_io_gate=gate,
+    )
+
+    result = adapter.wait_for_input(1.0)
+
+    assert result.status == "input"
+    assert gate.snapshot()["capture_active"] is False
+
+
+def test_active_transcription_timeout_is_visible_bounded_and_keeps_session_input_open(
+    tmp_path,
+):
+    pipeline = FakePipeline()
+    pipeline.input_text = ""
+    pipeline.input_success = False
+    pipeline.input_status = "transcription_failed"
+    pipeline.input_error_stage = "transcription"
+    pipeline.input_error_reason = "whisper_transcription_timeout"
+    statuses = []
+    diagnostics = []
+    request = replace(
+        _request(tmp_path),
+        cleanup_policy="delete_always",
+        transcription_timeout_seconds=30.0,
+    )
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=request,
+        session_id_provider=lambda: "session-1",
+        status_callback=statuses.append,
+        diagnostic_callback=diagnostics.append,
+    )
+
+    result = adapter.wait_for_input(1.0)
+
+    assert result.status == "timeout"
+    assert "Command transcription timed out after 30 seconds; still active" in statuses
+    assert statuses[-1] == "No command heard; still active"
+    assert len(diagnostics) == 1
+    assert adapter.wait_for_input(1.0).status == "timeout"
+
+
+@pytest.mark.parametrize("captured_text", ["goodbye ares", "shutdown ares"])
+def test_failed_transcription_never_emits_lifecycle_control_input(
+    captured_text,
+    tmp_path,
+):
+    pipeline = FakePipeline()
+    pipeline.input_text = captured_text
+    pipeline.input_success = False
+    pipeline.input_status = "transcription_failed"
+    pipeline.input_error_stage = "transcription"
+    pipeline.input_error_reason = "whisper_exit_2"
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: "session-1",
+    )
+
+    result = adapter.wait_for_input(1.0)
+
+    assert result.status == "timeout"
+    assert result.text == ""
+
+
 def test_active_voice_no_speech_timeout_is_visible_and_keeps_adapter_open(tmp_path):
     pipeline = FakePipeline()
     pipeline.input_text = ""
@@ -213,6 +327,18 @@ def test_active_command_diagnostics_use_current_command_capture_and_runtime_resu
     assert diagnostics.finalized_candidate_duration_seconds == pytest.approx(1.1)
     assert diagnostics.whisper_processing_duration_seconds == pytest.approx(0.42)
     assert diagnostics.terminal_silence_status == "confirmed_terminal_silence"
+    assert diagnostics.wav_byte_size == 35244
+    assert diagnostics.wav_sample_rate_hz == 16000
+    assert diagnostics.wav_channels == 1
+    assert diagnostics.wav_sample_width_bytes == 2
+    assert diagnostics.transcription_backend == "whisper.cpp"
+    assert diagnostics.transcription_status == "transcribed"
+    assert diagnostics.transcription_timeout_seconds == 30.0
+    assert diagnostics.transcript_parsing_status == "completed"
+    assert diagnostics.microphone_gate_released_before_inference is True
+    assert diagnostics.temporary_audio_cleanup_status == "removed"
+    assert diagnostics.routing_started_at
+    assert diagnostics.routing_completed_at
 
 
 @pytest.mark.parametrize(

@@ -9,6 +9,7 @@ from core.Contracts import (
     SingleTurnVoiceResultV1,
     TextToSpeechRequestV1,
     TranscriptNormalizationRequestV1,
+    utc_contract_timestamp,
 )
 from core.Health import RETRY_SAFE
 from core.Microphone import AudioChunk, MicrophoneResult
@@ -255,12 +256,28 @@ class SingleTurnVoiceStageMixin:
     ) -> TranscriptionResult | SingleTurnVoiceResultV1:
         self._stage(3, "Transcribing", "running")
         started = self.clock()
+        timeout_seconds = request.transcription_timeout_seconds
+        bounded_audio_chunk = replace(
+            audio_chunk,
+            metadata={
+                **dict(audio_chunk.metadata or {}),
+                "transcription_timeout_seconds": timeout_seconds,
+            },
+        )
+        state.data["transcription_boundary"] = {
+            "started_at": utc_contract_timestamp(),
+            "timeout_seconds": timeout_seconds,
+            "microphone_capture_released": not self.coordinator.capture_active,
+            "wav_closed_before_inference": True,
+        }
         try:
             self.coordinator.begin_heavy("whisper")
-            transcription = self._transcribe(audio_chunk)
+            transcription = self._transcribe(bounded_audio_chunk)
         except VoiceStageConflict as error:
+            self._stage(3, "Transcribing", "failed")
             return self._failure(state, "transcription", str(error), "stage_conflict")
         except Exception as error:
+            self._stage(3, "Transcribing", "failed")
             return self._failure(
                 state,
                 "transcription",
@@ -269,7 +286,9 @@ class SingleTurnVoiceStageMixin:
             )
         finally:
             self.coordinator.end_heavy("whisper")
+            state.data["transcription_boundary"]["completed_at"] = utc_contract_timestamp()
         if self._stage_timed_out(state, started, request.transcription_timeout_seconds):
+            self._stage(3, "Transcribing", "timeout")
             return self._failure(
                 state,
                 "transcription",
@@ -284,6 +303,13 @@ class SingleTurnVoiceStageMixin:
         )
         state.data["transcription"] = transcription.to_dict()
         if not transcription.success:
+            self._stage(
+                3,
+                "Transcribing",
+                "timeout"
+                if transcription.status == "transcription_timeout"
+                else "failed",
+            )
             return self._failure(
                 state,
                 "transcription",
@@ -291,6 +317,7 @@ class SingleTurnVoiceStageMixin:
                 "transcription_failed",
             )
         if not state.recognized_text:
+            self._stage(3, "Transcribing", "empty")
             return self._failure(
                 state,
                 "transcription",
@@ -571,6 +598,7 @@ class SingleTurnVoiceStageMixin:
                 empty_audio_chunk(),
             )
         capture_data = dict(getattr(capture, "data", {}) or {})
+        finalization_started_at = utc_contract_timestamp()
         finalized_path = str(
             getattr(capture, "final_whisper_input_path", "")
             or getattr(capture, "wav_path", "")
@@ -634,6 +662,18 @@ class SingleTurnVoiceStageMixin:
                 "final_whisper_input_path": str(output_path),
             },
         )
+        state.data["audio_finalization"] = {
+            "started_at": finalization_started_at,
+            "completed_at": utc_contract_timestamp(),
+            "wav_path": str(output_path),
+            "wav_byte_size": int(wav.get("byte_count", 0)),
+            "sample_rate_hz": int(wav.get("sample_rate_hz", 0)),
+            "channels": int(wav.get("channels", 0)),
+            "sample_width_bytes": int(wav.get("sample_width_bytes", 0)),
+            "duration_seconds": float(wav.get("duration_seconds", 0.0)),
+            "wav_closed": True,
+            "microphone_capture_released": not self.coordinator.capture_active,
+        }
         self._emit(
             state,
             self.EVENT_RECORDING_COMPLETED,

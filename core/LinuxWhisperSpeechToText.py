@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import math
 import os
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence
@@ -13,13 +15,19 @@ import wave
 from core.LinuxAlsaMicrophone import SafeProcessResult, SafeSubprocessRunner
 from core.Microphone import AudioChunk
 from core.SpeechToText import SpeechToTextAdapter, TranscriptionResult
+from core.WavAudio import (
+    CANONICAL_CHANNELS,
+    CANONICAL_SAMPLE_RATE_HZ,
+    CANONICAL_SAMPLE_WIDTH_BYTES,
+)
 
 
 DEFAULT_WHISPER_COMMAND = "whisper-cli"
 DEFAULT_WHISPER_MODEL_PATH = "models/whisper/ggml-tiny.en.bin"
 DEFAULT_WHISPER_LANGUAGE = "auto"
-DEFAULT_WHISPER_TIMEOUT_SECONDS = 120.0
+DEFAULT_WHISPER_TIMEOUT_SECONDS = 30.0
 MAX_WHISPER_TIMEOUT_SECONDS = 900.0
+DEFAULT_WHISPER_TERMINATION_GRACE_SECONDS = 2.0
 
 WHISPER_STATUS_BINARY_MISSING = "whisper_binary_missing"
 WHISPER_STATUS_MODEL_MISSING = "whisper_model_missing"
@@ -40,6 +48,160 @@ NO_SPEECH_MARKERS = frozenset(
 )
 
 Clock = Callable[[], float]
+
+
+class WhisperSubprocessRunner(SafeSubprocessRunner):
+    """Run whisper.cpp with bounded pipe draining and explicit child cleanup."""
+
+    def __init__(
+        self,
+        *,
+        process_factory: Callable[..., Any] = subprocess.Popen,
+        termination_grace_seconds: float = DEFAULT_WHISPER_TERMINATION_GRACE_SECONDS,
+        clock: Clock = time.perf_counter,
+    ) -> None:
+        grace = float(termination_grace_seconds)
+        if not 0.1 <= grace <= 10.0:
+            raise ValueError("termination_grace_seconds must be between 0.1 and 10")
+        self.process_factory = process_factory
+        self.termination_grace_seconds = grace
+        self.clock = clock
+
+    def run(self, args: Sequence[str], timeout_seconds: float) -> SafeProcessResult:
+        safe_args = [str(arg) for arg in args]
+        timeout = _bounded_timeout(timeout_seconds)
+        started = self.clock()
+        try:
+            process = self.process_factory(
+                safe_args,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                shell=False,
+            )
+        except FileNotFoundError:
+            return SafeProcessResult(
+                args=safe_args,
+                returncode=-1,
+                error_message="process_not_found",
+            )
+        except OSError as error:
+            return SafeProcessResult(
+                args=safe_args,
+                returncode=-1,
+                error_message=f"process_os_error:{error.__class__.__name__}",
+                metadata={"errno": getattr(error, "errno", None)},
+            )
+
+        pid = int(getattr(process, "pid", 0) or 0)
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except KeyboardInterrupt:
+            self._force_reap(process)
+            raise
+        except subprocess.TimeoutExpired as error:
+            stdout, stderr, cleanup = self._terminate_and_reap(process, error)
+            return SafeProcessResult(
+                args=safe_args,
+                returncode=int(getattr(process, "returncode", -1) or -1),
+                stdout=_process_text(stdout),
+                stderr=_process_text(stderr),
+                timed_out=True,
+                error_message="process_timeout",
+                metadata={
+                    "pid": pid,
+                    "timeout_seconds": timeout,
+                    "elapsed_seconds": round(_elapsed(self.clock, started), 6),
+                    **cleanup,
+                },
+            )
+        except OSError as error:
+            cleanup = self._force_reap(process)
+            return SafeProcessResult(
+                args=safe_args,
+                returncode=int(getattr(process, "returncode", -1) or -1),
+                error_message=f"process_io_error:{error.__class__.__name__}",
+                metadata={
+                    "pid": pid,
+                    "elapsed_seconds": round(_elapsed(self.clock, started), 6),
+                    **cleanup,
+                },
+            )
+
+        return SafeProcessResult(
+            args=safe_args,
+            returncode=int(getattr(process, "returncode", 0) or 0),
+            stdout=_process_text(stdout),
+            stderr=_process_text(stderr),
+            metadata={
+                "pid": pid,
+                "timeout_seconds": timeout,
+                "elapsed_seconds": round(_elapsed(self.clock, started), 6),
+                "terminated": False,
+                "killed": False,
+                "reaped": getattr(process, "poll", lambda: None)() is not None,
+            },
+        )
+
+    def _terminate_and_reap(
+        self,
+        process: Any,
+        timeout_error: subprocess.TimeoutExpired,
+    ) -> tuple[str, str, Dict[str, bool]]:
+        terminated = False
+        killed = False
+        try:
+            process.terminate()
+            terminated = True
+        except OSError:
+            pass
+        try:
+            stdout, stderr = process.communicate(
+                timeout=self.termination_grace_seconds
+            )
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+                killed = True
+            except OSError:
+                pass
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=self.termination_grace_seconds
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                stdout = timeout_error.stdout or ""
+                stderr = timeout_error.stderr or ""
+        except OSError:
+            stdout = timeout_error.stdout or ""
+            stderr = timeout_error.stderr or ""
+        return (
+            _process_text(stdout or timeout_error.stdout),
+            _process_text(stderr or timeout_error.stderr),
+            {
+                "terminated": terminated,
+                "killed": killed,
+                "reaped": getattr(process, "poll", lambda: None)() is not None,
+            },
+        )
+
+    def _force_reap(self, process: Any) -> Dict[str, bool]:
+        killed = False
+        try:
+            process.kill()
+            killed = True
+        except OSError:
+            pass
+        try:
+            process.communicate(timeout=self.termination_grace_seconds)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return {
+            "terminated": False,
+            "killed": killed,
+            "reaped": getattr(process, "poll", lambda: None)() is not None,
+        }
 
 
 @dataclass(frozen=True)
@@ -96,7 +258,7 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
         self.language = str(language or DEFAULT_WHISPER_LANGUAGE).strip()
         self.timeout_seconds = _bounded_timeout(timeout_seconds)
         self.minimum_rms = _non_negative_float(minimum_rms, "minimum_rms")
-        self.runner = runner or SafeSubprocessRunner()
+        self.runner = runner or WhisperSubprocessRunner()
         self.clock = clock
         self.source = source
         self.transcription_count = 0
@@ -119,8 +281,13 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
             )
 
         wav_path = _audio_chunk_wav_path(audio_chunk)
+        request_timeout = _audio_chunk_transcription_timeout(audio_chunk)
         if wav_path:
-            return self.transcribe_wav(wav_path, audio_chunk=audio_chunk)
+            return self.transcribe_wav(
+                wav_path,
+                audio_chunk=audio_chunk,
+                timeout_seconds=request_timeout,
+            )
 
         with tempfile.TemporaryDirectory(prefix="ares_whisper_audio_") as temp_dir:
             temp_wav = Path(temp_dir) / "audio_chunk.wav"
@@ -134,7 +301,11 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                     processing_time_seconds=0.0,
                     extra_data={"audio_chunk": audio_chunk.to_dict()},
                 )
-            return self.transcribe_wav(temp_wav, audio_chunk=audio_chunk)
+            return self.transcribe_wav(
+                temp_wav,
+                audio_chunk=audio_chunk,
+                timeout_seconds=request_timeout,
+            )
 
     def transcribe_wav(
         self,
@@ -145,6 +316,7 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
     ) -> TranscriptionResult:
         self.transcription_count += 1
         start_time = self.clock()
+        transcription_started_at = _utc_timestamp()
         audio_path = Path(wav_path).expanduser()
         binary_path = self._find_whisper_binary()
         if not binary_path:
@@ -162,11 +334,22 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                 processing_time_seconds=_elapsed(self.clock, start_time),
             )
 
+        audio_validation_started_at = _utc_timestamp()
         audio_validation = _validate_wav_audio(audio_path)
+        audio_validation_completed_at = _utc_timestamp()
         if not audio_validation["success"]:
             return self._failure(
                 status=WHISPER_STATUS_INVALID_AUDIO,
                 error_message=str(audio_validation["error_message"]),
+                audio_path=str(audio_path),
+                processing_time_seconds=_elapsed(self.clock, start_time),
+                extra_data={"audio_validation": audio_validation},
+            )
+        canonical_error = _canonical_wav_error(audio_validation)
+        if canonical_error:
+            return self._failure(
+                status=WHISPER_STATUS_INVALID_AUDIO,
+                error_message=canonical_error,
                 audio_path=str(audio_path),
                 processing_time_seconds=_elapsed(self.clock, start_time),
                 extra_data={"audio_validation": audio_validation},
@@ -205,9 +388,21 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                 output_base=output_base,
                 language=effective_language,
             )
+            process_started_at = _utc_timestamp()
             result = self.runner.run(command, timeout_seconds=timeout)
+            process_completed_at = _utc_timestamp()
             self.speech_engine_accessed = True
             elapsed = _elapsed(self.clock, start_time)
+            timing_data = {
+                "transcription_backend": "whisper.cpp",
+                "transcription_started_at": transcription_started_at,
+                "audio_validation_started_at": audio_validation_started_at,
+                "audio_validation_completed_at": audio_validation_completed_at,
+                "whisper_process_started_at": process_started_at,
+                "whisper_process_completed_at": process_completed_at,
+                "transcription_timeout_seconds": timeout,
+                "wav_closed_before_inference": True,
+            }
 
             if result.timed_out:
                 return self._failure(
@@ -215,7 +410,13 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                     error_message="whisper_transcription_timeout",
                     audio_path=str(audio_path),
                     processing_time_seconds=elapsed,
-                    extra_data={"process": _safe_process_data(result)},
+                    extra_data={
+                        "process": _safe_process_data(result),
+                        "audio_validation": audio_validation,
+                        **timing_data,
+                        "transcription_completed_at": process_completed_at,
+                        "transcript_parsing_status": "not_started",
+                    },
                 )
             if result.returncode != 0:
                 return self._failure(
@@ -223,10 +424,18 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                     error_message=f"whisper_exit_{result.returncode}",
                     audio_path=str(audio_path),
                     processing_time_seconds=elapsed,
-                    extra_data={"process": _safe_process_data(result)},
+                    extra_data={
+                        "process": _safe_process_data(result),
+                        "audio_validation": audio_validation,
+                        **timing_data,
+                        "transcription_completed_at": process_completed_at,
+                        "transcript_parsing_status": "not_started",
+                    },
                 )
 
+            parsing_started_at = _utc_timestamp()
             transcript = _normalize_transcript_text(_read_transcript_text(output_base, result))
+            parsing_completed_at = _utc_timestamp()
             detected_language = (
                 _detect_language(result.stdout, result.stderr)
                 if effective_language == "auto"
@@ -246,6 +455,11 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                         "language_effective": effective_language,
                         "language": detected_language,
                         "model_english_only": model_english_only,
+                        **timing_data,
+                        "transcript_parsing_started_at": parsing_started_at,
+                        "transcript_parsing_completed_at": parsing_completed_at,
+                        "transcript_parsing_status": "empty",
+                        "transcription_completed_at": parsing_completed_at,
                     },
                 )
 
@@ -263,6 +477,11 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                     "language_effective": effective_language,
                     "language": detected_language,
                     "model_english_only": model_english_only,
+                    **timing_data,
+                    "transcript_parsing_started_at": parsing_started_at,
+                    "transcript_parsing_completed_at": parsing_completed_at,
+                    "transcript_parsing_status": "completed",
+                    "transcription_completed_at": parsing_completed_at,
                 },
             )
 
@@ -461,6 +680,13 @@ def _audio_chunk_wav_path(audio_chunk: AudioChunk) -> Optional[Path]:
     return Path(str(wav_path)).expanduser()
 
 
+def _audio_chunk_transcription_timeout(audio_chunk: AudioChunk) -> Optional[float]:
+    value = dict(audio_chunk.metadata or {}).get("transcription_timeout_seconds")
+    if value is None:
+        return None
+    return _bounded_timeout(value)
+
+
 def _write_audio_chunk_wav(audio_chunk: AudioChunk, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as wav_file:
@@ -521,9 +747,27 @@ def _validate_wav_audio(path: Path) -> Dict[str, Any]:
         "sample_rate_hz": frame_rate,
         "channels": channels,
         "sample_width_bytes": sample_width,
+        "pcm_encoding": (
+            "signed_16_bit_little_endian"
+            if sample_width == 2
+            else f"pcm_{sample_width * 8}_bit"
+        ),
+        "file_size_greater_than_wav_header": size > 44,
         "duration_seconds": frames / frame_rate if frame_rate else 0.0,
         **signal,
     }
+
+
+def _canonical_wav_error(audio: Dict[str, Any]) -> str:
+    if int(audio.get("sample_rate_hz", 0)) != CANONICAL_SAMPLE_RATE_HZ:
+        return "audio_sample_rate_must_be_16000_hz"
+    if int(audio.get("channels", 0)) != CANONICAL_CHANNELS:
+        return "audio_must_be_mono"
+    if int(audio.get("sample_width_bytes", 0)) != CANONICAL_SAMPLE_WIDTH_BYTES:
+        return "audio_sample_width_must_be_16_bit"
+    if not bool(audio.get("file_size_greater_than_wav_header")):
+        return "audio_has_no_pcm_payload"
+    return ""
 
 
 def analyze_wav_audio(path: str | Path) -> Dict[str, Any]:
@@ -626,6 +870,7 @@ def _safe_process_data(result: SafeProcessResult) -> Dict[str, Any]:
         "stderr_preview": _bounded_text(result.stderr, limit=4000),
         "timed_out": result.timed_out,
         "error_message": result.error_message,
+        "metadata": dict(result.metadata or {}),
     }
 
 
@@ -633,8 +878,24 @@ def _bounded_text(text: str, limit: int = 500) -> str:
     return str(text or "")[:limit]
 
 
+def _process_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _bounded_timeout(value: Any) -> float:
+    if isinstance(value, bool):
+        raise ValueError("timeout_seconds must be numeric")
     timeout = float(value)
+    if not math.isfinite(timeout):
+        raise ValueError("timeout_seconds must be finite")
     if timeout <= 0:
         raise ValueError("timeout_seconds must be positive")
     if timeout > MAX_WHISPER_TIMEOUT_SECONDS:

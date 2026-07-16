@@ -7,6 +7,7 @@ from threading import RLock
 from typing import Any, Callable, Dict, List, Optional
 
 from memory.schema_migrations import (
+    DEFAULT_STALE_LOCK_SECONDS,
     MigrationError,
     SCHEMA_EVENT_HISTORY,
     load_store_data,
@@ -115,10 +116,24 @@ class EventHistoryStore:
         max_records: int = DEFAULT_MAX_HISTORY,
         *,
         warning_callback: Optional[Callable[[str], None]] = None,
+        recover_dead_owner_lock: bool = True,
+        stale_lock_seconds: float = DEFAULT_STALE_LOCK_SECONDS,
+        lock_process_alive: Optional[Callable[[int], Optional[bool]]] = None,
     ):
         self.path = Path(path) if path else (_event_history_path_from_env() or DEFAULT_EVENT_HISTORY_PATH)
         self.max_records = max(0, int(max_records))
         self._warning_callback = warning_callback or _default_warning
+        if not isinstance(recover_dead_owner_lock, bool):
+            raise ValueError("recover_dead_owner_lock must be a boolean")
+        if (
+            isinstance(stale_lock_seconds, bool)
+            or not isinstance(stale_lock_seconds, (int, float))
+            or not 1.0 <= float(stale_lock_seconds) <= 86400.0
+        ):
+            raise ValueError("stale_lock_seconds must be between 1 and 86400")
+        self._recover_dead_owner_lock = recover_dead_owner_lock
+        self._stale_lock_seconds = float(stale_lock_seconds)
+        self._lock_process_alive = lock_process_alive
         self._lock = RLock()
         self._dropped_event_count = 0
         self._reported_failures: set[str] = set()
@@ -187,7 +202,15 @@ class EventHistoryStore:
 
     def _save(self, records: List[EventHistoryRecord]) -> None:
         payload = [record.to_dict() for record in self._bounded(records)]
-        save_store_data(self.path, SCHEMA_EVENT_HISTORY, payload)
+        save_store_data(
+            self.path,
+            SCHEMA_EVENT_HISTORY,
+            payload,
+            recover_if_owner_dead=self._recover_dead_owner_lock,
+            stale_lock_seconds=self._stale_lock_seconds,
+            lock_owner_kind="event_history_append",
+            lock_process_alive=self._lock_process_alive,
+        )
 
     def _bounded(self, records: List[EventHistoryRecord]) -> List[EventHistoryRecord]:
         if self.max_records == 0:

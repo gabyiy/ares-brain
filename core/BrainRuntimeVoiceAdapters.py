@@ -12,7 +12,11 @@ from core.BrainRuntimeAdapters import (
     RuntimeOutputMessage,
     RuntimeOutputResult,
 )
-from core.Contracts import SingleTurnVoiceRequestV1, new_correlation_id
+from core.Contracts import (
+    SingleTurnVoiceRequestV1,
+    new_correlation_id,
+    utc_contract_timestamp,
+)
 from core.ResourceBudget import CancellationToken
 from core.SingleTurnVoiceSupport import SingleTurnPreBrainDecision
 
@@ -45,6 +49,23 @@ class ActiveCommandLocalDiagnostics:
     finalized_candidate_duration_seconds: float = 0.0
     whisper_processing_duration_seconds: float = 0.0
     terminal_silence_status: str = "unknown"
+    audio_finalization_started_at: str = ""
+    audio_finalization_completed_at: str = ""
+    wav_path: str = ""
+    wav_byte_size: int = 0
+    wav_sample_rate_hz: int = 0
+    wav_channels: int = 0
+    wav_sample_width_bytes: int = 0
+    transcription_backend: str = "whisper.cpp"
+    transcription_started_at: str = ""
+    transcription_completed_at: str = ""
+    transcription_status: str = "not_started"
+    transcription_timeout_seconds: float = 0.0
+    transcript_parsing_status: str = "not_started"
+    routing_started_at: str = ""
+    routing_completed_at: str = ""
+    temporary_audio_cleanup_status: str = "unknown"
+    microphone_gate_released_before_inference: bool = False
 
 
 class VoiceRuntimeGate:
@@ -173,12 +194,14 @@ class SingleTurnPipelineRuntimeInputAdapter:
         self.last_result: Any = None
         self.last_diagnostics: Optional[ActiveCommandLocalDiagnostics] = None
         self.capture_count = 0
+        self._routing_started_at = ""
 
     def wait_for_input(self, timeout_seconds: float) -> RuntimeInputResult:
         with self._lock:
             if self._closed:
                 return RuntimeInputResult.end()
             self.last_diagnostics = None
+            self._routing_started_at = ""
         emitted_statuses: set[str] = set()
 
         def emit_once(message: str) -> None:
@@ -221,11 +244,16 @@ class SingleTurnPipelineRuntimeInputAdapter:
             self._current_token = token
             self.capture_count += 1
         unsubscribe: Optional[Callable[[], None]] = None
+        capture_gate_owned = False
 
         def observe_stage(_index: int, _total: int, label: str, status: str) -> None:
+            nonlocal capture_gate_owned
             normalized_label = str(label or "").strip().casefold()
             normalized_status = str(status or "").strip().casefold()
             if normalized_label == "recording" and normalized_status == "completed":
+                if capture_gate_owned:
+                    self.voice_io_gate.end_capture("active_command")
+                    capture_gate_owned = False
                 emit_once("Speech detected")
                 emit_once("Command captured")
             elif normalized_label == "transcribing" and normalized_status == "running":
@@ -236,6 +264,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
             unsubscribe = add_observer(observe_stage)
         try:
             self.voice_io_gate.begin_capture("active_command")
+            capture_gate_owned = True
             emit_once("Active microphone capture started")
             result = self.pipeline.run_once(
                 request,
@@ -254,12 +283,14 @@ class SingleTurnPipelineRuntimeInputAdapter:
         finally:
             if unsubscribe is not None:
                 unsubscribe()
-            self.voice_io_gate.end_capture("active_command")
+            if capture_gate_owned:
+                self.voice_io_gate.end_capture("active_command")
             with self._lock:
                 self._current_token = None
         status = str(getattr(result, "status", "") or "")
         self.last_diagnostics = _active_command_diagnostics(result)
         if status == "cancelled" or str(getattr(result, "error_stage", "")) == "cancellation":
+            self._emit_local_diagnostics()
             return RuntimeInputResult.cancelled()
         text = captured.get("text") or str(getattr(result, "recognized_text", "") or "").strip()
         if text and bool(getattr(result, "success", False)):
@@ -267,6 +298,11 @@ class SingleTurnPipelineRuntimeInputAdapter:
             emit_once("Command captured")
             emit_once("Transcribing command")
             emit_once("Processing command")
+            self._routing_started_at = utc_contract_timestamp()
+            self.last_diagnostics = replace(
+                self.last_diagnostics,
+                routing_started_at=self._routing_started_at,
+            )
             return RuntimeInputResult(
                 status="input",
                 text=text,
@@ -292,7 +328,26 @@ class SingleTurnPipelineRuntimeInputAdapter:
             "transcription",
             "transcript_normalization",
         }:
+            error_reason = str(
+                getattr(result, "error_reason", "") or status or "transcription_failed"
+            )
+            if str(getattr(result, "error_stage", "")) == "transcription":
+                if "timeout" in error_reason.casefold():
+                    timeout = float(
+                        getattr(self.base_request, "transcription_timeout_seconds", 0.0)
+                        or 0.0
+                    )
+                    emit_once(
+                        "Command transcription timed out"
+                        + (f" after {timeout:g} seconds" if timeout else "")
+                        + "; still active"
+                    )
+                else:
+                    emit_once(
+                        f"Command transcription failed: {error_reason[:120]}; still active"
+                    )
             emit_once("No command heard; still active")
+            self._emit_local_diagnostics()
             return RuntimeInputResult(
                 status="timeout",
                 metadata={
@@ -302,6 +357,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
                     "contains_audio": False,
                 },
             )
+        self._emit_local_diagnostics()
         return RuntimeInputResult.failed(
             "active_voice_pipeline_failed",
             str(getattr(result, "error_reason", "") or status or "voice input failed")[:160],
@@ -312,6 +368,14 @@ class SingleTurnPipelineRuntimeInputAdapter:
             return
         try:
             self.status_callback(str(message))
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return
+
+    def _emit_local_diagnostics(self) -> None:
+        if self.diagnostic_callback is None or self.last_diagnostics is None:
+            return
+        try:
+            self.diagnostic_callback(self.last_diagnostics)
         except (OSError, RuntimeError, TypeError, ValueError):
             return
 
@@ -349,11 +413,14 @@ class SingleTurnPipelineRuntimeInputAdapter:
             ),
             session_id_before=str(session_id_before or ""),
             session_id_after=str(getattr(runtime_result, "session_id", "") or ""),
+            routing_started_at=(
+                diagnostics.routing_started_at or self._routing_started_at
+            ),
+            routing_completed_at=utc_contract_timestamp(),
         )
         with self._lock:
             self.last_diagnostics = completed
-        if self.diagnostic_callback is not None:
-            self.diagnostic_callback(completed)
+        self._emit_local_diagnostics()
 
     def release_active_resources(self) -> None:
         with self._lock:
@@ -495,6 +562,11 @@ def _capture_stop_reason(result: Any) -> str:
 def _active_command_diagnostics(result: Any) -> ActiveCommandLocalDiagnostics:
     data = dict(getattr(result, "data", {}) or {})
     recording = dict(data.get("recording") or {})
+    audio_finalization = dict(data.get("audio_finalization") or {})
+    transcription_contract = dict(data.get("transcription") or {})
+    transcription = dict(transcription_contract.get("data") or {})
+    transcription_boundary = dict(data.get("transcription_boundary") or {})
+    cleanup = dict(data.get("cleanup") or {})
     stop_reason = _capture_stop_reason(result)
     raw_duration = float(recording.get("raw_duration_seconds", 0.0) or 0.0)
     candidate_duration = float(
@@ -502,6 +574,25 @@ def _active_command_diagnostics(result: Any) -> ActiveCommandLocalDiagnostics:
         or recording.get("assembled_duration_seconds", 0.0)
         or getattr(result, "recording_duration_seconds", 0.0)
         or 0.0
+    )
+    wav_path = str(
+        audio_finalization.get("wav_path")
+        or transcription.get("audio_path")
+        or getattr(result, "recorded_wav_path", "")
+        or ""
+    )
+    removed = {str(path) for path in list(cleanup.get("removed") or [])}
+    preserved = {str(path) for path in list(cleanup.get("preserved") or [])}
+    cleanup_status = (
+        "removed"
+        if wav_path and wav_path in removed
+        else "preserved"
+        if wav_path and wav_path in preserved
+        else "not_applicable"
+        if not wav_path
+        else "missing_after_cleanup"
+        if not Path(wav_path).exists()
+        else "present"
     )
     return ActiveCommandLocalDiagnostics(
         raw_transcript=str(getattr(result, "raw_transcript", "") or ""),
@@ -522,5 +613,50 @@ def _active_command_diagnostics(result: Any) -> ActiveCommandLocalDiagnostics:
             else "maximum_duration_before_terminal_silence"
             if stop_reason == "maximum_duration_reached"
             else stop_reason or "unknown"
+        ),
+        audio_finalization_started_at=str(
+            audio_finalization.get("started_at") or ""
+        ),
+        audio_finalization_completed_at=str(
+            audio_finalization.get("completed_at") or ""
+        ),
+        wav_path=wav_path,
+        wav_byte_size=int(audio_finalization.get("wav_byte_size", 0) or 0),
+        wav_sample_rate_hz=int(
+            audio_finalization.get("sample_rate_hz", 0) or 0
+        ),
+        wav_channels=int(audio_finalization.get("channels", 0) or 0),
+        wav_sample_width_bytes=int(
+            audio_finalization.get("sample_width_bytes", 0) or 0
+        ),
+        transcription_backend=str(
+            transcription.get("transcription_backend") or "whisper.cpp"
+        ),
+        transcription_started_at=str(
+            transcription.get("transcription_started_at")
+            or transcription_boundary.get("started_at")
+            or ""
+        ),
+        transcription_completed_at=str(
+            transcription.get("transcription_completed_at")
+            or transcription_boundary.get("completed_at")
+            or ""
+        ),
+        transcription_status=str(
+            transcription_contract.get("status")
+            or getattr(result, "transcription_status", "")
+            or "not_started"
+        ),
+        transcription_timeout_seconds=float(
+            transcription.get("transcription_timeout_seconds")
+            or transcription_boundary.get("timeout_seconds")
+            or 0.0
+        ),
+        transcript_parsing_status=str(
+            transcription.get("transcript_parsing_status") or "not_started"
+        ),
+        temporary_audio_cleanup_status=cleanup_status,
+        microphone_gate_released_before_inference=bool(
+            transcription_boundary.get("microphone_capture_released")
         ),
     )

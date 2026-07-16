@@ -1,3 +1,7 @@
+from datetime import datetime, timedelta, timezone
+import json
+import socket
+
 import pytest
 
 from core import (
@@ -11,7 +15,12 @@ from core import (
 )
 from core.EventBus import Event
 from events import EventHistoryStore
-from memory.schema_migrations import StoreWriteLock
+from memory.schema_migrations import (
+    LOCK_METADATA_SCHEMA,
+    LOCK_METADATA_VERSION,
+    StoreWriteLock,
+    store_lock_path,
+)
 
 
 def _event(source="voice", type="voice.status", priority=PRIORITY_NORMAL):
@@ -148,3 +157,60 @@ def test_event_history_unexpected_programming_error_still_surfaces(tmp_path, mon
             {"success": True, "decision": "recorded"},
         )
     assert store.recent() == []
+
+
+def test_event_history_recovers_only_expired_dead_owner_lock(tmp_path):
+    path = tmp_path / "events.json"
+    lock_path = store_lock_path(path)
+    lock_path.write_text(
+        json.dumps(
+            {
+                "schema_name": LOCK_METADATA_SCHEMA,
+                "schema_version": LOCK_METADATA_VERSION,
+                "pid": 987654,
+                "hostname": socket.gethostname(),
+                "owner_token": "expired-dead-event-owner",
+                "owner_kind": "event_history_append",
+                "created_at": (
+                    datetime.now(timezone.utc) - timedelta(seconds=120)
+                ).isoformat().replace("+00:00", "Z"),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    warnings = []
+    store = EventHistoryStore(
+        path=path,
+        warning_callback=warnings.append,
+        stale_lock_seconds=30,
+        lock_process_alive=lambda pid: False,
+    )
+
+    record = store.add(_event(), _result())
+
+    assert record is not None
+    assert warnings == []
+    assert store.dropped_event_count == 0
+    assert not lock_path.exists()
+    assert len(store.list()) == 1
+
+
+def test_event_history_never_steals_live_owner_lock(tmp_path):
+    path = tmp_path / "events.json"
+    warnings = []
+    store = EventHistoryStore(
+        path=path,
+        warning_callback=warnings.append,
+        stale_lock_seconds=1,
+        lock_process_alive=lambda pid: True,
+    )
+
+    with StoreWriteLock(path):
+        record = store.add(_event(), _result())
+        assert store_lock_path(path).exists()
+
+    assert record is None
+    assert store.dropped_event_count == 1
+    assert len(warnings) == 1

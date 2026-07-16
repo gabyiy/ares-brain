@@ -1,4 +1,8 @@
+from pathlib import Path
+import sys
 import wave
+
+import pytest
 
 from core import (
     AudioChunk,
@@ -15,6 +19,7 @@ from core import (
     WHISPER_STATUS_TRANSCRIBED,
     WHISPER_STATUS_TRANSCRIPTION_FAILED,
     WHISPER_STATUS_TRANSCRIPTION_TIMEOUT,
+    WhisperSubprocessRunner,
 )
 from scripts import manual_verify_linux_whisper_stt as manual_whisper
 
@@ -177,6 +182,46 @@ def test_linux_whisper_transcribes_wav_file_with_metadata(tmp_path):
     assert "-of" in command
     assert runner.calls[0]["timeout_seconds"] == 33
     assert "whisper-cli" in result.data["process"]["command"]
+    assert result.data["wav_closed_before_inference"] is True
+    assert result.data["transcription_timeout_seconds"] == 33
+    assert result.data["transcription_started_at"]
+    assert result.data["whisper_process_started_at"]
+    assert result.data["whisper_process_completed_at"]
+    assert result.data["transcript_parsing_status"] == "completed"
+
+
+def test_linux_whisper_default_timeout_is_bounded_for_raspberry_pi(tmp_path):
+    adapter = create_adapter(tmp_path)
+
+    assert adapter.timeout_seconds == 30.0
+
+
+def test_audio_chunk_request_timeout_overrides_long_adapter_timeout(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+    runner = FakeWhisperRunner(transcript_text="bounded command")
+    adapter = LinuxWhisperSpeechToTextAdapter(
+        model_path=create_model(tmp_path),
+        runner=runner,
+        timeout_seconds=300,
+    )
+    chunk = AudioChunk(
+        data=b"\x00\x01" * 160,
+        sample_rate_hz=16000,
+        channels=1,
+        sample_width_bytes=2,
+        source="active_command",
+        metadata={
+            "wav_path": str(wav_path),
+            "transcription_timeout_seconds": 30.0,
+        },
+    )
+
+    result = adapter.transcribe(chunk)
+
+    assert result.success is True
+    assert runner.calls[0]["timeout_seconds"] == 30.0
+    assert result.data["transcription_timeout_seconds"] == 30.0
 
 
 def test_linux_whisper_auto_language_resolves_to_en_for_english_only_model(tmp_path):
@@ -339,6 +384,42 @@ def test_linux_whisper_invalid_audio_fails_safely(tmp_path):
     assert result.metadata["speech_engine_accessed"] is False
 
 
+def test_linux_whisper_header_only_wav_fails_before_inference(tmp_path):
+    wav_path = tmp_path / "header-only.wav"
+    with wave.open(str(wav_path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+    runner = FakeWhisperRunner()
+    adapter = create_adapter(tmp_path, runner=runner)
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_INVALID_AUDIO
+    assert result.error_message == "audio_has_no_frames"
+    assert runner.calls == []
+
+
+def test_linux_whisper_rejects_noncanonical_wav_before_inference(tmp_path):
+    wav_path = tmp_path / "noncanonical.wav"
+    with wave.open(str(wav_path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(44100)
+        wav_file.writeframes(pcm16_frames(1000, count=4410))
+    runner = FakeWhisperRunner()
+    adapter = create_adapter(tmp_path, runner=runner)
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_INVALID_AUDIO
+    assert result.error_message == "audio_sample_rate_must_be_16000_hz"
+    assert result.data["audio_validation"]["sample_rate_hz"] == 44100
+    assert runner.calls == []
+
+
 def test_linux_whisper_missing_audio_file_fails_safely(tmp_path):
     adapter = create_adapter(tmp_path)
 
@@ -359,6 +440,101 @@ def test_linux_whisper_timeout_fails_safely(tmp_path):
     assert result.success is False
     assert result.status == WHISPER_STATUS_TRANSCRIPTION_TIMEOUT
     assert result.error_message == "whisper_transcription_timeout"
+    assert result.data["transcript_parsing_status"] == "not_started"
+
+
+def test_whisper_process_timeout_terminates_and_reaps_child():
+    runner = WhisperSubprocessRunner(termination_grace_seconds=0.2)
+
+    result = runner.run(
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        timeout_seconds=0.1,
+    )
+
+    assert result.timed_out is True
+    assert result.error_message == "process_timeout"
+    assert result.metadata["pid"] > 0
+    assert result.metadata["terminated"] or result.metadata["killed"]
+    assert result.metadata["reaped"] is True
+
+
+def test_whisper_process_is_killed_and_reaped_on_keyboard_interrupt():
+    class InterruptedProcess:
+        pid = 12345
+
+        def __init__(self):
+            self.returncode = None
+            self.killed = False
+            self.calls = 0
+
+        def communicate(self, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise KeyboardInterrupt
+            self.returncode = -9
+            return "", ""
+
+        def kill(self):
+            self.killed = True
+
+        def poll(self):
+            return self.returncode
+
+    process = InterruptedProcess()
+    runner = WhisperSubprocessRunner(
+        process_factory=lambda *args, **kwargs: process,
+        termination_grace_seconds=0.1,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        runner.run(["whisper-cli"], timeout_seconds=1.0)
+
+    assert process.killed is True
+    assert process.calls == 2
+    assert process.poll() == -9
+
+
+def test_linux_whisper_input_wav_is_closed_before_process_launch(tmp_path):
+    wav_path = tmp_path / "closed-before-inference.wav"
+    write_valid_wav(wav_path)
+
+    class ClosedFileCheckingRunner(FakeWhisperRunner):
+        def run(self, args, timeout_seconds):
+            source = Path(args[args.index("-f") + 1])
+            moved = source.with_suffix(".moved")
+            source.replace(moved)
+            moved.replace(source)
+            return super().run(args, timeout_seconds)
+
+    runner = ClosedFileCheckingRunner(transcript_text="goodbye ares")
+    adapter = create_adapter(tmp_path, runner=runner)
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is True
+    assert result.text == "goodbye ares"
+    assert result.data["wav_closed_before_inference"] is True
+
+
+def test_linux_whisper_malformed_transcript_file_is_rejected(tmp_path):
+    wav_path = tmp_path / "sample.wav"
+    write_valid_wav(wav_path)
+
+    class MalformedTranscriptRunner(FakeWhisperRunner):
+        def run(self, args, timeout_seconds):
+            safe_args = list(args)
+            self.calls.append({"args": safe_args, "timeout_seconds": timeout_seconds})
+            output_base = safe_args[safe_args.index("-of") + 1]
+            Path(f"{output_base}.txt").write_bytes(b"\xff\xfe\x00")
+            return SafeProcessResult(args=safe_args, returncode=0)
+
+    adapter = create_adapter(tmp_path, runner=MalformedTranscriptRunner())
+
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is False
+    assert result.status == WHISPER_STATUS_NO_USABLE_SPEECH
+    assert result.data["transcript_parsing_status"] == "empty"
 
 
 def test_linux_whisper_nonzero_process_exit_fails_safely(tmp_path):

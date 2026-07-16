@@ -582,6 +582,38 @@ def _print_recognition_summary(
             "->"
             f"{getattr(wake_result, 'ownership_handoff_destination', '') or 'none'}"
         )
+    else:
+        output_func(
+            "  Active audio: "
+            f"capture={float(getattr(diagnostics, 'raw_capture_duration_seconds', 0.0)):.3f}s; "
+            "finalized="
+            f"{float(getattr(diagnostics, 'finalized_candidate_duration_seconds', 0.0)):.3f}s; "
+            f"bytes={int(getattr(diagnostics, 'wav_byte_size', 0) or 0)}; "
+            f"format={int(getattr(diagnostics, 'wav_sample_rate_hz', 0) or 0)}Hz/"
+            f"{int(getattr(diagnostics, 'wav_channels', 0) or 0)}ch/"
+            f"{int(getattr(diagnostics, 'wav_sample_width_bytes', 0) or 0)}B"
+        )
+        if diagnostic_enabled:
+            output_func(
+                "  Active WAV path: "
+                f"{getattr(diagnostics, 'wav_path', '') or '<unavailable>'}"
+            )
+        output_func(
+            "  Active transcription: "
+            f"backend={getattr(diagnostics, 'transcription_backend', '') or 'unknown'}; "
+            f"start={getattr(diagnostics, 'transcription_started_at', '') or 'unknown'}; "
+            f"completion={getattr(diagnostics, 'transcription_completed_at', '') or 'timeout/not_completed'}; "
+            f"elapsed={float(getattr(diagnostics, 'whisper_processing_duration_seconds', 0.0)):.3f}s; "
+            f"status={getattr(diagnostics, 'transcription_status', '') or 'unknown'}"
+        )
+        output_func(
+            "  Active routing: "
+            f"result={getattr(result, 'status', '') or 'unknown'}; "
+            f"lifecycle={getattr(diagnostics, 'lifecycle_state_before', '') or before_state}"
+            "->"
+            f"{getattr(diagnostics, 'lifecycle_state_after', '') or getattr(result, 'current_lifecycle_state', '') or 'unknown'}; "
+            f"cleanup={getattr(diagnostics, 'temporary_audio_cleanup_status', '') or 'unknown'}"
+        )
 
 
 def _retry_allowed(label: str, result: Any) -> bool:

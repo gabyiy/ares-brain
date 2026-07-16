@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 import importlib.util
+import math
 from pathlib import Path
 import shutil
 import shlex
@@ -23,6 +24,7 @@ from core import (  # noqa: E402
     CoreService,
     LinuxAlsaMicrophoneAdapter,
     LinuxStandbyWakeListener,
+    PIPELINE_CLEANUP_DELETE_ALWAYS,
     SingleTurnPipelineRuntimeInputAdapter,
     SingleTurnPipelineRuntimeOutputAdapter,
     VoiceRuntimeGate,
@@ -48,6 +50,7 @@ DEFAULT_COMMAND_WHISPER_MODEL = single_turn.DEFAULT_WHISPER_MODEL
 DEFAULT_VOICE_PROFILE = single_voice_launcher._configured_default_voice_profile()
 DEFAULT_INACTIVITY_SECONDS = 30.0
 DEFAULT_TIMEOUT_SECONDS = 300.0
+DEFAULT_ACTIVE_TRANSCRIPTION_TIMEOUT_SECONDS = 30.0
 DEFAULT_RUNTIME_LOCK_PATH = REPO_ROOT / "data" / "runtime" / "ares_standby_voice.runtime"
 DEFAULT_RUNTIME_LOCK_STALE_SECONDS = 30.0
 
@@ -85,6 +88,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--voice-profile", default=DEFAULT_VOICE_PROFILE)
     parser.add_argument("--inactivity-seconds", type=float, default=DEFAULT_INACTIVITY_SECONDS)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--active-transcription-timeout",
+        type=float,
+        default=DEFAULT_ACTIVE_TRANSCRIPTION_TIMEOUT_SECONDS,
+        help="hard timeout for each active-command Whisper subprocess",
+    )
     parser.add_argument("--diagnostic-routing", action="store_true")
     parser.add_argument("--diagnostic-wake", action="store_true")
     parser.add_argument("--retain-diagnostic-audio", action="store_true")
@@ -137,7 +146,11 @@ def create_runtime(
     base_request = replace(
         base_request,
         playback_enabled=True,
-        cleanup_policy="keep" if args.retain_diagnostic_audio else "delete_on_success",
+        cleanup_policy=(
+            "keep"
+            if args.retain_diagnostic_audio
+            else PIPELINE_CLEANUP_DELETE_ALWAYS
+        ),
         diagnostic_audio=bool(args.retain_diagnostic_audio),
         metadata={
             **dict(base_request.metadata or {}),
@@ -250,7 +263,10 @@ def run_standby_voice(
     except MigrationError as error:
         error_path = Path(error.path).resolve() if error.path else None
         if error.status == "store_locked" and error_path == runtime_lock_path.resolve():
-            output_func("ARES is already running")
+            lock = dict(error.details.get("lock") or {})
+            owner_pid = int(lock.get("owner_pid", 0) or 0)
+            suffix = f" (PID {owner_pid})" if owner_pid > 0 else ""
+            output_func(f"ARES is already running{suffix}")
             return 4
         output_func(f"ARES runtime lock failed: {error}")
         return 2
@@ -268,6 +284,16 @@ def _run_standby_voice_locked(
     output_func: Callable[[str], None],
     runtime_factory: Optional[Callable[..., tuple[BrainRuntime, Any, Any]]],
 ) -> int:
+    if (
+        isinstance(args.active_transcription_timeout, bool)
+        or not math.isfinite(float(args.active_transcription_timeout))
+        or not 1.0 <= float(args.active_transcription_timeout) <= 300.0
+    ):
+        output_func(
+            "ARES standby voice configuration error: active transcription timeout "
+            "must be between 1 and 300 seconds."
+        )
+        return 2
     if args.retain_diagnostic_audio and not args.diagnostic_wake:
         output_func(
             "ARES standby voice configuration error: --retain-diagnostic-audio "
@@ -310,6 +336,13 @@ def _run_standby_voice_locked(
         runtime.shutdown(reason="keyboard_interrupt")
         output_func("ARES standby voice runtime cancelled and cleaned up.")
         return 130
+    except (OSError, RuntimeError, TimeoutError) as error:
+        runtime.shutdown(reason="foreground_runtime_error")
+        output_func(
+            "ARES standby voice runtime failed and cleaned up: "
+            f"{error.__class__.__name__}:{str(error)[:160]}"
+        )
+        return 1
     if result.success and result.status == "stopped":
         output_func("ARES standby voice runtime stopped cleanly.")
         return 0
@@ -336,6 +369,8 @@ def _command_pipeline_args(args: argparse.Namespace) -> argparse.Namespace:
         str(args.voice_profile),
         "--timeout",
         str(args.timeout),
+        "--transcription-timeout",
+        str(args.active_transcription_timeout),
         "--auto-stop",
         "--playback",
         "--recording-output",
@@ -439,8 +474,32 @@ def render_active_command_diagnostics(
         f"  Raw capture duration: {diagnostics.raw_capture_duration_seconds:.3f}s",
         "  Finalized candidate duration: "
         f"{diagnostics.finalized_candidate_duration_seconds:.3f}s",
+        "  Audio finalization: "
+        f"{diagnostics.audio_finalization_started_at or 'unknown'} -> "
+        f"{diagnostics.audio_finalization_completed_at or 'unknown'}",
+        f"  WAV path: {diagnostics.wav_path or '<unavailable>'}",
+        f"  WAV byte size: {diagnostics.wav_byte_size}",
+        "  WAV format: "
+        f"{diagnostics.wav_sample_rate_hz} Hz, "
+        f"{diagnostics.wav_channels} channel(s), "
+        f"{diagnostics.wav_sample_width_bytes}-byte samples",
+        f"  Transcription backend: {diagnostics.transcription_backend}",
+        "  Transcription timing: "
+        f"{diagnostics.transcription_started_at or 'unknown'} -> "
+        f"{diagnostics.transcription_completed_at or 'unknown'}",
+        f"  Transcription status: {diagnostics.transcription_status}",
+        "  Transcription hard timeout: "
+        f"{diagnostics.transcription_timeout_seconds:.3f}s",
         "  Whisper processing duration: "
         f"{diagnostics.whisper_processing_duration_seconds:.3f}s",
+        f"  Transcript parsing: {diagnostics.transcript_parsing_status}",
+        "  Routing timing: "
+        f"{diagnostics.routing_started_at or 'not_started'} -> "
+        f"{diagnostics.routing_completed_at or 'not_completed'}",
+        "  Microphone gate released before inference: "
+        f"{'yes' if diagnostics.microphone_gate_released_before_inference else 'no'}",
+        "  Temporary audio cleanup: "
+        f"{diagnostics.temporary_audio_cleanup_status}",
         f"  Terminal-silence status: {diagnostics.terminal_silence_status}",
     ]
 

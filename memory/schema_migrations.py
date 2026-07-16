@@ -1025,6 +1025,10 @@ def save_store_data(
     registry: Optional[MigrationRegistry] = None,
     metadata: Optional[Dict[str, Any]] = None,
     backup_retention: int = 5,
+    recover_if_owner_dead: bool = False,
+    stale_lock_seconds: float = DEFAULT_STALE_LOCK_SECONDS,
+    lock_owner_kind: str = "store_write",
+    lock_process_alive: Optional[Callable[[int], Optional[bool]]] = None,
 ) -> MigrationResult:
     registry = registry or DEFAULT_MIGRATION_REGISTRY
     store_path = Path(path)
@@ -1047,7 +1051,13 @@ def save_store_data(
     envelope = SchemaEnvelope.create(schema_name, target_version, _copy_json_data(data), created_at=created_at, metadata=merged_metadata)
     registry.validate_envelope(envelope)
     try:
-        with StoreWriteLock(store_path):
+        with StoreWriteLock(
+            store_path,
+            recover_if_owner_dead=recover_if_owner_dead,
+            stale_after_seconds=stale_lock_seconds,
+            owner_kind=lock_owner_kind,
+            process_alive=lock_process_alive,
+        ):
             _atomic_write_envelope(store_path, envelope, registry)
     except Exception:
         _cleanup_temp(store_path)

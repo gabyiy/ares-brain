@@ -1114,6 +1114,71 @@ def test_locked_event_history_does_not_block_acknowledgement_or_calculator(tmp_p
     assert any("event history append skipped" in warning for warning in warnings)
 
 
+def test_microphone_and_event_store_lock_are_released_before_whisper(tmp_path):
+    history_path = tmp_path / "events.json"
+    history = EventHistoryStore(path=history_path)
+    order = []
+    microphone = FakeMicrophone(order)
+
+    def assert_boundaries_released():
+        assert microphone.active is False
+        assert not Path(f"{history_path}.lock").exists()
+
+    stt = FakeSpeechToText(order, on_call=assert_boundaries_released)
+    pipeline, *_ = _pipeline(
+        tmp_path,
+        microphone=microphone,
+        stt=stt,
+        event_history_store=history,
+    )
+
+    result = pipeline.run_once(
+        _request(
+            tmp_path,
+            playback_enabled=False,
+            transcription_timeout_seconds=30.0,
+        )
+    )
+
+    assert result.success is True
+    assert stt.audio_chunks[0].metadata["transcription_timeout_seconds"] == 30.0
+    assert result.data["transcription_boundary"]["microphone_capture_released"] is True
+    assert result.data["audio_finalization"]["wav_closed"] is True
+
+
+def test_delete_always_removes_temporary_audio_after_success(tmp_path):
+    pipeline, *_ = _pipeline(tmp_path)
+    request = _request(
+        tmp_path,
+        playback_enabled=False,
+        cleanup_policy="delete_always",
+    )
+
+    result = pipeline.run_once(request)
+
+    assert result.success is True
+    assert not Path(request.recording_output_path).exists()
+    assert request.recording_output_path in result.data["cleanup"]["removed"]
+
+
+def test_delete_always_removes_temporary_audio_after_transcription_failure(tmp_path):
+    order = []
+    stt = FakeSpeechToText(order, fail=True)
+    pipeline, *_ = _pipeline(tmp_path, stt=stt)
+    request = _request(
+        tmp_path,
+        playback_enabled=False,
+        cleanup_policy="delete_always",
+    )
+
+    result = pipeline.run_once(request)
+
+    assert result.success is False
+    assert result.error_stage == "transcription"
+    assert not Path(request.recording_output_path).exists()
+    assert request.recording_output_path in result.data["cleanup"]["removed"]
+
+
 def test_unexpected_event_history_programming_error_surfaces_from_pipeline(tmp_path):
     class BrokenHistory:
         def add(self, event, result):

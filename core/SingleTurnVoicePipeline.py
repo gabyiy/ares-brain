@@ -22,6 +22,7 @@ from core.ModuleLifecycle import (
 from core.ResourceBudget import CancellationToken, ResourceManager
 from core.SingleTurnVoiceStages import SingleTurnVoiceStageMixin
 from core.SingleTurnVoiceSupport import (
+    PIPELINE_CLEANUP_DELETE_ALWAYS,
     PIPELINE_CLEANUP_KEEP,
     PreBrainHook,
     SingleTurnRunState,
@@ -667,7 +668,13 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         request: SingleTurnVoiceRequestV1,
         result: Optional[SingleTurnVoiceResultV1],
     ) -> Dict[str, Any]:
-        preserve = request.cleanup_policy == PIPELINE_CLEANUP_KEEP or result is None or not result.success
+        preserve = (
+            request.cleanup_policy == PIPELINE_CLEANUP_KEEP
+            or (
+                request.cleanup_policy != PIPELINE_CLEANUP_DELETE_ALWAYS
+                and (result is None or not result.success)
+            )
+        )
         removed: List[str] = []
         preserved: List[str] = []
         recording = dict(result.data.get("recording") or {}) if result else {}
