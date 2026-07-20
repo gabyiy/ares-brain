@@ -1227,7 +1227,7 @@ Phase 102: Standby Wake Short-Utterance Endpointing
 
 - Real Raspberry Pi reliability fell to 3/10 with `ares aris`, `aries ares`, and `[unk] aris`; failed candidates commonly reached the 2.4-second pre-roll-plus-active bound with zero terminal silence.
 - The wake-only state machine had a threshold gap: frames below `speech_continue_rms` but above `silence_rms` were not resumed speech, yet they reset terminal-silence accumulation. Wake endpointing now treats every sub-continuation frame as quiet while preserving the three-frame continuation hysteresis needed to resume speech.
-- Wake calibration now requires a bounded clean non-speech window. Wake assembly tracks frame indices, retains bounded post-roll once, trims only excess boundary silence from a closed canonical WAV, and clears rolling/backlogged PCM after each candidate. Full-command VAD and active Whisper are unchanged.
+- Wake calibration at that checkpoint used a bounded clean non-speech window. Phase 104 replaces its overly strict uninterrupted-window gate with a robust percentile bootstrap. Wake assembly continues to track frame indices, retain bounded post-roll once, trim only excess boundary silence from a closed canonical WAV, and clear rolling/backlogged PCM after each candidate. Full-command VAD and active Whisper are unchanged.
 - Exact constrained-grammar matching remains primary. A residual two-token Vosk artifact may collapse only when both complete tokens map to the same configured ARES identity, no unknown or other token exists, the trimmed candidate is at most 1.4 seconds, and the existing minimum-confidence policy passes.
 - Hardware diagnostics now expose noise floor, thresholds, RMS samples, speech/quiet/pre/post-roll counts, duplicate/stale PCM checks, trim durations, token confidences, endpoint reason, and read-only ALSA mixer/AGC information. The helper still requires at least 9/10 on the physical Raspberry Pi and reports failure categories honestly.
 - Deterministic verification passes 2014 tests. Physical microphone reliability remains owner-run and is not inferred from mocks.
@@ -1240,6 +1240,14 @@ Phase 103: Generation-Bound Wake Attempts and Recovery Health
 - Vosk model probing no longer consumes microphone audio. Model, adapter, open-device, and calibration health are distinct and startup reports the actual failed subsystem. The hardware verifier uses isolated event telemetry, separates infrastructure failures from recognition misses, and renders only completed attempt objects.
 - Added `scripts/inspect_ares_runtime_state.py` for process, runtime-lock, and event-history-lock preflight with proven-dead-only recovery. Live owners are never displaced.
 - Deterministic verification passes 2049 tests. Physical Raspberry Pi 9/10 reliability and the full wake/calculator/standby/reactivation/shutdown sequence remain required.
+
+Phase 104: Robust Standby Ambient Calibration
+
+- Real Raspberry Pi preflight proved model and microphone-adapter health but failed standby startup with `calibration_non_speech_window_not_found`. The guarded implementation required 30 consecutive 20 ms frames below fixed RMS 200 within 1.8 seconds and cleared its whole sample on every louder frame, so constant USB hiss could prevent calibration indefinitely within the bound.
+- Standby now collects a fixed three-second calibration sample and estimates noise from the median of the quietest 25 percent. High-energy outliers are excluded after a provisional low-energy bootstrap; the absolute minimum is never used as the floor.
+- Configurable quality gates require valid frames and quiet coverage and reject all-zero PCM, severe clipping, speech dominance, invalid/missing frames, and an above-limit noise floor. One likely speech-contaminated sample gets one bounded retry after history/backlog reset. There is no cached-profile fallback, no Vosk invocation during calibration, and no change to active Whisper or wake classification/confidence rules.
+- Health and terminal output now separate Vosk-model, adapter, ALSA-open-attempt, current-open, valid-PCM, calibration-quality, cleanup-close, and listener states. Diagnostics expose RMS min/median/p20/p80/max, bounded rolling summaries, speech/non-speech counts, longest quiet run, bootstrap/final thresholds, selected floor, clipping/zeros, and read-only mixer capture/boost/AGC state.
+- Deterministic verification passes 2072 tests. Physical Raspberry Pi calibration, 9/10 quiet-room wake reliability, and the complete lifecycle sequence remain owner-run requirements.
 
 Current State
 
@@ -1261,7 +1269,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 2049 tests.
+The current pytest collection is 2072 tests.
 
 The current memory paths are:
 
@@ -1337,7 +1345,8 @@ Phase 3 Real Voice Integration
 34. Make event-history append failures non-fatal, remove fake acknowledgement turns, add owner-aware lock recovery/inspection, share one production history store, and prevent duplicate foreground runtimes. Completed in deterministic CI.
 35. Bound active command Whisper at the subprocess boundary, release capture ownership before inference, validate closed canonical WAV input, expose terminal timing/cleanup diagnostics, and recover only proven-dead event locks. Completed in deterministic CI.
 36. Bind wake capture, recognition, classification, lifecycle, recovery generation, cleanup, and terminal diagnostics into one immutable attempt result; separate model/device/calibration health and add process/lock preflight. Completed in deterministic CI; physical validation remains owner-run.
-37. Pull this checkpoint and run `python scripts/manual_verify_standby_wake_hardware.py --diagnostic-wake --wake-reliability-attempts 10`. Require at least 9/10 valid quiet-room wakes, normally one stream open/calibration during the reliability phase, zero internally inconsistent attempts, infrastructure failures reported separately, a bounded active transcript for calculator/goodbye/shutdown, no silence/unrelated-speech false activation, exact lifecycle bypass, calculator response, standby return, second activation, and clean shutdown before recording hardware proof.
+37. Replace the strict consecutive-silence bootstrap with bounded percentile-based standby calibration, explicit quality gates, one contamination retry, split health reporting, and local energy/gain diagnostics. Completed in deterministic CI; physical USB-microphone calibration remains owner-run.
+38. Pull this checkpoint and run `python scripts/manual_verify_standby_wake_hardware.py --diagnostic-wake --wake-reliability-attempts 10`. Require successful three-second calibration, at least 9/10 valid quiet-room wakes, normally one stream open/calibration during the reliability phase, zero internally inconsistent attempts, infrastructure failures reported separately, a bounded active transcript for calculator/goodbye/shutdown, no silence/unrelated-speech false activation, exact lifecycle bypass, calculator response, standby return, second activation, and clean shutdown before recording hardware proof.
 38. Only after that stable hardware proof consider a separately reviewed systemd/boot-startup checkpoint. Wider background listening and autonomous City activation remain out of scope.
 
 What Must Not Be Started Yet
