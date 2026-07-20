@@ -58,6 +58,7 @@
     "calibration_bootstrap_speech_margin_rms": 180,
     "calibration_diagnostic_interval_frames": 10,
     "recalibration_interval_seconds": 300,
+    "wake_vad_sensitivity": "normal",
     "speech_start_rms": 200,
     "speech_continue_rms": 160,
     "silence_rms": 120,

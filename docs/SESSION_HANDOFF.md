@@ -4,13 +4,13 @@ Last Updated: 2026-07-20
 
 Current Version
 
-ARES v2.07 - Robust Standby Ambient Calibration
+ARES v2.08 - Wake-Only VAD Sensitivity
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, persistent foreground runtime, and injected Raspberry Pi standby wake listener. Verified components include ALSA input/output, constrained Vosk standby recognition, bounded offline Whisper active-command STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production natural-language calculator routing, and central explicit long-term owner memory with confirmation-gated CRUD. Real Raspberry Pi evidence proves Vosk recognized `ares`, activated one session, spoke `Yes Gabi.`, and the active Whisper/calculator/Piper route returned `Result: 4`; `goodbye Ares` also succeeded in one sequence. The latest owner run reached process/lock and component preflight but failed startup at `calibration_non_speech_window_not_found`: the old guarded calibration erased all accumulated quiet frames whenever USB hiss exceeded a fixed RMS 200 bootstrap gate. This checkpoint replaces only that bootstrap with a bounded three-second percentile estimator, configurable quality gates, one speech-contamination retry, explicit calibration statistics, and read-only gain/AGC diagnostics. Wake aliases, constrained Vosk classification, confidence thresholds, active Whisper, lifecycle controls, memory, and skills are unchanged. A successful physical calibration, quiet-room 9/10 wake result, and the complete standby/calculator/return/reactivation/shutdown sequence remain owner-run Raspberry Pi requirements.
+ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, persistent foreground runtime, and injected Raspberry Pi standby wake listener. Verified components include ALSA input/output, constrained Vosk standby recognition, bounded offline Whisper active-command STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production natural-language calculator routing, and central explicit long-term owner memory with confirmation-gated CRUD. Real Raspberry Pi evidence proves Vosk recognized `ares`, activated one session, spoke `Yes Gabi.`, and the active Whisper/calculator/Piper route returned `Result: 4`; `goodbye Ares` also succeeded in one sequence. The latest run also proved the repaired standby ownership path: one persistent ALSA stream stayed open, calibration ran once, and no PCM duplication or stale-buffer leakage occurred. Wake still failed before Vosk because ambient was roughly 389-430 RMS while the generic start gate reached about 658.5 RMS, so no short speech frame was promoted. This checkpoint changes only the wake start/continuation/silence policy and its observability: validated `conservative`, `normal`, and `sensitive` profiles derive ordered gates above the measured ambient baseline; source sequences/bytes and bounded frame traces prove post-calibration delivery; and the verifier distinguishes absent PCM, below-threshold PCM, assembly failure, and Vosk rejection. Wake grammar, aliases, confidence, active Whisper, lifecycle controls, memory, skills, and microphone ownership are unchanged. Quiet-room 9/10 wake reliability and the complete standby/calculator/return/reactivation/shutdown sequence remain owner-run Raspberry Pi requirements.
 
 Checkpoint root causes and fixes:
 
@@ -24,7 +24,9 @@ Checkpoint root causes and fixes:
 - `VoskWakeRecognizer` loads the configured local model once and constrains decoding to exact `ares`, `aris`, and `aries` alias slots under the empty, `hey`, `hello`, `okay`, and `wake up` prefixes, exact standby/shutdown controls, and `[unk]`. Complete-phrase token matching remains mandatory; there is no substring, edit-distance, fuzzy, or learned-alias fallback.
 - Word output is requested and exact complete-phrase matching remains mandatory. Exact wake confidence at or above `0.55` activates immediately. Exact `0.40` through less than `0.55` results require two identical recognitions within eight seconds. Below `0.40`, wrong phrases, `[unk]`, extra words, `okay`, `bye`, `alrighty`, `areas`, `air`, and sentences that merely mention Ares reject. Missing confidence is accepted only for one exact permitted activation phrase after VAD speech evidence, canonical WAV validation, and duration checks; lifecycle controls and malformed candidates reject. `Aries` resolves to canonical `ares` only in an exact configured name slot.
 - `WakeRecognizerRequestV1` and `WakeRecognizerResultV1` contain classification/confidence metadata but no recognition text. Raw Vosk JSON and normalized text remain available only in explicit local `--diagnostic-wake` output and never enter events or owner memory.
-- Wake capture uses 0.4-second rolling pre-roll, 0.55-second terminal silence, 0.12-second bounded post-roll, two-frame start evidence, three-frame resume hysteresis, calibrated 160/120 continue/silence RMS floors, a 0.08-second speech minimum, and a 1.6-second active candidate cap. Standby calibration now collects 150 canonical 20 ms frames over three seconds, selects the quietest quarter, and uses that subset's median as the ambient floor. High-energy bursts are excluded; all-zero, clipped, malformed, missing, speech-dominated, insufficient-quiet, or above-limit input fails closed. One likely speech-contaminated sample retries once after buffer reset. Thresholds default to in-place recalibration after 300 seconds. Full-command VAD defaults remain unchanged.
+- Wake capture uses 0.4-second rolling pre-roll, 0.55-second terminal silence, 0.12-second bounded post-roll, two-frame start evidence, three-frame resume hysteresis, a 0.08-second speech minimum, and a 1.6-second active candidate cap. Standby calibration now collects 150 canonical 20 ms frames over three seconds, selects the quietest quarter, and uses that subset's median as the ambient floor. High-energy bursts are excluded; all-zero, clipped, malformed, missing, speech-dominated, insufficient-quiet, or above-limit input fails closed. One likely speech-contaminated sample retries once after buffer reset. Thresholds default to in-place recalibration after 300 seconds. Full-command VAD defaults remain unchanged.
+- Wake calibration now applies an immutable `conservative`, `normal`, or `sensitive` threshold policy to the greater of its robust floor and measured median. The default is `normal`; the hardware verifier can select `sensitive` with `--wake-vad-sensitive`. Every profile keeps ordered hysteresis gates above ambient and still requires two consecutive start frames, so the diagnostic override is not silence bypass or continuous Vosk.
+- The rolling source now exposes cumulative live/read frame sequences, returned/live byte totals, last-read timestamps, and replay flags without changing ownership. Diagnostic wake polls snapshot those counters before and after VAD and emit a bounded frame trace. A/B/C/D verifier stages separate no post-calibration input, below-threshold input, incomplete assembly, and recognizer rejection.
 - Calibration is RMS-only; WebRTC VAD is not used for this bootstrap. Diagnostics report frame duration/count, min/median/p20/p80/max, speech/non-speech counts, longest non-speech run, quiet coverage, bootstrap threshold, selected floor, clipping/zeros, bounded rolling energy summaries, derived hysteresis thresholds, quality reason, and attempt count. Fresh calibration remains authoritative; no cache is implemented.
 - Wake-only terminal silence now advances for every frame below the continuation threshold; a frame in the prior silence/continue gap cannot erase endpoint progress unless three continuation-level frames establish resumed speech. Frame-index assembly proves pre-roll, speech, and post-roll are appended once. A closed canonical WAV is trimmed only beyond 0.24 seconds leading and 0.20 seconds trailing padding, and candidate/backlog PCM is reset before the next attempt.
 - Exact wake matching remains primary. Exactly two complete alias tokens may collapse only if both map to canonical ARES, no `[unk]` or other token exists, trimmed audio is at most 1.4 seconds, and minimum-token confidence passes. Diagnostics expose minimum and mean confidence; `[unk] aris`, longer repetitions, missing-confidence duplicates, and unrelated words still reject.
@@ -176,7 +178,7 @@ Confirmed Phase 3 foundation:
 - Output-only acknowledgement TTS/playback with no fake single-turn input event
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 2072 tests.
+Current pytest collection: 2087 tests.
 
 Hardware-free Raspberry Pi verification after pulling:
 
@@ -217,6 +219,7 @@ python scripts/manual_diagnose_wake_word.py \
   --diagnostic-wake
 python scripts/manual_verify_standby_wake_hardware.py \
   --diagnostic-wake \
+  --wake-vad-sensitive \
   --wake-reliability-attempts 10
 python scripts/run_ares_standby_voice.py
 ```
@@ -2287,7 +2290,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 2072 tests.
+- Current pytest collection: 2087 tests.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2422,6 +2425,7 @@ The inspector is read-only and exits nonzero for corrupt or unsupported state. I
 
 Latest Commits
 
+- `0455558` Fix standby wake VAD sensitivity
 - `b7bff3e` Implement persistent standby wake capture
 - `78baf61` Add foreground standby wake runtime
 - `1744506` Implement safe owner memory management
