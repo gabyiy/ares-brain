@@ -24,6 +24,7 @@ from core.VoiceActivityCalibration import (
     analyze_robust_ambient_calibration,
     calculate_ambient_statistics,
     derive_thresholds,
+    derive_wake_thresholds,
     manual_thresholds,
     update_noise_floor,
 )
@@ -389,7 +390,14 @@ class RmsVoiceActivityCapture:
                         ),
                     )
                 statistics = analysis.statistics
-                thresholds = derive_thresholds(statistics, request)
+                if metadata.get("vad_profile") == "standby_wake_short_v1":
+                    thresholds = derive_wake_thresholds(
+                        statistics,
+                        request,
+                        str(metadata.get("wake_vad_sensitivity", "normal")),
+                    )
+                else:
+                    thresholds = derive_thresholds(statistics, request)
                 return VoiceActivityStreamCalibration(
                     True,
                     "calibrated",
@@ -506,11 +514,14 @@ class RmsVoiceActivityCapture:
         all_levels: list[float] = []
         transitions: list[Dict[str, Any]] = []
         rms_trace: list[Dict[str, Any]] = []
+        frame_trace: list[Dict[str, Any]] = []
         thresholds = manual_thresholds(request)
         ambient_statistics: Optional[AmbientStatistics] = None
         noise_floor = 0.0
         speech_detected = False
         consecutive_speech = 0
+        maximum_consecutive_speech_evidence = 0
+        speech_start_threshold_crossing_count = 0
         consecutive_resume = 0
         consecutive_below_silence = 0
         active_frames = 0
@@ -531,6 +542,76 @@ class RmsVoiceActivityCapture:
             if request.calibration_enabled
             else DETECTION_STATE_WAITING
         )
+        source_start_snapshot = _pcm_source_snapshot(frame_source)
+
+        def observability_data() -> Dict[str, Any]:
+            source_end_snapshot = _pcm_source_snapshot(frame_source)
+            source_observable = bool(source_start_snapshot or source_end_snapshot)
+            read_start = int(source_start_snapshot.get("read_sequence", 0) or 0)
+            read_end = int(source_end_snapshot.get("read_sequence", 0) or 0)
+            live_start = int(source_start_snapshot.get("live_frame_count", 0) or 0)
+            live_end = int(source_end_snapshot.get("live_frame_count", 0) or 0)
+            bytes_start = int(
+                source_start_snapshot.get("total_bytes_returned", 0) or 0
+            )
+            bytes_end = int(source_end_snapshot.get("total_bytes_returned", 0) or 0)
+            live_bytes_start = int(
+                source_start_snapshot.get("total_live_bytes_read", 0) or 0
+            )
+            live_bytes_end = int(
+                source_end_snapshot.get("total_live_bytes_read", 0) or 0
+            )
+            frames_delta = (
+                max(0, read_end - read_start)
+                if source_observable
+                else total_frames
+            )
+            live_frames_delta = (
+                max(0, live_end - live_start) if source_observable else total_frames
+            )
+            bytes_delta = (
+                max(0, bytes_end - bytes_start)
+                if source_observable
+                else total_frames * frame_bytes
+            )
+            live_bytes_delta = (
+                max(0, live_bytes_end - live_bytes_start)
+                if source_observable
+                else total_frames * frame_bytes
+            )
+            return {
+                "source_observability_available": source_observable,
+                "source_read_sequence_start": read_start,
+                "source_read_sequence_end": read_end,
+                "source_frames_read_delta": frames_delta,
+                "source_live_frame_sequence_start": live_start,
+                "source_live_frame_sequence_end": live_end,
+                "source_live_frames_read_delta": live_frames_delta,
+                "source_bytes_read_delta": bytes_delta,
+                "source_live_bytes_read_delta": live_bytes_delta,
+                "source_last_frame_sequence": int(
+                    source_end_snapshot.get("last_source_frame_sequence", 0) or 0
+                ),
+                "source_last_read_timestamp": float(
+                    source_end_snapshot.get("last_read_timestamp", 0.0) or 0.0
+                ),
+                "source_stream_closed": bool(
+                    source_end_snapshot.get("closed", False)
+                ),
+                "listening_frame_count": listening_frames,
+                "listening_duration_seconds": round(
+                    listening_frames * frame_seconds,
+                    6,
+                ),
+                "speech_start_threshold_crossing_count": (
+                    speech_start_threshold_crossing_count
+                ),
+                "maximum_consecutive_speech_evidence": (
+                    maximum_consecutive_speech_evidence
+                ),
+                "maximum_observed_rms": round(max(all_levels or [0.0]), 3),
+                "frame_trace": _enrich_frame_trace(frame_trace, transitions),
+            }
 
         def append_captured_frame(value: bytes, frame_index: int) -> None:
             nonlocal duplicate_frame_append_count
@@ -568,6 +649,7 @@ class RmsVoiceActivityCapture:
                     request.frame_read_timeout_seconds,
                 )
             except TimeoutError:
+                timeout_observability = observability_data()
                 return self._failure(
                     request,
                     VAD_STATUS_TIMEOUT,
@@ -579,9 +661,18 @@ class RmsVoiceActivityCapture:
                     ambient_levels=ambient_levels or calibration_levels,
                     ambient_statistics=ambient_statistics,
                     thresholds=thresholds,
-                    data={"transitions": transitions},
+                    data={
+                        **timeout_observability,
+                        "transitions": transitions,
+                        "capture_failure_stage": (
+                            "post_calibration_input_absent"
+                            if timeout_observability["source_frames_read_delta"] == 0
+                            else "speech_candidate_assembly_failed"
+                        ),
+                    },
                 )
             except (EOFError, OSError, RuntimeError) as error:
+                device_observability = observability_data()
                 return self._failure(
                     request,
                     VAD_STATUS_DEVICE_ERROR,
@@ -593,7 +684,15 @@ class RmsVoiceActivityCapture:
                     ambient_levels=ambient_levels or calibration_levels,
                     ambient_statistics=ambient_statistics,
                     thresholds=thresholds,
-                    data={"transitions": transitions},
+                    data={
+                        **device_observability,
+                        "transitions": transitions,
+                        "capture_failure_stage": (
+                            "post_calibration_input_absent"
+                            if device_observability["source_frames_read_delta"] == 0
+                            else "speech_candidate_assembly_failed"
+                        ),
+                    },
                 )
 
             if not isinstance(frame, (bytes, bytearray)) or len(frame) != frame_bytes:
@@ -635,6 +734,54 @@ class RmsVoiceActivityCapture:
                 )
             rms = float(signal["rms_amplitude"])
             all_levels.append(rms)
+            source_frame = _pcm_source_snapshot(frame_source)
+            if request.frame_debug_enabled and len(frame_trace) < 512:
+                predicted_evidence = consecutive_speech
+                if detection_state == DETECTION_STATE_WAITING:
+                    predicted_evidence = (
+                        consecutive_speech + 1
+                        if rms >= thresholds.speech_start_rms
+                        else 0
+                    )
+                frame_trace.append(
+                    {
+                        "frame": total_frames,
+                        "source_frame_sequence": int(
+                            source_frame.get("last_source_frame_sequence", 0)
+                            or total_frames
+                        ),
+                        "source_read_sequence": int(
+                            source_frame.get("read_sequence", 0) or total_frames
+                        ),
+                        "rms": round(rms, 3),
+                        "speech_start_threshold": round(
+                            thresholds.speech_start_rms,
+                            3,
+                        ),
+                        "speech_continue_threshold": round(
+                            thresholds.speech_continue_rms,
+                            3,
+                        ),
+                        "exceeded_speech_start": (
+                            rms >= thresholds.speech_start_rms
+                        ),
+                        "exceeded_speech_continue": (
+                            rms >= thresholds.speech_continue_rms
+                        ),
+                        "consecutive_speech_evidence": predicted_evidence,
+                        "state_before": detection_state,
+                        "state_after": detection_state,
+                        "vad_state_transition": "none",
+                        "bytes_read": len(frame),
+                        "read_timestamp": float(
+                            source_frame.get("last_read_timestamp", 0.0)
+                            or self.clock()
+                        ),
+                        "replayed_pre_roll": bool(
+                            source_frame.get("last_frame_was_replay", False)
+                        ),
+                    }
+                )
             if request.frame_debug_enabled and (
                 total_frames == 1 or total_frames % diagnostic_rms_interval == 0
             ) and len(rms_trace) < 128:
@@ -678,9 +825,14 @@ class RmsVoiceActivityCapture:
                 pre_roll.append((frame, rms, total_frames))
                 if rms >= thresholds.speech_start_rms:
                     consecutive_speech += 1
+                    speech_start_threshold_crossing_count += 1
                 else:
                     consecutive_speech = 0
                     ambient_levels.append(rms)
+                maximum_consecutive_speech_evidence = max(
+                    maximum_consecutive_speech_evidence,
+                    consecutive_speech,
+                )
                 if consecutive_speech >= request.required_speech_frames:
                     speech_detected = True
                     retained_pre_roll = list(pre_roll)
@@ -715,6 +867,10 @@ class RmsVoiceActivityCapture:
                     detection_state = DETECTION_STATE_SPEECH
                     continue
                 if listening_frames >= wait_frames:
+                    no_speech_observability = observability_data()
+                    post_calibration_frames = no_speech_observability[
+                        "source_frames_read_delta"
+                    ]
                     return self._failure(
                         request,
                         VAD_STATUS_NO_SPEECH_TIMEOUT,
@@ -727,8 +883,21 @@ class RmsVoiceActivityCapture:
                         ambient_statistics=ambient_statistics,
                         thresholds=thresholds,
                         data={
+                            **no_speech_observability,
+                            "frame_duration_ms": request.frame_duration_ms,
+                            "pre_roll_frames": pre_roll_frames,
+                            "required_speech_frames": request.required_speech_frames,
                             "transitions": transitions,
                             "rms_trace": rms_trace,
+                            "capture_failure_stage": (
+                                "post_calibration_input_absent"
+                                if post_calibration_frames == 0
+                                else (
+                                    "speech_threshold_not_crossed"
+                                    if speech_start_threshold_crossing_count == 0
+                                    else "speech_start_evidence_incomplete"
+                                )
+                            ),
                             "vad_profile": (
                                 "standby_wake_short_v1"
                                 if wake_short_profile
@@ -916,10 +1085,12 @@ class RmsVoiceActivityCapture:
                 ambient_statistics=ambient_statistics,
                 thresholds=thresholds,
                 data={
+                    **observability_data(),
                     "transitions": transitions,
                     "rms_trace": rms_trace,
                     "speech_frame_count": speech_frame_count,
                     "minimum_speech_duration_seconds": minimum_speech_seconds,
+                    "capture_failure_stage": "speech_candidate_assembly_failed",
                 },
             )
 
@@ -933,6 +1104,10 @@ class RmsVoiceActivityCapture:
                 speech_detected=True,
                 frame_count=total_frames,
                 levels=all_levels,
+                data={
+                    **observability_data(),
+                    "capture_failure_stage": "speech_candidate_assembly_failed",
+                },
             )
 
         assembled_frame_count = len(captured)
@@ -1064,6 +1239,7 @@ class RmsVoiceActivityCapture:
             correlation_id=request.correlation_id,
             session_id=request.session_id,
             data={
+                **observability_data(),
                 "frame_duration_ms": request.frame_duration_ms,
                 "calibration_enabled": request.calibration_enabled,
                 "calibration_frames": calibration_frames,
@@ -1205,6 +1381,41 @@ class RmsVoiceActivityCapture:
                 "background_listening": False,
             },
         )
+
+
+def _pcm_source_snapshot(frame_source: Any) -> Dict[str, Any]:
+    snapshot = getattr(frame_source, "snapshot", None)
+    if not callable(snapshot):
+        return {}
+    try:
+        value = snapshot()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _enrich_frame_trace(
+    frame_trace: list[Dict[str, Any]],
+    transitions: list[Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    transition_by_frame = {
+        int(item.get("frame", 0) or 0): item
+        for item in transitions
+        if isinstance(item, dict)
+    }
+    enriched: list[Dict[str, Any]] = []
+    for item in frame_trace:
+        current = dict(item)
+        transition = transition_by_frame.get(int(current.get("frame", 0) or 0))
+        if transition is not None:
+            source = str(transition.get("from", "") or "")
+            target = str(transition.get("to", "") or "")
+            current["state_after"] = target or current.get("state_before", "")
+            current["vad_state_transition"] = (
+                f"{source}->{target}" if source and target else "none"
+            )
+        enriched.append(current)
+    return enriched
 
 
 def validate_voice_activity_request(

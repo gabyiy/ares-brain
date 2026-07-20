@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import statistics
-from typing import Iterable, Sequence
+from types import MappingProxyType
+from typing import Iterable, Mapping, Sequence
 
 from core.Contracts import VoiceActivityCaptureRequestV1
 
@@ -40,6 +41,54 @@ class VoiceActivityThresholds:
             "speech_continue_rms": self.speech_continue_rms,
             "silence_rms": self.silence_rms,
         }
+
+
+@dataclass(frozen=True)
+class WakeVadSensitivityProfile:
+    """Bounded wake-only threshold policy over a measured ambient baseline."""
+
+    name: str
+    start_multiplier: float
+    start_margin_rms: float
+    continue_multiplier: float
+    continue_margin_rms: float
+    silence_multiplier: float
+    silence_margin_rms: float
+
+
+WAKE_VAD_SENSITIVITY_PROFILES: Mapping[str, WakeVadSensitivityProfile] = (
+    MappingProxyType(
+        {
+            "conservative": WakeVadSensitivityProfile(
+                name="conservative",
+                start_multiplier=1.55,
+                start_margin_rms=140.0,
+                continue_multiplier=1.25,
+                continue_margin_rms=70.0,
+                silence_multiplier=1.12,
+                silence_margin_rms=35.0,
+            ),
+            "normal": WakeVadSensitivityProfile(
+                name="normal",
+                start_multiplier=1.18,
+                start_margin_rms=65.0,
+                continue_multiplier=1.08,
+                continue_margin_rms=30.0,
+                silence_multiplier=1.03,
+                silence_margin_rms=12.0,
+            ),
+            "sensitive": WakeVadSensitivityProfile(
+                name="sensitive",
+                start_multiplier=1.12,
+                start_margin_rms=45.0,
+                continue_multiplier=1.055,
+                continue_margin_rms=22.0,
+                silence_multiplier=1.02,
+                silence_margin_rms=10.0,
+            ),
+        }
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -221,6 +270,68 @@ def derive_thresholds(
         request.maximum_speech_start_rms,
     )
     return _ordered_thresholds(start, continue_level, silence, request)
+
+
+def derive_wake_thresholds(
+    statistics_result: AmbientStatistics,
+    request: VoiceActivityCaptureRequestV1,
+    sensitivity: str = "normal",
+) -> VoiceActivityThresholds:
+    """Derive wake-only hysteresis gates without changing command-mode VAD.
+
+    Robust calibration deliberately estimates its noise floor from the quietest
+    bounded samples. Wake detection instead needs a gate above the typical live
+    room level, so the reference also includes the measured median.
+    """
+
+    profile = wake_vad_sensitivity_profile(sensitivity)
+    ambient_reference = max(
+        float(statistics_result.noise_floor_rms),
+        float(statistics_result.median_rms),
+    )
+    if ambient_reference <= 0 or not math.isfinite(ambient_reference):
+        raise ValueError("wake_vad_ambient_baseline_invalid")
+    if ambient_reference >= float(request.maximum_speech_start_rms) - 10.0:
+        raise ValueError("wake_vad_ambient_baseline_exceeds_threshold_range")
+
+    start = _clamp(
+        max(
+            ambient_reference * profile.start_multiplier,
+            ambient_reference + profile.start_margin_rms,
+        ),
+        request.minimum_speech_start_rms,
+        request.maximum_speech_start_rms,
+    )
+    continue_level = _clamp(
+        max(
+            ambient_reference * profile.continue_multiplier,
+            ambient_reference + profile.continue_margin_rms,
+        ),
+        request.minimum_speech_continue_rms,
+        request.maximum_speech_continue_rms,
+    )
+    silence = _clamp(
+        max(
+            ambient_reference * profile.silence_multiplier,
+            ambient_reference + profile.silence_margin_rms,
+        ),
+        request.minimum_silence_rms,
+        request.maximum_silence_rms,
+    )
+    thresholds = _ordered_thresholds(start, continue_level, silence, request)
+    if thresholds.speech_start_rms <= ambient_reference:
+        raise ValueError("wake_vad_start_threshold_not_above_ambient")
+    return thresholds
+
+
+def wake_vad_sensitivity_profile(name: str) -> WakeVadSensitivityProfile:
+    normalized = str(name or "").strip().lower()
+    profile = WAKE_VAD_SENSITIVITY_PROFILES.get(normalized)
+    if profile is None:
+        raise ValueError(
+            "wake_vad_sensitivity must be conservative, normal, or sensitive"
+        )
+    return profile
 
 
 def adapt_post_speech_thresholds(

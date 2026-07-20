@@ -113,6 +113,7 @@ def test_production_standby_voice_cli_defaults_match_verified_raspberry_pi_stack
     assert args.active_transcription_timeout == 30
     assert args.diagnostic_routing is False
     assert args.diagnostic_wake is False
+    assert args.wake_vad_sensitive is False
     assert args.retain_diagnostic_audio is False
 
 
@@ -133,6 +134,7 @@ def test_production_standby_voice_cli_supports_required_overrides():
             "--active-transcription-timeout", "22",
             "--diagnostic-routing",
             "--diagnostic-wake",
+            "--wake-vad-sensitive",
             "--retain-diagnostic-audio",
         ]
     )
@@ -148,6 +150,7 @@ def test_production_standby_voice_cli_supports_required_overrides():
     assert args.inactivity_seconds == 45
     assert args.active_transcription_timeout == 22
     assert args.diagnostic_routing and args.diagnostic_wake and args.retain_diagnostic_audio
+    assert args.wake_vad_sensitive is True
 
 
 def test_active_command_pipeline_uses_separate_hard_whisper_timeout():
@@ -490,6 +493,49 @@ def test_production_composition_reuses_one_event_history_store(tmp_path):
     assert runtime.session_manager._event_history_store is history
     assert runtime.core_service._event_history_store is history
     assert runtime.core_service.resource_manager.event_history_store is history
+    assert runtime.standby_wake_listener.config.wake_vad_sensitivity == "normal"
+
+
+def test_production_composition_selects_sensitive_wake_vad_profile(tmp_path):
+    history = EventHistoryStore(path=tmp_path / "events.json")
+
+    class Pipeline:
+        def run_once(self, request, cancellation_token=None, pre_brain_hook=None):
+            return SimpleNamespace(success=True, status="captured")
+
+        def run_local_output(self, request, text, cancellation_token=None):
+            return SimpleNamespace(success=True, status="output")
+
+        def stop(self, request=None):
+            return SimpleNamespace(success=True, status="stopped")
+
+    class WakeListener:
+        def __init__(self, *, config, **kwargs):
+            self.config = config
+
+        def operation(self, *args, **kwargs):
+            return SimpleNamespace(success=True, status="ok")
+
+        start = operation
+        enter_standby = operation
+        leave_standby = operation
+        listen_once = operation
+        cancel = operation
+        stop = operation
+        snapshot = operation
+        health = operation
+
+    args = run_ares_standby_voice.build_parser().parse_args(
+        ["--wake-vad-sensitive"]
+    )
+    runtime, _, _ = run_ares_standby_voice.create_runtime(
+        args,
+        pipeline_factory=lambda args, **kwargs: Pipeline(),
+        wake_listener_factory=WakeListener,
+        event_history_store=history,
+    )
+
+    assert runtime.standby_wake_listener.config.wake_vad_sensitivity == "sensitive"
 
 
 def test_deterministic_manual_wake_runtime_script_passes_and_is_hardware_free():
@@ -1026,6 +1072,33 @@ def test_wake_diagnostic_rendering_is_explicit_and_prints_manual_playback_only()
         recognition_processing_time_seconds=0.04,
         recognizer_model_path="models/vosk/vosk-model-small-en-us-0.15",
         retained_audio_path="/tmp/wake candidate.wav",
+        wake_vad_sensitivity="sensitive",
+        source_read_sequence_start=150,
+        source_read_sequence_end=151,
+        source_frames_read_delta=1,
+        source_live_frames_read_delta=1,
+        source_bytes_read_delta=640,
+        source_live_bytes_read_delta=640,
+        speech_start_threshold_crossing_count=1,
+        maximum_consecutive_speech_evidence=1,
+        maximum_observed_rms=720.0,
+        listening_duration_seconds=0.02,
+        capture_failure_stage="candidate_assembled",
+        frame_trace=(
+            {
+                "frame": 1,
+                "source_frame_sequence": 151,
+                "source_read_sequence": 151,
+                "rms": 720.0,
+                "speech_start_threshold": 450.0,
+                "exceeded_speech_start": True,
+                "consecutive_speech_evidence": 1,
+                "state_before": "WAITING",
+                "vad_state_transition": "none",
+                "bytes_read": 640,
+                "read_timestamp": 12.5,
+            },
+        ),
     )
     lines = run_ares_standby_voice.render_wake_diagnostics(
         diagnostics,
@@ -1039,8 +1112,33 @@ def test_wake_diagnostic_rendering_is_explicit_and_prints_manual_playback_only()
     assert "Selected alias: aries" in text
     assert "Wake classification: accepted" in text
     assert "Classification path: vosk_constrained_grammar" in text
+    assert "Wake VAD sensitivity: sensitive" in text
+    assert "Post-calibration source sequence: 150->151" in text
+    assert "Capture stage: candidate_assembled" in text
+    assert "VAD frame 1 (source=151, read=151)" in text
     assert "aplay -D" in text
     assert not any(line.strip().startswith("Playing") for line in lines)
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected"),
+    [
+        ("post_calibration_input_absent", "A:no_post_calibration_frames"),
+        ("speech_threshold_not_crossed", "B:frames_below_speech_threshold"),
+        (
+            "speech_start_evidence_incomplete",
+            "B:insufficient_consecutive_speech_evidence",
+        ),
+        ("speech_candidate_assembly_failed", "C:speech_candidate_assembly_failed"),
+        ("recognizer_rejected", "D:candidate_assembled_recognizer_rejected"),
+    ],
+)
+def test_hardware_verifier_distinguishes_wake_capture_failure_stage(
+    stage,
+    expected,
+):
+    label = manual_verify_standby_wake_hardware._wake_capture_stage_label(stage)
+    assert label == expected
 
 
 def test_active_command_diagnostics_separate_real_command_capture_from_wake_capture():

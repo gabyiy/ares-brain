@@ -105,6 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--diagnostic-routing", action="store_true")
     parser.add_argument("--diagnostic-wake", action="store_true")
+    parser.add_argument(
+        "--wake-vad-sensitive",
+        action="store_true",
+        help="use the validated sensitive wake-only VAD profile",
+    )
     parser.add_argument("--retain-diagnostic-audio", action="store_true")
     parser.add_argument(
         "--runtime-lock-path",
@@ -202,6 +207,9 @@ def create_runtime(
         medium_recognition_confidence=args.wake_medium_confidence,
         medium_confidence_confirmation_count=args.wake_medium_confirmations,
         recalibration_interval_seconds=args.wake_recalibration_seconds,
+        wake_vad_sensitivity=(
+            "sensitive" if args.wake_vad_sensitive else "normal"
+        ),
         language=args.language,
         wake_phrase_aliases=name_policy.aliases,
         playback_settle_delay_seconds=gate.settle_delay_seconds,
@@ -663,6 +671,21 @@ def render_wake_diagnostics(
         f"{diagnostics.speech_start_threshold:.1f} / "
         f"{diagnostics.speech_continue_threshold:.1f} / "
         f"{diagnostics.speech_end_threshold:.1f}",
+        f"  Wake VAD sensitivity: {diagnostics.wake_vad_sensitivity}",
+        "  Post-calibration source sequence: "
+        f"{diagnostics.source_read_sequence_start}->"
+        f"{diagnostics.source_read_sequence_end}; "
+        f"frames={diagnostics.source_frames_read_delta}; "
+        f"live_frames={diagnostics.source_live_frames_read_delta}",
+        "  Post-calibration PCM bytes / live bytes: "
+        f"{diagnostics.source_bytes_read_delta} / "
+        f"{diagnostics.source_live_bytes_read_delta}",
+        "  Threshold crossings / maximum consecutive evidence / maximum RMS: "
+        f"{diagnostics.speech_start_threshold_crossing_count} / "
+        f"{diagnostics.maximum_consecutive_speech_evidence} / "
+        f"{diagnostics.maximum_observed_rms:.1f}",
+        f"  Listening duration: {diagnostics.listening_duration_seconds:.3f}s",
+        f"  Capture stage: {diagnostics.capture_failure_stage or 'none'}",
         f"  Bounded RMS samples: {len(diagnostics.rms_trace)}",
         "  Speech-start to activation: "
         f"{diagnostics.speech_to_activation_seconds:.3f}s",
@@ -682,6 +705,21 @@ def render_wake_diagnostics(
         f"  Vosk model path: {diagnostics.recognizer_model_path or diagnostics.wake_model_path}",
         f"  Lifecycle state: {diagnostics.lifecycle_state}",
     ]
+    for frame in diagnostics.frame_trace:
+        lines.append(
+            "  VAD frame "
+            f"{int(frame.get('frame', 0) or 0)} "
+            f"(source={int(frame.get('source_frame_sequence', 0) or 0)}, "
+            f"read={int(frame.get('source_read_sequence', 0) or 0)}): "
+            f"rms={float(frame.get('rms', 0.0) or 0.0):.1f}; "
+            f"start={float(frame.get('speech_start_threshold', 0.0) or 0.0):.1f}; "
+            f"exceeded={'yes' if frame.get('exceeded_speech_start') else 'no'}; "
+            f"evidence={int(frame.get('consecutive_speech_evidence', 0) or 0)}; "
+            f"state={frame.get('state_before') or 'unknown'}; "
+            f"transition={frame.get('vad_state_transition') or 'none'}; "
+            f"bytes={int(frame.get('bytes_read', 0) or 0)}; "
+            f"timestamp={float(frame.get('read_timestamp', 0.0) or 0.0):.6f}"
+        )
     if diagnostics.retained_audio_path:
         lines.extend(
             [
@@ -738,6 +776,7 @@ def render_standby_calibration_diagnostics(
         f"{float(thresholds.get('speech_start_rms', 0.0) or 0.0):.1f} / "
         f"{float(thresholds.get('speech_continue_rms', 0.0) or 0.0):.1f} / "
         f"{float(thresholds.get('silence_rms', 0.0) or 0.0):.1f}",
+        f"  Wake VAD sensitivity: {data.get('wake_vad_sensitivity') or 'normal'}",
         "  Clipped / zero frames: "
         f"{int(diagnostics.get('clipped_frame_count', 0) or 0)} / "
         f"{int(diagnostics.get('zero_frame_count', 0) or 0)}",

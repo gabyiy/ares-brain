@@ -156,6 +156,76 @@ def test_persistent_stream_calibrates_without_reopening_or_closing_source(tmp_pa
     adapter.close_persistent_stream(handle, owner="standby_wake_listener")
 
 
+def test_post_calibration_frames_continue_through_same_persistent_stream(tmp_path):
+    source = FrameSource([*([frame(400)] * 5), *([frame(410)] * 5)])
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(source),
+    )
+    assert adapter.start().success
+    handle = adapter.open_persistent_stream(owner="standby_wake_listener")
+    calibration = adapter.calibrate_persistent_stream(
+        handle,
+        VoiceActivityCaptureRequestV1(
+            output_wav_path=str(tmp_path / "unused.wav"),
+            microphone_device="hw:2,0",
+            calibration_duration_seconds=0.1,
+            frame_duration_ms=20,
+            metadata={
+                "calibration_confirm_non_speech": True,
+                "calibration_maximum_seconds": 0.1,
+                "calibration_quiet_sample_fraction": 0.25,
+                "calibration_minimum_quiet_frame_fraction": 0.2,
+                "calibration_maximum_speech_frame_fraction": 0.75,
+                "calibration_maximum_noise_floor_rms": 600,
+                "calibration_maximum_clipped_frame_fraction": 0.1,
+                "calibration_bootstrap_speech_multiplier": 3,
+                "calibration_bootstrap_speech_margin_rms": 180,
+                "vad_profile": "standby_wake_short_v1",
+                "wake_vad_sensitivity": "normal",
+            },
+        ),
+    )
+    assert calibration.success
+    assert calibration.thresholds.speech_start_rms == pytest.approx(472.0)
+    handle.frame_source.clear_history()
+    after_calibration = adapter.persistent_stream_snapshot()
+    assert after_calibration["rolling_pre_roll"]["live_frame_count"] == 5
+    assert after_calibration["rolling_pre_roll"]["read_sequence"] == 5
+
+    result = adapter.record_persistent_until_silence(
+        handle,
+        tmp_path / "post-calibration.wav",
+        calibration_enabled=False,
+        speech_start_rms=calibration.thresholds.speech_start_rms,
+        speech_continue_rms=calibration.thresholds.speech_continue_rms,
+        silence_rms=calibration.thresholds.silence_rms,
+        required_speech_frames=2,
+        silence_seconds=0.1,
+        speech_wait_timeout_seconds=0.1,
+        maximum_utterance_seconds=0.2,
+        pre_roll_seconds=0,
+        capture_profile="standby_wake_short_v1",
+        minimum_speech_duration_seconds=0.08,
+        frame_debug_enabled=True,
+        diagnostic_rms_interval_frames=1,
+    )
+
+    assert result.status == VAD_STATUS_NO_SPEECH_TIMEOUT
+    assert result.data["source_read_sequence_start"] == 5
+    assert result.data["source_read_sequence_end"] == 10
+    assert result.data["source_live_frame_sequence_start"] == 5
+    assert result.data["source_live_frame_sequence_end"] == 10
+    assert result.data["source_live_frames_read_delta"] == 5
+    assert result.data["source_live_bytes_read_delta"] == 5 * 640
+    assert result.data["capture_failure_stage"] == "speech_threshold_not_crossed"
+    assert len(result.data["frame_trace"]) == 5
+    assert adapter.persistent_stream_snapshot()["open_count"] == 1
+    assert source.closed is False
+    adapter.close_persistent_stream(handle, owner="standby_wake_listener")
+
+
 def test_persistent_stream_rejects_second_capture_owner():
     source = FrameSource([frame(20)] * 5)
     adapter = LinuxAlsaMicrophoneAdapter(

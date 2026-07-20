@@ -909,6 +909,7 @@ def _print_wake_capture_metrics(
     wake_result: Any,
     diagnostics: Any,
 ) -> None:
+    capture_stage = str(getattr(diagnostics, "capture_failure_stage", "") or "")
     output_func(
         "  Wake VAD: "
         f"noise_floor={float(getattr(wake_result, 'ambient_noise_floor', 0.0) or 0.0):.1f}; "
@@ -918,6 +919,18 @@ def _print_wake_capture_metrics(
         f"speech_frames={int(getattr(wake_result, 'speech_frame_count', 0) or 0)}; "
         f"quiet_frames={int(getattr(wake_result, 'terminal_quiet_frame_count', 0) or 0)}; "
         f"terminal_silence={float(getattr(wake_result, 'terminal_silence_duration_seconds', 0.0) or 0.0):.3f}s"
+    )
+    output_func(
+        "  Post-calibration PCM: "
+        f"stage={_wake_capture_stage_label(capture_stage)}; "
+        f"source_sequence={int(getattr(diagnostics, 'source_read_sequence_start', 0) or 0)}->"
+        f"{int(getattr(diagnostics, 'source_read_sequence_end', 0) or 0)}; "
+        f"frames={int(getattr(diagnostics, 'source_frames_read_delta', 0) or 0)}; "
+        f"live_frames={int(getattr(diagnostics, 'source_live_frames_read_delta', 0) or 0)}; "
+        f"bytes={int(getattr(diagnostics, 'source_bytes_read_delta', 0) or 0)}; "
+        f"threshold_crossings={int(getattr(diagnostics, 'speech_start_threshold_crossing_count', 0) or 0)}; "
+        f"max_evidence={int(getattr(diagnostics, 'maximum_consecutive_speech_evidence', 0) or 0)}; "
+        f"max_rms={float(getattr(diagnostics, 'maximum_observed_rms', 0.0) or 0.0):.1f}"
     )
     output_func(
         "  Wake audio: "
@@ -942,6 +955,18 @@ def _print_wake_capture_metrics(
         f"duplicate_collapse={'yes' if getattr(wake_result, 'duplicate_collapse_used', False) else 'no'}; "
         f"decision={getattr(wake_result, 'classification_reason', '') or getattr(wake_result, 'rejection_reason', '') or 'unclassified'}"
     )
+
+
+def _wake_capture_stage_label(stage: str) -> str:
+    labels = {
+        "post_calibration_input_absent": "A:no_post_calibration_frames",
+        "speech_threshold_not_crossed": "B:frames_below_speech_threshold",
+        "speech_start_evidence_incomplete": "B:insufficient_consecutive_speech_evidence",
+        "speech_candidate_assembly_failed": "C:speech_candidate_assembly_failed",
+        "candidate_assembled": "D:candidate_assembled",
+        "recognizer_rejected": "D:candidate_assembled_recognizer_rejected",
+    }
+    return labels.get(str(stage or ""), str(stage or "unclassified"))
 
 
 def _wake_failure_category(wake_result: Any) -> str:

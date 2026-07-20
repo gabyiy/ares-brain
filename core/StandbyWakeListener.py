@@ -23,6 +23,7 @@ from core.Contracts import (
     WakeListenerSnapshotV1,
     new_correlation_id,
 )
+from core.VoiceActivityCalibration import wake_vad_sensitivity_profile
 
 
 WAKE_LISTENER_STOPPED = "stopped"
@@ -147,6 +148,22 @@ class WakeLocalDiagnostics:
     stream_close_reasons: tuple[str, ...] = ()
     calibration_reasons: tuple[str, ...] = ()
     ownership_handoffs: tuple[str, ...] = ()
+    wake_vad_sensitivity: str = "normal"
+    frame_trace: tuple[Dict[str, Any], ...] = ()
+    source_observability_available: bool = False
+    source_read_sequence_start: int = 0
+    source_read_sequence_end: int = 0
+    source_frames_read_delta: int = 0
+    source_live_frame_sequence_start: int = 0
+    source_live_frame_sequence_end: int = 0
+    source_live_frames_read_delta: int = 0
+    source_bytes_read_delta: int = 0
+    source_live_bytes_read_delta: int = 0
+    listening_duration_seconds: float = 0.0
+    speech_start_threshold_crossing_count: int = 0
+    maximum_consecutive_speech_evidence: int = 0
+    maximum_observed_rms: float = 0.0
+    capture_failure_stage: str = ""
 
 
 @dataclass(frozen=True)
@@ -254,6 +271,7 @@ class WakeListenerConfig:
     calibration_bootstrap_speech_margin_rms: float = 180.0
     calibration_diagnostic_interval_frames: int = 10
     recalibration_interval_seconds: float = 300.0
+    wake_vad_sensitivity: str = "normal"
     speech_start_rms: float = 200.0
     speech_continue_rms: float = 160.0
     silence_rms: float = 120.0
@@ -330,6 +348,9 @@ class WakeListenerConfig:
             "filler_prefixes",
             _validated_phrases(self.filler_prefixes, "filler_prefixes", allow_empty=True),
         )
+        sensitivity = str(self.wake_vad_sensitivity or "").strip().lower()
+        wake_vad_sensitivity_profile(sensitivity)
+        object.__setattr__(self, "wake_vad_sensitivity", sensitivity)
         numeric_bounds = {
             "calibration_duration_seconds": (0.0, 3.0),
             "calibration_maximum_seconds": (0.1, 5.0),

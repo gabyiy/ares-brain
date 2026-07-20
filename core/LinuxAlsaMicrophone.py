@@ -266,15 +266,31 @@ class DiagnosticPcmFrameSource:
 class RollingPcmFrameSource:
     """Bounded replay of recent live frames across foreground VAD windows."""
 
-    def __init__(self, source: Any, *, maximum_history_frames: int = 100):
+    def __init__(
+        self,
+        source: Any,
+        *,
+        maximum_history_frames: int = 100,
+        clock: Any = time.monotonic,
+    ):
         if maximum_history_frames < 1 or maximum_history_frames > 250:
             raise ValueError("maximum_history_frames must be between 1 and 250")
         self.source = source
+        self.clock = clock
         self.maximum_history_frames = int(maximum_history_frames)
-        self._history: deque[bytes] = deque(maxlen=self.maximum_history_frames)
-        self._replay: deque[bytes] = deque()
+        self._history: deque[tuple[int, bytes]] = deque(
+            maxlen=self.maximum_history_frames
+        )
+        self._replay: deque[tuple[int, bytes]] = deque()
         self.live_frame_count = 0
         self.replayed_frame_count = 0
+        self.read_sequence = 0
+        self.total_bytes_returned = 0
+        self.total_live_bytes_read = 0
+        self.last_source_frame_sequence = 0
+        self.last_frame_was_replay = False
+        self.last_frame_bytes = 0
+        self.last_read_timestamp = 0.0
         self.candidate_reset_count = 0
         self.discarded_stale_byte_count = 0
         self.closed = False
@@ -289,15 +305,42 @@ class RollingPcmFrameSource:
         if self.closed:
             raise EOFError("persistent PCM stream is closed")
         if self._replay:
-            frame = self._replay.popleft()
+            source_sequence, frame = self._replay.popleft()
             if len(frame) != frame_bytes:
                 raise ValueError("replayed PCM frame size changed")
             self.replayed_frame_count += 1
+            self._record_returned_frame(
+                frame,
+                source_sequence=source_sequence,
+                replayed=True,
+            )
             return frame
         frame = self.source.read_frame(frame_bytes, timeout_seconds)
-        self._history.append(bytes(frame))
+        frame = bytes(frame)
         self.live_frame_count += 1
+        source_sequence = self.live_frame_count
+        self._history.append((source_sequence, frame))
+        self.total_live_bytes_read += len(frame)
+        self._record_returned_frame(
+            frame,
+            source_sequence=source_sequence,
+            replayed=False,
+        )
         return frame
+
+    def _record_returned_frame(
+        self,
+        frame: bytes,
+        *,
+        source_sequence: int,
+        replayed: bool,
+    ) -> None:
+        self.read_sequence += 1
+        self.total_bytes_returned += len(frame)
+        self.last_source_frame_sequence = int(source_sequence)
+        self.last_frame_was_replay = bool(replayed)
+        self.last_frame_bytes = len(frame)
+        self.last_read_timestamp = float(self.clock())
 
     def clear_history(self) -> None:
         self._history.clear()
@@ -316,12 +359,19 @@ class RollingPcmFrameSource:
             return 0
         return math.ceil(max(0, discarded_bytes) / frame_bytes)
 
-    def snapshot(self) -> Dict[str, int | bool]:
+    def snapshot(self) -> Dict[str, int | float | bool]:
         return {
             "history_frame_count": len(self._history),
             "pending_replay_frame_count": len(self._replay),
             "live_frame_count": self.live_frame_count,
             "replayed_frame_count": self.replayed_frame_count,
+            "read_sequence": self.read_sequence,
+            "total_bytes_returned": self.total_bytes_returned,
+            "total_live_bytes_read": self.total_live_bytes_read,
+            "last_source_frame_sequence": self.last_source_frame_sequence,
+            "last_frame_was_replay": self.last_frame_was_replay,
+            "last_frame_bytes": self.last_frame_bytes,
+            "last_read_timestamp": self.last_read_timestamp,
             "candidate_reset_count": self.candidate_reset_count,
             "discarded_stale_byte_count": self.discarded_stale_byte_count,
             "closed": self.closed,

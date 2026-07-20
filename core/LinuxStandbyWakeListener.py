@@ -1245,6 +1245,8 @@ class LinuxStandbyWakeListener:
             metadata={
                 "safe": True,
                 "source": "persistent_standby_calibration",
+                "vad_profile": "standby_wake_short_v1",
+                "wake_vad_sensitivity": self.config.wake_vad_sensitivity,
                 "calibration_confirm_non_speech": True,
                 "calibration_maximum_seconds": self.config.calibration_maximum_seconds,
                 "calibration_quiet_sample_fraction": (
@@ -1449,6 +1451,7 @@ class LinuxStandbyWakeListener:
                 "stream_open_count": self._stream_open_count,
                 "stream_close_count": self._stream_close_count,
                 "calibration_count": self._calibration_count,
+                "wake_vad_sensitivity": self.config.wake_vad_sensitivity,
                 "candidate_count": self._candidate_count,
                 "stream_generation": self._stream_generation,
                 "stream_state": self._stream_state,
@@ -1697,6 +1700,10 @@ class LinuxStandbyWakeListener:
         context: _WakeAttemptContext,
     ) -> StandbyListenResultV1:
         audio = _capture_audio_metadata(capture)
+        if context.recognizer_invoked and not wake_detected:
+            audio["capture_failure_stage"] = "recognizer_rejected"
+        elif context.capture_valid and not audio.get("capture_failure_stage"):
+            audio["capture_failure_stage"] = "candidate_assembled"
         if trim is not None:
             audio.update(
                 {
@@ -2070,6 +2077,7 @@ class LinuxStandbyWakeListener:
             stream_close_reasons=tuple(stream["stream_close_reasons"]),
             calibration_reasons=tuple(stream["calibration_reasons"]),
             ownership_handoffs=tuple(stream["ownership_handoffs"]),
+            wake_vad_sensitivity=self.config.wake_vad_sensitivity,
             pre_roll_frames_retained=int(
                 audio.get("pre_roll_frames_retained", 0) or 0
             ),
@@ -2106,6 +2114,49 @@ class LinuxStandbyWakeListener:
                 audio.get("speech_end_threshold", 0.0) or 0.0
             ),
             rms_trace=tuple(audio.get("rms_trace", ())),
+            frame_trace=tuple(audio.get("frame_trace", ())),
+            source_observability_available=bool(
+                audio.get("source_observability_available", False)
+            ),
+            source_read_sequence_start=int(
+                audio.get("source_read_sequence_start", 0) or 0
+            ),
+            source_read_sequence_end=int(
+                audio.get("source_read_sequence_end", 0) or 0
+            ),
+            source_frames_read_delta=int(
+                audio.get("source_frames_read_delta", 0) or 0
+            ),
+            source_live_frame_sequence_start=int(
+                audio.get("source_live_frame_sequence_start", 0) or 0
+            ),
+            source_live_frame_sequence_end=int(
+                audio.get("source_live_frame_sequence_end", 0) or 0
+            ),
+            source_live_frames_read_delta=int(
+                audio.get("source_live_frames_read_delta", 0) or 0
+            ),
+            source_bytes_read_delta=int(
+                audio.get("source_bytes_read_delta", 0) or 0
+            ),
+            source_live_bytes_read_delta=int(
+                audio.get("source_live_bytes_read_delta", 0) or 0
+            ),
+            listening_duration_seconds=float(
+                audio.get("listening_duration_seconds", 0.0) or 0.0
+            ),
+            speech_start_threshold_crossing_count=int(
+                audio.get("speech_start_threshold_crossing_count", 0) or 0
+            ),
+            maximum_consecutive_speech_evidence=int(
+                audio.get("maximum_consecutive_speech_evidence", 0) or 0
+            ),
+            maximum_observed_rms=float(
+                audio.get("maximum_observed_rms", 0.0) or 0.0
+            ),
+            capture_failure_stage=str(
+                audio.get("capture_failure_stage", "") or ""
+            ),
             trimmed_duration_seconds=float(
                 audio.get("trimmed_duration_seconds", 0.0) or 0.0
             ),
@@ -2285,6 +2336,51 @@ def _capture_audio_metadata(capture: Any) -> Dict[str, Any]:
             for item in data.get("rms_trace", [])
             if isinstance(item, dict)
         ),
+        "frame_trace": tuple(
+            dict(item)
+            for item in data.get("frame_trace", [])
+            if isinstance(item, dict)
+        ),
+        "source_observability_available": bool(
+            data.get("source_observability_available", False)
+        ),
+        "source_read_sequence_start": int(
+            data.get("source_read_sequence_start", 0) or 0
+        ),
+        "source_read_sequence_end": int(
+            data.get("source_read_sequence_end", 0) or 0
+        ),
+        "source_frames_read_delta": int(
+            data.get("source_frames_read_delta", 0) or 0
+        ),
+        "source_live_frame_sequence_start": int(
+            data.get("source_live_frame_sequence_start", 0) or 0
+        ),
+        "source_live_frame_sequence_end": int(
+            data.get("source_live_frame_sequence_end", 0) or 0
+        ),
+        "source_live_frames_read_delta": int(
+            data.get("source_live_frames_read_delta", 0) or 0
+        ),
+        "source_bytes_read_delta": int(
+            data.get("source_bytes_read_delta", 0) or 0
+        ),
+        "source_live_bytes_read_delta": int(
+            data.get("source_live_bytes_read_delta", 0) or 0
+        ),
+        "listening_duration_seconds": float(
+            data.get("listening_duration_seconds", 0.0) or 0.0
+        ),
+        "speech_start_threshold_crossing_count": int(
+            data.get("speech_start_threshold_crossing_count", 0) or 0
+        ),
+        "maximum_consecutive_speech_evidence": int(
+            data.get("maximum_consecutive_speech_evidence", 0) or 0
+        ),
+        "maximum_observed_rms": float(
+            data.get("maximum_observed_rms", 0.0) or 0.0
+        ),
+        "capture_failure_stage": str(data.get("capture_failure_stage", "") or ""),
     }
     whisper_path = Path(
         str(
