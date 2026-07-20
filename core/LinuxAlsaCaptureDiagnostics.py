@@ -27,6 +27,7 @@ def inspect_linux_alsa_capture(
         "channels": CANONICAL_CHANNELS,
         "sample_width_bytes": CANONICAL_SAMPLE_WIDTH_BYTES,
         "mixer_capture_levels": [],
+        "input_gain_controls": [],
         "automatic_gain_controls": [],
         "mixer_inspection_available": False,
         "settings_modified": False,
@@ -52,10 +53,17 @@ def inspect_linux_alsa_capture(
             result.error_message or result.stderr or "amixer failed"
         )[:200]
         return diagnostics
-    capture_levels, automatic_gain = _parse_capture_mixer_state(result.stdout)
+    capture_levels, input_gain, automatic_gain = _parse_capture_mixer_state(
+        result.stdout
+    )
     diagnostics["mixer_inspection_available"] = True
     diagnostics["mixer_capture_levels"] = capture_levels
+    diagnostics["input_gain_controls"] = input_gain
     diagnostics["automatic_gain_controls"] = automatic_gain
+    diagnostic_lines = capture_levels + input_gain
+    diagnostics["extreme_gain_warning"] = any(
+        _line_has_extreme_gain(line) for line in diagnostic_lines
+    )
     return diagnostics
 
 
@@ -68,20 +76,45 @@ def _alsa_card_identifier(device: str) -> str:
     return named.group(1) if named else ""
 
 
-def _parse_capture_mixer_state(stdout: str) -> tuple[list[str], list[str]]:
+def _parse_capture_mixer_state(
+    stdout: str,
+) -> tuple[list[str], list[str], list[str]]:
     capture_levels: list[str] = []
+    input_gain: list[str] = []
     automatic_gain: list[str] = []
+    current_control = ""
     for raw_line in str(stdout or "").splitlines():
         line = " ".join(raw_line.split())
         lowered = line.casefold()
         if not line:
             continue
+        if lowered.startswith("simple mixer control"):
+            current_control = line[:100]
         if "capture" in lowered and "%" in line and len(capture_levels) < 8:
             capture_levels.append(line[:160])
+        if (
+            any(
+                label in f"{current_control} {line}".casefold()
+                for label in ("mic boost", "microphone boost", "input gain", "capture gain")
+            )
+            and ("%" in line or "[on]" in lowered or "[off]" in lowered)
+            and len(input_gain) < 8
+        ):
+            input_gain.append(f"{current_control} | {line}"[:160])
         if (
             "automatic gain" in lowered
             or re.search(r"\bagc\b", lowered)
             or "auto gain" in lowered
         ) and len(automatic_gain) < 8:
             automatic_gain.append(line[:160])
-    return capture_levels, automatic_gain
+    return capture_levels, input_gain, automatic_gain
+
+
+def _line_has_extreme_gain(line: str) -> bool:
+    percentages = [int(value) for value in re.findall(r"\[(\d{1,3})%\]", line)]
+    if any(value >= 95 for value in percentages):
+        return True
+    lowered = str(line or "").casefold()
+    return "boost" in lowered and any(
+        marker in lowered for marker in ("[on]", "100%", "max")
+    )

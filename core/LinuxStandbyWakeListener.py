@@ -127,12 +127,20 @@ class LinuxStandbyWakeListener:
         self._stream_open_count = 0
         self._stream_close_count = 0
         self._calibration_count = 0
+        self._calibration_attempt_count = 0
         self._candidate_count = 0
         self._stream_generation = 0
         self._stream_state = STREAM_CLOSED
         self._calibration_at: Optional[float] = None
         self._calibration_thresholds: Any = None
         self._calibration_statistics: Any = None
+        self._last_calibration_diagnostics: Any = None
+        self._calibration_attempt_summaries: list[Dict[str, Any]] = []
+        self._last_calibration_error_code = ""
+        self._last_calibration_error_message = ""
+        self._last_alsa_open_succeeded = False
+        self._last_alsa_closed_during_cleanup = False
+        self._last_valid_pcm_received = False
         self._recalibration_requested = False
         self._capture_gate_owned = False
         self._last_stream_instance_id = ""
@@ -225,7 +233,11 @@ class LinuxStandbyWakeListener:
                 data={
                     **dependencies.data,
                     **stream,
-                    "failing_subsystem": "standby_stream",
+                    "failing_subsystem": (
+                        "standby_calibration"
+                        if stream.get("calibration_error_code")
+                        else "standby_stream"
+                    ),
                 },
             )
         return self._result(
@@ -265,7 +277,15 @@ class LinuxStandbyWakeListener:
                 "calibration_healthy": bool(stream["calibration_healthy"]),
                 "failing_subsystem": (
                     dependencies.data.get("failing_subsystem", "")
-                    or ("standby_stream" if stream["stream_state"] != STREAM_HEALTHY else "")
+                    or (
+                        "standby_calibration"
+                        if stream.get("calibration_error_code")
+                        else (
+                            "standby_stream"
+                            if stream["stream_state"] != STREAM_HEALTHY
+                            else ""
+                        )
+                    )
                 ),
             },
         )
@@ -368,6 +388,8 @@ class LinuxStandbyWakeListener:
         with self._lock:
             self._capture_gate_owned = True
             self._stream_state = STREAM_OPENING
+            self._last_alsa_open_succeeded = False
+            self._last_alsa_closed_during_cleanup = False
         self._reset_recognizer_attempt_state("standby_stream_opening")
         try:
             open_reason = str(reason or "standby_entered")[:80]
@@ -377,6 +399,8 @@ class LinuxStandbyWakeListener:
             )
             with self._lock:
                 self._stream_handle = handle
+                self._last_alsa_open_succeeded = True
+                self._last_alsa_closed_during_cleanup = False
                 self._stream_open_count += 1
                 self._stream_generation += 1
                 self._stream_state = STREAM_CALIBRATING
@@ -419,6 +443,8 @@ class LinuxStandbyWakeListener:
                         "wake_model_healthy": True,
                         "microphone_adapter_healthy": True,
                         "alsa_device_open": False,
+                        "alsa_device_open_attempt_succeeded": True,
+                        "alsa_device_closed_during_cleanup": True,
                         "calibration_healthy": False,
                         "failing_subsystem": "standby_calibration",
                     },
@@ -1221,13 +1247,97 @@ class LinuxStandbyWakeListener:
                 "source": "persistent_standby_calibration",
                 "calibration_confirm_non_speech": True,
                 "calibration_maximum_seconds": self.config.calibration_maximum_seconds,
+                "calibration_quiet_sample_fraction": (
+                    self.config.calibration_quiet_sample_fraction
+                ),
+                "calibration_minimum_quiet_frame_fraction": (
+                    self.config.calibration_minimum_quiet_frame_fraction
+                ),
+                "calibration_maximum_speech_frame_fraction": (
+                    self.config.calibration_maximum_speech_frame_fraction
+                ),
+                "calibration_maximum_noise_floor_rms": (
+                    self.config.calibration_maximum_noise_floor_rms
+                ),
+                "calibration_maximum_clipped_frame_fraction": (
+                    self.config.calibration_maximum_clipped_frame_fraction
+                ),
+                "calibration_bootstrap_speech_multiplier": (
+                    self.config.calibration_bootstrap_speech_multiplier
+                ),
+                "calibration_bootstrap_speech_margin_rms": (
+                    self.config.calibration_bootstrap_speech_margin_rms
+                ),
+                "calibration_diagnostic_interval_frames": (
+                    self.config.calibration_diagnostic_interval_frames
+                ),
             },
         )
-        result = self.microphone_adapter.calibrate_persistent_stream(
-            handle,
-            request,
-            cancel_requested=self._is_cancelled,
-        )
+        retryable_quality_failures = {
+            "calibration_speech_dominated",
+            "calibration_quiet_samples_insufficient",
+            "calibration_noise_floor_unusable",
+        }
+        result = None
+        for attempt_number in range(1, self.config.calibration_retry_count + 2):
+            with self._lock:
+                self._calibration_attempt_count += 1
+            result = self.microphone_adapter.calibrate_persistent_stream(
+                handle,
+                request,
+                cancel_requested=self._is_cancelled,
+            )
+            if hasattr(result, "__dataclass_fields__") and hasattr(
+                result,
+                "attempt_count",
+            ):
+                result = replace(result, attempt_count=attempt_number)
+            diagnostics = getattr(result, "diagnostics", None)
+            error_code = str(getattr(result, "error_code", "") or "")
+            with self._lock:
+                self._last_calibration_diagnostics = diagnostics
+                self._last_calibration_error_code = error_code
+                self._last_calibration_error_message = str(
+                    getattr(result, "error_message", "") or ""
+                )[:200]
+                self._last_valid_pcm_received = bool(
+                    bool(getattr(result, "success", False))
+                    or int(getattr(result, "frame_count", 0) or 0) > 0
+                )
+                summary = {
+                    "attempt": attempt_number,
+                    "success": bool(getattr(result, "success", False)),
+                    "status": str(getattr(result, "status", "") or ""),
+                    "error_code": error_code,
+                    "frame_count": int(getattr(result, "frame_count", 0) or 0),
+                    "quality": (
+                        diagnostics.to_dict() if diagnostics is not None else {}
+                    ),
+                }
+                self._calibration_attempt_summaries.append(summary)
+                if len(self._calibration_attempt_summaries) > 4:
+                    del self._calibration_attempt_summaries[:-4]
+            if bool(getattr(result, "success", False)):
+                break
+            if (
+                attempt_number > self.config.calibration_retry_count
+                or error_code not in retryable_quality_failures
+                or self._is_cancelled()
+            ):
+                break
+            self._reset_recognizer_attempt_state("calibration_retry")
+            clear_history = getattr(
+                getattr(handle, "frame_source", None),
+                "clear_history",
+                None,
+            )
+            if callable(clear_history):
+                clear_history()
+            if self.config.calibration_retry_delay_seconds > 0:
+                self.sleeper(self.config.calibration_retry_delay_seconds)
+            self._reset_candidate_stream(handle)
+        if result is None:
+            raise RuntimeError("standby_calibration_did_not_run")
         if bool(getattr(result, "success", False)):
             clear_history = getattr(
                 getattr(handle, "frame_source", None),
@@ -1252,6 +1362,8 @@ class LinuxStandbyWakeListener:
                 )
                 self._recalibration_requested = False
                 self._stream_state = STREAM_HEALTHY
+                self._last_calibration_error_code = ""
+                self._last_calibration_error_message = ""
         else:
             with self._lock:
                 self._stream_state = STREAM_FAILED
@@ -1305,6 +1417,7 @@ class LinuxStandbyWakeListener:
             finally:
                 with self._lock:
                     self._stream_close_count += 1
+                    self._last_alsa_closed_during_cleanup = True
         if gate_owned:
             self._end_capture_gate()
         self._reset_recognizer_attempt_state(close_reason)
@@ -1315,10 +1428,21 @@ class LinuxStandbyWakeListener:
             handle = self._stream_handle
             thresholds = self._calibration_thresholds
             statistics = self._calibration_statistics
+            diagnostics = self._last_calibration_diagnostics
+            stream_active = bool(
+                handle is not None and not bool(getattr(handle, "closed", False))
+            )
+            calibration_healthy = bool(
+                self._stream_state == STREAM_HEALTHY and thresholds is not None
+            )
             return {
-                "stream_active": bool(
-                    handle is not None and not bool(getattr(handle, "closed", False))
+                "stream_active": stream_active,
+                "alsa_device_open": stream_active,
+                "alsa_device_open_attempt_succeeded": self._last_alsa_open_succeeded,
+                "alsa_device_closed_during_cleanup": (
+                    self._last_alsa_closed_during_cleanup
                 ),
+                "valid_pcm_received": self._last_valid_pcm_received,
                 "capture_owner": (
                     STANDBY_STREAM_OWNER if handle is not None else ""
                 ),
@@ -1328,10 +1452,17 @@ class LinuxStandbyWakeListener:
                 "candidate_count": self._candidate_count,
                 "stream_generation": self._stream_generation,
                 "stream_state": self._stream_state,
-                "calibration_healthy": bool(
-                    self._stream_state == STREAM_HEALTHY
-                    and thresholds is not None
+                "calibration_healthy": calibration_healthy,
+                "calibration_quality_passed": bool(
+                    diagnostics is not None
+                    and bool(getattr(diagnostics, "quality_passed", False))
                 ),
+                "standby_listener_healthy": bool(
+                    stream_active and calibration_healthy
+                ),
+                "calibration_attempt_count": self._calibration_attempt_count,
+                "calibration_error_code": self._last_calibration_error_code,
+                "calibration_error_message": self._last_calibration_error_message,
                 "stream_instance_id": (
                     str(getattr(handle, "stream_id", "") or "")
                     if handle is not None
@@ -1357,6 +1488,10 @@ class LinuxStandbyWakeListener:
                 "ambient_statistics": (
                     statistics.to_dict() if statistics is not None else {}
                 ),
+                "calibration_diagnostics": (
+                    diagnostics.to_dict() if diagnostics is not None else {}
+                ),
+                "calibration_attempts": list(self._calibration_attempt_summaries),
                 "safe": True,
             }
 

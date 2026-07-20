@@ -21,6 +21,7 @@ from core.VoiceActivityCalibration import (
     AmbientStatistics,
     VoiceActivityThresholds,
     adapt_post_speech_thresholds,
+    analyze_robust_ambient_calibration,
     calculate_ambient_statistics,
     derive_thresholds,
     manual_thresholds,
@@ -76,8 +77,60 @@ class VoiceActivityStreamCalibration:
     rejected_speech_frames: int = 0
     restart_count: int = 0
     maximum_frame_count: int = 0
+    attempt_count: int = 1
+    diagnostics: Optional["VoiceActivityCalibrationDiagnostics"] = None
     error_code: str = ""
     error_message: str = ""
+
+
+@dataclass(frozen=True)
+class VoiceActivityCalibrationDiagnostics:
+    frame_count: int
+    frame_duration_seconds: float
+    minimum_rms: float
+    median_rms: float
+    percentile_20_rms: float
+    percentile_80_rms: float
+    maximum_rms: float
+    speech_frame_count: int
+    non_speech_frame_count: int
+    longest_non_speech_sequence: int
+    bootstrap_threshold_rms: float
+    selected_noise_floor_rms: float
+    quiet_sample_count: int
+    quiet_sample_fraction: float
+    clipped_frame_count: int
+    clipped_frame_fraction: float
+    zero_frame_count: int
+    quality_passed: bool
+    quality_reason: str
+    rms_summary: Tuple[Dict[str, float | int], ...] = ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "calibration_method": "rms_percentile_bootstrap_v1",
+            "speech_classifier": "bounded_rms_outlier",
+            "frame_count": self.frame_count,
+            "frame_duration_seconds": self.frame_duration_seconds,
+            "minimum_rms": self.minimum_rms,
+            "median_rms": self.median_rms,
+            "percentile_20_rms": self.percentile_20_rms,
+            "percentile_80_rms": self.percentile_80_rms,
+            "maximum_rms": self.maximum_rms,
+            "speech_frame_count": self.speech_frame_count,
+            "non_speech_frame_count": self.non_speech_frame_count,
+            "longest_non_speech_sequence": self.longest_non_speech_sequence,
+            "bootstrap_threshold_rms": self.bootstrap_threshold_rms,
+            "selected_noise_floor_rms": self.selected_noise_floor_rms,
+            "quiet_sample_count": self.quiet_sample_count,
+            "quiet_sample_fraction": self.quiet_sample_fraction,
+            "clipped_frame_count": self.clipped_frame_count,
+            "clipped_frame_fraction": self.clipped_frame_fraction,
+            "zero_frame_count": self.zero_frame_count,
+            "quality_passed": self.quality_passed,
+            "quality_reason": self.quality_reason,
+            "rms_summary": [dict(item) for item in self.rms_summary],
+        }
 
 
 class RmsVoiceActivityCapture:
@@ -145,14 +198,16 @@ class RmsVoiceActivityCapture:
             1,
             math.ceil(request.calibration_duration_seconds / frame_seconds),
         )
+        calibration_metadata = dict(request.metadata or {})
         guarded = bool(
-            dict(request.metadata or {}).get("calibration_confirm_non_speech", False)
+            calibration_metadata.get("calibration_confirm_non_speech", False)
         )
-        maximum_seconds = float(
-            dict(request.metadata or {}).get(
-                "calibration_maximum_seconds",
-                request.calibration_duration_seconds,
-            )
+        maximum_seconds = _metadata_number(
+            calibration_metadata,
+            "calibration_maximum_seconds",
+            request.calibration_duration_seconds,
+            request.calibration_duration_seconds,
+            10.0,
         )
         maximum_frame_count = max(
             frame_count,
@@ -164,19 +219,31 @@ class RmsVoiceActivityCapture:
         )
         frame_bytes = samples_per_frame * request.channels * request.sample_width_bytes
         levels: list[float] = []
+        peaks: list[int] = []
         frames_read = 0
-        rejected_speech_frames = 0
-        restart_count = 0
+        calibration_started = self.clock()
+        wall_timeout_seconds = maximum_seconds + min(
+            2.0,
+            request.frame_read_timeout_seconds * 2.0,
+        )
         try:
-            for _ in range(maximum_frame_count):
+            for _ in range(frame_count):
+                if self.clock() - calibration_started > wall_timeout_seconds:
+                    return VoiceActivityStreamCalibration(
+                        False,
+                        VAD_STATUS_TIMEOUT,
+                        frame_count=frames_read,
+                        duration_seconds=round(frames_read * frame_seconds, 6),
+                        maximum_frame_count=maximum_frame_count,
+                        error_code=VAD_STATUS_TIMEOUT,
+                        error_message="standby calibration exceeded its wall-clock bound",
+                    )
                 if _is_cancelled(cancel_requested):
                     return VoiceActivityStreamCalibration(
                         False,
                         VAD_STATUS_CANCELLED,
                         frame_count=frames_read,
                         duration_seconds=round(frames_read * frame_seconds, 6),
-                        rejected_speech_frames=rejected_speech_frames,
-                        restart_count=restart_count,
                         maximum_frame_count=maximum_frame_count,
                         error_code=VAD_STATUS_CANCELLED,
                         error_message="voice activity calibration cancelled",
@@ -226,29 +293,113 @@ class RmsVoiceActivityCapture:
                     )
                 frames_read += 1
                 rms = float(signal["rms_amplitude"])
-                if guarded and rms >= request.speech_start_rms:
-                    rejected_speech_frames += 1
-                    if levels:
-                        levels.clear()
-                        restart_count += 1
-                    continue
                 levels.append(rms)
-                if len(levels) >= frame_count:
-                    break
+                peaks.append(int(signal["peak_amplitude"]))
             if len(levels) < frame_count:
                 return VoiceActivityStreamCalibration(
                     False,
-                    "calibration_non_speech_window_not_found",
+                    "calibration_frames_incomplete",
                     frame_count=frames_read,
                     duration_seconds=round(frames_read * frame_seconds, 6),
-                    rejected_speech_frames=rejected_speech_frames,
-                    restart_count=restart_count,
                     maximum_frame_count=maximum_frame_count,
-                    error_code="calibration_non_speech_window_not_found",
-                    error_message=(
-                        "confirmed non-speech calibration window was not found "
-                        "within the configured bound"
+                    error_code="calibration_frames_incomplete",
+                    error_message="bounded calibration did not receive enough PCM frames",
+                )
+            if guarded:
+                metadata = dict(request.metadata or {})
+                analysis = analyze_robust_ambient_calibration(
+                    levels,
+                    peaks,
+                    quiet_sample_fraction=_metadata_number(
+                        metadata,
+                        "calibration_quiet_sample_fraction",
+                        0.25,
+                        0.10,
+                        0.50,
                     ),
+                    minimum_quiet_frame_fraction=_metadata_number(
+                        metadata,
+                        "calibration_minimum_quiet_frame_fraction",
+                        0.20,
+                        0.10,
+                        0.80,
+                    ),
+                    maximum_speech_frame_fraction=_metadata_number(
+                        metadata,
+                        "calibration_maximum_speech_frame_fraction",
+                        0.75,
+                        0.20,
+                        0.95,
+                    ),
+                    maximum_noise_floor_rms=_metadata_number(
+                        metadata,
+                        "calibration_maximum_noise_floor_rms",
+                        600.0,
+                        50.0,
+                        5000.0,
+                    ),
+                    maximum_clipped_frame_fraction=_metadata_number(
+                        metadata,
+                        "calibration_maximum_clipped_frame_fraction",
+                        0.10,
+                        0.0,
+                        0.50,
+                    ),
+                    bootstrap_speech_multiplier=_metadata_number(
+                        metadata,
+                        "calibration_bootstrap_speech_multiplier",
+                        3.0,
+                        1.5,
+                        10.0,
+                    ),
+                    bootstrap_speech_margin_rms=_metadata_number(
+                        metadata,
+                        "calibration_bootstrap_speech_margin_rms",
+                        180.0,
+                        20.0,
+                        5000.0,
+                    ),
+                    minimum_bootstrap_speech_rms=float(request.speech_start_rms),
+                )
+                diagnostics = _calibration_diagnostics(
+                    levels,
+                    frame_seconds,
+                    analysis,
+                    summary_interval=_metadata_integer(
+                        metadata,
+                        "calibration_diagnostic_interval_frames",
+                        10,
+                        1,
+                        50,
+                    ),
+                )
+                if not analysis.success:
+                    return VoiceActivityStreamCalibration(
+                        False,
+                        analysis.quality_reason,
+                        frame_count=frames_read,
+                        duration_seconds=round(frames_read * frame_seconds, 6),
+                        ambient_statistics=analysis.statistics,
+                        rejected_speech_frames=analysis.speech_frame_count,
+                        maximum_frame_count=maximum_frame_count,
+                        diagnostics=diagnostics,
+                        error_code=analysis.quality_reason,
+                        error_message=_calibration_quality_message(
+                            analysis.quality_reason
+                        ),
+                    )
+                statistics = analysis.statistics
+                thresholds = derive_thresholds(statistics, request)
+                return VoiceActivityStreamCalibration(
+                    True,
+                    "calibrated",
+                    frame_count=frames_read,
+                    duration_seconds=round(frames_read * frame_seconds, 6),
+                    ambient_statistics=statistics,
+                    thresholds=thresholds,
+                    rejected_speech_frames=analysis.speech_frame_count,
+                    maximum_frame_count=maximum_frame_count,
+                    diagnostics=diagnostics,
                 )
             statistics = calculate_ambient_statistics(levels)
             thresholds = derive_thresholds(statistics, request)
@@ -259,8 +410,6 @@ class RmsVoiceActivityCapture:
                 duration_seconds=round(frames_read * frame_seconds, 6),
                 ambient_statistics=statistics,
                 thresholds=thresholds,
-                rejected_speech_frames=rejected_speech_frames,
-                restart_count=restart_count,
                 maximum_frame_count=maximum_frame_count,
             )
         except ValueError as error:
@@ -1125,6 +1274,101 @@ def validate_voice_activity_request(
     if not str(request.output_wav_path or "").lower().endswith(".wav"):
         raise ValueError("voice_activity_output_path_must_be_wav")
     return request
+
+
+def _metadata_number(
+    metadata: Dict[str, Any],
+    name: str,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    value = metadata.get(name, default)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or not minimum <= float(value) <= maximum
+    ):
+        raise ValueError(f"{name}_out_of_range")
+    return float(value)
+
+
+def _metadata_integer(
+    metadata: Dict[str, Any],
+    name: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    value = metadata.get(name, default)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not minimum <= value <= maximum
+    ):
+        raise ValueError(f"{name}_out_of_range")
+    return int(value)
+
+
+def _calibration_diagnostics(
+    levels: list[float],
+    frame_seconds: float,
+    analysis: Any,
+    *,
+    summary_interval: int,
+) -> VoiceActivityCalibrationDiagnostics:
+    summaries: list[Dict[str, float | int]] = []
+    for start in range(0, len(levels), summary_interval):
+        chunk = levels[start : start + summary_interval]
+        summaries.append(
+            {
+                "first_frame": start + 1,
+                "last_frame": start + len(chunk),
+                "minimum_rms": round(min(chunk), 6),
+                "mean_rms": round(sum(chunk) / len(chunk), 6),
+                "maximum_rms": round(max(chunk), 6),
+            }
+        )
+    statistics = analysis.statistics
+    return VoiceActivityCalibrationDiagnostics(
+        frame_count=len(levels),
+        frame_duration_seconds=round(frame_seconds, 6),
+        minimum_rms=analysis.minimum_rms,
+        median_rms=statistics.median_rms,
+        percentile_20_rms=analysis.percentile_20_rms,
+        percentile_80_rms=analysis.percentile_80_rms,
+        maximum_rms=analysis.maximum_rms,
+        speech_frame_count=analysis.speech_frame_count,
+        non_speech_frame_count=analysis.non_speech_frame_count,
+        longest_non_speech_sequence=analysis.longest_non_speech_sequence,
+        bootstrap_threshold_rms=analysis.bootstrap_threshold_rms,
+        selected_noise_floor_rms=statistics.noise_floor_rms,
+        quiet_sample_count=analysis.quiet_sample_count,
+        quiet_sample_fraction=analysis.quiet_sample_fraction,
+        clipped_frame_count=analysis.clipped_frame_count,
+        clipped_frame_fraction=analysis.clipped_frame_fraction,
+        zero_frame_count=analysis.zero_frame_count,
+        quality_passed=analysis.success,
+        quality_reason=analysis.quality_reason,
+        rms_summary=tuple(summaries),
+    )
+
+
+def _calibration_quality_message(reason: str) -> str:
+    return {
+        "calibration_all_zero_pcm": "standby calibration received only zero PCM",
+        "calibration_pcm_clipped": "standby calibration PCM was severely clipped",
+        "calibration_speech_dominated": (
+            "standby calibration was dominated by speech-like energy"
+        ),
+        "calibration_quiet_samples_insufficient": (
+            "standby calibration did not contain enough low-energy samples"
+        ),
+        "calibration_noise_floor_unusable": (
+            "standby calibration noise floor exceeded the configured usable limit"
+        ),
+    }.get(reason, "standby calibration quality policy rejected the PCM sample")
 
 
 def _write_pcm_wav_atomic(request: VoiceActivityCaptureRequestV1, pcm: bytes) -> Path:

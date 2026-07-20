@@ -362,6 +362,10 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
     assert config.maximum_utterance_seconds == 1.6
     assert config.speech_start_rms > config.speech_continue_rms >= config.silence_rms
     assert config.calibration_enabled is True
+    assert config.calibration_duration_seconds == 3.0
+    assert config.calibration_retry_count == 1
+    assert config.calibration_quiet_sample_fraction == 0.25
+    assert config.calibration_maximum_noise_floor_rms == 600.0
     assert config.wake_phrase_aliases == ("ares", "aris", "aries")
     assert config.wake_phrase_prefixes == ("", "hey", "hello", "wake up", "okay")
     assert config.pre_roll_seconds == 0.4
@@ -395,6 +399,16 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
         {"frame_duration_ms": True},
         {"frame_duration_ms": 100},
         {"calibration_enabled": True, "calibration_duration_seconds": 0},
+        {"calibration_retry_count": 2},
+        {"calibration_retry_delay_seconds": True},
+        {"calibration_quiet_sample_fraction": 0.05},
+        {"calibration_minimum_quiet_frame_fraction": 0.9},
+        {"calibration_maximum_speech_frame_fraction": 0.99},
+        {"calibration_maximum_noise_floor_rms": float("inf")},
+        {"calibration_maximum_clipped_frame_fraction": -0.1},
+        {"calibration_bootstrap_speech_multiplier": 1.0},
+        {"calibration_bootstrap_speech_margin_rms": 0},
+        {"calibration_diagnostic_interval_frames": 0},
         {"microphone_device": "bad\x00device"},
         {"vosk_model_path": ""},
         {"retry_delay_seconds": float("nan")},
@@ -797,6 +811,10 @@ def test_calibration_failure_closes_stream_and_listener_never_reports_healthy(tm
     components = listener.component_health()
     assert not started.success
     assert started.status == "calibration_failed"
+    assert started.data["alsa_device_open_attempt_succeeded"] is True
+    assert started.data["alsa_device_open"] is False
+    assert started.data["alsa_device_closed_during_cleanup"] is True
+    assert started.data["failing_subsystem"] == "standby_calibration"
     assert microphone.stream_open_count == 1
     assert microphone.stream_close_count == 1
     assert microphone.history_clear_count == 1

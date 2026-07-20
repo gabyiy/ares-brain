@@ -172,6 +172,7 @@ def _run_hardware_verification_locked(
         output_func(f"Dependency error: {issue}")
         return 2
     if runtime_factory is None:
+        output_func("Phase 1: ARES process and lock preflight.")
         try:
             process_report = inspect_ares_runtime_state(
                 recover_if_owner_dead=True,
@@ -210,7 +211,23 @@ def _run_hardware_verification_locked(
     if not preflight.success:
         output_func("Command voice pipeline health check failed before capture.")
         return 3
+    calibration_seconds = float(
+        getattr(
+            getattr(runtime.standby_wake_listener, "config", None),
+            "calibration_duration_seconds",
+            3.0,
+        )
+    )
+    output_func(
+        "Phase 2: Remain silent while ARES calibrates "
+        f"(approximately {calibration_seconds:.0f} seconds)."
+    )
     wake_started = runtime.standby_wake_listener.start(runtime_id=runtime.runtime_id)
+    for line in standby_voice.render_standby_calibration_diagnostics(
+        dict(getattr(wake_started, "data", {}) or {}),
+        include_energy_summary=bool(args.diagnostic_wake),
+    ):
+        output_func(line)
     if not wake_started.success:
         component_health = (
             wake_started
@@ -224,6 +241,7 @@ def _run_hardware_verification_locked(
             f"({wake_started.error_message or wake_started.status})."
         )
         _print_component_health(output_func, component_health)
+        _print_capture_hardware_diagnostics(output_func, runtime)
         return 3
     wake_health = runtime.standby_wake_listener.health(runtime_id=runtime.runtime_id)
     component_health = _component_health(runtime.standby_wake_listener, runtime.runtime_id)
@@ -266,6 +284,8 @@ def _run_hardware_verification_locked(
             else STAGES
         )
         for index, stage in enumerate(stages, start=1):
+            if stage.label == "C":
+                output_func("Phase 4: Full wake, command, standby, and shutdown lifecycle.")
             output_func(f"Test {index}/{len(STAGES)} ({stage.label}): {stage.instruction}")
             output_func(f"Expected: {stage.expected}.")
             passed = False
@@ -382,6 +402,7 @@ def _run_hardware_verification_locked(
                 output_func("Cleanup completed; verification did not pass.")
                 return 1
             if stage.label == "B" and reliability_attempts:
+                output_func("Phase 3: Ten-attempt standby wake reliability check.")
                 reliable = _run_wake_reliability(
                     runtime,
                     reliability_attempts,
@@ -856,8 +877,23 @@ def _print_component_health(
         f"{'yes' if data.get('alsa_device_open') else 'no'}"
     )
     output_func(
+        "  ALSA open attempt succeeded / closed during cleanup: "
+        f"{'yes' if data.get('alsa_device_open_attempt_succeeded') else 'no'} / "
+        f"{'yes' if data.get('alsa_device_closed_during_cleanup') else 'no'}"
+    )
+    output_func(
+        "  Valid PCM received: "
+        f"{'yes' if data.get('valid_pcm_received') else 'no'}"
+    )
+    output_func(
         "  Calibration successful: "
         f"{'yes' if data.get('calibration_healthy') else 'no'}"
+    )
+    output_func(
+        "  Calibration quality passed: "
+        f"{'yes' if data.get('calibration_quality_passed') else 'no'}; "
+        f"attempts={int(data.get('calibration_attempt_count', 0) or 0)}; "
+        f"reason={data.get('calibration_error_code') or 'none'}"
     )
     output_func(
         "  Stream state: "
@@ -958,10 +994,19 @@ def _print_capture_hardware_diagnostics(
         + (" | ".join(diagnostics.get("mixer_capture_levels", [])) or "not detected")
     )
     output_func(
+        "ALSA microphone boost/input gain: "
+        + (" | ".join(diagnostics.get("input_gain_controls", [])) or "not detected")
+    )
+    output_func(
         "ALSA automatic gain controls: "
         + (" | ".join(diagnostics.get("automatic_gain_controls", [])) or "not detected")
     )
     output_func("ALSA mixer settings were inspected only; no setting was changed.")
+    if diagnostics.get("extreme_gain_warning"):
+        output_func(
+            "WARNING: a capture/boost control appears near its maximum; inspect the "
+            "mixer setting manually if calibration remains noisy. No setting was changed."
+        )
 
 
 def _print_stream_reason_summary(

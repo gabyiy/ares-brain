@@ -347,7 +347,23 @@ def _run_standby_voice_locked(
         for issue in preflight.issues:
             output_func(f"- {issue.component}: {issue.status} ({issue.reason}).")
         return 3
+    calibration_seconds = float(
+        getattr(
+            getattr(runtime.standby_wake_listener, "config", None),
+            "calibration_duration_seconds",
+            _WAKE_DEFAULTS.calibration_duration_seconds,
+        )
+    )
+    output_func(
+        "Calibrating standby microphone; remain silent for approximately "
+        f"{calibration_seconds:.0f} seconds."
+    )
     wake_started = runtime.standby_wake_listener.start(runtime_id=runtime.runtime_id)
+    for line in render_standby_calibration_diagnostics(
+        dict(getattr(wake_started, "data", {}) or {}),
+        include_energy_summary=bool(args.diagnostic_wake),
+    ):
+        output_func(line)
     if not wake_started.success:
         runtime.standby_wake_listener.stop("preflight_failed")
         output_func(
@@ -675,6 +691,68 @@ def render_wake_diagnostics(
                 f"{shlex.quote(diagnostics.retained_audio_path)}",
             ]
         )
+    return lines
+
+
+def render_standby_calibration_diagnostics(
+    data: dict[str, Any],
+    *,
+    include_energy_summary: bool = False,
+) -> list[str]:
+    diagnostics = dict(data.get("calibration_diagnostics") or {})
+    thresholds = dict(data.get("calibration_thresholds") or {})
+    if not diagnostics:
+        return []
+    lines = [
+        "Standby calibration:",
+        "  Vosk model / microphone adapter healthy: "
+        f"{'yes' if data.get('wake_model_healthy') else 'no'} / "
+        f"{'yes' if data.get('microphone_adapter_healthy') else 'no'}",
+        "  Device open attempt / currently open / closed during cleanup: "
+        f"{'yes' if data.get('alsa_device_open_attempt_succeeded') else 'no'} / "
+        f"{'yes' if data.get('alsa_device_open') else 'no'} / "
+        f"{'yes' if data.get('alsa_device_closed_during_cleanup') else 'no'}",
+        "  Valid PCM / quality passed / listener healthy: "
+        f"{'yes' if data.get('valid_pcm_received') else 'no'} / "
+        f"{'yes' if diagnostics.get('quality_passed') else 'no'} / "
+        f"{'yes' if data.get('standby_listener_healthy') else 'no'}",
+        "  Frames / frame duration: "
+        f"{int(diagnostics.get('frame_count', 0) or 0)} / "
+        f"{float(diagnostics.get('frame_duration_seconds', 0.0) or 0.0):.3f}s",
+        "  RMS min / median / p20 / p80 / max: "
+        f"{float(diagnostics.get('minimum_rms', 0.0) or 0.0):.1f} / "
+        f"{float(diagnostics.get('median_rms', 0.0) or 0.0):.1f} / "
+        f"{float(diagnostics.get('percentile_20_rms', 0.0) or 0.0):.1f} / "
+        f"{float(diagnostics.get('percentile_80_rms', 0.0) or 0.0):.1f} / "
+        f"{float(diagnostics.get('maximum_rms', 0.0) or 0.0):.1f}",
+        "  Speech / non-speech / longest non-speech run: "
+        f"{int(diagnostics.get('speech_frame_count', 0) or 0)} / "
+        f"{int(diagnostics.get('non_speech_frame_count', 0) or 0)} / "
+        f"{int(diagnostics.get('longest_non_speech_sequence', 0) or 0)}",
+        "  Quiet samples / bootstrap threshold / selected noise floor: "
+        f"{int(diagnostics.get('quiet_sample_count', 0) or 0)} "
+        f"({float(diagnostics.get('quiet_sample_fraction', 0.0) or 0.0):.1%}) / "
+        f"{float(diagnostics.get('bootstrap_threshold_rms', 0.0) or 0.0):.1f} / "
+        f"{float(diagnostics.get('selected_noise_floor_rms', 0.0) or 0.0):.1f}",
+        "  Derived start / continuation / silence thresholds: "
+        f"{float(thresholds.get('speech_start_rms', 0.0) or 0.0):.1f} / "
+        f"{float(thresholds.get('speech_continue_rms', 0.0) or 0.0):.1f} / "
+        f"{float(thresholds.get('silence_rms', 0.0) or 0.0):.1f}",
+        "  Clipped / zero frames: "
+        f"{int(diagnostics.get('clipped_frame_count', 0) or 0)} / "
+        f"{int(diagnostics.get('zero_frame_count', 0) or 0)}",
+        f"  Quality decision: {diagnostics.get('quality_reason') or 'unknown'}",
+        f"  Failing subsystem: {data.get('failing_subsystem') or 'none'}",
+    ]
+    if include_energy_summary:
+        for summary in list(diagnostics.get("rms_summary") or []):
+            lines.append(
+                "  RMS frames "
+                f"{summary.get('first_frame', 0)}-{summary.get('last_frame', 0)}: "
+                f"min={float(summary.get('minimum_rms', 0.0) or 0.0):.1f}; "
+                f"mean={float(summary.get('mean_rms', 0.0) or 0.0):.1f}; "
+                f"max={float(summary.get('maximum_rms', 0.0) or 0.0):.1f}"
+            )
     return lines
 
 

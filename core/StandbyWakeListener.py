@@ -241,8 +241,18 @@ class WakeListenerConfig:
     wake_phrase_prefixes: tuple[str, ...] = DEFAULT_WAKE_PHRASE_PREFIXES
     filler_prefixes: tuple[str, ...] = DEFAULT_WAKE_FILLER_PREFIXES
     calibration_enabled: bool = True
-    calibration_duration_seconds: float = 0.6
-    calibration_maximum_seconds: float = 1.8
+    calibration_duration_seconds: float = 3.0
+    calibration_maximum_seconds: float = 3.0
+    calibration_retry_count: int = 1
+    calibration_retry_delay_seconds: float = 0.35
+    calibration_quiet_sample_fraction: float = 0.25
+    calibration_minimum_quiet_frame_fraction: float = 0.20
+    calibration_maximum_speech_frame_fraction: float = 0.75
+    calibration_maximum_noise_floor_rms: float = 600.0
+    calibration_maximum_clipped_frame_fraction: float = 0.10
+    calibration_bootstrap_speech_multiplier: float = 3.0
+    calibration_bootstrap_speech_margin_rms: float = 180.0
+    calibration_diagnostic_interval_frames: int = 10
     recalibration_interval_seconds: float = 300.0
     speech_start_rms: float = 200.0
     speech_continue_rms: float = 160.0
@@ -323,6 +333,14 @@ class WakeListenerConfig:
         numeric_bounds = {
             "calibration_duration_seconds": (0.0, 3.0),
             "calibration_maximum_seconds": (0.1, 5.0),
+            "calibration_retry_delay_seconds": (0.0, 2.0),
+            "calibration_quiet_sample_fraction": (0.10, 0.50),
+            "calibration_minimum_quiet_frame_fraction": (0.10, 0.80),
+            "calibration_maximum_speech_frame_fraction": (0.20, 0.95),
+            "calibration_maximum_noise_floor_rms": (50.0, 5000.0),
+            "calibration_maximum_clipped_frame_fraction": (0.0, 0.50),
+            "calibration_bootstrap_speech_multiplier": (1.5, 10.0),
+            "calibration_bootstrap_speech_margin_rms": (20.0, 5000.0),
             "recalibration_interval_seconds": (0.0, 3600.0),
             "speech_start_rms": (1.0, 32767.0),
             "speech_continue_rms": (1.0, 32767.0),
@@ -361,6 +379,8 @@ class WakeListenerConfig:
             ("maximum_retained_candidates", 1, 3),
             ("medium_confidence_confirmation_count", 2, 3),
             ("diagnostic_rms_interval_frames", 1, 50),
+            ("calibration_retry_count", 0, 1),
+            ("calibration_diagnostic_interval_frames", 1, 50),
         ):
             object.__setattr__(self, name, _bounded_integer(getattr(self, name), name, minimum, maximum))
         if not self.speech_start_rms > self.speech_continue_rms >= self.silence_rms:

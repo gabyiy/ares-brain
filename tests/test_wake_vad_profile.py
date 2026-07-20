@@ -185,7 +185,7 @@ def test_wake_pcm_pre_roll_post_roll_and_speech_frames_are_appended_once(tmp_pat
     assert result.data["captured_frame_indexes_unique"] is True
 
 
-def test_guarded_wake_calibration_restarts_after_detected_speech(tmp_path):
+def test_guarded_wake_calibration_excludes_detected_speech_without_reset(tmp_path):
     config = WakeListenerConfig()
     request = replace(
         wake_request(tmp_path, config),
@@ -205,9 +205,11 @@ def test_guarded_wake_calibration_restarts_after_detected_speech(tmp_path):
     result = detector.calibrate_stream(request, source)
     assert result.success
     assert result.rejected_speech_frames == 1
-    assert result.restart_count == 1
-    assert result.frame_count == 41
+    assert result.restart_count == 0
+    assert result.frame_count == 30
     assert result.ambient_statistics.sample_count == 30
+    assert result.ambient_statistics.noise_floor_rms == pytest.approx(40.0)
+    assert result.diagnostics.quality_reason == "calibration_quality_passed"
 
 
 def test_single_frame_click_does_not_start_a_wake_candidate(tmp_path):

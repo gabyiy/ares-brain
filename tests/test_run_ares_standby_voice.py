@@ -255,6 +255,59 @@ def test_foreground_launcher_returns_wake_health_and_loop_failures(tmp_path):
     ) == 1
 
 
+def test_standby_calibration_renderer_reports_quality_without_hiding_cleanup():
+    lines = run_ares_standby_voice.render_standby_calibration_diagnostics(
+        {
+            "wake_model_healthy": True,
+            "microphone_adapter_healthy": True,
+            "alsa_device_open": False,
+            "alsa_device_open_attempt_succeeded": True,
+            "alsa_device_closed_during_cleanup": True,
+            "valid_pcm_received": True,
+            "standby_listener_healthy": False,
+            "failing_subsystem": "standby_calibration",
+            "calibration_thresholds": {},
+            "calibration_diagnostics": {
+                "frame_count": 150,
+                "frame_duration_seconds": 0.02,
+                "minimum_rms": 210.0,
+                "median_rms": 260.0,
+                "percentile_20_rms": 230.0,
+                "percentile_80_rms": 310.0,
+                "maximum_rms": 1800.0,
+                "speech_frame_count": 8,
+                "non_speech_frame_count": 142,
+                "longest_non_speech_sequence": 71,
+                "bootstrap_threshold_rms": 780.0,
+                "selected_noise_floor_rms": 225.0,
+                "quiet_sample_count": 38,
+                "quiet_sample_fraction": 0.253333,
+                "clipped_frame_count": 0,
+                "zero_frame_count": 0,
+                "quality_passed": False,
+                "quality_reason": "calibration_noise_floor_unusable",
+                "rms_summary": [
+                    {
+                        "first_frame": 1,
+                        "last_frame": 10,
+                        "minimum_rms": 210.0,
+                        "mean_rms": 250.0,
+                        "maximum_rms": 300.0,
+                    }
+                ],
+            },
+        },
+        include_energy_summary=True,
+    )
+
+    text = "\n".join(lines)
+    assert "yes / no / yes" in text
+    assert "RMS min / median / p20 / p80 / max" in text
+    assert "calibration_noise_floor_unusable" in text
+    assert "RMS frames 1-10" in text
+    assert "standby_calibration" in text
+
+
 def test_second_production_runtime_is_rejected_without_starting_capture(tmp_path):
     lock_target = tmp_path / "ares_standby_voice.runtime"
     factory, runtime, _ = _factory()

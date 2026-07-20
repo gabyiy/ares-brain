@@ -91,6 +91,8 @@ class FakeMixerInspectionRunner:
             stdout=(
                 "Simple mixer control 'Capture',0\n"
                 "  Front Left: Capture 48 [76%] [on]\n"
+                "Simple mixer control 'Mic Boost',0\n"
+                "  Mono: Capture 3 [100%] [on]\n"
                 "Simple mixer control 'Auto Gain Control',0\n"
                 "  Mono: Playback [off]\n"
             ),
@@ -202,11 +204,16 @@ def test_capture_hardware_diagnostics_reports_mixer_state_without_modifying_it()
     assert result["channels"] == 1
     assert result["sample_width_bytes"] == 2
     assert result["mixer_capture_levels"] == [
-        "Front Left: Capture 48 [76%] [on]"
+        "Front Left: Capture 48 [76%] [on]",
+        "Mono: Capture 3 [100%] [on]",
     ]
     assert result["automatic_gain_controls"] == [
         "Simple mixer control 'Auto Gain Control',0"
     ]
+    assert result["input_gain_controls"] == [
+        "Simple mixer control 'Mic Boost',0 | Mono: Capture 3 [100%] [on]"
+    ]
+    assert result["extreme_gain_warning"] is True
     assert result["settings_modified"] is False
     assert result["subprocess_shell"] is False
     assert runner.calls == [
