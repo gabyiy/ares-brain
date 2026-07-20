@@ -1256,6 +1256,13 @@ Phase 105: Wake-Only VAD Sensitivity and Stream Observability
 - Added persistent-source frame/byte sequence invariants, bounded per-frame terminal diagnostics, and explicit A/B/C/D failure stages for absent input, below-threshold input, candidate assembly, and recognizer classification.
 - Deterministic verification passes 2087 tests. Physical 9/10 quiet-room wake reliability and the complete lifecycle sequence remain owner-run requirements.
 
+Phase 106: Natural Wake Timing and Terminal-Silence Completion
+
+- A subsequent real Raspberry Pi run kept one stream and one calibration healthy and promoted real speech, but accepted only 6/10 prompts. Candidates frequently exhausted the old 1.6-second post-start cap, the verifier advanced without a clear owner-ready interval, and one-utterance Vosk artifacts such as `ares ares` or `aris aris` exceeded the old duplicate-duration guard.
+- Wake capture now separates a 5-second `WAITING_FOR_SPEECH` budget from its post-start utterance budget. Two speech frames enter recording; 0.9 seconds of continuous calibrated terminal quiet normally completes the candidate; genuine resumed speech resets that timer; and the 4-second post-start maximum remains a failsafe. Pre-roll is 0.3 seconds and bounded post-speech grace is 0.15 seconds. Active-command VAD is unchanged.
+- The ten-attempt helper resets only stale pre-prompt candidate state, prints an explicit ready prompt, keeps the same ALSA stream live during a 0.6-second readiness interval, and waits 0.5 seconds between attempts. Exactly two identical surface alias tokens may collapse once; mixed aliases, unknowns, extra words, and three repetitions remain rejected.
+- Deterministic verification passes 2097 tests. Physical 9/10 quiet-room wake reliability and the complete lifecycle sequence remain owner-run requirements.
+
 Current State
 
 ARES is currently at the completed Architecture Hardening foundation plus a central deterministic Brain session state machine and persistent foreground runtime, explicit ALSA microphone/speaker adapters, one persistent and calibrated standby PCM stream, constrained Vosk wake recognition, bounded offline Whisper active-command STT, Piper TTS, verified configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive calibrated RMS end-of-speech capture, ordered complete-utterance assembly, a duration-checked canonical 16 kHz mono PCM handoff, shared production skill registration, safe anchored natural-language calculator routing, and CoreService-owned general explicit long-term owner memory with confirmation-gated CRUD. The assistant remains deterministic and offline. The foreground runtime can reject multiple candidates without reopening ALSA, activate only from a complete confidence-gated grammar result, process multiple serial Whisper-transcribed voice commands under one session ID, terminate/reap a timed-out command inference without ending that session, return to standby on inactivity or an exact owner stop phrase, and stop on an exact shutdown phrase. One process lock prevents duplicate foreground production runtimes, and event-history append failures degrade to visible telemetry warnings instead of terminating live operation. It still does not activate Cities. Brain/CoreService remain free of ALSA, audio conversion, VAD, Vosk, Whisper, Piper, model paths, and subprocess details; those remain injected adapters. Owner facts and general memories are written only by explicit bounded memory commands, and ordinary transcripts/recordings are not persisted.
@@ -1276,7 +1283,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 2087 tests.
+The current pytest collection is 2097 tests.
 
 The current memory paths are:
 
