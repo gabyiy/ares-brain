@@ -79,6 +79,35 @@ def test_verified_wake_phrase_activates_and_acknowledges_exactly_once(phrase, tm
     assert runtime.snapshot().activation_count == 1
 
 
+def test_guarded_duplicate_wake_result_creates_only_one_session(tmp_path):
+    runtime, _, output, wake = _runtime(tmp_path)
+    runtime.start()
+    wake.push(
+        StandbyListenResultV1(
+            success=True,
+            status="wake_detected",
+            speech_detected=True,
+            wake_detected=True,
+            command_category="activation",
+            normalized_wake_phrase="ares",
+            matched_phrase="ares",
+            selected_alias="ares",
+            selected_wake_phrase="ares",
+            canonical_wake_phrase="ares",
+            classification_path="vosk_constrained_grammar_duplicate_collapse",
+            classification_reason="accepted_canonical_duplicate_wake",
+            duplicate_collapse_used=True,
+        )
+    )
+
+    result = runtime.poll_once()
+
+    assert result.status == "activated"
+    assert runtime.session_manager.session_id
+    assert runtime.snapshot().activation_count == 1
+    assert output.texts == ["Yes Gabi."]
+
+
 def test_runtime_carries_exact_immutable_wake_attempt_through_activation(tmp_path):
     class AttemptListener(QueuedStandbyWakeListener):
         def __init__(self):

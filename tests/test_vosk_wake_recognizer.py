@@ -170,7 +170,7 @@ def test_high_confidence_wrong_phrase_is_always_rejected():
     assert result.rejection_reason == "exact_constrained_phrase_not_matched"
 
 
-@pytest.mark.parametrize("text", ["ares ares", "aries aries", "ares aris", "aries ares"])
+@pytest.mark.parametrize("text", ["ares ares", "aris aris", "aries aries"])
 def test_two_token_canonical_wake_identity_collapses_only_with_audio_safeguards(text):
     result = _classify(text, confidence=0.82, audio_duration_seconds=0.9)
     assert result.wake_detected
@@ -189,7 +189,9 @@ def test_two_token_canonical_wake_identity_collapses_only_with_audio_safeguards(
         ("[unk] aris", [{"word": "[unk]", "conf": 0.99}, {"word": "aris", "conf": 0.99}], 0.8),
         ("ares ares ares", None, 0.8),
         ("ares hello", None, 0.8),
+        ("ares aris", None, 0.8),
         ("ares aris", None, 1.5),
+        ("ares ares", None, 4.1),
         ("ares aris", [{"word": "ares"}, {"word": "aris"}], 0.8),
     ],
 )
@@ -204,10 +206,10 @@ def test_duplicate_wake_collapse_rejects_unknown_length_duration_and_missing_con
 
 def test_duplicate_wake_uses_minimum_confidence_and_exposes_mean():
     result = _classify(
-        "ares aris",
+        "ares ares",
         words=[
             {"word": "ares", "conf": 0.90},
-            {"word": "aris", "conf": 0.52},
+            {"word": "ares", "conf": 0.52},
         ],
         audio_duration_seconds=0.8,
     )

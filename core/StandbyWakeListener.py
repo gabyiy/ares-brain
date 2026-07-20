@@ -164,6 +164,15 @@ class WakeLocalDiagnostics:
     maximum_consecutive_speech_evidence: int = 0
     maximum_observed_rms: float = 0.0
     capture_failure_stage: str = ""
+    waiting_duration_before_speech_seconds: float = 0.0
+    speech_start_timestamp_monotonic: float = 0.0
+    active_speech_window_seconds: float = 0.0
+    terminal_silence_confirmed: bool = False
+    terminal_silence_reset_count: int = 0
+    last_speech_frame: int = 0
+    capture_completion_reason: str = ""
+    original_vosk_tokens: tuple[str, ...] = ()
+    canonical_tokens_after_collapse: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -282,17 +291,17 @@ class WakeListenerConfig:
     minimum_silence_rms: float = 120.0
     maximum_silence_rms: float = 600.0
     required_speech_frames: int = 2
-    required_continue_frames: int = 3
+    required_continue_frames: int = 1
     required_silence_frames: int = 5
-    speech_wait_timeout_seconds: float = 3.0
-    maximum_utterance_seconds: float = 1.6
+    speech_wait_timeout_seconds: float = 5.0
+    maximum_utterance_seconds: float = 4.0
     minimum_speech_duration_seconds: float = 0.08
-    silence_duration_seconds: float = 0.55
-    pre_roll_seconds: float = 0.4
-    speech_end_padding_seconds: float = 0.12
+    silence_duration_seconds: float = 0.9
+    pre_roll_seconds: float = 0.3
+    speech_end_padding_seconds: float = 0.15
     trim_leading_padding_seconds: float = 0.24
     trim_trailing_padding_seconds: float = 0.20
-    maximum_duplicate_collapse_audio_seconds: float = 1.4
+    maximum_duplicate_collapse_audio_seconds: float = 4.0
     diagnostic_rms_interval_frames: int = 5
     frame_duration_ms: int = 20
     frame_read_timeout_seconds: float = 1.0
@@ -380,7 +389,7 @@ class WakeListenerConfig:
             "speech_end_padding_seconds": (0.0, 0.5),
             "trim_leading_padding_seconds": (0.0, 0.5),
             "trim_trailing_padding_seconds": (0.0, 0.5),
-            "maximum_duplicate_collapse_audio_seconds": (0.25, 2.0),
+            "maximum_duplicate_collapse_audio_seconds": (0.25, 4.0),
             "frame_read_timeout_seconds": (0.05, 3.0),
             "playback_settle_delay_seconds": (0.0, 3.0),
             "retry_delay_seconds": (0.0, 5.0),
@@ -431,13 +440,6 @@ class WakeListenerConfig:
             raise ValueError(
                 "minimum_speech_duration_seconds must be below maximum_utterance_seconds"
             )
-        if (
-            self.maximum_duplicate_collapse_audio_seconds
-            > self.maximum_utterance_seconds + self.pre_roll_seconds
-        ):
-            raise ValueError(
-                "maximum_duplicate_collapse_audio_seconds exceeds the wake capture bound"
-            )
 
     @classmethod
     def from_mapping(cls, value: Optional["WakeListenerConfig | Mapping[str, Any]"] = None) -> "WakeListenerConfig":
@@ -479,6 +481,9 @@ class StandbyWakeListener(Protocol):
         ...
 
     def listen_attempt(self, request: WakeListenerRequestV1) -> WakeAttemptResult:
+        ...
+
+    def prepare_for_owner_prompt(self) -> WakeListenerResultV1:
         ...
 
     def completed_attempt(self, attempt_id: str) -> Optional[WakeAttemptResult]:
@@ -737,6 +742,18 @@ class QueuedStandbyWakeListener:
             if runtime_id:
                 self._runtime_id = str(runtime_id)
             return self._lifecycle(self._state != WAKE_LISTENER_ERROR, "healthy")
+
+    def prepare_for_owner_prompt(self) -> WakeListenerResultV1:
+        with self._lock:
+            ready = (
+                self._state != WAKE_LISTENER_STOPPED
+                and not self._cancelled
+                and self._stream_active
+            )
+            return self._lifecycle(
+                ready,
+                "owner_prompt_ready" if ready else "standby_stream_not_ready",
+            )
 
     def listen_once(self, request: WakeListenerRequestV1) -> StandbyListenResultV1:
         with self._lock:

@@ -608,6 +608,11 @@ class ReliabilityListener:
         self.stream_id = "reliability-stream-1"
         self.last_result = None
         self.last_diagnostics = None
+        self.prompt_prepare_count = 0
+
+    def prepare_for_owner_prompt(self):
+        self.prompt_prepare_count += 1
+        return SimpleNamespace(success=True, status="owner_prompt_ready")
 
     def snapshot(self, runtime_id=""):
         return SimpleNamespace(
@@ -701,10 +706,13 @@ def test_hardware_reliability_mode_pauses_between_candidates_and_prints_vad_metr
         diagnostic_enabled=True,
         wake_transcripts=[],
         pause_seconds=0.75,
+        prompt_ready_delay_seconds=0.6,
         sleeper=pauses.append,
     )
-    assert pauses == [0.75, 0.75]
+    assert pauses == [0.6, 0.75, 0.6, 0.75, 0.6]
+    assert runtime.standby_wake_listener.prompt_prepare_count == 3
     text = "\n".join(output)
+    assert "Ready for attempt 1. Say 'Ares' now." in text
     assert "Wake VAD: noise_floor=" in text
     assert "Wake audio: raw=" in text
     assert "Vosk decision: raw_tokens=" in text
@@ -832,6 +840,7 @@ def test_hardware_reliability_mode_prompts_and_consumes_second_confirmation_cand
     )
     assert any("Confirmation result: accepted; count=2/2" in line for line in output)
     assert any("1/1 accepted" in line for line in output)
+    assert runtime.standby_wake_listener.prompt_prepare_count == 2
 
 
 def test_hardware_reliability_excludes_confirmation_infrastructure_failure():

@@ -116,7 +116,7 @@ def classify_constrained_recognition(
     grammar_phrase_count: int = 0,
     processing_time_seconds: float = 0.0,
     audio_duration_seconds: float = 0.0,
-    maximum_duplicate_collapse_audio_seconds: float = 1.4,
+    maximum_duplicate_collapse_audio_seconds: float = 4.0,
 ) -> WakeRecognizerResultV1:
     """Classify only a complete constrained-grammar result.
 
@@ -137,7 +137,7 @@ def classify_constrained_recognition(
     duplicate_duration_limit = _bounded_duration(
         maximum_duplicate_collapse_audio_seconds,
         "maximum_duplicate_collapse_audio_seconds",
-        2.0,
+        4.0,
         minimum=0.25,
     )
     if (
@@ -407,11 +407,13 @@ def _canonical_duplicate_alias(
     alias_set = set(aliases)
     if any(token not in alias_set for token in tokens):
         return ""
+    if tokens[0] != tokens[1]:
+        return ""
     if audio_duration_seconds <= 0 or audio_duration_seconds > maximum_audio_seconds:
         return ""
-    # Every configured alias is an exact whole-token rendering of the same
-    # immutable ARES identity. No prefixes, unknowns, or unrelated words enter.
-    return tokens[0]
+    # Only one duplicated exact alias may collapse. Mixed aliases, prefixes,
+    # unknowns, and unrelated words remain outside this wake-only exception.
+    return aliases[0]
 
 
 def _normalized_unique(

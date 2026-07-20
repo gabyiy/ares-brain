@@ -358,8 +358,8 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
     assert config.vosk_model_path.endswith("vosk-model-small-en-us-0.15")
     assert config.minimum_recognition_confidence == 0.55
     assert config.frame_duration_ms == 20
-    assert config.speech_wait_timeout_seconds == 3.0
-    assert config.maximum_utterance_seconds == 1.6
+    assert config.speech_wait_timeout_seconds == 5.0
+    assert config.maximum_utterance_seconds == 4.0
     assert config.speech_start_rms > config.speech_continue_rms >= config.silence_rms
     assert config.calibration_enabled is True
     assert config.calibration_duration_seconds == 3.0
@@ -368,9 +368,10 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
     assert config.calibration_maximum_noise_floor_rms == 600.0
     assert config.wake_phrase_aliases == ("ares", "aris", "aries")
     assert config.wake_phrase_prefixes == ("", "hey", "hello", "wake up", "okay")
-    assert config.pre_roll_seconds == 0.4
-    assert config.silence_duration_seconds == 0.55
-    assert config.speech_end_padding_seconds == 0.12
+    assert config.pre_roll_seconds == 0.3
+    assert config.silence_duration_seconds == 0.9
+    assert config.speech_end_padding_seconds == 0.15
+    assert config.required_continue_frames == 1
     assert config.medium_recognition_confidence == 0.40
     assert config.allow_exact_wake_without_confidence is True
     assert config.medium_confidence_confirmation_count == 2
@@ -1164,11 +1165,32 @@ def test_linux_listener_forwards_calibrated_vad_bounds_and_safe_capture_settings
     assert kwargs["speech_continue_rms"] == 180
     assert kwargs["silence_rms"] == 120
     assert kwargs["frame_duration_ms"] == 20
-    assert kwargs["maximum_utterance_seconds"] == 1.6
+    assert kwargs["maximum_utterance_seconds"] == 4.0
     assert kwargs["capture_profile"] == "standby_wake_short_v1"
-    assert kwargs["pre_roll_seconds"] == 0.4
-    assert kwargs["speech_end_padding_seconds"] == 0.12
-    assert kwargs["silence_seconds"] == 0.55
+    assert kwargs["pre_roll_seconds"] == 0.3
+    assert kwargs["speech_end_padding_seconds"] == 0.15
+    assert kwargs["silence_seconds"] == 0.9
+    listener.stop()
+
+
+def test_owner_prompt_preparation_discards_only_candidate_state_without_reopen(tmp_path):
+    microphone = FakeMicrophone()
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=microphone,
+        wake_recognizer=FakeWakeRecognizer(),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+
+    prepared = listener.prepare_for_owner_prompt()
+    snapshot = listener.snapshot()
+
+    assert prepared.success
+    assert prepared.status == "owner_prompt_ready"
+    assert microphone.candidate_reset_count == 1
+    assert snapshot.stream_open_count == 1
+    assert snapshot.calibration_count == 1
+    assert snapshot.stream_close_count == 0
     listener.stop()
 
 
@@ -1201,10 +1223,10 @@ def test_linux_listener_accepts_exact_wake_without_confidence_after_audio_valida
     assert result.recognition_confidence_available is False
 
 
-def test_linux_listener_accepts_guarded_two_alias_vosk_duplication(tmp_path):
+def test_linux_listener_accepts_guarded_identical_vosk_duplication(tmp_path):
     listener = LinuxStandbyWakeListener(
         microphone_adapter=FakeMicrophone(candidate_seconds=0.8),
-        wake_recognizer=FakeWakeRecognizer("Ares Aris", confidence=0.82),
+        wake_recognizer=FakeWakeRecognizer("Ares Ares", confidence=0.82),
         project_root=tmp_path,
     )
     assert listener.start().success
@@ -1218,6 +1240,70 @@ def test_linux_listener_accepts_guarded_two_alias_vosk_duplication(tmp_path):
     )
     assert result.minimum_word_confidence == pytest.approx(0.82)
     assert result.mean_word_confidence == pytest.approx(0.82)
+    listener.stop()
+
+
+@pytest.mark.parametrize("recognized", ["Aris Aris", "Aries Aries"])
+def test_linux_listener_canonicalizes_two_identical_wake_aliases_once(
+    tmp_path,
+    recognized,
+):
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(candidate_seconds=0.8),
+        wake_recognizer=FakeWakeRecognizer(recognized, confidence=0.82),
+        config=WakeListenerConfig(diagnostic_wake=True),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+
+    attempt = listener.listen_attempt(_request(diagnostic_wake=True))
+
+    assert attempt.result.wake_detected
+    assert attempt.result.canonical_wake_phrase == "ares"
+    assert attempt.result.duplicate_collapse_used
+    assert attempt.diagnostics is not None
+    assert attempt.diagnostics.original_vosk_tokens == tuple(
+        normalize_wake_phrase(recognized).split()
+    )
+    assert attempt.diagnostics.canonical_tokens_after_collapse == ("ares",)
+    listener.stop()
+
+
+def test_linux_listener_rejects_three_wake_alias_repetitions(tmp_path):
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(candidate_seconds=0.8),
+        wake_recognizer=FakeWakeRecognizer("Ares Ares Ares", confidence=0.99),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+
+    result = listener.listen_once(_request())
+
+    assert not result.wake_detected
+    assert not result.duplicate_collapse_used
+    listener.stop()
+
+
+def test_wake_diagnostics_canonicalize_single_alias_token_without_fuzzy_matching(
+    tmp_path,
+):
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=FakeMicrophone(candidate_seconds=0.8),
+        wake_recognizer=FakeWakeRecognizer("Hello Aris", confidence=0.82),
+        config=WakeListenerConfig(diagnostic_wake=True),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+
+    attempt = listener.listen_attempt(_request(diagnostic_wake=True))
+
+    assert attempt.result.wake_detected
+    assert attempt.diagnostics is not None
+    assert attempt.diagnostics.original_vosk_tokens == ("hello", "aris")
+    assert attempt.diagnostics.canonical_tokens_after_collapse == (
+        "hello",
+        "ares",
+    )
     listener.stop()
 
 
@@ -1432,7 +1518,7 @@ def test_maximum_duration_wake_candidate_still_reaches_strict_classifier(tmp_pat
 
 
 def test_wake_candidate_hard_duration_limit_rejects_before_recognizer(tmp_path):
-    microphone = FakeMicrophone(raw_seconds=4.0, candidate_seconds=3.5)
+    microphone = FakeMicrophone(raw_seconds=5.0, candidate_seconds=4.5)
     stt = FakeWakeRecognizer("Ares")
     listener = LinuxStandbyWakeListener(
         microphone_adapter=microphone,
@@ -1451,7 +1537,7 @@ def test_wake_candidate_hard_duration_limit_rejects_before_recognizer(tmp_path):
 def test_wake_raw_capture_hard_limit_includes_only_bounded_capture_phases(tmp_path):
     stt = FakeWakeRecognizer("Ares")
     listener = LinuxStandbyWakeListener(
-        microphone_adapter=FakeMicrophone(raw_seconds=7.0, candidate_seconds=0.8),
+        microphone_adapter=FakeMicrophone(raw_seconds=9.2, candidate_seconds=0.8),
         wake_recognizer=stt,
         project_root=tmp_path,
     )
@@ -1467,7 +1553,7 @@ def test_wake_raw_capture_hard_limit_includes_only_bounded_capture_phases(tmp_pa
 def test_wake_raw_capture_limit_excludes_separate_stream_calibration(tmp_path):
     stt = FakeWakeRecognizer("Ares")
     listener = LinuxStandbyWakeListener(
-        microphone_adapter=FakeMicrophone(raw_seconds=5.2, candidate_seconds=0.8),
+        microphone_adapter=FakeMicrophone(raw_seconds=9.2, candidate_seconds=0.8),
         wake_recognizer=stt,
         project_root=tmp_path,
     )

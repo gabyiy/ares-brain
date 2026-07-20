@@ -86,8 +86,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--wake-attempt-pause-seconds",
         type=float,
-        default=0.75,
+        default=0.5,
         help="Quiet pause between reliability candidates (0.25-3.0 seconds).",
+    )
+    parser.add_argument(
+        "--wake-prompt-ready-delay-seconds",
+        type=float,
+        default=0.6,
+        help="Prompt settling delay before each reliability capture (0.1-2.0 seconds).",
     )
     return parser
 
@@ -157,6 +163,15 @@ def _run_hardware_verification_locked(
     ):
         output_func(
             "Configuration error: --wake-attempt-pause-seconds must be between 0.25 and 3.0."
+        )
+        return 2
+    if (
+        isinstance(args.wake_prompt_ready_delay_seconds, bool)
+        or not math.isfinite(args.wake_prompt_ready_delay_seconds)
+        or not 0.1 <= args.wake_prompt_ready_delay_seconds <= 2.0
+    ):
+        output_func(
+            "Configuration error: --wake-prompt-ready-delay-seconds must be between 0.1 and 2.0."
         )
         return 2
     reliability_attempts = args.wake_reliability_attempts
@@ -410,6 +425,9 @@ def _run_hardware_verification_locked(
                     diagnostic_enabled=bool(args.diagnostic_wake),
                     wake_transcripts=wake_transcripts,
                     pause_seconds=args.wake_attempt_pause_seconds,
+                    prompt_ready_delay_seconds=(
+                        args.wake_prompt_ready_delay_seconds
+                    ),
                     sleeper=time.sleep,
                 )
                 if not reliable:
@@ -463,6 +481,7 @@ def _run_wake_reliability(
     diagnostic_enabled: bool,
     wake_transcripts: list[str],
     pause_seconds: float = 0.0,
+    prompt_ready_delay_seconds: float = 0.6,
     sleeper: Callable[[float], None] = lambda _seconds: None,
 ) -> bool:
     required = math.ceil(attempts * 0.9)
@@ -510,9 +529,14 @@ def _run_wake_reliability(
     valid_attempt = 0
     while valid_attempt < attempts:
         attempt = valid_attempt + 1
-        output_func(
-            f"Reliability attempt {attempt}/{attempts}: Say 'Ares' once, then remain silent."
-        )
+        if not _prepare_reliability_prompt(
+            listener,
+            attempt,
+            output_func=output_func,
+            prompt_ready_delay_seconds=prompt_ready_delay_seconds,
+            sleeper=sleeper,
+        ):
+            return False
         before = runtime.snapshot()
         request = runtime.build_standby_wake_request()
         wake_attempt = _listen_verifier_attempt(
@@ -562,7 +586,16 @@ def _run_wake_reliability(
                 or getattr(wake_result, "rejection_reason", "")
                 or "medium_confidence_confirmation_required"
             )
+            prepared = getattr(listener, "prepare_for_owner_prompt", None)
+            if callable(prepared):
+                prepare_result = prepared()
+                if not bool(getattr(prepare_result, "success", False)):
+                    output_func(
+                        "  Confirmation setup failed: standby stream was not ready."
+                    )
+                    return False
             output_func("  Low-confidence wake detected. Say Ares once more.")
+            sleeper(prompt_ready_delay_seconds)
             output_func(
                 "  Confirmation request: "
                 f"transcript={transcript or '<unavailable>'}; "
@@ -712,6 +745,28 @@ def _run_wake_reliability(
         )
     )
     return accepted >= required
+
+
+def _prepare_reliability_prompt(
+    listener: Any,
+    attempt: int,
+    *,
+    output_func: Callable[[str], None],
+    prompt_ready_delay_seconds: float,
+    sleeper: Callable[[float], None],
+) -> bool:
+    prepare = getattr(listener, "prepare_for_owner_prompt", None)
+    if callable(prepare):
+        result = prepare()
+        if not bool(getattr(result, "success", False)):
+            output_func(
+                "Wake reliability prompt setup failed: "
+                f"{getattr(result, 'error_code', '') or getattr(result, 'status', 'unknown')}"
+            )
+            return False
+    output_func(f"Ready for attempt {attempt}. Say 'Ares' now.")
+    sleeper(prompt_ready_delay_seconds)
+    return True
 
 
 def _listen_verifier_attempt(
@@ -921,6 +976,21 @@ def _print_wake_capture_metrics(
         f"terminal_silence={float(getattr(wake_result, 'terminal_silence_duration_seconds', 0.0) or 0.0):.3f}s"
     )
     output_func(
+        "  Wake timing: "
+        f"waited={float(getattr(wake_result, 'waiting_duration_before_speech_seconds', 0.0) or 0.0):.3f}s; "
+        f"speech_start={float(getattr(wake_result, 'speech_start_timestamp_monotonic', 0.0) or 0.0):.6f}; "
+        f"speech_window={float(getattr(wake_result, 'active_speech_window_seconds', 0.0) or 0.0):.3f}s; "
+        f"terminal_confirmed={'yes' if getattr(wake_result, 'terminal_silence_confirmed', False) else 'no'}; "
+        f"terminal_resets={int(getattr(wake_result, 'terminal_silence_reset_count', 0) or 0)}; "
+        f"completion={getattr(wake_result, 'capture_completion_reason', '') or 'unknown'}"
+    )
+    output_func(
+        "  Speech frame range: "
+        f"first={int(getattr(wake_result, 'first_speech_frame', 0) or 0)}; "
+        f"last={int(getattr(wake_result, 'last_speech_frame', 0) or 0)}; "
+        f"pre_roll={int(getattr(wake_result, 'pre_roll_frames_retained', 0) or 0)}"
+    )
+    output_func(
         "  Post-calibration PCM: "
         f"stage={_wake_capture_stage_label(capture_stage)}; "
         f"source_sequence={int(getattr(diagnostics, 'source_read_sequence_start', 0) or 0)}->"
@@ -947,7 +1017,8 @@ def _print_wake_capture_metrics(
     )
     output_func(
         "  Vosk decision: "
-        f"raw_tokens={getattr(diagnostics, 'normalized_transcript', '') or '<unavailable>'}; "
+        f"raw_tokens={list(getattr(diagnostics, 'original_vosk_tokens', ()) or ()) or '<unavailable>'}; "
+        f"canonical_tokens={list(getattr(diagnostics, 'canonical_tokens_after_collapse', ()) or ()) or '<none>'}; "
         f"minimum_confidence={_format_optional_confidence(getattr(wake_result, 'minimum_word_confidence', None))}; "
         f"mean_confidence={_format_optional_confidence(getattr(wake_result, 'mean_word_confidence', None))}; "
         f"canonical_confidence={_format_optional_confidence(getattr(wake_result, 'canonical_confidence', None))}; "
@@ -978,7 +1049,7 @@ def _wake_failure_category(wake_result: Any) -> str:
         or getattr(wake_result, "classification_reason", "")
         or ""
     )
-    if stop == "maximum_duration_reached":
+    if stop in {"maximum_duration_reached", "maximum_speech_duration_reached"}:
         return "maximum_duration_reached"
     if "unknown_token" in reason:
         return "unknown_token"

@@ -163,6 +163,74 @@ def test_wake_terminal_quiet_counter_resets_on_real_continuation_evidence(tmp_pa
     assert result.silence_duration_at_stop_seconds == pytest.approx(
         quiet_frames * 0.02
     )
+    assert result.terminal_silence_reset_count == 1
+    assert result.terminal_silence_confirmed is True
+
+
+def test_three_seconds_of_waiting_does_not_consume_wake_speech_budget(tmp_path):
+    config = WakeListenerConfig(
+        calibration_enabled=False,
+        calibration_duration_seconds=0.0,
+    )
+    waiting_frames = math.ceil(3.0 / 0.02)
+    quiet_frames = math.ceil(config.silence_duration_seconds / 0.02)
+    frames = (
+        [pcm_frame(40)] * waiting_frames
+        + [pcm_frame(900)] * 8
+        + [pcm_frame(40)] * quiet_frames
+    )
+
+    result, _ = execute_wake(tmp_path, frames, config)
+
+    assert result.success
+    assert result.status == VAD_STATUS_COMPLETED_AFTER_SILENCE
+    assert result.waiting_duration_before_speech_seconds == pytest.approx(3.0)
+    assert result.active_speech_window_seconds < config.maximum_utterance_seconds
+    assert result.completion_reason == "completed_after_terminal_silence"
+
+
+def test_short_internal_pause_does_not_end_wake_and_resets_terminal_timer(tmp_path):
+    config = WakeListenerConfig(
+        calibration_enabled=False,
+        calibration_duration_seconds=0.0,
+    )
+    quiet_frames = math.ceil(config.silence_duration_seconds / 0.02)
+    frames = (
+        [pcm_frame(40)] * 4
+        + [pcm_frame(900)] * 6
+        + [pcm_frame(40)] * 20
+        + [pcm_frame(900)] * 3
+        + [pcm_frame(40)] * quiet_frames
+    )
+
+    result, _ = execute_wake(tmp_path, frames, config)
+
+    assert result.success
+    assert result.status == VAD_STATUS_COMPLETED_AFTER_SILENCE
+    assert result.terminal_silence_reset_count == 1
+    assert result.terminal_silence_confirmed is True
+    assert result.last_speech_frame > result.first_speech_frame
+
+
+def test_continuous_wake_speech_uses_four_second_failsafe_from_speech_start(tmp_path):
+    config = WakeListenerConfig(
+        calibration_enabled=False,
+        calibration_duration_seconds=0.0,
+    )
+    waiting_frames = math.ceil(3.0 / 0.02)
+    maximum_frames = math.ceil(config.maximum_utterance_seconds / 0.02)
+    frames = [pcm_frame(40)] * waiting_frames + [pcm_frame(900)] * (
+        maximum_frames + 4
+    )
+
+    result, _ = execute_wake(tmp_path, frames, config)
+
+    assert result.success
+    assert result.status == VAD_STATUS_MAXIMUM_DURATION
+    assert result.waiting_duration_before_speech_seconds == pytest.approx(3.0)
+    assert result.active_speech_window_seconds == pytest.approx(4.0)
+    assert result.terminal_silence_confirmed is False
+    assert result.completion_reason == "maximum_speech_duration_reached"
 
 
 def test_wake_pcm_pre_roll_post_roll_and_speech_frames_are_appended_once(tmp_path):
@@ -225,6 +293,11 @@ def test_single_frame_click_does_not_start_a_wake_candidate(tmp_path):
     assert not result.success
     assert result.status == "no_speech_timeout"
     assert result.speech_detected is False
+    assert result.completion_reason == "speech_wait_timeout"
+    assert result.waiting_duration_before_speech_seconds == pytest.approx(
+        config.speech_wait_timeout_seconds
+    )
+    assert result.maximum_duration_reached is False
 
 
 def test_wake_candidate_retains_full_configured_pre_roll_and_short_speech(tmp_path):
@@ -249,10 +322,10 @@ def test_wake_candidate_retains_full_configured_pre_roll_and_short_speech(tmp_pa
 def test_wake_profile_does_not_change_full_command_vad_defaults():
     wake = WakeListenerConfig()
     command = VoiceActivityCaptureRequestV1()
-    assert wake.maximum_utterance_seconds == 1.6
-    assert wake.silence_duration_seconds == 0.55
-    assert wake.pre_roll_seconds == 0.4
-    assert wake.speech_end_padding_seconds == 0.12
+    assert wake.maximum_utterance_seconds == 4.0
+    assert wake.silence_duration_seconds == 0.9
+    assert wake.pre_roll_seconds == 0.3
+    assert wake.speech_end_padding_seconds == 0.15
     assert command.maximum_utterance_seconds == 15.0
     assert command.silence_duration_seconds == 0.9
     assert command.pre_roll_seconds == 0.25

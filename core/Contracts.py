@@ -448,6 +448,14 @@ class VoiceActivityCaptureResultV1(VersionedContract):
     speech_start_offset_seconds: Optional[float] = None
     speech_end_offset_seconds: Optional[float] = None
     maximum_duration_reached: bool = False
+    waiting_duration_before_speech_seconds: float = 0.0
+    speech_start_timestamp_monotonic: float = 0.0
+    active_speech_window_seconds: float = 0.0
+    terminal_silence_confirmed: bool = False
+    terminal_silence_reset_count: int = 0
+    first_speech_frame: int = 0
+    last_speech_frame: int = 0
+    completion_reason: str = ""
     processing_time_seconds: float = 0.0
     error_message: str = ""
     data: Dict[str, Any] = field(default_factory=dict)
@@ -1085,6 +1093,13 @@ class StandbyListenResultV1(VersionedContract):
     mean_word_confidence: Optional[float] = None
     canonical_confidence: Optional[float] = None
     duplicate_collapse_used: bool = False
+    waiting_duration_before_speech_seconds: float = 0.0
+    speech_start_timestamp_monotonic: float = 0.0
+    active_speech_window_seconds: float = 0.0
+    terminal_silence_confirmed: bool = False
+    terminal_silence_reset_count: int = 0
+    last_speech_frame: int = 0
+    capture_completion_reason: str = ""
     speech_to_activation_seconds: float = 0.0
     sample_rate_hz: int = 0
     channels: int = 0
@@ -1123,7 +1138,7 @@ class WakeRecognizerRequestV1(VersionedContract):
     medium_confirmation_window_seconds: float = 8.0
     timeout_seconds: float = 3.0
     audio_duration_seconds: float = 0.0
-    maximum_duplicate_collapse_audio_seconds: float = 1.4
+    maximum_duplicate_collapse_audio_seconds: float = 4.0
 
 
 @dataclass(frozen=True)

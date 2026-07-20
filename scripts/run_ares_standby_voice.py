@@ -659,8 +659,18 @@ def render_wake_diagnostics(
         f"{diagnostics.pre_roll_frames_retained}/{diagnostics.expected_pre_roll_frames}",
         f"  Beginning clipped: {'yes' if diagnostics.beginning_clipped else 'no'}",
         f"  First speech frame: {diagnostics.first_speech_frame}",
+        f"  Last speech frame: {diagnostics.last_speech_frame}",
+        "  Wait before speech / active speech window: "
+        f"{diagnostics.waiting_duration_before_speech_seconds:.3f}s / "
+        f"{diagnostics.active_speech_window_seconds:.3f}s",
+        "  Speech-start monotonic timestamp: "
+        f"{diagnostics.speech_start_timestamp_monotonic:.6f}",
         "  Terminal silence duration: "
         f"{diagnostics.terminal_silence_duration_seconds:.3f}s",
+        "  Terminal silence confirmed / resets: "
+        f"{'yes' if diagnostics.terminal_silence_confirmed else 'no'} / "
+        f"{diagnostics.terminal_silence_reset_count}",
+        f"  Capture completion reason: {diagnostics.capture_completion_reason or 'unknown'}",
         f"  Terminal quiet frames: {diagnostics.terminal_quiet_frame_count}",
         f"  Speech frames: {diagnostics.speech_frame_count}",
         f"  Post-roll frames: {diagnostics.post_roll_frame_count}",
@@ -702,6 +712,9 @@ def render_wake_diagnostics(
         f"  Recognition status: {diagnostics.recognition_status or 'unknown'}",
         "  Recognition processing duration: "
         f"{diagnostics.recognition_processing_time_seconds:.3f}s",
+        "  Original/canonical Vosk tokens: "
+        f"{list(diagnostics.original_vosk_tokens)} / "
+        f"{list(diagnostics.canonical_tokens_after_collapse)}",
         f"  Vosk model path: {diagnostics.recognizer_model_path or diagnostics.wake_model_path}",
         f"  Lifecycle state: {diagnostics.lifecycle_state}",
     ]

@@ -9,6 +9,7 @@ import time
 from typing import Any, Callable, Dict, Optional
 import wave
 
+from core.AresIdentity import canonicalize_ares_name_tokens
 from core.Contracts import (
     StandbyListenResultV1,
     VoiceActivityCaptureRequestV1,
@@ -155,6 +156,7 @@ class LinuxStandbyWakeListener:
         self._calibration_reasons: list[str] = []
         self._ownership_handoffs: list[str] = []
         self._last_candidate_stale_frames = 0
+        self._prepared_prompt_stale_frames = 0
         self.last_result: Optional[StandbyListenResultV1] = None
         self.last_diagnostics: Optional[WakeLocalDiagnostics] = None
         self.last_attempt: Optional[WakeAttemptResult] = None
@@ -502,6 +504,34 @@ class LinuxStandbyWakeListener:
             self._recalibration_requested = True
         return self._result(True, "recalibration_requested")
 
+    def prepare_for_owner_prompt(self) -> WakeListenerResultV1:
+        """Discard only audio buffered before an owner-facing ready prompt."""
+
+        with self._attempt_lock:
+            with self._lock:
+                handle = self._stream_handle
+                stream_state = self._stream_state
+            if (
+                handle is None
+                or bool(getattr(handle, "closed", False))
+                or stream_state != STREAM_HEALTHY
+            ):
+                return self._result(
+                    False,
+                    "standby_stream_not_ready",
+                    "wake_stream_not_ready_for_prompt",
+                    "standby stream must be healthy before an owner prompt",
+                    data=self._stream_metrics(),
+                )
+            stale_frames = self._reset_candidate_stream(handle)
+            with self._lock:
+                self._prepared_prompt_stale_frames = stale_frames
+            return self._result(
+                True,
+                "owner_prompt_ready",
+                data=self._stream_metrics(),
+            )
+
     def listen_once(self, request: WakeListenerRequestV1) -> StandbyListenResultV1:
         return self.listen_attempt(request).result
 
@@ -517,7 +547,8 @@ class LinuxStandbyWakeListener:
             raise TypeError("request must be WakeListenerRequestV1")
         with self._lock:
             self._last_cleanup_status = "not_required"
-            self._last_candidate_stale_frames = 0
+            self._last_candidate_stale_frames = self._prepared_prompt_stale_frames
+            self._prepared_prompt_stale_frames = 0
             self._listen_count += 1
             self._candidate_count += 1
             candidate_number = self._candidate_count
@@ -864,7 +895,11 @@ class LinuxStandbyWakeListener:
                 timeout_seconds=max(0.1, float(request.listener_timeout_seconds)),
                 audio_duration_seconds=trim.trimmed_duration_seconds,
                 maximum_duplicate_collapse_audio_seconds=(
-                    self.config.maximum_duplicate_collapse_audio_seconds
+                    min(
+                        self.config.maximum_duplicate_collapse_audio_seconds,
+                        self.config.maximum_utterance_seconds
+                        + self.config.pre_roll_seconds,
+                    )
                 ),
                 correlation_id=request.correlation_id,
                 metadata={"safe": True, "contains_transcript": False},
@@ -1188,13 +1223,13 @@ class LinuxStandbyWakeListener:
             or "wake recalibration failed"
         )
 
-    def _reset_candidate_stream(self, handle: Any) -> None:
+    def _reset_candidate_stream(self, handle: Any) -> int:
         reset = getattr(self.microphone_adapter, "reset_persistent_candidate", None)
         if not callable(reset):
             clear = getattr(getattr(handle, "frame_source", None), "clear_history", None)
             if callable(clear):
                 clear()
-            return
+            return 0
         result = reset(
             handle,
             frame_duration_ms=self.config.frame_duration_ms,
@@ -1211,6 +1246,7 @@ class LinuxStandbyWakeListener:
             )
         with self._lock:
             self._last_candidate_stale_frames += max(0, stale_frames)
+        return max(0, stale_frames)
 
     def _calibrate_stream(self, handle: Any, *, reason: str) -> Any:
         with self._lock:
@@ -1834,11 +1870,30 @@ class LinuxStandbyWakeListener:
                 audio.get("expected_pre_roll_frames", 0) or 0
             ),
             first_speech_frame=int(audio.get("first_speech_frame", 0) or 0),
+            waiting_duration_before_speech_seconds=float(
+                audio.get("waiting_duration_before_speech_seconds", 0.0) or 0.0
+            ),
+            speech_start_timestamp_monotonic=float(
+                audio.get("speech_start_timestamp_monotonic", 0.0) or 0.0
+            ),
+            active_speech_window_seconds=float(
+                audio.get("active_speech_window_seconds", 0.0) or 0.0
+            ),
             terminal_silence_duration_seconds=float(
                 audio.get("terminal_silence_duration_seconds", 0.0) or 0.0
             ),
+            terminal_silence_confirmed=bool(
+                audio.get("terminal_silence_confirmed", False)
+            ),
+            terminal_silence_reset_count=int(
+                audio.get("terminal_silence_reset_count", 0) or 0
+            ),
             terminal_quiet_frame_count=int(
                 audio.get("terminal_quiet_frame_count", 0) or 0
+            ),
+            last_speech_frame=int(audio.get("last_speech_frame", 0) or 0),
+            capture_completion_reason=str(
+                audio.get("capture_completion_reason", "") or ""
             ),
             speech_frame_count=int(audio.get("speech_frame_count", 0) or 0),
             post_roll_frame_count=int(
@@ -1984,6 +2039,22 @@ class LinuxStandbyWakeListener:
             if result.command_category != WAKE_CATEGORY_NON_WAKE
             else "rejected"
         )
+        original_tokens = tuple(
+            part for part in normalize_wake_phrase(raw_text).split(" ") if part
+        )
+        canonicalized_tokens = tuple(
+            part
+            for part in canonicalize_ares_name_tokens(
+                raw_text,
+                self.config.wake_phrase_aliases,
+            ).split(" ")
+            if part
+        )
+        canonical_tokens = (
+            (result.canonical_wake_phrase,)
+            if result.duplicate_collapse_used and result.canonical_wake_phrase
+            else canonicalized_tokens
+        )
         return WakeLocalDiagnostics(
             raw_transcript=raw_text,
             attempt_id=result.attempt_id,
@@ -2089,12 +2160,33 @@ class LinuxStandbyWakeListener:
                 < int(audio.get("expected_pre_roll_frames", 0) or 0)
             ),
             first_speech_frame=int(audio.get("first_speech_frame", 0) or 0),
+            waiting_duration_before_speech_seconds=float(
+                audio.get("waiting_duration_before_speech_seconds", 0.0) or 0.0
+            ),
+            speech_start_timestamp_monotonic=float(
+                audio.get("speech_start_timestamp_monotonic", 0.0) or 0.0
+            ),
+            active_speech_window_seconds=float(
+                audio.get("active_speech_window_seconds", 0.0) or 0.0
+            ),
             terminal_silence_duration_seconds=float(
                 audio.get("terminal_silence_duration_seconds", 0.0) or 0.0
+            ),
+            terminal_silence_confirmed=bool(
+                audio.get("terminal_silence_confirmed", False)
+            ),
+            terminal_silence_reset_count=int(
+                audio.get("terminal_silence_reset_count", 0) or 0
             ),
             terminal_quiet_frame_count=int(
                 audio.get("terminal_quiet_frame_count", 0) or 0
             ),
+            last_speech_frame=int(audio.get("last_speech_frame", 0) or 0),
+            capture_completion_reason=str(
+                audio.get("capture_completion_reason", "") or ""
+            ),
+            original_vosk_tokens=original_tokens,
+            canonical_tokens_after_collapse=canonical_tokens,
             speech_frame_count=int(audio.get("speech_frame_count", 0) or 0),
             post_roll_frame_count=int(
                 audio.get("post_roll_frame_count", 0) or 0
@@ -2278,8 +2370,23 @@ def _capture_audio_metadata(capture: Any) -> Dict[str, Any]:
         ),
         "expected_pre_roll_frames": expected_pre_roll_frames,
         "first_speech_frame": first_speech_frame,
+        "waiting_duration_before_speech_seconds": float(
+            getattr(capture, "waiting_duration_before_speech_seconds", 0.0) or 0.0
+        ),
+        "speech_start_timestamp_monotonic": float(
+            getattr(capture, "speech_start_timestamp_monotonic", 0.0) or 0.0
+        ),
+        "active_speech_window_seconds": float(
+            getattr(capture, "active_speech_window_seconds", 0.0) or 0.0
+        ),
         "terminal_silence_duration_seconds": float(
             getattr(capture, "silence_duration_at_stop_seconds", 0.0) or 0.0
+        ),
+        "terminal_silence_confirmed": bool(
+            getattr(capture, "terminal_silence_confirmed", False)
+        ),
+        "terminal_silence_reset_count": int(
+            getattr(capture, "terminal_silence_reset_count", 0) or 0
         ),
         "terminal_quiet_frame_count": int(
             data.get("terminal_quiet_frame_count", 0) or 0
@@ -2288,6 +2395,16 @@ def _capture_audio_metadata(capture: Any) -> Dict[str, Any]:
             getattr(capture, "speech_frame_count", 0)
             or data.get("speech_frames_retained", 0)
             or 0
+        ),
+        "last_speech_frame": int(
+            getattr(capture, "last_speech_frame", 0)
+            or data.get("last_speech_frame", 0)
+            or 0
+        ),
+        "capture_completion_reason": str(
+            getattr(capture, "completion_reason", "")
+            or data.get("completion_reason", "")
+            or ""
         ),
         "post_roll_frame_count": int(
             data.get("post_roll_frames_retained", 0) or 0
