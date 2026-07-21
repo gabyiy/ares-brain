@@ -1259,9 +1259,10 @@ Phase 105: Wake-Only VAD Sensitivity and Stream Observability
 Phase 106: Natural Wake Timing and Terminal-Silence Completion
 
 - A subsequent real Raspberry Pi run kept one stream and one calibration healthy and promoted real speech, but accepted only 6/10 prompts. Candidates frequently exhausted the old 1.6-second post-start cap, the verifier advanced without a clear owner-ready interval, and one-utterance Vosk artifacts such as `ares ares` or `aris aris` exceeded the old duplicate-duration guard.
-- Wake capture now separates a 5-second `WAITING_FOR_SPEECH` budget from its post-start utterance budget. Two speech frames enter recording; 0.9 seconds of continuous calibrated terminal quiet normally completes the candidate; genuine resumed speech resets that timer; and the 4-second post-start maximum remains a failsafe. Pre-roll is 0.3 seconds and bounded post-speech grace is 0.15 seconds. Active-command VAD is unchanged.
-- The ten-attempt helper resets only stale pre-prompt candidate state, prints an explicit ready prompt, keeps the same ALSA stream live during a 0.6-second readiness interval, and waits 0.5 seconds between attempts. Exactly two identical surface alias tokens may collapse once; mixed aliases, unknowns, extra words, and three repetitions remain rejected.
-- Deterministic verification passes 2097 tests. Physical 9/10 quiet-room wake reliability and the complete lifecycle sequence remain owner-run requirements.
+- Wake capture now separates a 5-second `WAITING_FOR_SPEECH` budget from its post-start utterance budget. Two speech frames enter recording; 0.9 seconds of continuous calibrated terminal quiet normally completes the candidate; genuine resumed speech resets that timer; and the 4-second post-start maximum remains a failsafe. Pre-roll is 0.3 seconds and bounded post-speech grace is 0.15 seconds. An owner-facing `wake_capture` mapping exposes those semantic names and defaults while translating to the established flat listener fields for backward compatibility; malformed, unknown, or conflicting definitions fail closed. Active-command VAD is unchanged.
+- The ten-attempt helper resets only stale pre-prompt candidate state, prints an explicit ready prompt, keeps the same ALSA stream live during a 0.6-second readiness interval, and waits 0.5 seconds between every completed capture, including invalid-audio/infrastructure retries. All attempts print capture metrics before infrastructure failures are excluded. Diagnostics distinguish qualifying-speech duration from the full post-start window and retain the true first qualifying speech frame.
+- Exactly two identical surface alias tokens may collapse once; mixed aliases, unknowns, extra words, and three repetitions remain rejected. Each Vosk word entry must normalize to one token, so malformed multi-token entries cannot bypass per-token confidence, and accepted duplicate diagnostics preserve the true surface alias while canonicalizing the wake identity to `ares`.
+- Deterministic verification passes 2110 tests. Physical 9/10 quiet-room wake reliability and the complete lifecycle sequence remain owner-run requirements.
 
 Current State
 
@@ -1283,7 +1284,7 @@ The current deterministic answer paths are:
 - `CoreService`, the lifecycle/manifest/health/resource boundaries, local event infrastructure, Device/PC City, and Voice City contracts/adapters provide the safe service path. The Voice City surface now includes `RmsVoiceActivityCapture`, versioned VAD contracts, `VoiceProfile`, `VoiceProfileRegistry`, profile-aware TTS contracts, `LinuxPiperTextToSpeechAdapter`, `LinuxAlsaSpeakerAdapter`, `SingleTurnVoicePipeline`, and `MultiTurnVoiceSession` while preserving mock/null adapters, fixed-duration capture, and explicit-only real audio behavior.
 - In-memory conversation context for recent handled skill turns
 
-The current pytest collection is 2097 tests.
+The current pytest collection is 2110 tests.
 
 The current memory paths are:
 
