@@ -9,6 +9,7 @@ import pytest
 
 from core.WavAudio import (
     CANONICAL_SAMPLE_RATE_HZ,
+    analyze_pcm_audio,
     analyze_wav_audio,
     normalize_wav_audio,
     pcm_duration_seconds,
@@ -17,6 +18,19 @@ from core.WavAudio import (
     validate_duration_invariant,
     validate_canonical_wav,
 )
+
+
+def test_analyze_pcm_audio_uses_signed_little_endian_int16_scale():
+    samples = (1, -32768, 2048, -4096)
+    pcm = struct.pack("<4h", *samples)
+
+    signal = analyze_pcm_audio(pcm, sample_width_bytes=2)
+
+    expected_rms = math.sqrt(
+        sum(sample * sample for sample in samples) / len(samples)
+    )
+    assert signal["peak_amplitude"] == 32768
+    assert signal["rms_amplitude"] == pytest.approx(expected_rms)
 
 
 def write_tone_wav(

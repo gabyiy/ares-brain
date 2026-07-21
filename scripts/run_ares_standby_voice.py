@@ -612,6 +612,12 @@ def render_wake_diagnostics(
         and diagnostics.recognition_confidence is not None
         else "unavailable"
     )
+    speech_started = diagnostics.first_speech_frame > 0
+    beginning_clipped_status = (
+        diagnostics.beginning_clipped_status
+        if diagnostics.beginning_clipped_status
+        else ("yes" if diagnostics.beginning_clipped else "no")
+    )
     lines = [
         "Wake diagnostic:",
         f"  Attempt ID: {diagnostics.attempt_id or 'unknown'}",
@@ -657,14 +663,16 @@ def render_wake_diagnostics(
         f"{diagnostics.ownership_handoff_destination or 'none'}",
         "  Pre-roll frames retained: "
         f"{diagnostics.pre_roll_frames_retained}/{diagnostics.expected_pre_roll_frames}",
-        f"  Beginning clipped: {'yes' if diagnostics.beginning_clipped else 'no'}",
-        f"  First speech frame: {diagnostics.first_speech_frame}",
-        f"  Last speech frame: {diagnostics.last_speech_frame}",
+        f"  Beginning clipped: {beginning_clipped_status}",
+        "  First speech frame: "
+        f"{diagnostics.first_speech_frame if speech_started else 'absent'}",
+        "  Last speech frame: "
+        f"{diagnostics.last_speech_frame if speech_started else 'absent'}",
         "  Wait before speech / active speech window: "
         f"{diagnostics.waiting_duration_before_speech_seconds:.3f}s / "
         f"{diagnostics.active_speech_window_seconds:.3f}s",
         "  Speech-start monotonic timestamp: "
-        f"{diagnostics.speech_start_timestamp_monotonic:.6f}",
+        f"{f'{diagnostics.speech_start_timestamp_monotonic:.6f}' if speech_started else 'absent'}",
         "  Terminal silence duration: "
         f"{diagnostics.terminal_silence_duration_seconds:.3f}s",
         "  Terminal silence confirmed / resets: "
@@ -690,6 +698,18 @@ def render_wake_diagnostics(
         "  Post-calibration PCM bytes / live bytes: "
         f"{diagnostics.source_bytes_read_delta} / "
         f"{diagnostics.source_live_bytes_read_delta}",
+        "  PCM integrity reads/full/partial/empty/errors: "
+        f"{diagnostics.total_low_level_reads} / "
+        f"{diagnostics.valid_full_pcm_frames} / "
+        f"{diagnostics.partial_reads} / {diagnostics.empty_reads} / "
+        f"{diagnostics.read_errors}",
+        "  PCM integrity discarded/zero-filled/repeated/mutable-reuse: "
+        f"{diagnostics.discarded_bytes} / {diagnostics.zero_filled_bytes} / "
+        f"{diagnostics.repeated_frame_hashes} / "
+        f"{diagnostics.mutable_buffer_reuse_detected}",
+        "  Valid PCM bytes delivered to VAD (all/fresh): "
+        f"{diagnostics.valid_microphone_bytes_delivered_to_vad} / "
+        f"{diagnostics.fresh_microphone_bytes_delivered_to_vad}",
         "  Threshold crossings / maximum consecutive evidence / maximum RMS: "
         f"{diagnostics.speech_start_threshold_crossing_count} / "
         f"{diagnostics.maximum_consecutive_speech_evidence} / "

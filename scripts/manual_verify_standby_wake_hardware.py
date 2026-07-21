@@ -684,6 +684,9 @@ def _run_wake_reliability(
             failure_categories[_wake_failure_category(wake_result)] += 1
         confidence = getattr(wake_result, "recognition_confidence", None)
         clipped = bool(getattr(diagnostics, "beginning_clipped", False))
+        clipped_status = str(
+            getattr(diagnostics, "beginning_clipped_status", "") or ""
+        ) or ("yes" if clipped else "no")
         decision = str(
             getattr(wake_result, "classification_reason", "")
             or getattr(wake_result, "rejection_reason", "")
@@ -705,7 +708,7 @@ def _run_wake_reliability(
         output_func(
             "  Capture: "
             f"candidate={float(getattr(wake_result, 'duration_seconds', 0.0)):.3f}s; "
-            f"beginning_clipped={'yes' if clipped else 'no'}; "
+            f"beginning_clipped={clipped_status}; "
             f"stream_opens={int(getattr(wake_result, 'stream_open_count', 0))}; "
             f"calibrations={int(getattr(wake_result, 'calibration_count', 0))}; "
             f"stream_id={getattr(wake_result, 'stream_instance_id', '') or 'unknown'}; "
@@ -995,6 +998,22 @@ def _print_wake_capture_metrics(
     diagnostics: Any,
 ) -> None:
     capture_stage = str(getattr(diagnostics, "capture_failure_stage", "") or "")
+    speech_started = bool(getattr(wake_result, "speech_detected", False))
+    speech_start_text = (
+        f"{float(getattr(wake_result, 'speech_start_timestamp_monotonic', 0.0) or 0.0):.6f}"
+        if speech_started
+        else "absent"
+    )
+    first_speech_text = (
+        str(int(getattr(wake_result, "first_speech_frame", 0) or 0))
+        if speech_started
+        else "absent"
+    )
+    last_speech_text = (
+        str(int(getattr(wake_result, "last_speech_frame", 0) or 0))
+        if speech_started
+        else "absent"
+    )
     output_func(
         "  Wake VAD: "
         f"noise_floor={float(getattr(wake_result, 'ambient_noise_floor', 0.0) or 0.0):.1f}; "
@@ -1008,7 +1027,7 @@ def _print_wake_capture_metrics(
     output_func(
         "  Wake timing: "
         f"waited={float(getattr(wake_result, 'waiting_duration_before_speech_seconds', 0.0) or 0.0):.3f}s; "
-        f"speech_start={float(getattr(wake_result, 'speech_start_timestamp_monotonic', 0.0) or 0.0):.6f}; "
+        f"speech_start={speech_start_text}; "
         f"speech_duration={float(getattr(wake_result, 'speech_duration_seconds', 0.0) or 0.0):.3f}s; "
         f"speech_window={float(getattr(wake_result, 'active_speech_window_seconds', 0.0) or 0.0):.3f}s; "
         f"terminal_confirmed={'yes' if getattr(wake_result, 'terminal_silence_confirmed', False) else 'no'}; "
@@ -1017,8 +1036,8 @@ def _print_wake_capture_metrics(
     )
     output_func(
         "  Speech frame range: "
-        f"first={int(getattr(wake_result, 'first_speech_frame', 0) or 0)}; "
-        f"last={int(getattr(wake_result, 'last_speech_frame', 0) or 0)}; "
+        f"first={first_speech_text}; "
+        f"last={last_speech_text}; "
         f"pre_roll={int(getattr(wake_result, 'pre_roll_frames_retained', 0) or 0)}"
     )
     output_func(
@@ -1032,6 +1051,19 @@ def _print_wake_capture_metrics(
         f"threshold_crossings={int(getattr(diagnostics, 'speech_start_threshold_crossing_count', 0) or 0)}; "
         f"max_evidence={int(getattr(diagnostics, 'maximum_consecutive_speech_evidence', 0) or 0)}; "
         f"max_rms={float(getattr(diagnostics, 'maximum_observed_rms', 0.0) or 0.0):.1f}"
+    )
+    output_func(
+        "  PCM integrity: "
+        f"reads={int(getattr(diagnostics, 'total_low_level_reads', 0) or 0)}; "
+        f"valid_frames={int(getattr(diagnostics, 'valid_full_pcm_frames', 0) or 0)}; "
+        f"partial={int(getattr(diagnostics, 'partial_reads', 0) or 0)}; "
+        f"empty={int(getattr(diagnostics, 'empty_reads', 0) or 0)}; "
+        f"errors={int(getattr(diagnostics, 'read_errors', 0) or 0)}; "
+        f"discarded={int(getattr(diagnostics, 'discarded_bytes', 0) or 0)}; "
+        f"zero_filled={int(getattr(diagnostics, 'zero_filled_bytes', 0) or 0)}; "
+        f"repeated={int(getattr(diagnostics, 'repeated_frame_hashes', 0) or 0)}; "
+        f"mutable_reuse={int(getattr(diagnostics, 'mutable_buffer_reuse_detected', 0) or 0)}; "
+        f"vad_bytes={int(getattr(diagnostics, 'valid_microphone_bytes_delivered_to_vad', 0) or 0)}"
     )
     output_func(
         "  Wake audio: "
@@ -1111,9 +1143,10 @@ def _print_capture_hardware_diagnostics(
     output_func(
         "ALSA capture diagnostics: "
         f"device={diagnostics.get('capture_device', 'unknown')}; "
-        f"format={diagnostics.get('sample_rate_hz', 0)}Hz/"
+        f"requested_format={diagnostics.get('sample_rate_hz', 0)}Hz/"
         f"{diagnostics.get('channels', 0)}ch/"
         f"{diagnostics.get('sample_width_bytes', 0)}B; "
+        f"format_status={diagnostics.get('format_status', 'unknown')}; "
         f"mixer={diagnostics.get('status', 'unknown')}"
     )
     output_func(

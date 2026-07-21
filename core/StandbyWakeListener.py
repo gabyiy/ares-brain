@@ -126,6 +126,7 @@ class WakeLocalDiagnostics:
     pre_roll_frames_retained: int = 0
     expected_pre_roll_frames: int = 0
     beginning_clipped: bool = False
+    beginning_clipped_status: str = "not_applicable"
     first_speech_frame: int = 0
     terminal_silence_duration_seconds: float = 0.0
     terminal_quiet_frame_count: int = 0
@@ -168,6 +169,17 @@ class WakeLocalDiagnostics:
     source_live_frames_read_delta: int = 0
     source_bytes_read_delta: int = 0
     source_live_bytes_read_delta: int = 0
+    total_low_level_reads: int = 0
+    valid_full_pcm_frames: int = 0
+    partial_reads: int = 0
+    empty_reads: int = 0
+    read_errors: int = 0
+    discarded_bytes: int = 0
+    zero_filled_bytes: int = 0
+    repeated_frame_hashes: int = 0
+    mutable_buffer_reuse_detected: int = 0
+    valid_microphone_bytes_delivered_to_vad: int = 0
+    fresh_microphone_bytes_delivered_to_vad: int = 0
     listening_duration_seconds: float = 0.0
     speech_start_threshold_crossing_count: int = 0
     maximum_consecutive_speech_evidence: int = 0
@@ -423,6 +435,10 @@ class WakeListenerConfig:
             ("calibration_diagnostic_interval_frames", 1, 50),
         ):
             object.__setattr__(self, name, _bounded_integer(getattr(self, name), name, minimum, maximum))
+        if self.frame_duration_ms != 20:
+            raise ValueError(
+                "standby wake PCM requires frame_duration_ms to be exactly 20"
+            )
         if not self.speech_start_rms > self.speech_continue_rms >= self.silence_rms:
             raise ValueError("RMS thresholds must satisfy speech_start > speech_continue >= silence")
         for minimum_name, maximum_name in (

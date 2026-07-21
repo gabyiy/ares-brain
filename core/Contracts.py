@@ -1085,6 +1085,17 @@ class StandbyListenResultV1(VersionedContract):
     post_roll_frame_count: int = 0
     duplicate_pcm_frame_count: int = 0
     stale_pcm_frames_discarded: int = 0
+    total_low_level_reads: int = 0
+    valid_full_pcm_frames: int = 0
+    partial_reads: int = 0
+    empty_reads: int = 0
+    read_errors: int = 0
+    discarded_bytes: int = 0
+    zero_filled_bytes: int = 0
+    repeated_frame_hashes: int = 0
+    mutable_buffer_reuse_detected: int = 0
+    valid_microphone_bytes_delivered_to_vad: int = 0
+    fresh_microphone_bytes_delivered_to_vad: int = 0
     ambient_noise_floor: float = 0.0
     speech_start_threshold: float = 0.0
     speech_continue_threshold: float = 0.0

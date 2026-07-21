@@ -1906,6 +1906,29 @@ class LinuxStandbyWakeListener:
                 audio.get("duplicate_pcm_frame_count", 0) or 0
             ),
             stale_pcm_frames_discarded=self._last_candidate_stale_frames,
+            total_low_level_reads=int(
+                audio.get("total_low_level_reads", 0) or 0
+            ),
+            valid_full_pcm_frames=int(
+                audio.get("valid_full_pcm_frames", 0) or 0
+            ),
+            partial_reads=int(audio.get("partial_reads", 0) or 0),
+            empty_reads=int(audio.get("empty_reads", 0) or 0),
+            read_errors=int(audio.get("read_errors", 0) or 0),
+            discarded_bytes=int(audio.get("discarded_bytes", 0) or 0),
+            zero_filled_bytes=int(audio.get("zero_filled_bytes", 0) or 0),
+            repeated_frame_hashes=int(
+                audio.get("repeated_frame_hashes", 0) or 0
+            ),
+            mutable_buffer_reuse_detected=int(
+                audio.get("mutable_buffer_reuse_detected", 0) or 0
+            ),
+            valid_microphone_bytes_delivered_to_vad=int(
+                audio.get("valid_microphone_bytes_delivered_to_vad", 0) or 0
+            ),
+            fresh_microphone_bytes_delivered_to_vad=int(
+                audio.get("fresh_microphone_bytes_delivered_to_vad", 0) or 0
+            ),
             ambient_noise_floor=float(audio.get("ambient_noise_floor", 0.0) or 0.0),
             speech_start_threshold=float(
                 audio.get("speech_start_threshold", 0.0) or 0.0
@@ -2159,8 +2182,19 @@ class LinuxStandbyWakeListener:
                 audio.get("expected_pre_roll_frames", 0) or 0
             ),
             beginning_clipped=(
-                int(audio.get("pre_roll_frames_retained", 0) or 0)
+                bool(audio.get("speech_detected", False))
+                and int(audio.get("pre_roll_frames_retained", 0) or 0)
                 < int(audio.get("expected_pre_roll_frames", 0) or 0)
+            ),
+            beginning_clipped_status=(
+                "not_applicable"
+                if not bool(audio.get("speech_detected", False))
+                else (
+                    "yes"
+                    if int(audio.get("pre_roll_frames_retained", 0) or 0)
+                    < int(audio.get("expected_pre_roll_frames", 0) or 0)
+                    else "no"
+                )
             ),
             first_speech_frame=int(audio.get("first_speech_frame", 0) or 0),
             waiting_duration_before_speech_seconds=float(
@@ -2201,6 +2235,29 @@ class LinuxStandbyWakeListener:
                 audio.get("duplicate_pcm_frame_count", 0) or 0
             ),
             stale_pcm_frames_discarded=self._last_candidate_stale_frames,
+            total_low_level_reads=int(
+                audio.get("total_low_level_reads", 0) or 0
+            ),
+            valid_full_pcm_frames=int(
+                audio.get("valid_full_pcm_frames", 0) or 0
+            ),
+            partial_reads=int(audio.get("partial_reads", 0) or 0),
+            empty_reads=int(audio.get("empty_reads", 0) or 0),
+            read_errors=int(audio.get("read_errors", 0) or 0),
+            discarded_bytes=int(audio.get("discarded_bytes", 0) or 0),
+            zero_filled_bytes=int(audio.get("zero_filled_bytes", 0) or 0),
+            repeated_frame_hashes=int(
+                audio.get("repeated_frame_hashes", 0) or 0
+            ),
+            mutable_buffer_reuse_detected=int(
+                audio.get("mutable_buffer_reuse_detected", 0) or 0
+            ),
+            valid_microphone_bytes_delivered_to_vad=int(
+                audio.get("valid_microphone_bytes_delivered_to_vad", 0) or 0
+            ),
+            fresh_microphone_bytes_delivered_to_vad=int(
+                audio.get("fresh_microphone_bytes_delivered_to_vad", 0) or 0
+            ),
             ambient_noise_floor=float(audio.get("ambient_noise_floor", 0.0) or 0.0),
             speech_start_threshold=float(
                 audio.get("speech_start_threshold", 0.0) or 0.0
@@ -2498,6 +2555,29 @@ def _capture_audio_metadata(capture: Any) -> Dict[str, Any]:
         ),
         "source_live_bytes_read_delta": int(
             data.get("source_live_bytes_read_delta", 0) or 0
+        ),
+        "total_low_level_reads": int(
+            data.get("total_low_level_reads", 0) or 0
+        ),
+        "valid_full_pcm_frames": int(
+            data.get("valid_full_pcm_frames", 0) or 0
+        ),
+        "partial_reads": int(data.get("partial_reads", 0) or 0),
+        "empty_reads": int(data.get("empty_reads", 0) or 0),
+        "read_errors": int(data.get("read_errors", 0) or 0),
+        "discarded_bytes": int(data.get("discarded_bytes", 0) or 0),
+        "zero_filled_bytes": int(data.get("zero_filled_bytes", 0) or 0),
+        "repeated_frame_hashes": int(
+            data.get("repeated_frame_hashes", 0) or 0
+        ),
+        "mutable_buffer_reuse_detected": int(
+            data.get("mutable_buffer_reuse_detected", 0) or 0
+        ),
+        "valid_microphone_bytes_delivered_to_vad": int(
+            data.get("valid_microphone_bytes_delivered_to_vad", 0) or 0
+        ),
+        "fresh_microphone_bytes_delivered_to_vad": int(
+            data.get("fresh_microphone_bytes_delivered_to_vad", 0) or 0
         ),
         "listening_duration_seconds": float(
             data.get("listening_duration_seconds", 0.0) or 0.0

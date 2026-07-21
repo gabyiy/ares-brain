@@ -438,6 +438,7 @@ def test_wake_capture_mapping_rejects_malformed_or_conflicting_fields(value):
         {"medium_confidence_confirmation_count": 1},
         {"recalibration_interval_seconds": True},
         {"frame_duration_ms": True},
+        {"frame_duration_ms": 10},
         {"frame_duration_ms": 100},
         {"calibration_enabled": True, "calibration_duration_seconds": 0},
         {"calibration_retry_count": 2},
@@ -1500,6 +1501,84 @@ def test_wake_timing_diagnostics_preserve_literal_speech_duration_and_first_fram
     )
     assert attempt.diagnostics.speech_duration_seconds == pytest.approx(0.16)
     assert attempt.diagnostics.first_speech_frame == 11
+    listener.stop()
+
+
+@pytest.mark.parametrize(
+    (
+        "speech_detected",
+        "capture_status",
+        "retained_pre_roll_frames",
+        "expected_pre_roll_frames",
+        "expected_clipped",
+        "expected_status",
+    ),
+    [
+        pytest.param(
+            False,
+            "no_speech_timeout",
+            0,
+            15,
+            False,
+            "not_applicable",
+            id="no-speech",
+        ),
+        pytest.param(
+            True,
+            "completed_after_silence",
+            15,
+            15,
+            False,
+            "no",
+            id="complete-pre-roll",
+        ),
+        pytest.param(
+            True,
+            "completed_after_silence",
+            6,
+            15,
+            True,
+            "yes",
+            id="incomplete-pre-roll",
+        ),
+    ],
+)
+def test_wake_beginning_clipped_diagnostics_require_detected_speech(
+    tmp_path,
+    speech_detected,
+    capture_status,
+    retained_pre_roll_frames,
+    expected_pre_roll_frames,
+    expected_clipped,
+    expected_status,
+):
+    class PreRollMicrophone(FakeMicrophone):
+        def record_until_silence(self, output_path, **kwargs):
+            capture = super().record_until_silence(output_path, **kwargs)
+            capture.pre_roll_frames_retained = retained_pre_roll_frames
+            capture.data = {
+                "frame_duration_ms": 20,
+                "pre_roll_frames": expected_pre_roll_frames,
+            }
+            return capture
+
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=PreRollMicrophone(
+            capture_status=capture_status,
+            speech=speech_detected,
+        ),
+        wake_recognizer=FakeWakeRecognizer("Ares"),
+        config=WakeListenerConfig(diagnostic_wake=True),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+
+    attempt = listener.listen_attempt(_request(diagnostic_wake=True))
+
+    assert attempt.diagnostics.pre_roll_frames_retained == retained_pre_roll_frames
+    assert attempt.diagnostics.expected_pre_roll_frames == expected_pre_roll_frames
+    assert attempt.diagnostics.beginning_clipped is expected_clipped
+    assert attempt.diagnostics.beginning_clipped_status == expected_status
     listener.stop()
 
 

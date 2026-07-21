@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+import hashlib
 import math
 import os
 import re
@@ -17,6 +18,13 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from core.Contracts import VoiceActivityCaptureRequestV1, VoiceActivityCaptureResultV1
 from core.Microphone import AudioChunk, CancelCheck, MicrophoneAdapter, MicrophoneResult
+from core.PcmIntegrity import (
+    CANONICAL_PCM_FRAME_BYTES,
+    CANONICAL_PCM_FRAME_DURATION_MS,
+    CANONICAL_PCM_SAMPLE_FORMAT,
+    CANONICAL_PCM_SAMPLES_PER_FRAME,
+    canonical_pcm_contract,
+)
 from core.VoiceActivityDetection import (
     RmsVoiceActivityCapture,
     VAD_STATUS_DEVICE_ERROR,
@@ -41,7 +49,7 @@ from core.WavAudio import (
 
 DEFAULT_ALSA_SAMPLE_RATE_HZ = 16000
 DEFAULT_ALSA_CHANNELS = 1
-DEFAULT_ALSA_SAMPLE_FORMAT = "S16_LE"
+DEFAULT_ALSA_SAMPLE_FORMAT = CANONICAL_PCM_SAMPLE_FORMAT
 DEFAULT_ALSA_RECORD_SECONDS = 3
 DEFAULT_ALSA_TIMEOUT_PADDING_SECONDS = 5
 MAX_ALSA_RECORD_SECONDS = 60
@@ -98,6 +106,14 @@ class PersistentPcmStreamHandle:
     command: tuple[str, ...]
     frame_source: Any
     opened_at: float
+    sample_rate_hz: int = CANONICAL_SAMPLE_RATE_HZ
+    channels: int = CANONICAL_CHANNELS
+    sample_width_bytes: int = CANONICAL_SAMPLE_WIDTH_BYTES
+    sample_format: str = CANONICAL_PCM_SAMPLE_FORMAT
+    frame_duration_ms: int = CANONICAL_PCM_FRAME_DURATION_MS
+    samples_per_frame: int = CANONICAL_PCM_SAMPLES_PER_FRAME
+    frame_bytes: int = CANONICAL_PCM_FRAME_BYTES
+    format_verification_status: str = "requested_raw_contract_unheadered_stream"
     alsa_handle_id: str = ""
     closed: bool = False
 
@@ -153,9 +169,18 @@ class SafeSubprocessRunner:
 class SubprocessPcmFrameSource:
     """Bounded raw-PCM reader for one foreground arecord process."""
 
-    def __init__(self, args: Sequence[str]):
+    def __init__(
+        self,
+        args: Sequence[str],
+        *,
+        process_factory: Optional[Any] = None,
+        selector: Optional[Any] = None,
+        raw_reader: Optional[Any] = None,
+        clock: Any = time.monotonic,
+    ):
         self.args = [str(arg) for arg in args]
-        self.process = subprocess.Popen(
+        factory = process_factory or subprocess.Popen
+        self.process = factory(
             self.args,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -163,67 +188,287 @@ class SubprocessPcmFrameSource:
             shell=False,
             bufsize=0,
         )
+        self.selector = selector or select.select
+        self.raw_reader = raw_reader or os.read
+        self.clock = clock
         self.closed = False
+        self.stream_ended = False
         self.stderr = ""
+        self._pending = bytearray()
+        self._discard_continuation_bytes = 0
+        self._expected_frame_bytes = 0
+        self._last_frame_hash = b""
+        self._last_mutable_source_id: Optional[int] = None
+        self.total_low_level_reads = 0
+        self.valid_full_pcm_frames = 0
+        self.partial_reads = 0
+        self.empty_reads = 0
+        self.read_errors = 0
+        self.discarded_bytes = 0
+        self.zero_filled_bytes = 0
+        self.repeated_frame_hashes = 0
+        self.mutable_buffer_reuse_detected = 0
+        self.valid_microphone_bytes_delivered_to_vad = 0
+        self.last_read_timestamp = 0.0
 
     def read_frame(self, frame_bytes: int, timeout_seconds: float) -> bytes:
         if self.closed or self.process.stdout is None:
             raise RuntimeError("pcm_stream_closed")
-        deadline = time.monotonic() + max(0.01, float(timeout_seconds))
-        frame = bytearray()
-        while len(frame) < frame_bytes:
-            remaining = deadline - time.monotonic()
+        if self.stream_ended:
+            raise EOFError("arecord_pcm_stream_ended")
+        expected = self._set_expected_frame_bytes(frame_bytes)
+        deadline = self.clock() + max(0.01, float(timeout_seconds))
+        descriptor = self.process.stdout.fileno()
+        while len(self._pending) < expected:
+            remaining = deadline - self.clock()
             if remaining <= 0:
                 raise TimeoutError("pcm_frame_read_timeout")
-            readable, _, _ = select.select([self.process.stdout], [], [], remaining)
+            try:
+                readable, _, _ = self.selector([descriptor], [], [], remaining)
+            except OSError:
+                self.read_errors += 1
+                raise
             if not readable:
                 raise TimeoutError("pcm_frame_read_timeout")
-            chunk = self.process.stdout.read(frame_bytes - len(frame))
+            requested = expected - len(self._pending)
+            self.total_low_level_reads += 1
+            try:
+                chunk = self.raw_reader(descriptor, requested)
+            except OSError:
+                self.read_errors += 1
+                raise
             if not chunk:
+                self.empty_reads += 1
+                self.stream_ended = True
                 raise EOFError("arecord_pcm_stream_ended")
-            frame.extend(chunk)
-        return bytes(frame)
+            try:
+                immutable_chunk = self._copy_source_bytes(chunk)
+            except (TypeError, ValueError):
+                self.read_errors += 1
+                raise
+            if len(immutable_chunk) < requested:
+                self.partial_reads += 1
+            if self._discard_continuation_bytes:
+                discarded_prefix = min(
+                    self._discard_continuation_bytes,
+                    len(immutable_chunk),
+                )
+                immutable_chunk = immutable_chunk[discarded_prefix:]
+                self._discard_continuation_bytes -= discarded_prefix
+                self.discarded_bytes += discarded_prefix
+            self._pending.extend(immutable_chunk)
+        immutable_frame = bytes(self._pending[:expected])
+        del self._pending[:expected]
+        self.valid_full_pcm_frames += 1
+        self.valid_microphone_bytes_delivered_to_vad += len(immutable_frame)
+        self.last_read_timestamp = float(self.clock())
+        current_hash = hashlib.sha256(immutable_frame).digest()
+        if self._last_frame_hash and current_hash == self._last_frame_hash:
+            self.repeated_frame_hashes += 1
+        self._last_frame_hash = current_hash
+        return immutable_frame
 
     def discard_available(self, maximum_bytes: int) -> int:
-        """Discard only PCM already buffered by arecord; never block for new audio."""
+        """Discard stale bytes while preserving signed-16 sample alignment."""
 
-        if self.closed or self.process.stdout is None:
+        if self.closed or self.stream_ended or self.process.stdout is None:
             return 0
         bounded_maximum = max(0, min(int(maximum_bytes), 16000 * 2 * 3))
-        discarded = 0
+        if bounded_maximum <= 0:
+            return 0
+        bounded_maximum -= bounded_maximum % CANONICAL_SAMPLE_WIDTH_BYTES
+        if bounded_maximum <= 0:
+            return 0
+        buffered = bytearray(self._pending)
+        self._pending.clear()
+        alignment_discarded = 0
         descriptor = self.process.stdout.fileno()
-        while discarded < bounded_maximum:
-            readable, _, _ = select.select([self.process.stdout], [], [], 0.0)
+        while len(buffered) < bounded_maximum:
+            try:
+                readable, _, _ = self.selector([descriptor], [], [], 0.0)
+            except OSError:
+                self.read_errors += 1
+                self._pending.extend(buffered)
+                raise
             if not readable:
                 break
-            chunk = os.read(descriptor, min(16384, bounded_maximum - discarded))
+            requested = min(16384, bounded_maximum - len(buffered))
+            self.total_low_level_reads += 1
+            try:
+                chunk = self.raw_reader(descriptor, requested)
+            except OSError:
+                self.read_errors += 1
+                self._pending.extend(buffered)
+                raise
             if not chunk:
+                self.empty_reads += 1
+                self.stream_ended = True
                 break
-            discarded += len(chunk)
-        return discarded
+            try:
+                immutable_chunk = self._copy_source_bytes(chunk)
+            except (TypeError, ValueError):
+                self.read_errors += 1
+                self._pending.extend(buffered)
+                raise
+            if len(immutable_chunk) < requested:
+                self.partial_reads += 1
+            if self._discard_continuation_bytes:
+                discarded_prefix = min(
+                    self._discard_continuation_bytes,
+                    len(immutable_chunk),
+                )
+                immutable_chunk = immutable_chunk[discarded_prefix:]
+                self._discard_continuation_bytes -= discarded_prefix
+                self.discarded_bytes += discarded_prefix
+                alignment_discarded += discarded_prefix
+            buffered.extend(immutable_chunk)
+        discarded_now = min(len(buffered), bounded_maximum)
+        residual = buffered[discarded_now:]
+        if discarded_now % CANONICAL_SAMPLE_WIDTH_BYTES:
+            self._discard_continuation_bytes = 1
+        self._pending.extend(residual)
+        self.discarded_bytes += discarded_now
+        if discarded_now:
+            self._last_frame_hash = b""
+        return alignment_discarded + discarded_now
+
+    def snapshot(self) -> Dict[str, int | bool]:
+        return {
+            "total_low_level_reads": self.total_low_level_reads,
+            "valid_full_pcm_frames": self.valid_full_pcm_frames,
+            "valid_pcm_frames_delivered_to_vad": self.valid_full_pcm_frames,
+            "fresh_full_pcm_frames": self.valid_full_pcm_frames,
+            "partial_reads": self.partial_reads,
+            "empty_reads": self.empty_reads,
+            "read_errors": self.read_errors,
+            "discarded_bytes": self.discarded_bytes,
+            "zero_filled_bytes": self.zero_filled_bytes,
+            "repeated_frame_hashes": self.repeated_frame_hashes,
+            "mutable_buffer_reuse_detected": self.mutable_buffer_reuse_detected,
+            "valid_microphone_bytes_delivered_to_vad": (
+                self.valid_microphone_bytes_delivered_to_vad
+            ),
+            "read_sequence": self.valid_full_pcm_frames,
+            "live_frame_count": self.valid_full_pcm_frames,
+            "total_bytes_returned": self.valid_microphone_bytes_delivered_to_vad,
+            "total_live_bytes_read": self.valid_microphone_bytes_delivered_to_vad,
+            "last_source_frame_sequence": self.valid_full_pcm_frames,
+            "last_frame_was_replay": False,
+            "last_frame_bytes": (
+                self._expected_frame_bytes if self.valid_full_pcm_frames else 0
+            ),
+            "last_read_timestamp": self.last_read_timestamp,
+            "pending_partial_bytes": len(self._pending),
+            "pending_discard_alignment_bytes": self._discard_continuation_bytes,
+            "expected_frame_bytes": self._expected_frame_bytes,
+            "closed": self.closed,
+            "stream_ended": self.stream_ended,
+        }
+
+    def _set_expected_frame_bytes(self, frame_bytes: int) -> int:
+        if isinstance(frame_bytes, bool) or int(frame_bytes) <= 0:
+            raise ValueError("frame_bytes must be positive")
+        expected = int(frame_bytes)
+        if expected % CANONICAL_SAMPLE_WIDTH_BYTES:
+            raise ValueError("PCM frame bytes must contain complete S16_LE samples")
+        if self._expected_frame_bytes and expected != self._expected_frame_bytes:
+            raise ValueError("pcm_frame_size_changed")
+        self._expected_frame_bytes = expected
+        return expected
+
+    def _copy_source_bytes(self, value: Any) -> bytes:
+        if not isinstance(value, (bytes, bytearray, memoryview)):
+            raise TypeError("PCM reader returned a non-bytes payload")
+        mutable_source_id: Optional[int] = None
+        if isinstance(value, bytearray):
+            mutable_source_id = id(value)
+        elif isinstance(value, memoryview) and not value.readonly:
+            mutable_source_id = id(value.obj)
+        if mutable_source_id is not None:
+            if mutable_source_id == self._last_mutable_source_id:
+                self.mutable_buffer_reuse_detected += 1
+            self._last_mutable_source_id = mutable_source_id
+        actual_length = len(value)
+        return bytes(value[:actual_length])
 
     def close(self) -> None:
         if self.closed:
             return
-        self.closed = True
-        if self.process.poll() is None:
-            self.process.terminate()
+        cleanup_errors: list[str] = []
+
+        def process_returncode() -> Optional[int]:
             try:
-                self.process.wait(timeout=2.0)
+                value = self.process.poll()
+            except (OSError, RuntimeError) as error:
+                cleanup_errors.append(f"poll:{error.__class__.__name__}")
+                return None
+            return int(value) if value is not None else None
+
+        returncode = process_returncode()
+        if returncode is None:
+            try:
+                self.process.terminate()
+            except (OSError, RuntimeError) as error:
+                cleanup_errors.append(f"terminate:{error.__class__.__name__}")
+            try:
+                returncode = int(self.process.wait(timeout=2.0))
             except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=2.0)
-        if self.process.stderr is not None:
+                cleanup_errors.append("terminate_wait:TimeoutExpired")
+            except (OSError, RuntimeError) as error:
+                cleanup_errors.append(
+                    f"terminate_wait:{error.__class__.__name__}"
+                )
+            if returncode is None:
+                try:
+                    self.process.kill()
+                except (OSError, RuntimeError) as error:
+                    cleanup_errors.append(f"kill:{error.__class__.__name__}")
+                try:
+                    returncode = int(self.process.wait(timeout=2.0))
+                except subprocess.TimeoutExpired:
+                    cleanup_errors.append("kill_wait:TimeoutExpired")
+                except (OSError, RuntimeError) as error:
+                    cleanup_errors.append(
+                        f"kill_wait:{error.__class__.__name__}"
+                    )
+        if returncode is None:
+            returncode = process_returncode()
+        if returncode is not None and self.process.stderr is not None:
             try:
-                self.stderr = self.process.stderr.read(1000).decode("utf-8", errors="replace")
-            except (AttributeError, OSError):
+                self.stderr = self.process.stderr.read(1000).decode(
+                    "utf-8",
+                    errors="replace",
+                )
+            except (AttributeError, OSError, RuntimeError, ValueError):
                 self.stderr = ""
         for stream in (self.process.stdout, self.process.stderr):
             if stream is not None:
                 try:
                     stream.close()
-                except OSError:
-                    pass
+                except (OSError, RuntimeError) as error:
+                    cleanup_errors.append(
+                        f"pipe_close:{error.__class__.__name__}"
+                    )
+        if returncode is None:
+            try:
+                self.process.kill()
+            except (OSError, RuntimeError) as error:
+                cleanup_errors.append(f"final_kill:{error.__class__.__name__}")
+            try:
+                returncode = int(self.process.wait(timeout=2.0))
+            except (subprocess.TimeoutExpired, OSError, RuntimeError) as error:
+                cleanup_errors.append(
+                    f"final_wait:{error.__class__.__name__}"
+                )
+        if returncode is None:
+            returncode = process_returncode()
+        if returncode is None:
+            self.closed = False
+            raise RuntimeError(
+                "arecord_pcm_stream_cleanup_failed:"
+                + ",".join(cleanup_errors[-8:])
+            )
+        self.closed = True
 
 
 class SafePcmStreamRunner:
@@ -250,10 +495,16 @@ class DiagnosticPcmFrameSource:
 
     def read_frame(self, frame_bytes: int, timeout_seconds: float) -> bytes:
         frame = self.source.read_frame(frame_bytes, timeout_seconds)
-        if len(self.captured) + len(frame) > self.maximum_bytes:
+        if not isinstance(frame, (bytes, bytearray, memoryview)):
+            raise TypeError("diagnostic PCM source returned a non-bytes frame")
+        actual_length = len(frame)
+        immutable_frame = bytes(frame[:actual_length])
+        if actual_length != int(frame_bytes):
+            raise ValueError("diagnostic PCM source returned an incomplete frame")
+        if len(self.captured) + len(immutable_frame) > self.maximum_bytes:
             raise RuntimeError("diagnostic_pcm_buffer_limit_exceeded")
-        self.captured.extend(frame)
-        return frame
+        self.captured.extend(immutable_frame)
+        return immutable_frame
 
     def close(self) -> None:
         if self.close_source:
@@ -271,6 +522,7 @@ class RollingPcmFrameSource:
         source: Any,
         *,
         maximum_history_frames: int = 100,
+        expected_frame_bytes: int = CANONICAL_PCM_FRAME_BYTES,
         clock: Any = time.monotonic,
     ):
         if maximum_history_frames < 1 or maximum_history_frames > 250:
@@ -278,6 +530,9 @@ class RollingPcmFrameSource:
         self.source = source
         self.clock = clock
         self.maximum_history_frames = int(maximum_history_frames)
+        if isinstance(expected_frame_bytes, bool) or int(expected_frame_bytes) <= 0:
+            raise ValueError("expected_frame_bytes must be positive")
+        self.expected_frame_bytes = int(expected_frame_bytes)
         self._history: deque[tuple[int, bytes]] = deque(
             maxlen=self.maximum_history_frames
         )
@@ -293,6 +548,14 @@ class RollingPcmFrameSource:
         self.last_read_timestamp = 0.0
         self.candidate_reset_count = 0
         self.discarded_stale_byte_count = 0
+        self.partial_reads = 0
+        self.empty_reads = 0
+        self.read_errors = 0
+        self.zero_filled_bytes = 0
+        self.repeated_frame_hashes = 0
+        self.mutable_buffer_reuse_detected = 0
+        self._last_live_frame_hash = b""
+        self._last_mutable_source_id: Optional[int] = None
         self.closed = False
 
     def begin_window(self, pre_roll_frames: int) -> int:
@@ -304,6 +567,8 @@ class RollingPcmFrameSource:
     def read_frame(self, frame_bytes: int, timeout_seconds: float) -> bytes:
         if self.closed:
             raise EOFError("persistent PCM stream is closed")
+        if int(frame_bytes) != self.expected_frame_bytes:
+            raise ValueError("persistent PCM frame size changed")
         if self._replay:
             source_sequence, frame = self._replay.popleft()
             if len(frame) != frame_bytes:
@@ -315,18 +580,46 @@ class RollingPcmFrameSource:
                 replayed=True,
             )
             return frame
-        frame = self.source.read_frame(frame_bytes, timeout_seconds)
-        frame = bytes(frame)
+        try:
+            frame = self.source.read_frame(frame_bytes, timeout_seconds)
+        except EOFError:
+            self.empty_reads += 1
+            raise
+        except TimeoutError:
+            raise
+        except OSError:
+            self.read_errors += 1
+            raise
+        if not isinstance(frame, (bytes, bytearray, memoryview)):
+            raise TypeError("persistent PCM source returned a non-bytes frame")
+        mutable_source_id: Optional[int] = None
+        if isinstance(frame, bytearray):
+            mutable_source_id = id(frame)
+        elif isinstance(frame, memoryview) and not frame.readonly:
+            mutable_source_id = id(frame.obj)
+        if mutable_source_id is not None:
+            if mutable_source_id == self._last_mutable_source_id:
+                self.mutable_buffer_reuse_detected += 1
+            self._last_mutable_source_id = mutable_source_id
+        actual_length = len(frame)
+        immutable_frame = bytes(frame[:actual_length])
+        if actual_length != int(frame_bytes):
+            self.partial_reads += 1
+            raise ValueError("persistent PCM source returned an incomplete frame")
         self.live_frame_count += 1
         source_sequence = self.live_frame_count
-        self._history.append((source_sequence, frame))
-        self.total_live_bytes_read += len(frame)
+        current_hash = hashlib.sha256(immutable_frame).digest()
+        if self._last_live_frame_hash and current_hash == self._last_live_frame_hash:
+            self.repeated_frame_hashes += 1
+        self._last_live_frame_hash = current_hash
+        self._history.append((source_sequence, immutable_frame))
+        self.total_live_bytes_read += len(immutable_frame)
         self._record_returned_frame(
-            frame,
+            immutable_frame,
             source_sequence=source_sequence,
             replayed=False,
         )
-        return frame
+        return immutable_frame
 
     def _record_returned_frame(
         self,
@@ -355,11 +648,17 @@ class RollingPcmFrameSource:
         discard = getattr(self.source, "discard_available", None)
         discarded_bytes = int(discard(maximum_bytes)) if callable(discard) else 0
         self.discarded_stale_byte_count += max(0, discarded_bytes)
+        if discarded_bytes > 0:
+            self._last_live_frame_hash = b""
         if frame_bytes <= 0:
             return 0
         return math.ceil(max(0, discarded_bytes) / frame_bytes)
 
     def snapshot(self) -> Dict[str, int | float | bool]:
+        source_snapshot = getattr(self.source, "snapshot", None)
+        low_level = source_snapshot() if callable(source_snapshot) else {}
+        if not isinstance(low_level, dict):
+            low_level = {}
         return {
             "history_frame_count": len(self._history),
             "pending_replay_frame_count": len(self._replay),
@@ -374,16 +673,58 @@ class RollingPcmFrameSource:
             "last_read_timestamp": self.last_read_timestamp,
             "candidate_reset_count": self.candidate_reset_count,
             "discarded_stale_byte_count": self.discarded_stale_byte_count,
+            "total_low_level_reads": int(
+                low_level.get("total_low_level_reads", self.live_frame_count) or 0
+            ),
+            "valid_full_pcm_frames": self.live_frame_count,
+            "valid_pcm_frames_delivered_to_vad": self.read_sequence,
+            "fresh_full_pcm_frames": self.live_frame_count,
+            "partial_reads": int(
+                max(
+                    int(low_level.get("partial_reads", 0) or 0),
+                    self.partial_reads,
+                )
+            ),
+            "empty_reads": int(
+                max(
+                    int(low_level.get("empty_reads", 0) or 0),
+                    self.empty_reads,
+                )
+            ),
+            "read_errors": int(
+                max(
+                    int(low_level.get("read_errors", 0) or 0),
+                    self.read_errors,
+                )
+            ),
+            "discarded_bytes": int(low_level.get("discarded_bytes", 0) or 0),
+            "zero_filled_bytes": int(low_level.get("zero_filled_bytes", 0) or 0)
+            + self.zero_filled_bytes,
+            "repeated_frame_hashes": self.repeated_frame_hashes,
+            "mutable_buffer_reuse_detected": max(
+                int(low_level.get("mutable_buffer_reuse_detected", 0) or 0),
+                self.mutable_buffer_reuse_detected,
+            ),
+            "valid_microphone_bytes_delivered_to_vad": self.total_bytes_returned,
+            "fresh_microphone_bytes_delivered_to_vad": self.total_live_bytes_read,
+            "pending_partial_bytes": int(
+                low_level.get("pending_partial_bytes", 0) or 0
+            ),
+            "expected_frame_bytes": self.expected_frame_bytes,
             "closed": self.closed,
         }
 
     def close(self) -> None:
         if self.closed:
             return
+        try:
+            self.source.close()
+        except (OSError, RuntimeError):
+            self.closed = False
+            raise
         self.closed = True
         self._history.clear()
         self._replay.clear()
-        self.source.close()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.source, name)
@@ -461,7 +802,16 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
 
     def stop(self) -> MicrophoneResult:
         self.stop_count += 1
-        self.cancel_current()
+        try:
+            self.cancel_current()
+        except (OSError, RuntimeError) as error:
+            vad_stop = self.voice_activity_capture.stop()
+            return self._failure(
+                status="stop_failed",
+                text="Linux ALSA microphone adapter could not release capture ownership.",
+                error_message=f"{error.__class__.__name__}:{str(error)[:120]}",
+                data={"voice_activity_capture": vad_stop.to_dict()},
+            )
         vad_stop = self.voice_activity_capture.stop()
         self.started = False
         return self._success(
@@ -474,14 +824,17 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         with self._stream_lock:
             stream = self._active_stream
             handle = self._persistent_stream
-            self._active_stream = None
-            self._active_stream_owner = ""
-            self._persistent_stream = None
         if stream is not None:
             try:
                 stream.close()
             except (OSError, RuntimeError):
-                pass
+                raise
+        with self._stream_lock:
+            if self._active_stream is stream:
+                self._active_stream = None
+                self._active_stream_owner = ""
+            if self._persistent_stream is handle:
+                self._persistent_stream = None
         if handle is not None and not handle.closed:
             handle.closed = True
             self.persistent_stream_close_count += 1
@@ -528,7 +881,10 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 device=resolved_device,
             )
             raw_source = self.stream_runner.start(command)
-            source = RollingPcmFrameSource(raw_source)
+            source = RollingPcmFrameSource(
+                raw_source,
+                expected_frame_bytes=CANONICAL_PCM_FRAME_BYTES,
+            )
             self.persistent_stream_open_count += 1
             process_id = getattr(getattr(raw_source, "process", None), "pid", None)
             stream_id = f"alsa-pcm-stream-{self.persistent_stream_open_count}"
@@ -583,19 +939,19 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     text="Persistent ALSA stream is not the active stream.",
                     error_message="persistent_pcm_stream_not_active",
                 )
-            self._active_stream = None
-            self._active_stream_owner = ""
-            self._persistent_stream = None
         try:
             handle.frame_source.close()
         except (OSError, RuntimeError) as error:
-            handle.closed = True
-            self.persistent_stream_close_count += 1
             return self._failure(
                 status="stream_close_failed",
                 text="Persistent ALSA stream failed to close cleanly.",
                 error_message=f"{error.__class__.__name__}:{str(error)[:120]}",
             )
+        with self._stream_lock:
+            if self._persistent_stream is handle:
+                self._active_stream = None
+                self._active_stream_owner = ""
+                self._persistent_stream = None
         handle.closed = True
         self.persistent_stream_close_count += 1
         return self._success(
@@ -616,6 +972,22 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 "owner": self._active_stream_owner,
                 "requested_device": handle.requested_device if handle is not None else "",
                 "resolved_device": handle.resolved_device if handle is not None else "",
+                "pcm_contract": (
+                    {
+                        "sample_rate_hz": handle.sample_rate_hz,
+                        "channels": handle.channels,
+                        "sample_width_bytes": handle.sample_width_bytes,
+                        "sample_format": handle.sample_format,
+                        "frame_duration_ms": handle.frame_duration_ms,
+                        "samples_per_frame": handle.samples_per_frame,
+                        "frame_bytes": handle.frame_bytes,
+                        "format_verification_status": (
+                            handle.format_verification_status
+                        ),
+                    }
+                    if handle is not None
+                    else canonical_pcm_contract()
+                ),
                 "open_count": self.persistent_stream_open_count,
                 "close_count": self.persistent_stream_close_count,
                 "rolling_pre_roll": rolling() if callable(rolling) else {},
@@ -784,6 +1156,10 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 "timeout_handling": "safe_timeout_result",
                 "voice_activity_detection": "pcm_frame_rms_hysteresis",
                 "automatic_end_of_speech": True,
+                "canonical_pcm_contract": canonical_pcm_contract(),
+                "pcm_frame_ownership": "immutable_bytes_copy",
+                "partial_read_policy": "accumulate_until_complete_frame",
+                "empty_read_policy": "fail_without_zero_fill",
                 "background_listening": "disabled",
                 "stt": "not_configured",
                 "wake_word": "disabled",

@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+import wave
 
 import pytest
 
 from core import (
     LinuxAlsaMicrophoneAdapter,
+    RmsVoiceActivityCapture,
+    RollingPcmFrameSource,
     SafeProcessResult,
     VAD_STATUS_COMPLETED_AFTER_SILENCE,
     VAD_STATUS_DEVICE_ERROR,
     VAD_STATUS_NO_SPEECH_TIMEOUT,
+    VAD_STATUS_TIMEOUT,
     VoiceActivityCaptureRequestV1,
 )
 
@@ -58,6 +62,29 @@ class BufferedFrameSource(FrameSource):
         discarded = min(self.buffered_bytes, maximum_bytes)
         self.buffered_bytes -= discarded
         return discarded
+
+
+class FailureAfterFramesSource(FrameSource):
+    def __init__(self, frames, failure):
+        super().__init__(frames)
+        self.failure = failure
+
+    def read_frame(self, frame_bytes, timeout_seconds):
+        if self.frames:
+            return super().read_frame(frame_bytes, timeout_seconds)
+        raise self.failure
+
+
+class RetryCloseFrameSource(FrameSource):
+    def __init__(self, frames):
+        super().__init__(frames)
+        self.close_attempts = 0
+
+    def close(self):
+        self.close_attempts += 1
+        if self.close_attempts == 1:
+            raise RuntimeError("injected close failure")
+        super().close()
 
 
 class StreamRunner:
@@ -127,6 +154,66 @@ def test_persistent_stream_opens_once_across_rejected_and_accepted_candidates(tm
     ).success
     assert source.closed is True
     assert adapter.persistent_stream_snapshot()["close_count"] == 1
+
+
+def test_failed_persistent_close_retains_ownership_for_cleanup_retry():
+    source = RetryCloseFrameSource([])
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(source),
+    )
+    assert adapter.start().success
+    handle = adapter.open_persistent_stream(owner="standby_wake_listener")
+
+    first = adapter.close_persistent_stream(
+        handle,
+        owner="standby_wake_listener",
+    )
+
+    assert first.success is False
+    assert first.status == "stream_close_failed"
+    assert handle.closed is False
+    assert adapter.persistent_stream_snapshot()["active"] is True
+    assert adapter.persistent_stream_snapshot()["close_count"] == 0
+
+    second = adapter.close_persistent_stream(
+        handle,
+        owner="standby_wake_listener",
+    )
+
+    assert second.success is True
+    assert source.close_attempts == 2
+    assert source.closed is True
+    assert handle.closed is True
+    assert adapter.persistent_stream_snapshot()["active"] is False
+    assert adapter.persistent_stream_snapshot()["close_count"] == 1
+
+
+def test_failed_adapter_stop_reports_lock_risk_and_remains_retryable():
+    source = RetryCloseFrameSource([])
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(source),
+    )
+    assert adapter.start().success
+    adapter.open_persistent_stream(owner="standby_wake_listener")
+
+    first = adapter.stop()
+
+    assert first.success is False
+    assert first.status == "stop_failed"
+    assert adapter.started is True
+    assert adapter.persistent_stream_snapshot()["active"] is True
+
+    second = adapter.stop()
+
+    assert second.success is True
+    assert source.close_attempts == 2
+    assert source.closed is True
+    assert adapter.started is False
+    assert adapter.persistent_stream_snapshot()["active"] is False
 
 
 def test_persistent_stream_calibrates_without_reopening_or_closing_source(tmp_path):
@@ -574,3 +661,118 @@ def test_linux_alsa_capabilities_advertise_activity_capture():
     assert "arecord_pcm_rms_auto_stop" in capabilities.data["supported_modes"]
     assert capabilities.data["automatic_end_of_speech"] is True
     assert capabilities.data["background_listening"] == "disabled"
+
+
+def test_persistent_stream_delivers_exact_immutable_pcm_bytes_to_vad(tmp_path):
+    speech_frames = [frame(400), frame(-500), frame(600)]
+    source = FrameSource([*speech_frames, *([frame(20)] * 5)])
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="plughw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(source),
+    )
+    assert adapter.start().success
+    handle = adapter.open_persistent_stream(owner="standby_wake_listener")
+
+    result = adapter.record_persistent_until_silence(
+        handle,
+        tmp_path / "exact-pcm.wav",
+        calibration_enabled=False,
+        speech_start_rms=200,
+        speech_continue_rms=160,
+        silence_rms=120,
+        required_speech_frames=2,
+        required_continue_frames=1,
+        required_silence_frames=5,
+        silence_seconds=0.1,
+        speech_wait_timeout_seconds=0.1,
+        maximum_utterance_seconds=0.3,
+        pre_roll_seconds=0.0,
+    )
+
+    assert result.success
+    with wave.open(result.final_whisper_input_path, "rb") as wav_file:
+        delivered_pcm = wav_file.readframes(wav_file.getnframes())
+    assert delivered_pcm == b"".join(speech_frames)
+    assert result.data["valid_full_pcm_frames"] == 8
+    assert result.data["valid_microphone_bytes_delivered_to_vad"] == 8 * 640
+    assert result.data["fresh_microphone_bytes_delivered_to_vad"] == 8 * 640
+    assert result.data["zero_filled_bytes"] == 0
+    assert result.data["partial_reads"] == 0
+    assert handle.frame_source.snapshot()["read_sequence"] == 8
+    adapter.close_persistent_stream(handle, owner="standby_wake_listener")
+
+
+def test_direct_and_persistent_adapter_commands_share_canonical_pcm_contract(tmp_path):
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="plughw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(FrameSource([])),
+    )
+    assert adapter.start().success
+    direct = adapter._record_command(
+        "/usr/bin/arecord",
+        tmp_path / "direct.wav",
+        4,
+        "plughw:2,0",
+    )
+    handle = adapter.open_persistent_stream(owner="standby_wake_listener")
+    persistent = list(handle.command)
+
+    for flag, expected in (("-f", "S16_LE"), ("-c", "1"), ("-r", "16000")):
+        assert direct[direct.index(flag) + 1] == expected
+        assert persistent[persistent.index(flag) + 1] == expected
+    assert handle.sample_rate_hz == 16000
+    assert handle.channels == 1
+    assert handle.sample_width_bytes == 2
+    assert handle.samples_per_frame == 320
+    assert handle.frame_bytes == 640
+    adapter.close_persistent_stream(handle, owner="standby_wake_listener")
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_status"),
+    [
+        (EOFError("persistent PCM exhausted"), VAD_STATUS_DEVICE_ERROR),
+        (TimeoutError("persistent PCM timeout"), VAD_STATUS_TIMEOUT),
+    ],
+)
+def test_replay_only_then_input_absent_uses_fresh_live_frame_delta(
+    tmp_path,
+    failure,
+    expected_status,
+):
+    low_level = FailureAfterFramesSource([frame(20)], failure)
+    rolling = RollingPcmFrameSource(low_level, maximum_history_frames=2)
+    assert rolling.read_frame(640, timeout_seconds=1.0) == frame(20)
+    assert rolling.begin_window(1) == 1
+
+    detector = RmsVoiceActivityCapture()
+    detector.start()
+    result = detector.execute(
+        VoiceActivityCaptureRequestV1(
+            output_wav_path=str(tmp_path / "replay-only.wav"),
+            microphone_device="plughw:2,0",
+            frame_duration_ms=20,
+            calibration_enabled=False,
+            speech_start_rms=200,
+            speech_continue_rms=150,
+            silence_rms=120,
+            required_speech_frames=2,
+            required_continue_frames=1,
+            required_silence_frames=5,
+            silence_duration_seconds=0.1,
+            speech_wait_timeout_seconds=0.1,
+            maximum_utterance_seconds=0.2,
+            pre_roll_seconds=0.0,
+        ),
+        rolling,
+    )
+
+    assert result.status == expected_status
+    assert result.data["source_frames_read_delta"] == 1
+    assert result.data["source_live_frames_read_delta"] == 0
+    assert result.data["source_bytes_read_delta"] == 640
+    assert result.data["source_live_bytes_read_delta"] == 0
+    assert result.data["capture_failure_stage"] == "post_calibration_input_absent"
+    assert result.data["read_errors"] == 0

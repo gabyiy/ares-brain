@@ -585,6 +585,28 @@ class RmsVoiceActivityCapture:
                 if source_observable
                 else total_frames * frame_bytes
             )
+            integrity_counters = {}
+            for counter_name in (
+                "total_low_level_reads",
+                "valid_full_pcm_frames",
+                "valid_pcm_frames_delivered_to_vad",
+                "fresh_full_pcm_frames",
+                "partial_reads",
+                "empty_reads",
+                "read_errors",
+                "discarded_bytes",
+                "zero_filled_bytes",
+                "repeated_frame_hashes",
+                "mutable_buffer_reuse_detected",
+                "valid_microphone_bytes_delivered_to_vad",
+                "fresh_microphone_bytes_delivered_to_vad",
+            ):
+                counter_start = int(source_start_snapshot.get(counter_name, 0) or 0)
+                counter_end = int(source_end_snapshot.get(counter_name, 0) or 0)
+                integrity_counters[counter_name] = max(
+                    0,
+                    counter_end - counter_start,
+                )
             return {
                 "source_observability_available": source_observable,
                 "source_read_sequence_start": read_start,
@@ -634,6 +656,7 @@ class RmsVoiceActivityCapture:
                 ),
                 "maximum_observed_rms": round(max(all_levels or [0.0]), 3),
                 "frame_trace": _enrich_frame_trace(frame_trace, transitions),
+                **integrity_counters,
             }
 
         def append_captured_frame(value: bytes, frame_index: int) -> None:
@@ -689,7 +712,7 @@ class RmsVoiceActivityCapture:
                         "transitions": transitions,
                         "capture_failure_stage": (
                             "post_calibration_input_absent"
-                            if timeout_observability["source_frames_read_delta"] == 0
+                            if timeout_observability["source_live_frames_read_delta"] == 0
                             else "speech_candidate_assembly_failed"
                         ),
                     },
@@ -712,9 +735,28 @@ class RmsVoiceActivityCapture:
                         "transitions": transitions,
                         "capture_failure_stage": (
                             "post_calibration_input_absent"
-                            if device_observability["source_frames_read_delta"] == 0
+                            if device_observability["source_live_frames_read_delta"] == 0
                             else "speech_candidate_assembly_failed"
                         ),
+                    },
+                )
+            except (TypeError, ValueError) as error:
+                invalid_observability = observability_data()
+                return self._failure(
+                    request,
+                    VAD_STATUS_INVALID_AUDIO,
+                    f"invalid_pcm_stream:{str(error)[:120]}",
+                    started_at,
+                    speech_detected=speech_detected,
+                    frame_count=total_frames,
+                    levels=all_levels,
+                    ambient_levels=ambient_levels or calibration_levels,
+                    ambient_statistics=ambient_statistics,
+                    thresholds=thresholds,
+                    data={
+                        **invalid_observability,
+                        "transitions": transitions,
+                        "capture_failure_stage": "invalid_pcm_frame",
                     },
                 )
 
@@ -731,6 +773,7 @@ class RmsVoiceActivityCapture:
                     ambient_statistics=ambient_statistics,
                     thresholds=thresholds,
                     data={
+                        **observability_data(),
                         "expected_frame_bytes": frame_bytes,
                         "received_frame_bytes": len(frame or b""),
                         "transitions": transitions,

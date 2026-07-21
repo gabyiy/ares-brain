@@ -26,6 +26,7 @@ def inspect_linux_alsa_capture(
         "sample_rate_hz": CANONICAL_SAMPLE_RATE_HZ,
         "channels": CANONICAL_CHANNELS,
         "sample_width_bytes": CANONICAL_SAMPLE_WIDTH_BYTES,
+        "format_status": "requested_canonical_contract_not_negotiated_measurement",
         "mixer_capture_levels": [],
         "input_gain_controls": [],
         "automatic_gain_controls": [],
