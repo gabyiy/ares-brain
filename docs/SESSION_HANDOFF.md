@@ -1,16 +1,18 @@
 ARES Session Handoff
 
-Last Updated: 2026-07-20
+Last Updated: 2026-07-21
 
 Current Version
 
-ARES v2.09 - Natural Standby Wake Endpointing
+ARES v2.10 - Persistent PCM Integrity Diagnostics
 
 ---
 
 Current Status
 
-ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, persistent foreground runtime, and injected Raspberry Pi standby wake listener. Verified components include ALSA input/output, constrained Vosk standby recognition, bounded offline Whisper active-command STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production natural-language calculator routing, and central explicit long-term owner memory with confirmation-gated CRUD. Real Raspberry Pi evidence proves Vosk recognized `ares`, activated one session, spoke `Yes Gabi.`, and the active Whisper/calculator/Piper route returned `Result: 4`; `goodbye Ares` also succeeded in one sequence. The latest reliability run proved that one persistent ALSA stream and one calibration remained healthy and that real speech reached wake VAD, but only 6/10 prompts activated. Several candidates reached the old short post-start maximum, and valid one-utterance Vosk artifacts such as `ares ares` and `aris aris` were rejected. This checkpoint changes only wake utterance timing, terminal-silence confirmation, verifier pacing, and guarded identical-token collapse. The owner now has 5 seconds to begin speaking without consuming the 4-second post-start failsafe; 0.9 seconds of continuous calibrated quiet normally ends capture; and exactly two identical surface aliases may collapse once. Wake grammar, confidence thresholds, active Whisper, lifecycle controls, memory, skills, persistent stream ownership, and one-time calibration are unchanged. Quiet-room 9/10 wake reliability and the complete standby/calculator/return/reactivation/shutdown sequence remain owner-run Raspberry Pi requirements.
+ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, persistent foreground runtime, and injected Raspberry Pi standby wake listener. Verified components include ALSA input/output, constrained Vosk standby recognition, bounded offline Whisper active-command STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production natural-language calculator routing, and central explicit long-term owner memory with confirmation-gated CRUD. Real Raspberry Pi evidence proves Vosk recognized `ares`, activated one session, spoke `Yes Gabi.`, and the active Whisper/calculator/Piper route returned `Result: 4`; `goodbye Ares` also succeeded in one sequence. The latest reliability run kept one persistent ALSA stream and one calibration healthy and delivered speech frames to wake VAD, but only 6/10 prompts activated.
+
+Phase 107 instruments the lower raw-PCM boundary before any further wake tuning. Standby now declares one 16 kHz mono signed `S16_LE` contract with immutable 640-byte/20 ms frames, lossless partial-read assembly, no zero fill, bounded stale-byte removal with half-sample continuation handling, and exact low-level counters. `scripts/manual_diagnose_persistent_pcm.py` compares direct `arecord` with the persistent path and plays both captured WAVs only when explicitly requested. All 2172 local tests pass, proving deterministic framing and diagnostics but not Raspberry Pi amplitude. The physical root cause remains unclassified until the owner runs the direct-versus-persistent probe and confirms whether both WAVs contain clearly audible speech. The 9/10 wake run and full lifecycle are deferred until that prerequisite passes.
 
 Checkpoint root causes and fixes:
 
@@ -27,8 +29,10 @@ Checkpoint root causes and fixes:
 - Wake capture uses a separate 5-second `WAITING_FOR_SPEECH` phase with 0.3-second rolling pre-roll. Two qualifying 20 ms frames start the bounded utterance; owner waiting and replayed pre-roll do not consume its 4-second safety maximum. After speech, 0.9 seconds of continuous calibrated quiet confirms the endpoint, one genuine continuation-level frame resets that timer, and 0.15 seconds of post-speech grace is retained. Owner configuration may express these controls under `wake_capture` as `speech_wait_timeout_seconds`, `terminal_silence_seconds`, `maximum_speech_seconds`, `pre_roll_seconds`, `required_start_frames`, `required_continue_frames`, and `post_speech_grace_seconds`; they map to the established internal listener fields, preserving existing flat configurations while rejecting malformed, unknown, or conflicting definitions. Standby calibration still collects 150 canonical frames over three seconds, selects the quietest quarter, and uses that subset's median as the ambient floor. High-energy bursts are excluded; all-zero, clipped, malformed, missing, speech-dominated, insufficient-quiet, or above-limit input fails closed. One likely speech-contaminated sample retries once after buffer reset. Thresholds default to in-place recalibration after 300 seconds. Full-command VAD defaults remain unchanged.
 - Wake calibration now applies an immutable `conservative`, `normal`, or `sensitive` threshold policy to the greater of its robust floor and measured median. The default is `normal`; the hardware verifier can select `sensitive` with `--wake-vad-sensitive`. Every profile keeps ordered hysteresis gates above ambient and still requires two consecutive start frames, so the diagnostic override is not silence bypass or continuous Vosk.
 - The rolling source now exposes cumulative live/read frame sequences, returned/live byte totals, last-read timestamps, and replay flags without changing ownership. Diagnostic wake polls snapshot those counters before and after VAD and emit a bounded frame trace. Timing diagnostics report literal qualifying-speech duration separately from the complete post-start window and prefer the detector's first qualifying speech frame over the later `WAITING -> SPEECH` transition frame. A/B/C/D verifier stages separate no post-calibration input, below-threshold input, incomplete assembly, and recognizer rejection.
+- The persistent stream contract is 16,000 Hz, mono, signed little-endian `S16_LE`; 20 ms is exactly 320 samples and 640 bytes. Low-level chunks and rolling/pre-roll boundaries copy into immutable `bytes`. Short reads accumulate losslessly until a complete frame exists and incomplete/error paths never synthesize zero-filled bytes. Bounded stale draining removes all bytes already available; when it stops halfway through a two-byte sample, the continuation byte is discarded before fresh aligned frame assembly.
+- Integrity diagnostics expose `total_low_level_reads`, `valid_full_pcm_frames`, `partial_reads`, `empty_reads`, `read_errors`, `discarded_bytes`, `zero_filled_bytes`, `repeated_frame_hashes`, `mutable_buffer_reuse_detected`, and `valid_microphone_bytes_delivered_to_vad`. Equal consecutive frame hashes are not duplicate assembly; VAD-delivery bytes may include intentional pre-roll replay, while fresh live bytes are separate. Because headerless raw PCM cannot report an independently negotiated format, diagnostics label 16 kHz/mono/`S16_LE` as the requested canonical contract and use WAV headers only where a finalized WAV exists.
 - Calibration is RMS-only; WebRTC VAD is not used for this bootstrap. Diagnostics report frame duration/count, min/median/p20/p80/max, speech/non-speech counts, longest non-speech run, quiet coverage, bootstrap threshold, selected floor, clipping/zeros, bounded rolling energy summaries, derived hysteresis thresholds, quality reason, and attempt count. Fresh calibration remains authoritative; no cache is implemented.
-- Wake-only terminal silence advances for every frame below the continuation threshold. A genuine continuation-level frame returns `POSSIBLE_END_OF_SPEECH` to recording and increments an owner-visible reset count; ordinary calibrated quiet accumulates to the full 0.9-second endpoint. Frame-index assembly proves pre-roll, speech, and post-roll are appended once. A closed canonical WAV is trimmed only beyond 0.24 seconds leading and 0.20 seconds trailing padding, and candidate/backlog PCM is reset before the next attempt.
+- Wake-only terminal silence advances for every frame below the continuation threshold. A genuine continuation-level frame returns `POSSIBLE_END_OF_SPEECH` to recording and increments an owner-visible reset count; ordinary calibrated quiet accumulates to the full 0.9-second endpoint. Frame-index assembly proves pre-roll, speech, and post-roll are appended once. A closed canonical WAV is trimmed only beyond 0.24 seconds leading and 0.20 seconds trailing padding, and candidate/backlog PCM is reset before the next attempt. No-speech diagnostics use `beginning_clipped=false` with `beginning_clipped_status=not_applicable`; detected speech reports `no` for complete pre-roll and `yes` only for incomplete pre-roll.
 - Exact wake matching remains primary. Exactly two identical normalized alias tokens (`ares ares`, `aris aris`, or `aries aries`) may collapse only if both map to canonical ARES, no `[unk]`, prefix, or other token exists, the candidate is within the 4-second wake bound, and minimum-token confidence passes. Each Vosk word entry must normalize to exactly one token; a malformed multi-token word entry fails closed and cannot synthesize duplicate confidence evidence. Diagnostics expose original/canonical tokens plus minimum and mean confidence and preserve the recognized surface alias (`aris`/`aries`) separately from canonical `ares`; mixed aliases, `[unk] aris`, three repetitions, missing-confidence duplicates, and unrelated words still reject.
 - `--diagnostic-wake` exposes the local raw/cleaned/normalized transcript and classification only in the owner foreground terminal. Operational events, contracts, owner memory, and normal output remain transcript-free. Retention additionally requires `--retain-diagnostic-audio`, keeps one latest candidate by default, and never plays it automatically.
 - Wake candidate duration comes from the finalized canonical WAV rather than total listener wall time. Raw stream, assembled, normalized, recognizer-input, recognition, and overall processing durations are reported separately, and an over-limit or noncanonical WAV is rejected before Vosk.
@@ -49,6 +53,7 @@ Checkpoint root causes and fixes:
 - Stream recovery now follows `CLOSED -> OPENING -> CALIBRATING -> HEALTHY` or `FAILED`. Calibration failure closes the ALSA handle, clears rolling/candidate/Vosk state, releases capture ownership, and returns an infrastructure failure. A later successful reopen creates a new generation; older results cannot activate or appear in its diagnostics.
 - Each candidate creates a fresh constrained `KaldiRecognizer`; the loaded Vosk model is reused. No-speech, invalid-audio, calibration-failure, recovery, and exception paths clear ephemeral recognition state. Vosk model health uses deterministic silent PCM and consumes no owner microphone audio.
 - Startup health reports Vosk model, microphone adapter, whether ALSA opening succeeded, whether it remains open or was closed during failed-calibration cleanup, valid PCM receipt, calibration quality, listener health, stream generation, and last recovery reason independently. It preserves the actual calibration error rather than replacing it with `wake_recognizer_unhealthy`.
+- `scripts/manual_diagnose_persistent_pcm.py` is the mandatory Raspberry Pi prerequisite before another wake-reliability run. It acquires the foreground runtime lock, records matched bounded direct and persistent captures, saves both WAVs plus `pcm_integrity_report.json`, prints signed-sample/RMS/peak/repetition data and exact counters, and performs playback only with explicit `--playback`. Structural success and clearly audible speech in both WAVs are required; local tests do not prove hardware amplitude.
 - `scripts/manual_verify_standby_wake_hardware.py` performs process/lock preflight, uses an isolated temporary event-history store, retrieves only completed immutable attempts, and excludes infrastructure failures from its ten valid recognition attempts. It prints every attempt's capture metrics before applying that exclusion, so invalid-audio and infrastructure outcomes retain their timing, frame, duration, and completion reason. Before each prompt it clears only stale pre-prompt candidate history, prints `Ready for attempt N. Say 'Ares' now.`, keeps the existing PCM stream live for 0.6 seconds before accepting speech evidence, and waits 0.5 seconds after every completed capture, including an infrastructure retry. Neither pacing interval closes or recalibrates ALSA. `scripts/inspect_ares_runtime_state.py` lists matching ARES processes and both production locks; optional recovery never steals a live or unproven lock.
 
 - End-of-speech could reach `maximum_duration_reached` because the previous detector cleared all trailing-silence evidence for any frame above one static silence threshold. Adaptive calibration now derives three bounded thresholds, and `POSSIBLE_SILENCE` resumes only after consecutive frames above the continue threshold.
@@ -173,12 +178,13 @@ Confirmed Phase 3 foundation:
 - Exact configurable `Ares`/`Aris` grammar phrases with complete-candidate confidence and `[unk]` false-positive protection
 - Terminal-only wake diagnostics, one-attempt diagnosis, bounded latest-candidate retention, and finalized-WAV duration guards
 - Foreground `scripts/run_ares_standby_voice.py`, deterministic wake verifier, and bounded per-stage Raspberry Pi wake hardware helper
+- Owner-run `scripts/manual_diagnose_persistent_pcm.py` direct-versus-persistent comparison with canonical WAVs, signed-sample statistics, integrity counters, and explicit-only playback
 - One authoritative production event-history service with fail-safe telemetry append warnings and an in-memory dropped-event counter
 - Versioned owner-aware store locks, safe dead-owner inspection/recovery, and a separate foreground runtime process lock
 - Output-only acknowledgement TTS/playback with no fake single-turn input event
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Current pytest collection: 2110 tests.
+Current pytest collection: 2172 tests; all 2172 pass.
 
 Hardware-free Raspberry Pi verification after pulling:
 
@@ -194,37 +200,23 @@ python scripts/run_ares_brain_runtime_text.py
 
 The manual verifiers use fake clocks and deterministic injected adapters; they require no Raspberry Pi hardware. The text process remains unchanged. The standby-wake verifier injects microphone/Vosk standby results plus Whisper active-command, Piper, and speaker behavior while exercising the real runtime, manager, single-turn transport, CoreService, calculator, and owner-memory routes. Windows verification passed; post-pull Raspberry Pi Vosk wake execution remains owner-run.
 
-Raspberry Pi standby wake verification:
+Mandatory Raspberry Pi persistent-PCM prerequisite:
 
 ```bash
 cd ~/ares-brain
 source venv/bin/activate
 git pull --ff-only origin main
-python scripts/inspect_store_lock.py \
-  data/event_history.json \
-  --recover-if-owner-dead
-python scripts/inspect_store_lock.py \
-  data/runtime/ares_standby_voice.runtime \
-  --recover-if-owner-dead
-python -m pip install -r requirements.txt
-mkdir -p models/vosk
-curl -fL https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip -o /tmp/vosk-model-small-en-us-0.15.zip
-unzip -q /tmp/vosk-model-small-en-us-0.15.zip -d models/vosk
-rm /tmp/vosk-model-small-en-us-0.15.zip
-python scripts/manual_diagnose_wake_word.py \
+
+python scripts/manual_diagnose_persistent_pcm.py \
   --microphone-device plughw:2,0 \
   --speaker-device plughw:CARD=Device,DEV=0 \
-  --vosk-model models/vosk/vosk-model-small-en-us-0.15 \
-  --wake-min-confidence 0.55 \
-  --diagnostic-wake
-python scripts/manual_verify_standby_wake_hardware.py \
-  --diagnostic-wake \
-  --wake-vad-sensitive \
-  --wake-reliability-attempts 10
-python scripts/run_ares_standby_voice.py
+  --record-seconds 4 \
+  --playback
 ```
 
-The lock inspector reports a live owner without stealing it and recovers only an expired, proven-dead local owner. The wake diagnostic captures one candidate and exits. The hardware helper keeps one listener, stream, and calibration across all ten classification-only reliability prompts, requires at least 9/10, prompts immediately for a second exact phrase when medium confidence requires confirmation, then runs the real activation/calculator/standby/reactivation/shutdown lifecycle. It exits nonzero on failure and never replays owner capture. The production command stays in the foreground until `shutdown Ares` or Ctrl+C. Defaults are microphone `plughw:2,0`, speaker `plughw:CARD=Device,DEV=0`, `vosk-model-small-en-us-0.15`, immediate exact-wake confidence `0.55`, repeated-confirmation floor `0.40`, base English Whisper for active commands, male `en_US-hfc_male-medium`, 30-second inactivity, and no diagnostic output or retention. An event-history warning is non-fatal; a second foreground runtime is rejected as already running.
+Keep ARES stopped while this command acquires the foreground runtime lock. Follow both prompts: remain quiet for the first second, then speak loudly. The probe must report structural PCM integrity and a persistent spoken signal above its quiet stage, and both `direct_arecord.wav` and `persistent_stream.wav` must contain clearly audible speech. The JSON report and WAVs are kept under a unique `data/runtime/pcm_integrity/` run directory for owner inspection. Direct-valid/persistent-invalid evidence isolates the persistent path; both-invalid evidence points below it; both-valid evidence returns investigation to VAD/endpointing. Until this hardware comparison passes, the physical root cause remains unclassified and neither the ten-attempt wake verifier nor production standby voice is the next action.
+
+After the prerequisite passes, restore the existing Vosk model if needed, run `scripts/manual_diagnose_wake_word.py`, then run `python scripts/manual_verify_standby_wake_hardware.py --diagnostic-wake --wake-vad-sensitive --wake-reliability-attempts 10`. The helper must keep one listener, stream, and calibration across ten classification-only prompts, accept at least 9/10 clearly spoken attempts, and complete the activation/calculator/standby/reactivation/shutdown lifecycle. Do not claim this hardware proof before the PCM comparison and wake verifier both pass.
 
 Raspberry Pi post-pull verification:
 
@@ -2237,17 +2229,17 @@ Text REPL
 
 Immediate Next Milestone
 
-Pull the bounded active-Whisper checkpoint. Inspect the event-history and foreground runtime locks, recover only a proven-dead owner, and then require at least 9/10 quiet-room exact wake classifications with normally one stream open and one calibration across the reliability phase. Record the complete sequence: constrained Vosk wake, one output-only acknowledgement and session, visible active microphone acquisition, bounded active Whisper calculator result, `goodbye Ares` returning to standby without ordinary routing, second activation, and clean shutdown. A temporarily unavailable event-history append may warn but must not terminate that sequence, and active transcription must complete or fail visibly within its dedicated timeout. Runtime ownership remains in Capital/Core. Do not add boot startup, daemonization, barge-in, GPT, cloud services, autonomous City activation, or a second lifecycle/timer system.
+Pull Phase 107 and run the direct-versus-persistent PCM probe before any more wake reliability or threshold tuning. Require structural integrity, a persistent spoken stage above its quiet stage, and clearly audible speech in both WAVs. Classify the physical fault from that comparison; local passing tests cannot establish Raspberry Pi microphone amplitude. Only after the probe passes may the owner resume the 9/10 wake verifier and complete constrained Vosk wake, output-only acknowledgement, active Whisper calculator, exact standby, reactivation, and shutdown evidence. Runtime ownership remains in Capital/Core. Do not add boot startup, daemonization, barge-in, GPT, cloud services, autonomous City activation, or a second lifecycle/timer system.
 
 Next technical choices:
 
-- Pull latest `main`; inspect `data/event_history.json` and `data/runtime/ares_standby_voice.runtime` through `scripts/inspect_store_lock.py --recover-if-owner-dead`; then run `manual_verify_standby_wake_hardware.py --diagnostic-wake --wake-reliability-attempts 10` with the local Vosk/base-Whisper models and known ALSA devices.
+- Pull latest `main`, keep the foreground runtime stopped, and run `python scripts/manual_diagnose_persistent_pcm.py --microphone-device plughw:2,0 --speaker-device plughw:CARD=Device,DEV=0 --record-seconds 4 --playback`. Do not run the wake verifier until the probe passes and both saved WAVs are audible.
 - Inspect owner state only through `python scripts/inspect_owner_memory.py --summary --pending` or its focused flags; malformed durable or transient data must fail closed rather than be reset and executed.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
 - An exact `ares`, `aris`, or exact-slot `aries` result resolves to canonical `ares`. Confidence `>= 0.55` accepts; `0.40` through less than `0.55` requires two identical exact results within eight seconds; below `0.40`, `[unk]`, unrelated words, and partial words reject. Missing confidence is permitted only for one exact activation backed by validated VAD/canonical audio. Do not add output-driven aliases, substring matching, or fuzzy matching.
 - `core.AresIdentity` is the one owner-name alias authority for standby wake and active lifecycle controls. It replaces only whole alias tokens. `core.LifecycleControl` intercepts exact configured standby/shutdown phrases before `CoreService`, parser, planner, `SkillManager`, or skills.
 - Wake-candidate and active-command diagnostics are separate owner-terminal streams. The prior active-stage `2.260s`/`5.220s` maximum-duration display came from the stale wake result; active diagnostics now use the current `SingleTurnVoicePipeline` recording metadata. Command wait, capture ownership, speech, transcription, processing, and no-speech states are visible. Command VAD remains at its independently validated 15-second maximum and 0.9-second terminal silence.
-- Tune only validated wake adapter thresholds/durations if real hardware evidence requires it; keep exact phrase policy and Capital/Core lifecycle ownership.
+- After the PCM prerequisite passes, tune only validated wake adapter thresholds/durations if real hardware evidence requires it; keep exact phrase policy and Capital/Core lifecycle ownership.
 - Keep systemd/boot startup for the next separately reviewed checkpoint after hardware stability is demonstrated.
 - Keep GPT, embeddings, semantic/vector search, autonomous fact extraction, external weather/stocks/calendar APIs, real scheduling, and notifications out of scope until explicitly approved.
 - Keep additional STT engines, internet-backed adapters, notifications, and automatic PC actions out of scope until separately approved.
@@ -2290,7 +2282,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Current pytest collection: 2110 tests.
+- Current pytest collection: 2172 tests; all 2172 pass.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2553,8 +2545,8 @@ Next Planned Step
 
 - Architecture hardening before real hardware/adapters is complete: lifecycle, contracts, manifests, migrations, health/fallback, and measured resource budgets are implemented.
 - Phase 3 now includes the Capital-owned foreground standby wake runtime with one persistent ALSA stream per standby epoch, one-time/in-place calibration, rolling pre-roll, constrained Vosk grammar, exact `Ares`/`Aris`/`Aries` name slots, owner-local wake diagnostics, bounded confidence tiers, and finalized-WAV duration guards in deterministic verification.
-- Pull `main` on Raspberry Pi; inspect the event-history and runtime locks with `scripts/inspect_store_lock.py --recover-if-owner-dead`; then run `python scripts/manual_verify_standby_wake_hardware.py --diagnostic-wake --wake-reliability-attempts 10`. Require at least 9/10 prompted quiet-room wakes plus zero activation in the bounded silence/unrelated-speech checks. Then verify output-only acknowledgement, active Whisper calculator response, exact standby bypass, second activation, and exact shutdown cleanup even if event-history append emits a non-fatal warning.
-- Then run `python scripts/run_ares_standby_voice.py` in the foreground. Do not claim hardware wake verification until the owner records this evidence.
+- Pull `main` on Raspberry Pi, stop any foreground ARES process, and first run `python scripts/manual_diagnose_persistent_pcm.py --microphone-device plughw:2,0 --speaker-device plughw:CARD=Device,DEV=0 --record-seconds 4 --playback`. Require structural success and clearly audible speech in both direct and persistent WAVs; use their direct-versus-persistent result to classify the still-open physical root cause.
+- Only after that prerequisite passes, run `python scripts/manual_verify_standby_wake_hardware.py --diagnostic-wake --wake-vad-sensitive --wake-reliability-attempts 10`. Require at least 9/10 prompted quiet-room wakes plus zero activation in the bounded silence/unrelated-speech checks, then verify output-only acknowledgement, active Whisper calculator response, exact standby bypass, second activation, and exact shutdown cleanup even if event-history append emits a non-fatal warning. Do not claim hardware wake verification until the owner records both stages.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not enable default real weather/market API behavior, Google Calendar integration, GPT, embeddings, vision, scheduling, notifications, or background automation yet.

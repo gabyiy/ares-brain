@@ -103,6 +103,35 @@
     "channels": 1,
     "sample_width_bytes": 2,
     "frame_duration_ms": 20,
+    "pcm_integrity": {
+      "canonical_contract": {
+        "sample_rate_hz": 16000,
+        "channels": 1,
+        "sample_format": "S16_LE",
+        "sample_width_bytes": 2,
+        "frame_duration_ms": 20,
+        "samples_per_frame": 320,
+        "frame_bytes": 640
+      },
+      "frame_ownership": "immutable_bytes_copy_at_each_boundary",
+      "partial_read_policy": "accumulate_losslessly_until_complete_frame",
+      "empty_read_policy": "fail_without_zero_fill",
+      "stale_drain_policy": "remove_bounded_available_bytes_then_drop_half_sample_continuation",
+      "format_reporting_policy": "requested_contract_separate_from_negotiated_measurement",
+      "diagnostic_counters": [
+        "total_low_level_reads",
+        "valid_full_pcm_frames",
+        "partial_reads",
+        "empty_reads",
+        "read_errors",
+        "discarded_bytes",
+        "zero_filled_bytes",
+        "repeated_frame_hashes",
+        "mutable_buffer_reuse_detected",
+        "valid_microphone_bytes_delivered_to_vad"
+      ],
+      "hardware_prerequisite": "scripts/manual_diagnose_persistent_pcm.py"
+    },
     "calibration_enabled": true,
     "calibration_duration_seconds": 0.75,
     "speech_start_rms": 200,

@@ -574,7 +574,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `2110 tests`.
+Current pytest collection: `2172 tests`; all 2172 pass.
 
 Manual Brain Session Manager Verification
 
@@ -637,6 +637,18 @@ python -m pytest tests/test_wake_vad_profile.py \
   tests/test_event_history_store.py
 ```
 
+Before any further Raspberry Pi wake-reliability run, execute the persistent-PCM integrity probe. It compares a direct canonical `arecord` WAV with the exact persistent raw-stream path, asks for one quiet second followed by loud speech in each capture, saves both WAVs plus a JSON report under `data/runtime/pcm_integrity/`, and plays the two recordings only because this command explicitly requests `--playback`:
+
+```bash
+python scripts/manual_diagnose_persistent_pcm.py \
+  --microphone-device plughw:2,0 \
+  --speaker-device plughw:CARD=Device,DEV=0 \
+  --record-seconds 4 \
+  --playback
+```
+
+Do not continue to wake reliability unless the probe reports structural PCM integrity, the persistent spoken stage rises above its quiet stage, and both the direct and persistent WAVs are clearly audible. The direct-versus-persistent Raspberry Pi result is still needed to classify the physical root cause; local deterministic tests prove framing and counters, not real microphone amplitude.
+
 Then diagnose one local wake recognition. This explicit diagnostic prints the owner-local Vosk result and classification but does not write either to operational events or memory:
 
 ```bash
@@ -648,7 +660,7 @@ python scripts/manual_diagnose_wake_word.py \
   --diagnostic-wake
 ```
 
-The bounded Raspberry Pi hardware helper first checks silence and unrelated speech, then scores ten separately prompted wake classifications against a 9/10 target while keeping the runtime in `STANDBY` and reusing one listener, ALSA stream, and calibration. This isolates recognizer reliability from intentional microphone handoffs. It then guides real activation, calculator, standby, reactivation, and shutdown checks. It reports every miss, cumulative open/calibration counts and reasons, fails nonzero below the target or on any lifecycle failure, and never replays owner capture:
+Only after the persistent-PCM probe passes and both comparison WAVs are audible, the bounded Raspberry Pi hardware helper may check silence and unrelated speech, score ten separately prompted wake classifications against a 9/10 target while keeping the runtime in `STANDBY`, and reuse one listener, ALSA stream, and calibration. This isolates recognizer reliability from intentional microphone handoffs. It then guides real activation, calculator, standby, reactivation, and shutdown checks. It reports every miss, cumulative open/calibration counts and reasons, fails nonzero below the target or on any lifecycle failure, and never replays owner capture:
 
 ```bash
 python scripts/manual_verify_standby_wake_hardware.py \
@@ -705,7 +717,11 @@ Exact configured wake phrases remain the primary classifier. A narrowly guarded 
 
 At startup, ARES asks the owner to remain silent for approximately three seconds. `--diagnostic-wake` reports calibration frame count and duration, RMS minimum/median/p20/p80/maximum, quiet-sample coverage, speech/non-speech counts, longest non-speech run, bootstrap threshold, selected noise floor, clipping/zero counts, bounded rolling RMS summaries, derived thresholds, and the quality decision. During each bounded wake poll it additionally prints every VAD frame's source/read sequence, bytes, timestamp, RMS, start gate, threshold decision, consecutive evidence, and state transition. Cumulative source sequences and byte counts prove whether live PCM continued after calibration. Failures are separated into: no post-calibration frames, frames present but below threshold, speech evidence present but candidate assembly failed, and an assembled candidate rejected by Vosk. This detail is terminal-only under diagnostic mode and is bounded to 512 frames; normal production output remains quiet. The hardware helper also reports whether ALSA opened and was later closed during cleanup, valid PCM receipt, calibration quality, capture format, read-only capture level, microphone boost/input gain, and detectable AGC lines. Extreme gain produces an actionable warning; ARES never changes mixer settings automatically.
 
-`config/modules.example.json` records the validated listener defaults. Owner-facing configuration may group the phase controls under `standby_wake_listener.wake_capture` using `speech_wait_timeout_seconds: 5.0`, `terminal_silence_seconds: 0.9`, `maximum_speech_seconds: 4.0`, `pre_roll_seconds: 0.3`, `required_start_frames: 2`, `required_continue_frames: 1`, and `post_speech_grace_seconds: 0.15`. These names map to the established internal listener fields, so existing flat configurations remain compatible; unknown nested names, malformed mappings, and duplicate flat/nested definitions fail closed. The generic module-loader entry remains disabled so importing or booting unrelated ARES paths cannot start capture; the owner-run foreground command explicitly constructs and owns the listener.
+The persistent standby stream has one explicit raw-PCM contract: 16,000 Hz, mono, signed 16-bit little-endian `S16_LE`; each 20 ms VAD frame contains exactly 320 samples and 640 bytes. Every low-level chunk and every rolling/pre-roll boundary takes an immutable `bytes` copy. Short pipe reads are accumulated losslessly until one complete frame exists; EOF, read errors, and incomplete frames fail without synthesizing zero-filled audio. Pre-prompt stale draining removes all bounded bytes already available instead of retaining a partial stale VAD frame. If the drain ends halfway through one two-byte sample, the matching continuation byte is discarded before fresh PCM assembly resumes, so every delivered sample and 640-byte VAD frame remains aligned. Owner-terminal diagnostics expose `total_low_level_reads`, `valid_full_pcm_frames`, `partial_reads`, `empty_reads`, `read_errors`, `discarded_bytes`, `zero_filled_bytes`, `repeated_frame_hashes`, `mutable_buffer_reuse_detected`, and `valid_microphone_bytes_delivered_to_vad`. Repeated hashes describe consecutive equal microphone frames and are not the same as duplicate VAD assembly. VAD-delivery bytes include intentional rolling pre-roll replay; fresh live bytes remain separately observable.
+
+Raw `arecord -t raw` output has no header from which ARES can independently read a negotiated rate or channel layout. Diagnostics therefore label 16 kHz/mono/`S16_LE` as the requested canonical contract, not a measured negotiated hardware format. The direct comparison WAV exposes its actual header, and the diagnostic's serialized persistent WAV is revalidated after capture. A no-speech attempt may retain zero of the expected pre-roll without implying clipping: `beginning_clipped=false` and `beginning_clipped_status=not_applicable`. With detected speech, complete pre-roll reports `no`; only detected speech with incomplete pre-roll reports `yes`.
+
+`config/modules.example.json` records the validated listener defaults. Owner-facing configuration may group the phase controls under `standby_wake_listener.wake_capture` using `speech_wait_timeout_seconds: 5.0`, `terminal_silence_seconds: 0.9`, `maximum_speech_seconds: 4.0`, `pre_roll_seconds: 0.3`, `required_start_frames: 2`, `required_continue_frames: 1`, and `post_speech_grace_seconds: 0.15`. These names map to the established internal listener fields, so existing flat configurations remain compatible; unknown nested names, malformed mappings, and duplicate flat/nested definitions fail closed. The descriptive `voice_activity_capture.pcm_integrity` block records the fixed canonical contract and implementation policies; it is not a second tunable standby-listener mapping and therefore does not weaken strict wake configuration. The generic module-loader entry remains disabled so importing or booting unrelated ARES paths cannot start capture; the owner-run foreground command explicitly constructs and owns the listener.
 
 Hardware-free runtime verification after pulling on Raspberry Pi:
 
@@ -755,7 +771,7 @@ On Windows development machines, use `py` if needed:
 py scripts\manual_verify_linux_alsa_microphone.py
 ```
 
-The script uses the same `LinuxAlsaMicrophoneAdapter` path as Voice City. It does not run Whisper, Vosk, speech-to-text, wake word, GPT, internet access, speaker/TTS, or background listening.
+The script uses the same `LinuxAlsaMicrophoneAdapter` fixed-WAV path as Voice City. It does not run Whisper, Vosk, speech-to-text, wake word, GPT, internet access, speaker/TTS, or background listening. For the headerless persistent standby path, use the mandatory `scripts/manual_diagnose_persistent_pcm.py` comparison described above before another wake-reliability run.
 
 Raspberry Pi Whisper Runtime Preparation
 
@@ -2524,6 +2540,13 @@ Phase 106
 - The verifier now uses an explicit ready prompt, a 0.6-second live-stream readiness interval, and a 0.5-second inter-attempt pause without reopening or recalibrating ALSA. Exactly two identical configured alias tokens may collapse to one activation; mixed aliases, extra words, unknown tokens, and three repetitions still reject.
 - Owner-facing `wake_capture` names now map to the established listener fields without breaking existing flat configuration. Diagnostics distinguish literal speech duration from the full post-start window and preserve the first qualifying frame. Invalid-audio/infrastructure retries print metrics and receive the same 0.5-second pacing as recognition attempts. Malformed multi-token Vosk word entries fail closed, while accepted duplicates retain their true surface alias in diagnostics.
 - Current deterministic collection is 2110 tests. The quiet-room 9/10 target and complete production lifecycle still require owner-run Raspberry Pi microphone verification.
+
+Phase 107
+
+- The remaining Raspberry Pi question is now below VAD and Vosk: a direct `arecord` capture must be compared with the exact persistent raw-PCM path before another reliability run. `scripts/manual_diagnose_persistent_pcm.py` records a one-second quiet stage followed by loud speech through both paths, saves canonical comparison WAVs and a JSON report, prints signed-sample/RMS/repetition statistics and low-level counters, and optionally plays only those explicitly requested files.
+- Standby raw PCM now has one shared 16 kHz mono signed `S16_LE` contract: 20 ms equals 320 samples and 640 bytes. Low-level partial reads assemble losslessly into complete immutable frames, boundary copies prevent mutable-buffer aliasing, and no error path zero-fills missing bytes. Bounded stale draining removes every available stale byte; a half-sample boundary causes its one continuation byte to be discarded before aligned fresh-frame assembly. Diagnostics distinguish the requested raw contract from independently observed WAV headers rather than claiming a negotiated hardware format.
+- The persistent path exposes `total_low_level_reads`, `valid_full_pcm_frames`, `partial_reads`, `empty_reads`, `read_errors`, `discarded_bytes`, `zero_filled_bytes`, `repeated_frame_hashes`, `mutable_buffer_reuse_detected`, and `valid_microphone_bytes_delivered_to_vad`. No-speech diagnostics report beginning clipping as `not_applicable`; detected speech reports `no` for complete pre-roll and `yes` only for incomplete pre-roll.
+- All 2172 collected tests pass locally. This proves deterministic framing, ownership copies, alignment, counter propagation, and diagnostic behavior; it does not prove Raspberry Pi microphone amplitude. The physical root cause remains unclassified until the owner runs the direct-versus-persistent probe, hears both WAVs, and records whether speech changes both signals. Wake reliability is deferred until that prerequisite passes.
 
 Future phases retain camera understanding, face/object recognition, ROS2, Jetson Orin migration, and autonomous navigation as unimplemented plans.
 
