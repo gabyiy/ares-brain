@@ -1876,6 +1876,9 @@ class LinuxStandbyWakeListener:
             speech_start_timestamp_monotonic=float(
                 audio.get("speech_start_timestamp_monotonic", 0.0) or 0.0
             ),
+            speech_duration_seconds=float(
+                audio.get("speech_duration_seconds", 0.0) or 0.0
+            ),
             active_speech_window_seconds=float(
                 audio.get("active_speech_window_seconds", 0.0) or 0.0
             ),
@@ -2166,6 +2169,9 @@ class LinuxStandbyWakeListener:
             speech_start_timestamp_monotonic=float(
                 audio.get("speech_start_timestamp_monotonic", 0.0) or 0.0
             ),
+            speech_duration_seconds=float(
+                audio.get("speech_duration_seconds", 0.0) or 0.0
+            ),
             active_speech_window_seconds=float(
                 audio.get("active_speech_window_seconds", 0.0) or 0.0
             ),
@@ -2314,14 +2320,19 @@ def _capture_audio_metadata(capture: Any) -> Dict[str, Any]:
     transitions = data.get("transitions", [])
     if not isinstance(transitions, list):
         transitions = []
-    first_speech_frame = next(
-        (
-            int(item.get("frame", 0) or 0)
-            for item in transitions
-            if isinstance(item, dict) and item.get("to") == "SPEECH"
-        ),
+    first_speech_frame = max(
         0,
+        int(getattr(capture, "first_speech_frame", 0) or 0),
     )
+    if first_speech_frame == 0:
+        first_speech_frame = next(
+            (
+                max(0, int(item.get("frame", 0) or 0))
+                for item in transitions
+                if isinstance(item, dict) and item.get("to") == "SPEECH"
+            ),
+            0,
+        )
     frame_duration_seconds = float(data.get("frame_duration_ms", 0) or 0) / 1000.0
     expected_pre_roll_frames = (
         int(round(float(data.get("pre_roll_frames", 0) or 0)))
@@ -2375,6 +2386,9 @@ def _capture_audio_metadata(capture: Any) -> Dict[str, Any]:
         ),
         "speech_start_timestamp_monotonic": float(
             getattr(capture, "speech_start_timestamp_monotonic", 0.0) or 0.0
+        ),
+        "speech_duration_seconds": float(
+            getattr(capture, "speech_duration_seconds", 0.0) or 0.0
         ),
         "active_speech_window_seconds": float(
             getattr(capture, "active_speech_window_seconds", 0.0) or 0.0

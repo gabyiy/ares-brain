@@ -381,6 +381,46 @@ def test_wake_configuration_defaults_are_bounded_and_raspberry_pi_safe():
     assert config.retain_diagnostic_audio is False
 
 
+def test_wake_capture_mapping_uses_owner_facing_phase_names():
+    config = WakeListenerConfig.from_mapping(
+        {
+            "wake_capture": {
+                "speech_wait_timeout_seconds": 5.0,
+                "terminal_silence_seconds": 0.9,
+                "maximum_speech_seconds": 4.0,
+                "pre_roll_seconds": 0.3,
+                "required_start_frames": 2,
+                "required_continue_frames": 1,
+                "post_speech_grace_seconds": 0.15,
+            }
+        }
+    )
+
+    assert config.speech_wait_timeout_seconds == 5.0
+    assert config.silence_duration_seconds == 0.9
+    assert config.maximum_utterance_seconds == 4.0
+    assert config.pre_roll_seconds == 0.3
+    assert config.required_speech_frames == 2
+    assert config.required_continue_frames == 1
+    assert config.speech_end_padding_seconds == 0.15
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"wake_capture": "invalid"},
+        {"wake_capture": {"unknown": 1}},
+        {
+            "maximum_utterance_seconds": 4.0,
+            "wake_capture": {"maximum_speech_seconds": 4.0},
+        },
+    ],
+)
+def test_wake_capture_mapping_rejects_malformed_or_conflicting_fields(value):
+    with pytest.raises(ValueError):
+        WakeListenerConfig.from_mapping(value)
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -1416,6 +1456,82 @@ def test_local_wake_diagnostics_are_explicit_and_not_returned_in_contract(tmp_pa
     assert diagnostics.raw_capture_duration_seconds == pytest.approx(1.4, abs=0.001)
     assert diagnostics.whisper_input_duration_seconds == pytest.approx(0.8, abs=0.001)
     assert "Okay, Aris" not in str(result.to_dict())
+    listener.stop()
+
+
+def test_wake_timing_diagnostics_preserve_literal_speech_duration_and_first_frame(
+    tmp_path,
+):
+    class TimedMicrophone(FakeMicrophone):
+        def record_until_silence(self, output_path, **kwargs):
+            capture = super().record_until_silence(output_path, **kwargs)
+            capture.speech_duration_seconds = 0.16
+            capture.active_speech_window_seconds = 1.06
+            capture.first_speech_frame = 11
+            capture.last_speech_frame = 18
+            capture.data = {
+                "frame_duration_ms": 20,
+                "pre_roll_frames": 15,
+                "transitions": [
+                    {
+                        "from": "WAITING",
+                        "to": "SPEECH",
+                        "frame": 12,
+                    }
+                ],
+            }
+            return capture
+
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=TimedMicrophone(candidate_seconds=0.8),
+        wake_recognizer=FakeWakeRecognizer("Ares"),
+        config=WakeListenerConfig(diagnostic_wake=True),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+
+    attempt = listener.listen_attempt(_request(diagnostic_wake=True))
+
+    assert attempt.result.speech_duration_seconds == pytest.approx(0.16)
+    assert attempt.result.active_speech_window_seconds == pytest.approx(1.06)
+    assert attempt.result.first_speech_frame == 11
+    assert attempt.result.audio_metadata["speech_duration_seconds"] == pytest.approx(
+        0.16
+    )
+    assert attempt.diagnostics.speech_duration_seconds == pytest.approx(0.16)
+    assert attempt.diagnostics.first_speech_frame == 11
+    listener.stop()
+
+
+def test_wake_first_speech_frame_falls_back_to_validated_transition(tmp_path):
+    class TransitionOnlyMicrophone(FakeMicrophone):
+        def record_until_silence(self, output_path, **kwargs):
+            capture = super().record_until_silence(output_path, **kwargs)
+            capture.data = {
+                "frame_duration_ms": 20,
+                "pre_roll_frames": 15,
+                "transitions": [
+                    {
+                        "from": "WAITING",
+                        "to": "SPEECH",
+                        "frame": 12,
+                    }
+                ],
+            }
+            return capture
+
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=TransitionOnlyMicrophone(candidate_seconds=0.8),
+        wake_recognizer=FakeWakeRecognizer("Ares"),
+        config=WakeListenerConfig(diagnostic_wake=True),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+
+    attempt = listener.listen_attempt(_request(diagnostic_wake=True))
+
+    assert attempt.result.first_speech_frame == 12
+    assert attempt.diagnostics.first_speech_frame == 12
     listener.stop()
 
 

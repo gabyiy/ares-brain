@@ -59,6 +59,15 @@ DEFAULT_WAKE_MEDIUM_CONFIDENCE = 0.40
 
 _CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
 _PREFIX_PATTERN = re.compile(r"^[a-z0-9]+(?: [a-z0-9]+){0,2}$")
+_WAKE_CAPTURE_CONFIG_FIELDS = {
+    "speech_wait_timeout_seconds": "speech_wait_timeout_seconds",
+    "terminal_silence_seconds": "silence_duration_seconds",
+    "maximum_speech_seconds": "maximum_utterance_seconds",
+    "pre_roll_seconds": "pre_roll_seconds",
+    "required_start_frames": "required_speech_frames",
+    "required_continue_frames": "required_continue_frames",
+    "post_speech_grace_seconds": "speech_end_padding_seconds",
+}
 
 
 @dataclass(frozen=True)
@@ -166,6 +175,7 @@ class WakeLocalDiagnostics:
     capture_failure_stage: str = ""
     waiting_duration_before_speech_seconds: float = 0.0
     speech_start_timestamp_monotonic: float = 0.0
+    speech_duration_seconds: float = 0.0
     active_speech_window_seconds: float = 0.0
     terminal_silence_confirmed: bool = False
     terminal_silence_reset_count: int = 0
@@ -449,11 +459,35 @@ class WakeListenerConfig:
             return value
         if not isinstance(value, Mapping):
             raise ValueError("standby_wake_listener configuration must be a mapping")
+        normalized = dict(value)
+        wake_capture = normalized.pop("wake_capture", None)
         allowed = set(cls.__dataclass_fields__)
-        unknown = sorted(str(key) for key in value if key not in allowed)
+        unknown = sorted(str(key) for key in normalized if key not in allowed)
         if unknown:
             raise ValueError(f"Unknown standby_wake_listener configuration fields: {', '.join(unknown)}")
-        return cls(**dict(value))
+        if wake_capture is not None:
+            if not isinstance(wake_capture, Mapping):
+                raise ValueError("wake_capture configuration must be a mapping")
+            unknown_capture = sorted(
+                str(key)
+                for key in wake_capture
+                if key not in _WAKE_CAPTURE_CONFIG_FIELDS
+            )
+            if unknown_capture:
+                raise ValueError(
+                    "Unknown wake_capture configuration fields: "
+                    + ", ".join(unknown_capture)
+                )
+            for external_name, field_name in _WAKE_CAPTURE_CONFIG_FIELDS.items():
+                if external_name not in wake_capture:
+                    continue
+                if field_name in normalized:
+                    raise ValueError(
+                        "wake_capture field conflicts with standby_wake_listener field: "
+                        f"{external_name}"
+                    )
+                normalized[field_name] = wake_capture[external_name]
+        return cls(**normalized)
 
     def to_dict(self) -> Dict[str, Any]:
         return {

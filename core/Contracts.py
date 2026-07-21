@@ -1095,6 +1095,7 @@ class StandbyListenResultV1(VersionedContract):
     duplicate_collapse_used: bool = False
     waiting_duration_before_speech_seconds: float = 0.0
     speech_start_timestamp_monotonic: float = 0.0
+    speech_duration_seconds: float = 0.0
     active_speech_window_seconds: float = 0.0
     terminal_silence_confirmed: bool = False
     terminal_silence_reset_count: int = 0

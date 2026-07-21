@@ -92,12 +92,15 @@ def test_exact_constrained_wake_phrases_are_accepted(text):
         "areas",
         "air",
         "I spoke to Ares yesterday",
+        "I spoke to Aris",
         "where is ares",
+        "ares calculate",
         "ares is a greek god",
         "paris",
         "harris",
         "okay",
         "tell me about aries",
+        "aries horoscope",
         "what is the aries zodiac sign",
     ],
 )
@@ -181,6 +184,20 @@ def test_two_token_canonical_wake_identity_collapses_only_with_audio_safeguards(
     assert result.minimum_word_confidence == pytest.approx(0.82)
     assert result.mean_word_confidence == pytest.approx(0.82)
     assert result.canonical_confidence == pytest.approx(0.82)
+    assert result.selected_alias == text.split()[0]
+
+
+def test_duplicate_wake_requires_one_confidence_entry_per_vosk_token():
+    result = _classify(
+        "ares ares",
+        words=[{"word": "ares ares", "conf": 0.99}],
+        audio_duration_seconds=0.8,
+    )
+
+    assert not result.wake_detected
+    assert result.rejection_reason == "invalid_word_token_structure"
+    assert not result.duplicate_collapse_used
+    assert result.command_category == "non_wake"
 
 
 @pytest.mark.parametrize(

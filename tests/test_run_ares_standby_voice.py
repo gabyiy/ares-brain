@@ -719,6 +719,66 @@ def test_hardware_reliability_mode_pauses_between_candidates_and_prints_vad_metr
     assert "duplicate_collapse=" in text
 
 
+def test_hardware_prompt_flushes_before_ready_and_never_after_ready_point():
+    trace = []
+
+    class OrderedPromptListener(ReliabilityListener):
+        def prepare_for_owner_prompt(self):
+            trace.append("flush_stale")
+            return super().prepare_for_owner_prompt()
+
+        def listen_once(self, request):
+            trace.append("listen")
+            return super().listen_once(request)
+
+    runtime = ReliabilityRuntime([True, True])
+    runtime.standby_wake_listener = OrderedPromptListener([True, True])
+
+    def output(line):
+        if line.startswith("Ready for attempt"):
+            trace.append("ready_prompt")
+
+    def sleep(seconds):
+        trace.append(f"sleep:{seconds:.1f}")
+
+    assert manual_verify_standby_wake_hardware._run_wake_reliability(
+        runtime,
+        2,
+        output_func=output,
+        diagnostic_enabled=True,
+        wake_transcripts=[],
+        pause_seconds=0.5,
+        prompt_ready_delay_seconds=0.6,
+        sleeper=sleep,
+    )
+    assert trace == [
+        "flush_stale",
+        "ready_prompt",
+        "sleep:0.6",
+        "listen",
+        "sleep:0.5",
+        "flush_stale",
+        "ready_prompt",
+        "sleep:0.6",
+        "listen",
+    ]
+
+
+def test_hardware_wake_metrics_print_literal_speech_duration():
+    output = []
+    manual_verify_standby_wake_hardware._print_wake_capture_metrics(
+        output.append,
+        StandbyListenResultV1(
+            speech_duration_seconds=0.16,
+            active_speech_window_seconds=1.06,
+        ),
+        WakeLocalDiagnostics(),
+    )
+
+    assert "speech_duration=0.160s" in "\n".join(output)
+    assert "speech_window=1.060s" in "\n".join(output)
+
+
 def test_hardware_reliability_mode_fails_below_nine_of_ten():
     output = []
     runtime = ReliabilityRuntime([True] * 8 + [False] * 2)
@@ -758,8 +818,13 @@ def test_hardware_reliability_excludes_bounded_infrastructure_failure_from_denom
                     success=False,
                     status="failed",
                     infrastructure_failure=True,
+                    speech_detected=True,
                     error_code="calibration_failed",
-                    stop_reason="calibration_failed",
+                    stop_reason="invalid_audio",
+                    capture_stop_reason="invalid_audio",
+                    capture_completion_reason="invalid_audio",
+                    waiting_duration_before_speech_seconds=0.4,
+                    speech_duration_seconds=0.08,
                     stream_open_count=1,
                     calibration_count=1,
                     stream_instance_id=self.stream_id,
@@ -771,6 +836,7 @@ def test_hardware_reliability_excludes_bounded_infrastructure_failure_from_denom
             return super().listen_once(request)
 
     output = []
+    pauses = []
     runtime = ReliabilityRuntime([])
     runtime.standby_wake_listener = RecoveringListener()
     assert manual_verify_standby_wake_hardware._run_wake_reliability(
@@ -779,10 +845,14 @@ def test_hardware_reliability_excludes_bounded_infrastructure_failure_from_denom
         output_func=output.append,
         diagnostic_enabled=True,
         wake_transcripts=[],
+        pause_seconds=0.5,
+        sleeper=pauses.append,
     )
     assert any("excluded from recognition denominator" in line for line in output)
     assert any("10/10 accepted" in line for line in output)
     assert any("infrastructure_failures=1" in line for line in output)
+    assert any("completion=invalid_audio" in line for line in output)
+    assert pauses == [0.6, 0.5] * 10 + [0.6]
 
 
 def test_hardware_reliability_mode_prompts_and_consumes_second_confirmation_candidate():
@@ -823,6 +893,7 @@ def test_hardware_reliability_mode_prompts_and_consumes_second_confirmation_cand
             return self.last_result
 
     output = []
+    pauses = []
     runtime = ReliabilityRuntime([])
     runtime.standby_wake_listener = ConfirmingListener()
 
@@ -832,6 +903,9 @@ def test_hardware_reliability_mode_prompts_and_consumes_second_confirmation_cand
         output_func=output.append,
         diagnostic_enabled=True,
         wake_transcripts=[],
+        pause_seconds=0.5,
+        prompt_ready_delay_seconds=0.6,
+        sleeper=pauses.append,
     )
     assert runtime.standby_wake_listener.index == 2
     assert any(
@@ -841,6 +915,7 @@ def test_hardware_reliability_mode_prompts_and_consumes_second_confirmation_cand
     assert any("Confirmation result: accepted; count=2/2" in line for line in output)
     assert any("1/1 accepted" in line for line in output)
     assert runtime.standby_wake_listener.prompt_prepare_count == 2
+    assert pauses == [0.6, 0.5, 0.6]
 
 
 def test_hardware_reliability_excludes_confirmation_infrastructure_failure():

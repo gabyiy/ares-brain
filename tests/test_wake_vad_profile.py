@@ -11,6 +11,7 @@ from core import (
     VAD_STATUS_MAXIMUM_DURATION,
     VoiceActivityCaptureRequestV1,
     WakeListenerConfig,
+    classify_constrained_recognition,
 )
 
 
@@ -187,6 +188,40 @@ def test_three_seconds_of_waiting_does_not_consume_wake_speech_budget(tmp_path):
     assert result.waiting_duration_before_speech_seconds == pytest.approx(3.0)
     assert result.active_speech_window_seconds < config.maximum_utterance_seconds
     assert result.completion_reason == "completed_after_terminal_silence"
+
+
+def test_three_seconds_of_silence_then_ares_is_captured_and_accepted(tmp_path):
+    config = WakeListenerConfig(
+        calibration_enabled=False,
+        calibration_duration_seconds=0.0,
+    )
+    waiting_frames = math.ceil(3.0 / 0.02)
+    quiet_frames = math.ceil(config.silence_duration_seconds / 0.02)
+    frames = (
+        [pcm_frame(40)] * waiting_frames
+        + [pcm_frame(900)] * 8
+        + [pcm_frame(40)] * quiet_frames
+    )
+
+    capture, _ = execute_wake(tmp_path, frames, config)
+    recognition = classify_constrained_recognition(
+        "ares",
+        [{"word": "ares", "conf": 0.796}],
+        wake_phrases=config.wake_phrases,
+        wake_phrase_aliases=config.wake_phrase_aliases,
+        minimum_confidence=config.minimum_recognition_confidence,
+        medium_confidence=config.medium_recognition_confidence,
+        audio_duration_seconds=capture.duration_seconds,
+        maximum_duplicate_collapse_audio_seconds=(
+            config.maximum_duplicate_collapse_audio_seconds
+        ),
+    )
+
+    assert capture.success
+    assert capture.completion_reason == "completed_after_terminal_silence"
+    assert capture.waiting_duration_before_speech_seconds == pytest.approx(3.0)
+    assert recognition.wake_detected
+    assert recognition.normalized_wake_phrase == "ares"
 
 
 def test_short_internal_pause_does_not_end_wake_and_resets_terminal_timer(tmp_path):

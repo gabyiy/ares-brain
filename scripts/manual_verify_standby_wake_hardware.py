@@ -563,6 +563,7 @@ def _run_wake_reliability(
             f"recognizer_invoked={'yes' if wake_attempt.recognizer_invoked else 'no'}; "
             f"cleanup={wake_attempt.cleanup_status}"
         )
+        _print_wake_capture_metrics(output_func, wake_result, diagnostics)
         if wake_attempt.infrastructure_failure:
             infrastructure_failures += 1
             output_func(
@@ -574,6 +575,11 @@ def _run_wake_reliability(
                     "  Infrastructure retry budget exhausted before ten valid wake attempts."
                 )
                 return False
+            _pause_between_reliability_attempts(
+                output_func,
+                pause_seconds,
+                sleeper,
+            )
             continue
         valid_attempt += 1
         transcript = str(getattr(diagnostics, "raw_transcript", "") or "")
@@ -585,6 +591,11 @@ def _run_wake_reliability(
                 getattr(wake_result, "classification_reason", "")
                 or getattr(wake_result, "rejection_reason", "")
                 or "medium_confidence_confirmation_required"
+            )
+            _pause_between_reliability_attempts(
+                output_func,
+                pause_seconds,
+                sleeper,
             )
             prepared = getattr(listener, "prepare_for_owner_prompt", None)
             if callable(prepared):
@@ -632,6 +643,7 @@ def _run_wake_reliability(
             wake_result = confirmation_attempt.result
             after = runtime.snapshot()
             diagnostics = confirmation_attempt.diagnostics
+            _print_wake_capture_metrics(output_func, wake_result, diagnostics)
             if confirmation_attempt.infrastructure_failure:
                 infrastructure_failures += 1
                 valid_attempt -= 1
@@ -645,6 +657,11 @@ def _run_wake_reliability(
                         "  Infrastructure retry budget exhausted before ten valid wake attempts."
                     )
                     return False
+                _pause_between_reliability_attempts(
+                    output_func,
+                    pause_seconds,
+                    sleeper,
+                )
                 continue
             transcript = str(getattr(diagnostics, "raw_transcript", "") or "")
             if diagnostic_enabled and transcript and transcript not in wake_transcripts:
@@ -655,7 +672,6 @@ def _run_wake_reliability(
                 f"count={int(getattr(wake_result, 'confirmation_count', 0) or 0)}/"
                 f"{int(getattr(wake_result, 'confirmation_required_count', 0) or 0)}"
             )
-        _print_wake_capture_metrics(output_func, wake_result, diagnostics)
         success = bool(
             getattr(wake_result, "wake_detected", False)
             and after.current_lifecycle_state == BRAIN_STANDBY
@@ -718,10 +734,11 @@ def _run_wake_reliability(
             _print_stream_reason_summary(output_func, current_stream)
             return False
         if valid_attempt < attempts and pause_seconds > 0:
-            output_func(
-                f"  Pausing {pause_seconds:.2f}s so candidate audio cannot carry into the next prompt."
+            _pause_between_reliability_attempts(
+                output_func,
+                pause_seconds,
+                sleeper,
             )
-            sleeper(pause_seconds)
     output_func(
         f"Wake reliability result: {accepted}/{attempts} accepted; "
         f"rejected={rejected}; infrastructure_failures={infrastructure_failures}; "
@@ -745,6 +762,19 @@ def _run_wake_reliability(
         )
     )
     return accepted >= required
+
+
+def _pause_between_reliability_attempts(
+    output_func: Callable[[str], None],
+    pause_seconds: float,
+    sleeper: Callable[[float], None],
+) -> None:
+    if pause_seconds <= 0:
+        return
+    output_func(
+        f"  Pausing {pause_seconds:.2f}s so candidate audio cannot carry into the next prompt."
+    )
+    sleeper(pause_seconds)
 
 
 def _prepare_reliability_prompt(
@@ -979,6 +1009,7 @@ def _print_wake_capture_metrics(
         "  Wake timing: "
         f"waited={float(getattr(wake_result, 'waiting_duration_before_speech_seconds', 0.0) or 0.0):.3f}s; "
         f"speech_start={float(getattr(wake_result, 'speech_start_timestamp_monotonic', 0.0) or 0.0):.6f}; "
+        f"speech_duration={float(getattr(wake_result, 'speech_duration_seconds', 0.0) or 0.0):.3f}s; "
         f"speech_window={float(getattr(wake_result, 'active_speech_window_seconds', 0.0) or 0.0):.3f}s; "
         f"terminal_confirmed={'yes' if getattr(wake_result, 'terminal_silence_confirmed', False) else 'no'}; "
         f"terminal_resets={int(getattr(wake_result, 'terminal_silence_reset_count', 0) or 0)}; "

@@ -172,7 +172,11 @@ def classify_constrained_recognition(
         if not word:
             confidence_error = "missing_word_confidence"
             break
-        normalized_words.extend(word.split())
+        word_tokens = word.split()
+        if len(word_tokens) != 1:
+            confidence_error = "invalid_word_token_structure"
+            break
+        normalized_words.extend(word_tokens)
         confidence = item.get("conf")
         if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
             confidence_error = "missing_word_confidence"
@@ -211,7 +215,11 @@ def classify_constrained_recognition(
     duplicate_collapse_used = False
     collapsed_canonical_phrase = ""
     duplicate_alias = ""
-    if intended_category == WAKE_CATEGORY_NON_WAKE and not unknown:
+    if (
+        intended_category == WAKE_CATEGORY_NON_WAKE
+        and not unknown
+        and confidence_error != "invalid_word_token_structure"
+    ):
         duplicate_alias = _canonical_duplicate_alias(
             normalized,
             aliases=aliases,
@@ -241,10 +249,10 @@ def classify_constrained_recognition(
 
     if unknown:
         rejection_reason = reason = "unknown_token_result"
-    elif intended_category == WAKE_CATEGORY_NON_WAKE:
-        rejection_reason = reason = "exact_constrained_phrase_not_matched"
     elif confidence_error and confidence_error != "missing_word_confidence":
         rejection_reason = reason = confidence_error
+    elif intended_category == WAKE_CATEGORY_NON_WAKE:
+        rejection_reason = reason = "exact_constrained_phrase_not_matched"
     elif not words_match:
         rejection_reason = reason = "recognition_word_result_mismatch"
     elif (
@@ -413,7 +421,7 @@ def _canonical_duplicate_alias(
         return ""
     # Only one duplicated exact alias may collapse. Mixed aliases, prefixes,
     # unknowns, and unrelated words remain outside this wake-only exception.
-    return aliases[0]
+    return tokens[0]
 
 
 def _normalized_unique(
