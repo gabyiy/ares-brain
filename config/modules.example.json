@@ -10,7 +10,7 @@
     "active_acknowledgement": "Yes Gabi.",
     "already_active_acknowledgement": "Yes Gabi, I am listening.",
     "standby_phrases": ["goodbye ares", "go to standby ares", "go to sleep ares", "standby ares", "sleep ares"],
-    "shutdown_phrases": ["shutdown ares", "shut down ares", "stop ares completely"],
+    "shutdown_phrases": ["shutdown ares"],
     "inactivity_timeout_seconds": 30,
     "maximum_consecutive_failures": 3,
     "input_polling_interval_seconds": 0.25,
