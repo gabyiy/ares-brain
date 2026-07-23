@@ -563,16 +563,26 @@ def render_active_command_diagnostics(
     diagnostics: ActiveCommandLocalDiagnostics,
 ) -> list[str]:
     return [
-        "Active-command diagnostic:",
+        "Lifecycle diagnostic:",
         f"  Raw Whisper transcript: {diagnostics.raw_transcript or '<empty>'}",
         f"  Cleaned transcript: {diagnostics.cleaned_transcript or '<empty>'}",
-        "  Alias-canonicalized transcript: "
-        f"{diagnostics.alias_canonicalized_transcript or '<empty>'}",
-        "  Lifecycle-normalized transcript: "
+        "  Normalized transcript: "
         f"{diagnostics.lifecycle_normalized_transcript or '<empty>'}",
-        f"  Canonical name: {diagnostics.canonical_name or '<none>'}",
+        "  Canonicalized transcript: "
+        f"{diagnostics.alias_canonicalized_transcript or '<empty>'}",
+        "  Matched assistant alias: "
+        f"{diagnostics.matched_assistant_alias or '<none>'}",
+        f"  Alias type: {diagnostics.assistant_alias_type or '<none>'}",
+        "  Canonical assistant name: "
+        f"{diagnostics.canonical_name or '<none>'}",
+        "  Negation detected: "
+        f"{'yes' if diagnostics.negation_detected else 'no'}",
         f"  Lifecycle classification: {diagnostics.lifecycle_classification}",
-        f"  Selected lifecycle action: {diagnostics.selected_lifecycle_action}",
+        f"  Lifecycle action: {diagnostics.selected_lifecycle_action}",
+        "  Matched complete phrase: "
+        f"{diagnostics.matched_lifecycle_phrase or '<none>'}",
+        "  Lifecycle rejection reason: "
+        f"{diagnostics.lifecycle_rejection_reason or '<none>'}",
         "  CoreService routing bypassed: "
         f"{'yes' if diagnostics.core_service_bypassed else 'no'}",
         "  Lifecycle state: "

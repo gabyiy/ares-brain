@@ -620,6 +620,18 @@ def test_hardware_lifecycle_mode_selects_only_bounded_owner_lifecycle_stages():
             "lifecycle"
         )
     ] == ["C", "E", "F", "G"]
+    assert [
+        stage.label
+        for stage in manual_verify_standby_wake_hardware._verification_stages(
+            "standby"
+        )
+    ] == ["C", "E", "F", "G"]
+    assert [
+        stage.label
+        for stage in manual_verify_standby_wake_hardware._verification_stages(
+            "shutdown"
+        )
+    ] == ["C", "G"]
 
 
 def test_hardware_helper_stage_e_requires_bypass_and_does_not_retry_unknown_fallback():
@@ -759,8 +771,10 @@ def test_hardware_lifecycle_stages_require_survival_new_session_and_one_explicit
     )
 
 
-def test_bounded_hardware_lifecycle_mode_reports_transcripts_and_exact_shutdown_once(
+@pytest.mark.parametrize("verification_mode", ["lifecycle", "shutdown"])
+def test_bounded_hardware_lifecycle_modes_report_exact_shutdown_once(
     monkeypatch,
+    verification_mode,
 ):
     class LifecycleWakeListener(FakeWakeListener):
         def __init__(self):
@@ -787,6 +801,7 @@ def test_bounded_hardware_lifecycle_mode_reports_transcripts_and_exact_shutdown_
             self.poll_count = 0
             self.explicit_shutdown_count = 0
             self.cleanup_shutdown_count = 0
+            self.direct_shutdown = False
 
         def start(self):
             return SimpleNamespace(success=True, status="standby", error_code="")
@@ -843,7 +858,7 @@ def test_bounded_hardware_lifecycle_mode_reports_transcripts_and_exact_shutdown_
             self.poll_count += 1
             if self.poll_count == 1:
                 return self._wake("session-1")
-            if self.poll_count == 2:
+            if self.poll_count == 2 and not self.direct_shutdown:
                 self.input_adapter.last_diagnostics = ActiveCommandLocalDiagnostics(
                     raw_transcript="Goodbye, Ares.",
                     cleaned_transcript="goodbye ares",
@@ -867,12 +882,18 @@ def test_bounded_hardware_lifecycle_mode_reports_transcripts_and_exact_shutdown_
                         "runtime_terminal": False,
                     },
                 )
-            if self.poll_count == 3:
+            if self.poll_count == 3 and not self.direct_shutdown:
                 return self._wake("session-2")
             self.input_adapter.last_diagnostics = ActiveCommandLocalDiagnostics(
-                raw_transcript="Shutdown Ares.",
-                cleaned_transcript="shutdown ares",
-                alias_canonicalized_transcript="shutdown ares",
+                raw_transcript="Ares, shut down.",
+                cleaned_transcript="Ares, shut down",
+                lifecycle_normalized_transcript="ares shutdown",
+                alias_canonicalized_transcript="ares shutdown",
+                matched_assistant_alias="ares",
+                assistant_alias_type="canonical",
+                canonical_name="ares",
+                selected_lifecycle_action="shutdown",
+                matched_lifecycle_phrase="ares shutdown",
                 transcription_status="transcribed",
             )
             self.state = "STOPPED"
@@ -903,6 +924,7 @@ def test_bounded_hardware_lifecycle_mode_reports_transcripts_and_exact_shutdown_
     pipeline = FakePipeline()
 
     def factory(args, output_func=print):
+        runtime.direct_shutdown = args.verification_mode == "shutdown"
         return runtime, pipeline, SingleTurnVoiceRequestV1()
 
     monkeypatch.setattr(
@@ -919,29 +941,37 @@ def test_bounded_hardware_lifecycle_mode_reports_transcripts_and_exact_shutdown_
     )
     output = []
     code = manual_verify_standby_wake_hardware.run_hardware_verification(
-        ["--verification-mode", "lifecycle"],
+        ["--verification-mode", verification_mode],
         output_func=output.append,
         runtime_factory=factory,
     )
     text = "\n".join(output)
 
     assert code == 0
-    assert runtime.poll_count == 4
+    assert runtime.poll_count == (2 if verification_mode == "shutdown" else 4)
     assert runtime.explicit_shutdown_count == 1
     assert runtime.cleanup_shutdown_count == 0
-    assert "Test 1/4 (C): Say 'Ares'." in text
-    assert "Test 2/4 (E): Say 'goodbye Ares' once" in text
-    assert "Test 3/4 (F): Say 'Ares'." in text
-    assert "Test 4/4 (G): Say 'shutdown Ares'." in text
-    assert "Raw recognition result: Goodbye, Ares." in text
-    assert "Classification result: standby" in text
-    assert "Persistent runtime: alive in STANDBY; active session cleared." in text
-    assert "Reactivation: new active session confirmed." in text
-    assert "Raw recognition result: Shutdown Ares." in text
+    if verification_mode == "shutdown":
+        assert "Test 1/2 (C): Say 'Ares'." in text
+        assert "Test 2/2 (G): Say 'Ares, shut down'." in text
+        assert "Goodbye, Ares." not in text
+    else:
+        assert "Test 1/4 (C): Say 'Ares'." in text
+        assert "Test 2/4 (E): Say 'goodbye Ares' once" in text
+        assert "Test 3/4 (F): Say 'Ares'." in text
+        assert "Test 4/4 (G): Say 'Ares, shut down'." in text
+        assert "Raw recognition result: Goodbye, Ares." in text
+        assert "Classification result: standby" in text
+        assert "Persistent runtime: alive in STANDBY; active session cleared." in text
+        assert "Reactivation: new active session confirmed." in text
+        assert (
+            "Active-command transcripts: Goodbye, Ares. | Ares, shut down."
+            in text
+        )
+    assert "Raw recognition result: Ares, shut down." in text
     assert "Classification result: shutdown" in text
     assert "Runtime terminal reason: explicit_shutdown_command" in text
     assert "Explicit shutdown count / reason: 1 / explicit_shutdown_command" in text
-    assert "Active-command transcripts: Goodbye, Ares. | Shutdown Ares." in text
     assert "calculate two plus two" not in text
 
 
@@ -1587,16 +1617,20 @@ def test_hardware_verifier_distinguishes_wake_capture_failure_stage(
 
 def test_active_command_diagnostics_separate_real_command_capture_from_wake_capture():
     diagnostics = ActiveCommandLocalDiagnostics(
-        raw_transcript="Goodbye Aris.",
-        cleaned_transcript="goodbye aris",
-        alias_canonicalized_transcript="goodbye ares",
-        lifecycle_normalized_transcript="goodbye ares",
+        raw_transcript="Shut down RS",
+        cleaned_transcript="Shut down RS",
+        alias_canonicalized_transcript="shutdown ares",
+        lifecycle_normalized_transcript="shutdown rs",
+        matched_assistant_alias="rs",
+        assistant_alias_type="acoustic_alias",
         canonical_name="ares",
-        lifecycle_classification="standby",
-        selected_lifecycle_action="standby",
+        negation_detected=False,
+        lifecycle_classification="shutdown",
+        selected_lifecycle_action="shutdown",
+        matched_lifecycle_phrase="shutdown ares",
         core_service_bypassed=True,
         lifecycle_state_before="ACTIVE",
-        lifecycle_state_after="STANDBY",
+        lifecycle_state_after="STOPPED",
         session_id_before="session-1",
         session_id_after="",
         capture_stop_reason="completed_after_silence",
@@ -1622,25 +1656,31 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
         temporary_audio_cleanup_status="removed",
         microphone_gate_released_before_inference=True,
         pipeline_status="runtime_transport_captured",
-        runtime_terminal=False,
-        runtime_terminal_reason="not_terminal",
+        runtime_terminal=True,
+        runtime_terminal_reason="explicit_shutdown_command",
     )
 
     rendered = "\n".join(
         run_ares_standby_voice.render_active_command_diagnostics(diagnostics)
     )
 
-    assert "Raw Whisper transcript: Goodbye Aris." in rendered
-    assert "Alias-canonicalized transcript: goodbye ares" in rendered
-    assert "Lifecycle-normalized transcript: goodbye ares" in rendered
-    assert "Canonical name: ares" in rendered
-    assert "Lifecycle classification: standby" in rendered
+    assert "Lifecycle diagnostic:" in rendered
+    assert "Raw Whisper transcript: Shut down RS" in rendered
+    assert "Normalized transcript: shutdown rs" in rendered
+    assert "Canonicalized transcript: shutdown ares" in rendered
+    assert "Matched assistant alias: rs" in rendered
+    assert "Alias type: acoustic_alias" in rendered
+    assert "Canonical assistant name: ares" in rendered
+    assert "Negation detected: no" in rendered
+    assert "Lifecycle classification: shutdown" in rendered
+    assert "Lifecycle action: shutdown" in rendered
+    assert "Matched complete phrase: shutdown ares" in rendered
     assert "CoreService routing bypassed: yes" in rendered
-    assert "Lifecycle state: ACTIVE -> STANDBY" in rendered
+    assert "Lifecycle state: ACTIVE -> STOPPED" in rendered
     assert "Active session: session-1 -> none" in rendered
     assert "Pipeline status: runtime_transport_captured" in rendered
-    assert "Runtime terminal: no" in rendered
-    assert "Runtime terminal reason: not_terminal" in rendered
+    assert "Runtime terminal: yes" in rendered
+    assert "Runtime terminal reason: explicit_shutdown_command" in rendered
     assert "Raw capture duration: 2.400s" in rendered
     assert "Finalized candidate duration: 1.200s" in rendered
     assert "WAV byte size: 38444" in rendered

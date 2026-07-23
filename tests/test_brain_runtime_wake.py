@@ -236,8 +236,8 @@ def test_persistent_runtime_end_to_end_lifecycle_sequence(tmp_path):
     wake.push("Ares")
     wake.push("Ares")
     whisper.push("calculate two plus two")
-    whisper.push("goodbye Ares")
-    whisper.push("shutdown Ares")
+    whisper.push("RS goodbye")
+    whisper.push("Ares shut down")
 
     loop = runtime.run()
 

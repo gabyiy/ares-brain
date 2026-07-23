@@ -444,12 +444,12 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
         output_func("Self-wake guard: active output did not invoke standby listener")
 
         microphone.push_speech()
-        whisper.push("goodbye Aris")
+        whisper.push("RS goodbye")
         standby = runtime.poll_once()
         if standby.status != "standby_entered" or runtime.session_manager.state != BRAIN_STANDBY:
-            output_func("FAIL: goodbye alias did not return to standby")
+            output_func("FAIL: lifecycle-only RS goodbye did not return to standby")
             return 1
-        output_func("goodbye Aris -> goodbye Ares: RETURNING_TO_STANDBY -> STANDBY")
+        output_func("RS goodbye -> Ares goodbye: RETURNING_TO_STANDBY -> STANDBY")
 
         wake.push("hey, Ares")
         runtime.poll_once()
@@ -477,7 +477,7 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
         wake.push("hello Aries")
         runtime.poll_once()
         microphone.push_speech()
-        whisper.push("shutdown Aris")
+        whisper.push("Ares shut down")
         stopped = runtime.poll_once()
         if not stopped.success or runtime.session_manager.state != BRAIN_STOPPED:
             output_func("FAIL: explicit shutdown did not stop runtime")
@@ -490,7 +490,7 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
         ):
             output_func("FAIL: adapters were not stopped during shutdown")
             return 1
-        output_func("shutdown Aris -> shutdown Ares: SHUTTING_DOWN -> STOPPED; adapters stopped")
+        output_func("Ares shut down: SHUTTING_DOWN -> STOPPED; adapters stopped")
 
         event_payload = json.dumps(
             [event.to_dict() for event in runtime.events() + runtime.session_manager.events()],
@@ -501,6 +501,8 @@ def run_verification(output_func: Callable[[str], None] = print) -> int:
             "favorite color is blue",
             "what is my favorite color",
             "aris",
+            "rs goodbye",
+            "ares shut down",
             "raw_transcript",
             "audio_bytes",
         )

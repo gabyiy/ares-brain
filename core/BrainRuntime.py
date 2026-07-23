@@ -57,6 +57,7 @@ from core.LifecycleControl import (
     DEFAULT_LIFECYCLE_SHUTDOWN_PHRASES,
     DEFAULT_LIFECYCLE_STANDBY_PHRASES,
     LIFECYCLE_ACTION_ACTIVATE,
+    LIFECYCLE_ACTION_NONE,
     LIFECYCLE_ACTION_SHUTDOWN,
     LIFECYCLE_ACTION_STANDBY,
     normalize_lifecycle_command,
@@ -439,7 +440,11 @@ class BrainRuntime:
             shutdown_phrases=self.config.shutdown_phrases,
             ares_name_aliases=self.config.ares_name_aliases,
         )
-        normalized = control.normalized_transcript
+        normalized = (
+            control.canonicalized_transcript
+            if control.matched
+            else control.normalized_transcript
+        )
         state = self.session_manager.state
         category = RUNTIME_COMMAND_ORDINARY
         matched = ""
@@ -471,7 +476,14 @@ class BrainRuntime:
                 "routing_reason": control.routing_reason,
                 "lifecycle_cleaned_transcript": control.cleaned_transcript,
                 "lifecycle_normalized_transcript": control.normalized_transcript,
+                "lifecycle_canonicalized_transcript": (
+                    control.canonicalized_transcript
+                ),
                 "lifecycle_canonical_name": control.canonical_name,
+                "lifecycle_matched_alias": control.matched_alias,
+                "lifecycle_alias_type": control.alias_type,
+                "lifecycle_matched_phrase": control.matched_phrase,
+                "lifecycle_negation_detected": control.negation_detected,
                 "lifecycle_rejection_reason": control.rejection_reason,
                 "core_service_bypassed": category
                 in {
@@ -561,16 +573,25 @@ class BrainRuntime:
                 },
             )
             if classification.command_category == RUNTIME_COMMAND_SHUTDOWN:
-                return self.shutdown(
-                    correlation_id=normalized_request.correlation_id,
-                    reason="explicit_shutdown_command",
-                    command_category=RUNTIME_COMMAND_SHUTDOWN,
-                    normalized_input=classification.normalized_input,
+                return self._with_lifecycle_command(
+                    self.shutdown(
+                        correlation_id=normalized_request.correlation_id,
+                        reason="explicit_shutdown_command",
+                        command_category=RUNTIME_COMMAND_SHUTDOWN,
+                        normalized_input=classification.normalized_input,
+                    ),
+                    classification,
                 )
             if classification.command_category == RUNTIME_COMMAND_STANDBY:
-                return self._handle_standby(classification)
+                return self._with_lifecycle_command(
+                    self._handle_standby(classification),
+                    classification,
+                )
             if classification.command_category == RUNTIME_COMMAND_ACTIVATION:
-                return self._handle_activation(classification)
+                return self._with_lifecycle_command(
+                    self._handle_activation(classification),
+                    classification,
+                )
             if classification.command_category == RUNTIME_COMMAND_EMPTY:
                 return self._result(
                     False,
@@ -1079,6 +1100,7 @@ class BrainRuntime:
                 "processing_time_seconds": elapsed,
                 "core_service_bypassed": False,
                 "lifecycle_action": "none",
+                "lifecycle_command": _lifecycle_command_data(classification),
             },
         )
 
@@ -1760,6 +1782,19 @@ class BrainRuntime:
                 metadata={"safe": True, "source": "brain_runtime"},
             )
 
+    def _with_lifecycle_command(
+        self,
+        result: BrainRuntimeResultV1,
+        classification: BrainRuntimeCommandClassificationV1,
+    ) -> BrainRuntimeResultV1:
+        return replace(
+            result,
+            data={
+                **dict(result.data or {}),
+                "lifecycle_command": _lifecycle_command_data(classification),
+            },
+        )
+
     def _loop_result(
         self,
         success: bool,
@@ -1800,6 +1835,44 @@ class BrainRuntime:
 
 def normalize_runtime_phrase(value: Any) -> str:
     return normalize_spoken_phrase(value)
+
+
+def _lifecycle_command_data(
+    classification: BrainRuntimeCommandClassificationV1,
+) -> Dict[str, Any]:
+    metadata = dict(classification.metadata or {})
+    return {
+        "cleaned_transcript": str(
+            metadata.get("lifecycle_cleaned_transcript") or ""
+        ),
+        "normalized_transcript": str(
+            metadata.get("lifecycle_normalized_transcript") or ""
+        ),
+        "canonicalized_transcript": str(
+            metadata.get("lifecycle_canonicalized_transcript")
+            or classification.normalized_input
+            or ""
+        ),
+        "canonical_name": str(
+            metadata.get("lifecycle_canonical_name") or ""
+        ),
+        "matched_alias": str(
+            metadata.get("lifecycle_matched_alias") or ""
+        ),
+        "alias_type": str(metadata.get("lifecycle_alias_type") or ""),
+        "action": str(metadata.get("lifecycle_action") or LIFECYCLE_ACTION_NONE),
+        "matched_phrase": str(
+            metadata.get("lifecycle_matched_phrase")
+            or classification.matched_phrase
+            or ""
+        ),
+        "negation_detected": bool(
+            metadata.get("lifecycle_negation_detected", False)
+        ),
+        "rejection_reason": str(
+            metadata.get("lifecycle_rejection_reason") or ""
+        ),
+    }
 
 
 def _canonical_runtime_terminal_reason(result: BrainRuntimeResultV1) -> str:

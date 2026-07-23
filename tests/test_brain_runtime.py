@@ -218,12 +218,14 @@ def test_runtime_configuration_defaults_are_bounded_and_explicit():
     assert config.activation_phrases == ("ares", "hey ares", "hello ares", "wake up ares")
     assert config.standby_phrases == (
         "goodbye ares",
+        "ares goodbye",
         "go to standby ares",
         "go to sleep ares",
         "standby ares",
+        "ares standby",
         "sleep ares",
     )
-    assert config.shutdown_phrases == ("shutdown ares",)
+    assert config.shutdown_phrases == ("shutdown ares", "ares shutdown")
     assert config.active_acknowledgement == "Yes Gabi."
     assert config.inactivity_timeout_seconds == 30.0
     assert config.maximum_consecutive_failures == 3
@@ -336,11 +338,17 @@ def test_runtime_alias_canonicalization_is_whole_token_only():
     assert runtime.classify_command("Aris").normalized_input == "ares"
     assert runtime.classify_command("goodbye Aris").normalized_input == "goodbye ares"
     assert runtime.classify_command("shutdown Aris").normalized_input == "shutdown ares"
+    rs_shutdown = runtime.classify_command("Shut down RS")
+    assert rs_shutdown.normalized_input == "shutdown ares"
+    assert rs_shutdown.command_category == RUNTIME_COMMAND_SHUTDOWN
     for value in ("Paris", "Harris", "various"):
         classification = runtime.classify_command(value)
         assert classification.normalized_input == value.casefold()
         assert classification.command_category == RUNTIME_COMMAND_ORDINARY
     assert runtime.classify_command("Aries").normalized_input == "ares"
+    ordinary_rs = runtime.classify_command("What does RS mean?")
+    assert ordinary_rs.normalized_input == "what does rs mean"
+    assert ordinary_rs.command_category == RUNTIME_COMMAND_ORDINARY
 
 
 def test_runtime_boots_once_through_manager_to_standby():
@@ -467,13 +475,20 @@ def test_unsupported_active_command_returns_safe_response_and_runtime_survives(t
         "goodbye Ares",
         "goodbye, Aris",
         "goodbye Aries",
+        "goodbye RS",
+        "Ares goodbye",
+        "RS goodbye",
         "good bye Ares",
         "go to standby Ares",
         "go to standby Aris",
+        "go to standby RS",
         "go to sleep Ares",
         "standby Ares",
         "standby Aris",
         "standby Aries",
+        "standby RS",
+        "Ares standby",
+        "RS standby",
         "sleep Ares",
     ],
 )
@@ -508,6 +523,18 @@ def test_standby_phrase_while_standby_is_noop_and_creates_no_session():
         "shut down Ares",
         "shut down Aris",
         "shut down Aries",
+        "shutdown RS",
+        "shut down RS",
+        "RS shutdown",
+        "RS shut down",
+        "shut down R S",
+        "R S shut down",
+        "shut down Are S",
+        "Are S shut down",
+        "Ares shutdown",
+        "Ares shut down",
+        "Aris shutdown",
+        "Aries shut down",
     ],
 )
 def test_shutdown_phrases_stop_runtime_and_clear_session(phrase):
@@ -540,8 +567,13 @@ def test_goodbye_is_not_full_shutdown():
         "tell me about standby",
         "what does shutdown mean",
         "do not shutdown Ares",
+        "don't shutdown Ares",
+        "Ares should not shut down",
+        "never standby Ares",
         "calculate two plus two Ares",
         "Ares remember this",
+        "What does RS mean",
+        "RS",
         "Paris",
         "Harris",
         "tell me about Aries",
@@ -588,6 +620,51 @@ def test_shutdown_alias_bypasses_core_route_and_releases_runtime():
     assert calls == []
     assert runtime.session_manager.state == BRAIN_STOPPED
     assert runtime.session_manager.session_id == ""
+
+
+def test_rs_shutdown_bypasses_core_route_and_exposes_lifecycle_match():
+    calls = []
+    runtime, _ = _runtime(handler=lambda text: calls.append(text))
+    _start_active(runtime)
+
+    result = runtime.handle_text("Shut down RS")
+
+    lifecycle = result.data["lifecycle_command"]
+    assert result.status == "stopped"
+    assert result.normalized_input == "shutdown ares"
+    assert lifecycle["normalized_transcript"] == "shutdown rs"
+    assert lifecycle["canonicalized_transcript"] == "shutdown ares"
+    assert lifecycle["matched_alias"] == "rs"
+    assert lifecycle["alias_type"] == "acoustic_alias"
+    assert lifecycle["action"] == "shutdown"
+    assert lifecycle["negation_detected"] is False
+    assert result.data["core_service_bypassed"] is True
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "Do not shut down Ares",
+        "Don't shutdown Ares",
+        "Ares should not shut down",
+        "Never goodbye Ares",
+    ],
+)
+def test_negated_lifecycle_phrase_stays_active_and_reaches_ordinary_route(phrase):
+    calls = []
+    runtime, _ = _runtime(handler=lambda text: calls.append(text) or "ordinary")
+    session_id = _start_active(runtime)
+
+    result = runtime.handle_text(phrase)
+
+    assert result.command_category == RUNTIME_COMMAND_ORDINARY
+    assert result.data["core_service_bypassed"] is False
+    assert result.data["lifecycle_command"]["negation_detected"] is True
+    assert result.data["lifecycle_command"]["action"] == "none"
+    assert runtime.session_manager.state == BRAIN_ACTIVE
+    assert runtime.session_manager.session_id == session_id
+    assert calls == [phrase]
 
 
 def test_inactivity_before_exact_and_after_boundary_is_deterministic():

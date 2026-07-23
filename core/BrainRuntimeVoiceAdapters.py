@@ -43,9 +43,14 @@ class ActiveCommandLocalDiagnostics:
     cleaned_transcript: str = ""
     alias_canonicalized_transcript: str = ""
     lifecycle_normalized_transcript: str = ""
+    matched_assistant_alias: str = ""
+    assistant_alias_type: str = ""
     canonical_name: str = ""
+    negation_detected: bool = False
     lifecycle_classification: str = "ordinary"
     selected_lifecycle_action: str = "none"
+    matched_lifecycle_phrase: str = ""
+    lifecycle_rejection_reason: str = ""
     core_service_bypassed: bool = False
     lifecycle_state_before: str = ""
     lifecycle_state_after: str = ""
@@ -284,7 +289,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
                     "transport_only": True,
                     "lifecycle_action": lifecycle.action,
                     "lifecycle_normalized_transcript": (
-                        lifecycle.normalized_transcript
+                        lifecycle.canonicalized_transcript
                     ),
                     "canonical_name": lifecycle.canonical_name,
                 },
@@ -497,14 +502,18 @@ class SingleTurnPipelineRuntimeInputAdapter:
         )
         lifecycle_normalized = str(
             lifecycle_data.get("normalized_transcript")
-            or getattr(runtime_result, "normalized_input", "")
             or diagnostics.cleaned_transcript
+        )
+        lifecycle_canonicalized = str(
+            lifecycle_data.get("canonicalized_transcript")
+            or getattr(runtime_result, "normalized_input", "")
+            or lifecycle_normalized
         )
         canonical_name = str(lifecycle_data.get("canonical_name") or "")
         if (
             not canonical_name
             and action in {"activation", "standby", "shutdown"}
-            and "ares" in lifecycle_normalized.split()
+            and "ares" in lifecycle_canonicalized.split()
         ):
             canonical_name = "ares"
         current_state = str(
@@ -517,11 +526,26 @@ class SingleTurnPipelineRuntimeInputAdapter:
         )
         completed = replace(
             diagnostics,
-            alias_canonicalized_transcript=lifecycle_normalized,
+            alias_canonicalized_transcript=lifecycle_canonicalized,
             lifecycle_normalized_transcript=lifecycle_normalized,
+            matched_assistant_alias=str(
+                lifecycle_data.get("matched_alias") or ""
+            ),
+            assistant_alias_type=str(
+                lifecycle_data.get("alias_type") or ""
+            ),
             canonical_name=canonical_name,
+            negation_detected=bool(
+                lifecycle_data.get("negation_detected", False)
+            ),
             lifecycle_classification=category,
             selected_lifecycle_action=action,
+            matched_lifecycle_phrase=str(
+                lifecycle_data.get("matched_phrase") or ""
+            ),
+            lifecycle_rejection_reason=str(
+                lifecycle_data.get("rejection_reason") or ""
+            ),
             core_service_bypassed=bool(
                 data.get("core_service_bypassed")
                 or category in {"activation", "standby", "shutdown"}

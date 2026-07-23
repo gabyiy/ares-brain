@@ -66,7 +66,7 @@ STAGES = (
     HardwareTestStage("F", "Say 'Ares'.", "ACTIVE with a new session"),
     HardwareTestStage(
         "G",
-        "Say 'shutdown Ares'.",
+        "Say 'Ares, shut down'.",
         "one explicit shutdown transition and clean STOPPED state",
     ),
 )
@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--verification-mode",
-        choices=("all", "reliability", "lifecycle"),
+        choices=("all", "reliability", "lifecycle", "standby", "shutdown"),
         default="all",
     )
     parser.add_argument(
@@ -518,7 +518,10 @@ def _run_hardware_verification_locked(
 def _verification_stages(mode: str) -> tuple[HardwareTestStage, ...]:
     if mode == "reliability":
         return STAGES[:2]
-    if mode == "lifecycle":
+    if mode == "shutdown":
+        selected = {"C", "G"}
+        return tuple(stage for stage in STAGES if stage.label in selected)
+    if mode in {"lifecycle", "standby"}:
         selected = set(LIFECYCLE_STAGE_LABELS)
         return tuple(stage for stage in STAGES if stage.label in selected)
     return STAGES
@@ -1365,8 +1368,9 @@ def _print_recognition_summary(
         recognizer = "whisper_active_command"
         raw = str(getattr(diagnostics, "raw_transcript", "") or "")
         normalized = str(
-            getattr(diagnostics, "alias_canonicalized_transcript", "")
+            getattr(diagnostics, "lifecycle_normalized_transcript", "")
             or getattr(result, "normalized_input", "")
+            or getattr(diagnostics, "alias_canonicalized_transcript", "")
             or ""
         )
         confidence = None
@@ -1407,8 +1411,10 @@ def _print_recognition_summary(
         )
     else:
         result_data = dict(getattr(result, "data", {}) or {})
+        lifecycle_data = dict(result_data.get("lifecycle_command") or {})
         lifecycle_action = str(
-            result_data.get("lifecycle_action")
+            lifecycle_data.get("action")
+            or result_data.get("lifecycle_action")
             or (
                 classification
                 if classification in {"standby", "shutdown"}
@@ -1434,7 +1440,51 @@ def _print_recognition_summary(
             if runtime_terminal
             else "not_terminal"
         )
+        output_func(
+            "  Cleaned transcript: "
+            f"{getattr(diagnostics, 'cleaned_transcript', '') or '<empty>'}"
+        )
+        output_func(
+            "  Raw Whisper transcript: "
+            + (raw if diagnostic_enabled and raw else "<diagnostics disabled>")
+        )
+        output_func(
+            "  Canonicalized transcript: "
+            f"{getattr(diagnostics, 'alias_canonicalized_transcript', '') or '<empty>'}"
+        )
+        output_func(
+            "  Matched assistant alias: "
+            f"{getattr(diagnostics, 'matched_assistant_alias', '') or '<none>'}"
+        )
+        output_func(
+            "  Alias type: "
+            f"{getattr(diagnostics, 'assistant_alias_type', '') or '<none>'}"
+        )
+        output_func(
+            "  Canonical assistant name: "
+            f"{getattr(diagnostics, 'canonical_name', '') or '<none>'}"
+        )
+        output_func(
+            "  Negation detected: "
+            f"{'yes' if getattr(diagnostics, 'negation_detected', False) else 'no'}"
+        )
         output_func(f"  Selected lifecycle action: {lifecycle_action}")
+        output_func(
+            "  Matched complete phrase: "
+            f"{getattr(diagnostics, 'matched_lifecycle_phrase', '') or '<none>'}"
+        )
+        output_func(
+            "  CoreService routing bypassed: "
+            f"{'yes' if bool(result_data.get('core_service_bypassed')) else 'no'}"
+        )
+        output_func(
+            "  State before: "
+            f"{getattr(diagnostics, 'lifecycle_state_before', '') or before_state}"
+        )
+        output_func(
+            "  State after: "
+            f"{getattr(diagnostics, 'lifecycle_state_after', '') or getattr(result, 'current_lifecycle_state', '') or 'unknown'}"
+        )
         output_func(f"  Pipeline status: {pipeline_status}")
         output_func(
             "  Runtime terminal: "

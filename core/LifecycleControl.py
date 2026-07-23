@@ -8,7 +8,6 @@ from core.AresIdentity import (
     CANONICAL_ARES_NAME,
     DEFAULT_ARES_NAME_ALIASES,
     clean_spoken_phrase,
-    match_ares_alias_phrase,
     normalize_spoken_phrase,
     validate_ares_name_aliases,
 )
@@ -27,34 +26,69 @@ DEFAULT_LIFECYCLE_ACTIVATION_PHRASES = (
 )
 DEFAULT_LIFECYCLE_STANDBY_PHRASES = (
     "goodbye ares",
+    "ares goodbye",
     "go to standby ares",
     "go to sleep ares",
     "standby ares",
+    "ares standby",
     "sleep ares",
 )
-DEFAULT_LIFECYCLE_SHUTDOWN_PHRASES = ("shutdown ares",)
+DEFAULT_LIFECYCLE_SHUTDOWN_PHRASES = (
+    "shutdown ares",
+    "ares shutdown",
+)
+
+LIFECYCLE_ALIAS_TYPE_CANONICAL = "canonical"
+LIFECYCLE_ALIAS_TYPE_PRONUNCIATION = "pronunciation_alias"
+LIFECYCLE_ALIAS_TYPE_ACOUSTIC = "acoustic_alias"
 
 _OUTER_TERMINAL_PUNCTUATION = " \t\r\n.!?,;:"
 _GOOD_BYE = re.compile(r"\bgood\s+bye\b")
 _SHUT_DOWN = re.compile(r"\bshut\s+down\b")
+_LIFECYCLE_ACOUSTIC_NAME_FORMS = (
+    (("rs",), "rs"),
+    (("r", "s"), "r s"),
+    (("are", "s"), "are s"),
+)
+_NEGATION_TOKEN_SEQUENCES = (
+    ("do", "not"),
+    ("don", "t"),
+    ("dont",),
+    ("never",),
+    ("should", "not"),
+    ("shouldn", "t"),
+    ("shouldnt",),
+)
+
+
+@dataclass(frozen=True)
+class _LifecycleAliasMatch:
+    canonical_phrase: str
+    matched_alias: str
+    alias_type: str
 
 
 @dataclass(frozen=True)
 class LifecycleCommandResult:
     """Deterministic, whole-phrase lifecycle classification.
 
-    ``normalized_transcript`` canonicalizes a name alias only after the complete
-    phrase matches. Ordinary input therefore remains suitable for normal skill
-    routing (for example, ``aries horoscope`` is not rewritten to use ARES's
-    name).
+    ``normalized_transcript`` is punctuation/compound-word normalized but keeps
+    the recognized name token. ``canonicalized_transcript`` replaces the name
+    only after a complete lifecycle phrase matches. Ordinary input therefore
+    remains suitable for normal skill routing (for example, ``what does RS
+    mean`` is never rewritten to use ARES's name).
     """
 
     raw_transcript: str
     cleaned_transcript: str
     normalized_transcript: str
+    canonicalized_transcript: str = ""
     canonical_name: str = ""
+    matched_alias: str = ""
+    alias_type: str = ""
     action: str = LIFECYCLE_ACTION_NONE
     matched_phrase: str = ""
+    negation_detected: bool = False
     rejection_reason: str = "exact_lifecycle_phrase_not_matched"
 
     @property
@@ -68,7 +102,7 @@ class LifecycleCommandResult:
 
     @property
     def canonicalized_input(self) -> str:
-        return self.normalized_transcript
+        return self.canonicalized_transcript or self.normalized_transcript
 
     @property
     def routing_reason(self) -> str:
@@ -109,6 +143,7 @@ def normalize_lifecycle_command(
             raw_transcript=raw,
             cleaned_transcript=cleaned,
             normalized_transcript="",
+            canonicalized_transcript="",
             rejection_reason="empty_transcript",
         )
 
@@ -118,16 +153,19 @@ def normalize_lifecycle_command(
         aliases=aliases,
         field_name="activation_phrases",
         allow_empty=True,
+        allow_acoustic_aliases=False,
     )
     standby = _canonical_phrases(
         standby_phrases,
         aliases=aliases,
         field_name="standby_phrases",
+        allow_acoustic_aliases=True,
     )
     shutdown = _canonical_phrases(
         shutdown_phrases,
         aliases=aliases,
         field_name="shutdown_phrases",
+        allow_acoustic_aliases=True,
     )
     if set(activation) & set(standby):
         raise ValueError("activation and standby lifecycle phrases must not overlap")
@@ -136,20 +174,39 @@ def normalize_lifecycle_command(
     if set(standby) & set(shutdown):
         raise ValueError("standby and shutdown lifecycle phrases must not overlap")
 
-    for action, phrases in (
-        (LIFECYCLE_ACTION_SHUTDOWN, shutdown),
-        (LIFECYCLE_ACTION_STANDBY, standby),
-        (LIFECYCLE_ACTION_ACTIVATE, activation),
+    negation_detected = _contains_lifecycle_negation(normalized)
+    if negation_detected:
+        return LifecycleCommandResult(
+            raw_transcript=raw,
+            cleaned_transcript=cleaned,
+            normalized_transcript=normalized,
+            canonicalized_transcript=normalized,
+            negation_detected=True,
+            rejection_reason="negated_lifecycle_command",
+        )
+
+    for action, phrases, allow_acoustic_aliases in (
+        (LIFECYCLE_ACTION_SHUTDOWN, shutdown, True),
+        (LIFECYCLE_ACTION_STANDBY, standby, True),
+        (LIFECYCLE_ACTION_ACTIVATE, activation, False),
     ):
-        matched = match_ares_alias_phrase(normalized, phrases, aliases)
-        if matched:
+        matched = _match_lifecycle_phrase(
+            normalized,
+            phrases,
+            aliases=aliases,
+            allow_acoustic_aliases=allow_acoustic_aliases,
+        )
+        if matched is not None:
             return LifecycleCommandResult(
                 raw_transcript=raw,
                 cleaned_transcript=cleaned,
-                normalized_transcript=matched,
+                normalized_transcript=normalized,
+                canonicalized_transcript=matched.canonical_phrase,
                 canonical_name=CANONICAL_ARES_NAME,
+                matched_alias=matched.matched_alias,
+                alias_type=matched.alias_type,
                 action=action,
-                matched_phrase=matched,
+                matched_phrase=matched.canonical_phrase,
                 rejection_reason="",
             )
 
@@ -157,6 +214,7 @@ def normalize_lifecycle_command(
         raw_transcript=raw,
         cleaned_transcript=cleaned,
         normalized_transcript=normalized,
+        canonicalized_transcript=normalized,
     )
 
 
@@ -191,6 +249,7 @@ def _canonical_phrases(
     aliases: Sequence[str],
     field_name: str,
     allow_empty: bool = False,
+    allow_acoustic_aliases: bool,
 ) -> tuple[str, ...]:
     if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
         raise ValueError(f"{field_name} must be a sequence of phrases")
@@ -203,9 +262,108 @@ def _canonical_phrases(
         normalized = _normalize_lifecycle_words(value)
         if not normalized or len(normalized) > 64:
             raise ValueError(f"{field_name} contains an empty or oversized phrase")
-        matched = match_ares_alias_phrase(normalized, (normalized,), aliases)
+        matched = _canonicalize_configured_lifecycle_phrase(
+            normalized,
+            aliases=aliases,
+            allow_acoustic_aliases=allow_acoustic_aliases,
+        )
         if not matched or CANONICAL_ARES_NAME not in matched.split():
             raise ValueError(f"{field_name} must contain an exact ARES name alias")
         if matched not in canonical:
             canonical.append(matched)
     return tuple(canonical)
+
+
+def _match_lifecycle_phrase(
+    normalized: str,
+    canonical_phrases: Sequence[str],
+    *,
+    aliases: Sequence[str],
+    allow_acoustic_aliases: bool,
+) -> _LifecycleAliasMatch | None:
+    candidate_tokens = tuple(normalized.split())
+    for phrase in canonical_phrases:
+        canonical_tokens = tuple(phrase.split())
+        name_slots = [
+            index
+            for index, token in enumerate(canonical_tokens)
+            if token == CANONICAL_ARES_NAME
+        ]
+        if len(name_slots) != 1:
+            continue
+        slot = name_slots[0]
+        prefix = canonical_tokens[:slot]
+        suffix = canonical_tokens[slot + 1 :]
+        for alias_tokens, matched_alias, alias_type in _lifecycle_alias_forms(
+            aliases,
+            allow_acoustic_aliases=allow_acoustic_aliases,
+        ):
+            if candidate_tokens == prefix + alias_tokens + suffix:
+                return _LifecycleAliasMatch(
+                    canonical_phrase=" ".join(canonical_tokens),
+                    matched_alias=matched_alias,
+                    alias_type=alias_type,
+                )
+    return None
+
+
+def _canonicalize_configured_lifecycle_phrase(
+    normalized: str,
+    *,
+    aliases: Sequence[str],
+    allow_acoustic_aliases: bool,
+) -> str:
+    tokens = tuple(normalized.split())
+    matches: list[tuple[int, tuple[str, ...]]] = []
+    for alias_tokens, _matched_alias, _alias_type in _lifecycle_alias_forms(
+        aliases,
+        allow_acoustic_aliases=allow_acoustic_aliases,
+    ):
+        width = len(alias_tokens)
+        for index in range(0, len(tokens) - width + 1):
+            if tokens[index : index + width] == alias_tokens:
+                matches.append((index, alias_tokens))
+    if len(matches) != 1:
+        return ""
+    index, alias_tokens = matches[0]
+    canonical = (
+        tokens[:index]
+        + (CANONICAL_ARES_NAME,)
+        + tokens[index + len(alias_tokens) :]
+    )
+    return " ".join(canonical)
+
+
+def _lifecycle_alias_forms(
+    aliases: Sequence[str],
+    *,
+    allow_acoustic_aliases: bool,
+) -> tuple[tuple[tuple[str, ...], str, str], ...]:
+    forms: list[tuple[tuple[str, ...], str, str]] = []
+    for alias in validate_ares_name_aliases(aliases):
+        forms.append(
+            (
+                (alias,),
+                alias,
+                (
+                    LIFECYCLE_ALIAS_TYPE_CANONICAL
+                    if alias == CANONICAL_ARES_NAME
+                    else LIFECYCLE_ALIAS_TYPE_PRONUNCIATION
+                ),
+            )
+        )
+    if allow_acoustic_aliases:
+        forms.extend(
+            (tokens, matched_alias, LIFECYCLE_ALIAS_TYPE_ACOUSTIC)
+            for tokens, matched_alias in _LIFECYCLE_ACOUSTIC_NAME_FORMS
+        )
+    return tuple(forms)
+
+
+def _contains_lifecycle_negation(normalized: str) -> bool:
+    tokens = tuple(normalized.split())
+    return any(
+        tokens[index : index + len(sequence)] == sequence
+        for sequence in _NEGATION_TOKEN_SEQUENCES
+        for index in range(0, len(tokens) - len(sequence) + 1)
+    )

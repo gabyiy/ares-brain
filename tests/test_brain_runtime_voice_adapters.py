@@ -365,7 +365,20 @@ def test_active_command_diagnostics_use_current_command_capture_and_runtime_resu
             normalized_input="goodbye ares",
             current_lifecycle_state="STANDBY",
             session_id="",
-            data={"core_service_bypassed": True},
+            data={
+                "core_service_bypassed": True,
+                "lifecycle_command": {
+                    "normalized_transcript": "goodbye aris",
+                    "canonicalized_transcript": "goodbye ares",
+                    "canonical_name": "ares",
+                    "matched_alias": "aris",
+                    "alias_type": "pronunciation_alias",
+                    "action": "standby",
+                    "matched_phrase": "goodbye ares",
+                    "negation_detected": False,
+                    "rejection_reason": "",
+                },
+            },
         ),
         lifecycle_state_before="ACTIVE",
         session_id_before="session-1",
@@ -376,9 +389,13 @@ def test_active_command_diagnostics_use_current_command_capture_and_runtime_resu
     diagnostics = emitted[0]
     assert diagnostics.raw_transcript == "goodbye aris"
     assert diagnostics.alias_canonicalized_transcript == "goodbye ares"
-    assert diagnostics.lifecycle_normalized_transcript == "goodbye ares"
+    assert diagnostics.lifecycle_normalized_transcript == "goodbye aris"
+    assert diagnostics.matched_assistant_alias == "aris"
+    assert diagnostics.assistant_alias_type == "pronunciation_alias"
     assert diagnostics.canonical_name == "ares"
+    assert diagnostics.negation_detected is False
     assert diagnostics.selected_lifecycle_action == "standby"
+    assert diagnostics.matched_lifecycle_phrase == "goodbye ares"
     assert diagnostics.core_service_bypassed is True
     assert diagnostics.lifecycle_state_before == "ACTIVE"
     assert diagnostics.lifecycle_state_after == "STANDBY"
@@ -404,6 +421,61 @@ def test_active_command_diagnostics_use_current_command_capture_and_runtime_resu
     assert diagnostics.pipeline_status == "runtime_transport_captured"
     assert diagnostics.runtime_terminal is False
     assert diagnostics.runtime_terminal_reason == "not_terminal"
+
+
+def test_active_rs_shutdown_uses_central_lifecycle_parser_and_diagnostics(tmp_path):
+    pipeline = FakePipeline()
+    pipeline.input_text = "Shut down RS"
+    emitted = []
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: "session-1",
+        diagnostic_callback=emitted.append,
+    )
+
+    captured = adapter.wait_for_input(1.0)
+    adapter.record_runtime_result(
+        runtime_result=SimpleNamespace(
+            command_category="shutdown",
+            normalized_input="shutdown ares",
+            current_lifecycle_state="STOPPED",
+            session_id="",
+            stop_reason="explicit_shutdown_command",
+            data={
+                "core_service_bypassed": True,
+                "lifecycle_command": {
+                    "normalized_transcript": "shutdown rs",
+                    "canonicalized_transcript": "shutdown ares",
+                    "canonical_name": "ares",
+                    "matched_alias": "rs",
+                    "alias_type": "acoustic_alias",
+                    "action": "shutdown",
+                    "matched_phrase": "shutdown ares",
+                    "negation_detected": False,
+                    "rejection_reason": "",
+                },
+            },
+        ),
+        lifecycle_state_before="ACTIVE",
+        session_id_before="session-1",
+    )
+
+    assert captured.status == "input"
+    assert captured.text == "Shut down RS"
+    assert len(emitted) == 1
+    diagnostics = emitted[0]
+    assert diagnostics.raw_transcript == "Shut down RS"
+    assert diagnostics.lifecycle_normalized_transcript == "shutdown rs"
+    assert diagnostics.alias_canonicalized_transcript == "shutdown ares"
+    assert diagnostics.matched_assistant_alias == "rs"
+    assert diagnostics.assistant_alias_type == "acoustic_alias"
+    assert diagnostics.canonical_name == "ares"
+    assert diagnostics.selected_lifecycle_action == "shutdown"
+    assert diagnostics.matched_lifecycle_phrase == "shutdown ares"
+    assert diagnostics.core_service_bypassed is True
+    assert diagnostics.runtime_terminal is True
+    assert diagnostics.runtime_terminal_reason == "explicit_shutdown_command"
 
 
 @pytest.mark.parametrize(
