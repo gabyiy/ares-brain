@@ -3,12 +3,15 @@ from __future__ import annotations
 from collections import deque
 import struct
 import subprocess
+import time
 
 import pytest
 
 from core import (
+    ContinuousPcmFrameSource,
     RmsVoiceActivityCapture,
     RollingPcmFrameSource,
+    SafePcmStreamRunner,
     SubprocessPcmFrameSource,
     VAD_STATUS_COMPLETED_AFTER_SILENCE,
     VoiceActivityCaptureRequestV1,
@@ -45,6 +48,7 @@ class FakeProcess:
     def __init__(self):
         self.stdout = FakePipe(DESCRIPTOR)
         self.stderr = FakePipe(DESCRIPTOR + 1)
+        self.pid = 4321
         self.returncode = None
 
     def poll(self):
@@ -106,6 +110,15 @@ def make_source(reader: ScriptedRawReader):
     return source, factory
 
 
+def wait_until(predicate, timeout_seconds=1.0):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.005)
+    assert predicate()
+
+
 def test_partial_reads_accumulate_into_one_exact_full_frame():
     expected = pcm_frame(1, -2, 300, -400)
     reader = ScriptedRawReader(
@@ -121,6 +134,8 @@ def test_partial_reads_accumulate_into_one_exact_full_frame():
     assert reader.reads == [(DESCRIPTOR, 8), (DESCRIPTOR, 7), (DESCRIPTOR, 4)]
     assert snapshot["total_low_level_reads"] == 3
     assert snapshot["partial_reads"] == 2
+    assert snapshot["accumulated_partial_bytes"] == 4
+    assert snapshot["low_level_read_size_counts"] == {"1": 1, "3": 1, "4": 1}
     assert snapshot["valid_full_pcm_frames"] == 1
     assert snapshot["valid_microphone_bytes_delivered_to_vad"] == FRAME_BYTES
     assert snapshot["pending_partial_bytes"] == 0
@@ -152,10 +167,111 @@ def test_empty_read_is_terminal_and_never_pads_or_advances_valid_frame_sequence(
     assert terminal["stream_ended"] is True
     assert terminal["total_low_level_reads"] == 2
     assert terminal["empty_reads"] == 1
+    assert terminal["low_level_read_size_counts"] == {"2": 1, "0": 1}
     assert terminal["valid_full_pcm_frames"] == 0
     assert terminal["valid_microphone_bytes_delivered_to_vad"] == 0
     assert terminal["pending_partial_bytes"] == 2
     assert terminal["zero_filled_bytes"] == 0
+
+
+def test_one_low_level_read_can_supply_several_frames_without_losing_leftovers():
+    frames = [
+        pcm_frame(1, 2, 3, 4),
+        pcm_frame(5, 6, 7, 8),
+        pcm_frame(9, 10, 11, 12),
+    ]
+
+    class OversizedReader(ScriptedRawReader):
+        def __call__(self, descriptor, maximum_bytes):
+            self.reads.append((descriptor, maximum_bytes))
+            return self.chunks.popleft()
+
+    reader = OversizedReader([b"".join(frames)])
+    source, _ = make_source(reader)
+
+    assert [
+        source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+        for _ in frames
+    ] == frames
+
+    snapshot = source.snapshot()
+    assert snapshot["total_low_level_reads"] == 1
+    assert snapshot["valid_full_pcm_frames"] == 3
+    assert snapshot["pending_partial_bytes"] == 0
+    assert snapshot["low_level_read_size_counts"] == {str(FRAME_BYTES * 3): 1}
+
+
+def test_odd_trailing_pcm_is_corruption_and_never_becomes_a_frame():
+    reader = ScriptedRawReader([b"\x01", b""])
+    source, factory = make_source(reader)
+    factory.process.returncode = 0
+
+    with pytest.raises(ValueError, match="odd_trailing_pcm_corruption:1"):
+        source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+
+    snapshot = source.snapshot()
+    assert snapshot["odd_trailing_byte_count"] == 1
+    assert snapshot["unexpected_eof_count"] == 1
+    assert snapshot["valid_full_pcm_frames"] == 0
+    assert snapshot["pending_partial_bytes"] == 1
+    assert snapshot["zero_filled_bytes"] == 0
+
+
+def test_zero_length_read_while_process_is_alive_is_not_clean_eof():
+    reader = ScriptedRawReader([b""])
+    source, _ = make_source(reader)
+
+    with pytest.raises(
+        RuntimeError,
+        match="arecord_stdout_closed_while_process_alive",
+    ):
+        source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+
+    snapshot = source.snapshot()
+    assert snapshot["process_alive"] is True
+    assert snapshot["process_exit_status"] is None
+    assert snapshot["eof_count"] == 1
+    assert snapshot["low_level_read_size_counts"] == {"0": 1}
+    assert snapshot["unexpected_eof_count"] == 1
+    assert snapshot["dead_process_detected"] is False
+    assert snapshot["terminal_reason"] == "stdout_closed_while_process_alive"
+    assert snapshot["valid_full_pcm_frames"] == 0
+
+
+def test_clean_eof_is_distinct_from_a_dead_arecord_process():
+    reader = ScriptedRawReader([b""])
+    source, factory = make_source(reader)
+    factory.process.returncode = 0
+
+    with pytest.raises(EOFError, match="arecord_pcm_stream_ended"):
+        source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+
+    snapshot = source.snapshot()
+    assert snapshot["process_exit_status"] == 0
+    assert snapshot["process_alive"] is False
+    assert snapshot["eof_count"] == 1
+    assert snapshot["unexpected_eof_count"] == 0
+    assert snapshot["dead_process_detected"] is False
+    assert snapshot["terminal_reason"] == "clean_eof"
+    assert snapshot["low_level_read_size_counts"] == {"0": 1}
+
+
+def test_nonzero_arecord_exit_is_reported_as_a_dead_process():
+    reader = ScriptedRawReader([b""])
+    source, factory = make_source(reader)
+    factory.process.returncode = 7
+
+    with pytest.raises(RuntimeError, match="arecord_process_exited:7"):
+        source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+
+    snapshot = source.snapshot()
+    assert snapshot["process_exit_status"] == 7
+    assert snapshot["process_alive"] is False
+    assert snapshot["dead_process_detected"] is True
+    assert snapshot["unexpected_eof_count"] == 1
+    assert snapshot["terminal_reason"] == "arecord_process_exited"
+    assert snapshot["low_level_read_size_counts"] == {"0": 1}
+    assert snapshot["valid_full_pcm_frames"] == 0
 
 
 def test_discard_removes_all_stale_audio_and_preserves_sample_alignment():
@@ -229,6 +345,257 @@ def test_repeated_hash_counter_tracks_only_adjacent_returned_frames():
         b"".join(frames)
     )
     assert snapshot["zero_filled_bytes"] == 0
+
+
+def test_continuous_pump_detects_pathological_repeated_non_silent_frames():
+    repeated = pcm_frame(100, -100, 100, -100)
+    reader = ScriptedRawReader([repeated] * 4)
+    raw_source, _ = make_source(reader)
+    pump = ContinuousPcmFrameSource(
+        raw_source,
+        expected_frame_bytes=FRAME_BYTES,
+        maximum_queue_frames=8,
+        pathological_duplicate_frames=3,
+        capture_stderr=False,
+    )
+    try:
+        wait_until(
+            lambda: pump.snapshot()[
+                "pathological_duplicate_frame_detected"
+            ]
+        )
+        snapshot = pump.snapshot()
+
+        assert snapshot["repeated_frame_hashes"] == 2
+        assert snapshot[
+            "maximum_consecutive_repeated_non_silent_frames"
+        ] == 3
+        assert snapshot["pathological_duplicate_frame_detected"] is True
+        assert snapshot["integrity_failure_count"] == 1
+        assert snapshot["integrity_guard_discarded_frames"] == 2
+        assert snapshot["queue_depth_frames"] == 0
+        assert snapshot["stream_ended"] is True
+        assert (
+            snapshot["terminal_reason"]
+            == "pathological_repeated_non_silent_pcm"
+        )
+        assert snapshot["maximum_consecutive_tiny_rms_frames"] == 0
+        with pytest.raises(
+            RuntimeError,
+            match="pathological_repeated_non_silent_pcm",
+        ):
+            pump.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+    finally:
+        pump.close()
+
+
+def test_continuous_pump_allows_repeated_exact_silence_frames():
+    silence = b"\x00" * FRAME_BYTES
+    reader = ScriptedRawReader([silence] * 4)
+    raw_source, _ = make_source(reader)
+    pump = ContinuousPcmFrameSource(
+        raw_source,
+        expected_frame_bytes=FRAME_BYTES,
+        maximum_queue_frames=8,
+        pathological_duplicate_frames=3,
+        capture_stderr=False,
+    )
+    try:
+        wait_until(lambda: pump.snapshot()["valid_full_pcm_frames"] == 4)
+        snapshot = pump.snapshot()
+
+        assert snapshot["repeated_frame_hashes"] == 3
+        assert snapshot[
+            "maximum_consecutive_repeated_non_silent_frames"
+        ] == 0
+        assert snapshot["pathological_duplicate_frame_detected"] is False
+        assert snapshot["integrity_failure_count"] == 0
+        assert [
+            pump.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+            for _ in range(4)
+        ] == [silence] * 4
+    finally:
+        pump.close()
+
+
+def test_continuous_pump_tracks_long_tiny_rms_runs_without_promoting_audio():
+    tiny_frames = [
+        pcm_frame(1, -1, 2, -2),
+        pcm_frame(2, -2, 3, -3),
+        pcm_frame(3, -3, 4, -4),
+        pcm_frame(4, -4, 5, -5),
+    ]
+    reader = ScriptedRawReader(tiny_frames)
+    raw_source, _ = make_source(reader)
+    pump = ContinuousPcmFrameSource(
+        raw_source,
+        expected_frame_bytes=FRAME_BYTES,
+        maximum_queue_frames=8,
+        tiny_rms=8.0,
+        capture_stderr=False,
+    )
+    try:
+        wait_until(lambda: pump.snapshot()["valid_full_pcm_frames"] == 4)
+        snapshot = pump.snapshot()
+
+        assert snapshot["maximum_consecutive_tiny_rms_frames"] == 4
+        assert snapshot["pathological_duplicate_frame_detected"] is False
+        assert snapshot["zero_filled_bytes"] == 0
+    finally:
+        pump.close()
+
+
+def test_continuous_pump_queue_owns_mutable_source_bytes():
+    original = pcm_frame(100, 200, 300, 400)
+    shared = bytearray(original)
+    reader = ScriptedRawReader([shared])
+    raw_source, _ = make_source(reader)
+    pump = ContinuousPcmFrameSource(
+        raw_source,
+        expected_frame_bytes=FRAME_BYTES,
+        maximum_queue_frames=3,
+        capture_stderr=False,
+    )
+    try:
+        wait_until(lambda: pump.snapshot()["queue_depth_frames"] == 1)
+        shared[:] = pcm_frame(-1, -2, -3, -4)
+
+        delivered = pump.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+        assert delivered == original
+        assert isinstance(delivered, bytes)
+    finally:
+        pump.close()
+
+
+def test_continuous_pump_drains_during_consumer_idle_and_keeps_only_recent_frames():
+    frames = [
+        pcm_frame(value, value, value, value)
+        for value in range(1, 11)
+    ]
+    reader = ScriptedRawReader(frames)
+    raw_source, _ = make_source(reader)
+    pump = ContinuousPcmFrameSource(
+        raw_source,
+        expected_frame_bytes=FRAME_BYTES,
+        maximum_queue_frames=3,
+        capture_stderr=False,
+    )
+    try:
+        wait_until(lambda: pump.snapshot()["valid_full_pcm_frames"] == len(frames))
+        idle_snapshot = pump.snapshot()
+
+        assert idle_snapshot["total_low_level_reads"] == len(frames)
+        assert idle_snapshot["queue_depth_frames"] == 3
+        assert idle_snapshot["queue_overflow_dropped_frames"] == 7
+        assert idle_snapshot["queue_overflow_dropped_bytes"] == 7 * FRAME_BYTES
+        assert [
+            pump.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+            for _ in range(3)
+        ] == frames[-3:]
+        assert pump.snapshot()["valid_pcm_frames_delivered_to_vad"] == 3
+    finally:
+        pump.close()
+
+
+def test_candidate_reset_removes_idle_backlog_before_new_live_frame():
+    stale_frames = [
+        pcm_frame(value, value, value, value)
+        for value in (10, 20, 30)
+    ]
+    fresh_frame = pcm_frame(900, -900, 700, -700)
+    reader = ScriptedRawReader(stale_frames)
+    raw_source, _ = make_source(reader)
+    pump = ContinuousPcmFrameSource(
+        raw_source,
+        expected_frame_bytes=FRAME_BYTES,
+        maximum_queue_frames=4,
+        capture_stderr=False,
+    )
+    try:
+        wait_until(lambda: pump.snapshot()["queue_depth_frames"] == 3)
+        discarded = pump.discard_available(FRAME_BYTES * 4)
+        reader.append(fresh_frame)
+
+        assert discarded == len(b"".join(stale_frames))
+        assert pump.read_frame(FRAME_BYTES, timeout_seconds=1.0) == fresh_frame
+        snapshot = pump.snapshot()
+        assert snapshot["candidate_reset_discarded_frames"] == 3
+        assert snapshot["candidate_reset_discarded_bytes"] == 3 * FRAME_BYTES
+        assert snapshot["queue_overflow_dropped_frames"] == 0
+    finally:
+        pump.close()
+
+
+def test_safe_pcm_stream_runner_wraps_one_arecord_process_in_continuous_pump(
+    monkeypatch,
+):
+    reader = ScriptedRawReader([b"\x01\x00" * 320])
+    raw_source, factory = make_source(reader)
+
+    monkeypatch.setattr(
+        "core.LinuxAlsaMicrophone.SubprocessPcmFrameSource",
+        lambda args: raw_source,
+    )
+    runner = SafePcmStreamRunner()
+    pump = runner.start(
+        [
+            "/usr/bin/arecord",
+            "-q",
+            "-f",
+            "S16_LE",
+            "-c",
+            "1",
+            "-r",
+            "16000",
+            "-t",
+            "raw",
+            "-D",
+            "plughw:2,0",
+            "-",
+        ]
+    )
+    try:
+        assert isinstance(pump, ContinuousPcmFrameSource)
+        assert pump.read_frame(640, timeout_seconds=1.0) == b"\x01\x00" * 320
+        snapshot = pump.snapshot()
+        assert snapshot["process_pid"] == factory.process.pid
+        assert snapshot["process_exit_status"] is None
+        assert snapshot["process_alive"] is True
+        assert snapshot["process_liveness_observable"] is True
+        assert snapshot["stdout_transport_mode"] == "raw_pcm_pipe_continuous_pump"
+        assert snapshot["stderr_transport_mode"] == "separate_bounded_pipe"
+    finally:
+        pump.close()
+
+
+def test_continuous_pump_drains_stderr_without_mixing_it_into_pcm():
+    pcm = pcm_frame(1200, -1200, 600, -600)
+    pcm_reader = ScriptedRawReader([pcm])
+    stderr_payload = b"arecord: harmless diagnostic on stderr\n"
+    stderr_reader = ScriptedRawReader([stderr_payload])
+    raw_source, _ = make_source(pcm_reader)
+    pump = ContinuousPcmFrameSource(
+        raw_source,
+        expected_frame_bytes=FRAME_BYTES,
+        maximum_queue_frames=3,
+        stderr_selector=stderr_reader.select,
+        stderr_raw_reader=stderr_reader,
+    )
+    try:
+        wait_until(
+            lambda: pump.snapshot()["stderr_bytes_captured"]
+            == len(stderr_payload)
+        )
+
+        assert pump.read_frame(FRAME_BYTES, timeout_seconds=1.0) == pcm
+        snapshot = pump.snapshot()
+        assert snapshot["stderr_preview"] == stderr_payload.decode("utf-8")
+        assert snapshot["stderr_transport_mode"] == "separate_bounded_pipe"
+        assert snapshot["valid_full_pcm_frames"] == 1
+        assert snapshot["fresh_microphone_bytes_delivered_to_vad"] == len(pcm)
+        assert stderr_payload not in pcm
+    finally:
+        pump.close()
 
 
 def test_valid_byte_delivery_counts_frames_not_discarded_stale_bytes():
@@ -450,7 +817,10 @@ def test_rolling_wrapper_error_counter_is_not_masked_by_low_level_zero():
     with pytest.raises(OSError, match="wrapper-visible failure"):
         rolling.read_frame(FRAME_BYTES, timeout_seconds=1.0)
 
-    assert rolling.snapshot()["read_errors"] == 1
+    snapshot = rolling.snapshot()
+    assert snapshot["read_errors"] == 1
+    assert snapshot["process_liveness_observable"] is False
+    assert snapshot["process_alive"] is True
 
 
 def test_close_uses_kill_fallback_when_terminate_fails_and_closes_pipes():

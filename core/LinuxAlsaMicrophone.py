@@ -11,7 +11,7 @@ import select
 import shutil
 import subprocess
 import tempfile
-from threading import RLock
+from threading import Condition, Event, RLock, Thread
 import time
 import wave
 from typing import Any, Dict, List, Optional, Sequence
@@ -23,7 +23,9 @@ from core.PcmIntegrity import (
     CANONICAL_PCM_FRAME_DURATION_MS,
     CANONICAL_PCM_SAMPLE_FORMAT,
     CANONICAL_PCM_SAMPLES_PER_FRAME,
+    calculate_s16_le_rms,
     canonical_pcm_contract,
+    decode_s16_le_samples,
 )
 from core.VoiceActivityDetection import (
     RmsVoiceActivityCapture,
@@ -54,6 +56,11 @@ DEFAULT_ALSA_RECORD_SECONDS = 3
 DEFAULT_ALSA_TIMEOUT_PADDING_SECONDS = 5
 MAX_ALSA_RECORD_SECONDS = 60
 MAX_ALSA_TIMEOUT_SECONDS = 120
+DEFAULT_PCM_PUMP_QUEUE_FRAMES = 50
+DEFAULT_PCM_PUMP_READ_TIMEOUT_SECONDS = 0.10
+DEFAULT_PCM_NON_SILENT_RMS = 20.0
+DEFAULT_PCM_PATHOLOGICAL_DUPLICATE_FRAMES = 10
+DEFAULT_PCM_TINY_RMS = 8.0
 
 ALSA_STATUS_ARECORD_MISSING = "arecord_missing"
 ALSA_STATUS_NO_CAPTURE_DEVICE = "no_capture_device"
@@ -209,6 +216,15 @@ class SubprocessPcmFrameSource:
         self.repeated_frame_hashes = 0
         self.mutable_buffer_reuse_detected = 0
         self.valid_microphone_bytes_delivered_to_vad = 0
+        self.accumulated_partial_bytes = 0
+        self.low_level_read_size_counts: Dict[str, int] = {}
+        self.eof_count = 0
+        self.unexpected_eof_count = 0
+        self.dead_process_detected = False
+        self.odd_trailing_byte_count = 0
+        self.incomplete_trailing_byte_count = 0
+        self.stdout_closed_while_process_alive_count = 0
+        self.terminal_reason = ""
         self.last_read_timestamp = 0.0
 
     def read_frame(self, frame_bytes: int, timeout_seconds: float) -> bytes:
@@ -229,6 +245,9 @@ class SubprocessPcmFrameSource:
                 self.read_errors += 1
                 raise
             if not readable:
+                returncode = self._process_exit_status()
+                if returncode is not None:
+                    self._raise_terminal_stream_state(returncode=returncode)
                 raise TimeoutError("pcm_frame_read_timeout")
             requested = expected - len(self._pending)
             self.total_low_level_reads += 1
@@ -239,15 +258,26 @@ class SubprocessPcmFrameSource:
                 raise
             if not chunk:
                 self.empty_reads += 1
-                self.stream_ended = True
-                raise EOFError("arecord_pcm_stream_ended")
+                self.eof_count += 1
+                self.low_level_read_size_counts["0"] = (
+                    self.low_level_read_size_counts.get("0", 0) + 1
+                )
+                self._raise_terminal_stream_state(
+                    returncode=self._process_exit_status(),
+                )
             try:
                 immutable_chunk = self._copy_source_bytes(chunk)
             except (TypeError, ValueError):
                 self.read_errors += 1
                 raise
+            read_size = len(immutable_chunk)
+            read_size_key = str(read_size)
+            self.low_level_read_size_counts[read_size_key] = (
+                self.low_level_read_size_counts.get(read_size_key, 0) + 1
+            )
             if len(immutable_chunk) < requested:
                 self.partial_reads += 1
+                self.accumulated_partial_bytes += len(immutable_chunk)
             if self._discard_continuation_bytes:
                 discarded_prefix = min(
                     self._discard_continuation_bytes,
@@ -267,6 +297,27 @@ class SubprocessPcmFrameSource:
             self.repeated_frame_hashes += 1
         self._last_frame_hash = current_hash
         return immutable_frame
+
+    def discard_pending_bytes(self, maximum_bytes: Optional[int] = None) -> int:
+        """Discard only already-owned partial PCM while preserving S16 alignment.
+
+        The continuous pump pauses its only reader before calling this method.
+        This method never reads the process descriptor and therefore cannot race
+        another stdout reader or discard post-boundary microphone audio.
+        """
+
+        available = len(self._pending)
+        bounded = available
+        if maximum_bytes is not None:
+            bounded = min(available, max(0, int(maximum_bytes)))
+        if bounded <= 0:
+            return 0
+        del self._pending[:bounded]
+        if bounded % CANONICAL_SAMPLE_WIDTH_BYTES:
+            self._discard_continuation_bytes = 1
+        self.discarded_bytes += bounded
+        self._last_frame_hash = b""
+        return bounded
 
     def discard_available(self, maximum_bytes: int) -> int:
         """Discard stale bytes while preserving signed-16 sample alignment."""
@@ -302,6 +353,10 @@ class SubprocessPcmFrameSource:
                 raise
             if not chunk:
                 self.empty_reads += 1
+                self.eof_count += 1
+                self.low_level_read_size_counts["0"] = (
+                    self.low_level_read_size_counts.get("0", 0) + 1
+                )
                 self.stream_ended = True
                 break
             try:
@@ -310,8 +365,14 @@ class SubprocessPcmFrameSource:
                 self.read_errors += 1
                 self._pending.extend(buffered)
                 raise
+            read_size = len(immutable_chunk)
+            read_size_key = str(read_size)
+            self.low_level_read_size_counts[read_size_key] = (
+                self.low_level_read_size_counts.get(read_size_key, 0) + 1
+            )
             if len(immutable_chunk) < requested:
                 self.partial_reads += 1
+                self.accumulated_partial_bytes += len(immutable_chunk)
             if self._discard_continuation_bytes:
                 discarded_prefix = min(
                     self._discard_continuation_bytes,
@@ -332,8 +393,16 @@ class SubprocessPcmFrameSource:
             self._last_frame_hash = b""
         return alignment_discarded + discarded_now
 
-    def snapshot(self) -> Dict[str, int | bool]:
+    def snapshot(self) -> Dict[str, Any]:
+        returncode = self._process_exit_status()
         return {
+            "transport_argv": list(self.args),
+            "stdout_transport_mode": "raw_pcm_pipe",
+            "stderr_transport_mode": "separate_pipe",
+            "process_pid": int(getattr(self.process, "pid", 0) or 0),
+            "process_exit_status": returncode,
+            "process_alive": bool(returncode is None and not self.closed),
+            "process_liveness_observable": True,
             "total_low_level_reads": self.total_low_level_reads,
             "valid_full_pcm_frames": self.valid_full_pcm_frames,
             "valid_pcm_frames_delivered_to_vad": self.valid_full_pcm_frames,
@@ -358,12 +427,60 @@ class SubprocessPcmFrameSource:
                 self._expected_frame_bytes if self.valid_full_pcm_frames else 0
             ),
             "last_read_timestamp": self.last_read_timestamp,
+            "accumulated_partial_bytes": self.accumulated_partial_bytes,
             "pending_partial_bytes": len(self._pending),
             "pending_discard_alignment_bytes": self._discard_continuation_bytes,
+            "low_level_read_size_counts": dict(self.low_level_read_size_counts),
             "expected_frame_bytes": self._expected_frame_bytes,
+            "eof_count": self.eof_count,
+            "unexpected_eof_count": self.unexpected_eof_count,
+            "dead_process_detected": self.dead_process_detected,
+            "odd_trailing_byte_count": self.odd_trailing_byte_count,
+            "incomplete_trailing_byte_count": self.incomplete_trailing_byte_count,
+            "stdout_closed_while_process_alive_count": (
+                self.stdout_closed_while_process_alive_count
+            ),
+            "terminal_reason": self.terminal_reason,
             "closed": self.closed,
             "stream_ended": self.stream_ended,
         }
+
+    def _process_exit_status(self) -> Optional[int]:
+        try:
+            value = self.process.poll()
+        except (OSError, RuntimeError):
+            return None
+        return int(value) if value is not None else None
+
+    def _raise_terminal_stream_state(self, *, returncode: Optional[int]) -> None:
+        self.stream_ended = True
+        pending_bytes = len(self._pending)
+        if pending_bytes % CANONICAL_SAMPLE_WIDTH_BYTES:
+            self.odd_trailing_byte_count += pending_bytes
+            self.unexpected_eof_count += 1
+            self.terminal_reason = "odd_trailing_pcm_corruption"
+            raise ValueError(
+                f"odd_trailing_pcm_corruption:{pending_bytes}"
+            )
+        if pending_bytes:
+            self.incomplete_trailing_byte_count += pending_bytes
+            self.unexpected_eof_count += 1
+            self.terminal_reason = "incomplete_trailing_pcm_frame"
+            raise EOFError(
+                f"arecord_pcm_stream_ended_with_partial_frame:{pending_bytes}"
+            )
+        if returncode is None:
+            self.stdout_closed_while_process_alive_count += 1
+            self.unexpected_eof_count += 1
+            self.terminal_reason = "stdout_closed_while_process_alive"
+            raise RuntimeError("arecord_stdout_closed_while_process_alive")
+        if returncode != 0:
+            self.dead_process_detected = True
+            self.unexpected_eof_count += 1
+            self.terminal_reason = "arecord_process_exited"
+            raise RuntimeError(f"arecord_process_exited:{returncode}")
+        self.terminal_reason = "clean_eof"
+        raise EOFError("arecord_pcm_stream_ended")
 
     def _set_expected_frame_bytes(self, frame_bytes: int) -> int:
         if isinstance(frame_bytes, bool) or int(frame_bytes) <= 0:
@@ -471,11 +588,516 @@ class SubprocessPcmFrameSource:
         self.closed = True
 
 
-class SafePcmStreamRunner:
-    """Starts allowlisted arecord argument lists; never invokes a shell."""
+class ContinuousPcmFrameSource:
+    """Continuously drain one arecord PCM pipe into a bounded owned-frame queue.
 
-    def start(self, args: Sequence[str]) -> SubprocessPcmFrameSource:
-        return SubprocessPcmFrameSource(args)
+    The subprocess and microphone owner do not change. A single producer owns
+    stdout for the lifetime of the process, reconstructs exact immutable frames,
+    and drops the oldest queued frame when a paused consumer falls behind. This
+    prevents a persistent arecord process from blocking on a full stdout pipe and
+    later serving stale pre-prompt audio as if it were live microphone input.
+    Stderr is drained independently and is never mixed into PCM.
+    """
+
+    def __init__(
+        self,
+        source: SubprocessPcmFrameSource,
+        *,
+        expected_frame_bytes: int = CANONICAL_PCM_FRAME_BYTES,
+        maximum_queue_frames: int = DEFAULT_PCM_PUMP_QUEUE_FRAMES,
+        read_timeout_seconds: float = DEFAULT_PCM_PUMP_READ_TIMEOUT_SECONDS,
+        non_silent_rms: float = DEFAULT_PCM_NON_SILENT_RMS,
+        pathological_duplicate_frames: int = (
+            DEFAULT_PCM_PATHOLOGICAL_DUPLICATE_FRAMES
+        ),
+        tiny_rms: float = DEFAULT_PCM_TINY_RMS,
+        capture_stderr: bool = True,
+        stderr_selector: Optional[Any] = None,
+        stderr_raw_reader: Optional[Any] = None,
+        clock: Any = time.monotonic,
+    ):
+        if not callable(getattr(source, "read_frame", None)):
+            raise ValueError("continuous PCM source must support read_frame")
+        if (
+            isinstance(expected_frame_bytes, bool)
+            or int(expected_frame_bytes) <= 0
+            or int(expected_frame_bytes) % CANONICAL_SAMPLE_WIDTH_BYTES
+        ):
+            raise ValueError("expected_frame_bytes must contain complete S16_LE samples")
+        if not 2 <= int(maximum_queue_frames) <= 500:
+            raise ValueError("maximum_queue_frames must be between 2 and 500")
+        if not 0.01 <= float(read_timeout_seconds) <= 1.0:
+            raise ValueError("read_timeout_seconds must be between 0.01 and 1.0")
+        if float(non_silent_rms) < 0 or float(tiny_rms) < 0:
+            raise ValueError("PCM integrity RMS boundaries cannot be negative")
+        if not 2 <= int(pathological_duplicate_frames) <= 500:
+            raise ValueError(
+                "pathological_duplicate_frames must be between 2 and 500"
+            )
+
+        self.source = source
+        self.args = list(getattr(source, "args", ()) or ())
+        self.process = getattr(source, "process", None)
+        self.expected_frame_bytes = int(expected_frame_bytes)
+        self.maximum_queue_frames = int(maximum_queue_frames)
+        self.read_timeout_seconds = float(read_timeout_seconds)
+        self.non_silent_rms = float(non_silent_rms)
+        self.pathological_duplicate_frames = int(pathological_duplicate_frames)
+        self.tiny_rms = float(tiny_rms)
+        self.clock = clock
+        self.closed = False
+        self.stream_ended = False
+        self.terminal_reason = ""
+        self.stderr = ""
+        self._condition = Condition(RLock())
+        self._stop_requested = Event()
+        self._queue: deque[tuple[int, bytes, float]] = deque()
+        self._reset_epoch = 0
+        self._inflight_epoch: Optional[int] = None
+        self._resetting = False
+        self._terminal_error: Optional[tuple[type[BaseException], str]] = None
+        self._last_pumped_hash = b""
+        self._last_pumped_non_silent = False
+        self._current_repeated_non_silent_frames = 0
+        self._current_tiny_rms_frames = 0
+        self._stderr_bytes = bytearray()
+        self._stderr_maximum_bytes = 8192
+        self._stderr_discarded_bytes = 0
+        self._stderr_selector = stderr_selector or select.select
+        self._stderr_raw_reader = stderr_raw_reader or os.read
+
+        self.pumped_frame_count = 0
+        self.delivered_frame_count = 0
+        self.pumped_byte_count = 0
+        self.delivered_byte_count = 0
+        self.queue_overflow_dropped_frames = 0
+        self.queue_overflow_dropped_bytes = 0
+        self.candidate_reset_discarded_frames = 0
+        self.candidate_reset_discarded_bytes = 0
+        self.repeated_frame_hashes = 0
+        self.maximum_consecutive_repeated_non_silent_frames = 0
+        self.pathological_duplicate_frame_detected = False
+        self.integrity_failure_count = 0
+        self.integrity_guard_discarded_frames = 0
+        self.integrity_guard_discarded_bytes = 0
+        self.maximum_consecutive_tiny_rms_frames = 0
+        self.producer_timeouts = 0
+        self.reset_boundary_timeouts = 0
+        self.last_source_frame_sequence = 0
+        self.last_frame_was_replay = False
+        self.last_frame_bytes = 0
+        self.last_read_timestamp = 0.0
+        self.last_frame_rms = 0.0
+        self.last_frame_minimum_sample = 0
+        self.last_frame_maximum_sample = 0
+
+        self._producer_thread = Thread(
+            target=self._producer_loop,
+            name="ares-persistent-pcm-pump",
+            daemon=True,
+        )
+        self._producer_thread.start()
+        self._stderr_thread: Optional[Thread] = None
+        stderr_pipe = getattr(self.process, "stderr", None)
+        if capture_stderr and stderr_pipe is not None:
+            self._stderr_thread = Thread(
+                target=self._stderr_loop,
+                name="ares-persistent-pcm-stderr",
+                daemon=True,
+            )
+            self._stderr_thread.start()
+
+    def read_frame(self, frame_bytes: int, timeout_seconds: float) -> bytes:
+        if int(frame_bytes) != self.expected_frame_bytes:
+            raise ValueError("persistent PCM frame size changed")
+        deadline = self.clock() + max(0.01, float(timeout_seconds))
+        with self._condition:
+            while not self._queue:
+                if self._terminal_error is not None:
+                    self._raise_saved_terminal_error()
+                if self.closed:
+                    raise EOFError("persistent PCM stream is closed")
+                remaining = deadline - self.clock()
+                if remaining <= 0:
+                    raise TimeoutError("pcm_frame_read_timeout")
+                self._condition.wait(timeout=min(remaining, 0.10))
+            source_sequence, frame, captured_at = self._queue.popleft()
+            immutable_frame = bytes(frame)
+            self.delivered_frame_count += 1
+            self.delivered_byte_count += len(immutable_frame)
+            self.last_source_frame_sequence = int(source_sequence)
+            self.last_frame_was_replay = False
+            self.last_frame_bytes = len(immutable_frame)
+            self.last_read_timestamp = float(captured_at)
+            return immutable_frame
+
+    def discard_available(self, maximum_bytes: int) -> int:
+        """Establish a current-audio boundary without racing the stdout reader."""
+
+        bounded_maximum = max(
+            0,
+            min(int(maximum_bytes), self.expected_frame_bytes * self.maximum_queue_frames),
+        )
+        if bounded_maximum <= 0:
+            return 0
+        reset_started = self.clock()
+        with self._condition:
+            self._resetting = True
+            self._reset_epoch += 1
+            current_epoch = self._reset_epoch
+            discarded_before = self.candidate_reset_discarded_bytes
+            while (
+                self._queue
+                and self.candidate_reset_discarded_bytes - discarded_before
+                + self.expected_frame_bytes
+                <= bounded_maximum
+            ):
+                self._queue.popleft()
+                self.candidate_reset_discarded_frames += 1
+                self.candidate_reset_discarded_bytes += self.expected_frame_bytes
+            wait_bound = max(0.10, self.read_timeout_seconds * 3.0)
+            while (
+                self._inflight_epoch is not None
+                and self._inflight_epoch < current_epoch
+                and self.clock() - reset_started < wait_bound
+            ):
+                self._condition.wait(timeout=min(0.02, wait_bound))
+            if (
+                self._inflight_epoch is not None
+                and self._inflight_epoch < current_epoch
+            ):
+                self.reset_boundary_timeouts += 1
+                self._resetting = False
+                self._condition.notify_all()
+                raise TimeoutError("pcm_reset_boundary_timeout")
+
+            remaining = max(
+                0,
+                bounded_maximum
+                - (self.candidate_reset_discarded_bytes - discarded_before),
+            )
+            discard_pending = getattr(self.source, "discard_pending_bytes", None)
+            if remaining and callable(discard_pending):
+                discarded_partial = int(discard_pending(remaining))
+                self.candidate_reset_discarded_bytes += max(0, discarded_partial)
+            self._resetting = False
+            self._condition.notify_all()
+            return max(
+                0,
+                self.candidate_reset_discarded_bytes - discarded_before,
+            )
+
+    def snapshot(self) -> Dict[str, Any]:
+        source_snapshot = getattr(self.source, "snapshot", None)
+        low_level = source_snapshot() if callable(source_snapshot) else {}
+        if not isinstance(low_level, dict):
+            low_level = {}
+        with self._condition:
+            queue_depth = len(self._queue)
+            exit_status = low_level.get("process_exit_status")
+            process_pid = int(
+                low_level.get(
+                    "process_pid",
+                    getattr(self.process, "pid", 0),
+                )
+                or 0
+            )
+            process_alive_value = low_level.get("process_alive")
+            liveness_observable = bool(
+                low_level.get(
+                    "process_liveness_observable",
+                    isinstance(process_alive_value, bool) or process_pid > 0,
+                )
+            )
+            return {
+                **low_level,
+                "transport_argv": list(
+                    low_level.get("transport_argv", self.args) or self.args
+                ),
+                "stdout_transport_mode": "raw_pcm_pipe_continuous_pump",
+                "stderr_transport_mode": "separate_bounded_pipe",
+                "process_pid": process_pid,
+                "process_exit_status": exit_status,
+                "process_alive": bool(
+                    process_alive_value
+                    if isinstance(process_alive_value, bool)
+                    else exit_status is None and not self.closed
+                ),
+                "process_liveness_observable": liveness_observable,
+                "valid_full_pcm_frames": self.pumped_frame_count,
+                "fresh_full_pcm_frames": self.pumped_frame_count,
+                "valid_pcm_frames_delivered_to_vad": self.delivered_frame_count,
+                "valid_microphone_bytes_delivered_to_vad": (
+                    self.delivered_byte_count
+                ),
+                "fresh_microphone_bytes_delivered_to_vad": (
+                    self.pumped_byte_count
+                ),
+                "read_sequence": self.delivered_frame_count,
+                "live_frame_count": self.pumped_frame_count,
+                "total_bytes_returned": self.delivered_byte_count,
+                "total_live_bytes_read": self.pumped_byte_count,
+                "last_source_frame_sequence": self.last_source_frame_sequence,
+                "last_frame_was_replay": False,
+                "last_frame_bytes": self.last_frame_bytes,
+                "last_read_timestamp": self.last_read_timestamp,
+                "expected_frame_bytes": self.expected_frame_bytes,
+                "queue_capacity_frames": self.maximum_queue_frames,
+                "queue_depth_frames": queue_depth,
+                "queue_depth_bytes": queue_depth * self.expected_frame_bytes,
+                "queue_overflow_dropped_frames": (
+                    self.queue_overflow_dropped_frames
+                ),
+                "queue_overflow_dropped_bytes": self.queue_overflow_dropped_bytes,
+                "candidate_reset_discarded_frames": (
+                    self.candidate_reset_discarded_frames
+                ),
+                "candidate_reset_discarded_bytes": (
+                    self.candidate_reset_discarded_bytes
+                ),
+                "repeated_frame_hashes": self.repeated_frame_hashes,
+                "maximum_consecutive_repeated_non_silent_frames": (
+                    self.maximum_consecutive_repeated_non_silent_frames
+                ),
+                "pathological_duplicate_frame_detected": (
+                    self.pathological_duplicate_frame_detected
+                ),
+                "integrity_failure_count": self.integrity_failure_count,
+                "integrity_guard_discarded_frames": (
+                    self.integrity_guard_discarded_frames
+                ),
+                "integrity_guard_discarded_bytes": (
+                    self.integrity_guard_discarded_bytes
+                ),
+                "maximum_consecutive_tiny_rms_frames": (
+                    self.maximum_consecutive_tiny_rms_frames
+                ),
+                "producer_timeouts": self.producer_timeouts,
+                "reset_boundary_timeouts": self.reset_boundary_timeouts,
+                "last_frame_rms": self.last_frame_rms,
+                "last_frame_minimum_sample": self.last_frame_minimum_sample,
+                "last_frame_maximum_sample": self.last_frame_maximum_sample,
+                "stderr_bytes_captured": len(self._stderr_bytes),
+                "stderr_discarded_bytes": self._stderr_discarded_bytes,
+                "stderr_preview": bytes(self._stderr_bytes).decode(
+                    "utf-8",
+                    errors="replace",
+                ),
+                "stream_ended": self.stream_ended
+                or bool(low_level.get("stream_ended", False)),
+                "terminal_reason": self.terminal_reason
+                or str(low_level.get("terminal_reason", "") or ""),
+                "closed": self.closed,
+            }
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self._stop_requested.set()
+        with self._condition:
+            self._resetting = False
+            self._condition.notify_all()
+        self._producer_thread.join(timeout=max(0.25, self.read_timeout_seconds * 4.0))
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=0.25)
+        try:
+            self.source.close()
+        except (OSError, RuntimeError):
+            self.closed = False
+            raise
+        self._producer_thread.join(timeout=0.25)
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=0.25)
+        source_stderr = str(getattr(self.source, "stderr", "") or "")
+        captured_stderr = bytes(self._stderr_bytes).decode("utf-8", errors="replace")
+        self.stderr = (captured_stderr + source_stderr)[:1000]
+        with self._condition:
+            self.closed = True
+            self._queue.clear()
+            self._condition.notify_all()
+
+    def _producer_loop(self) -> None:
+        while not self._stop_requested.is_set():
+            with self._condition:
+                while self._resetting and not self._stop_requested.is_set():
+                    self._condition.wait(timeout=0.02)
+                if self._stop_requested.is_set():
+                    return
+                read_epoch = self._reset_epoch
+                self._inflight_epoch = read_epoch
+            try:
+                frame = self.source.read_frame(
+                    self.expected_frame_bytes,
+                    self.read_timeout_seconds,
+                )
+                if not isinstance(frame, (bytes, bytearray, memoryview)):
+                    raise TypeError("PCM pump received a non-bytes frame")
+                actual_length = len(frame)
+                immutable_frame = bytes(frame[:actual_length])
+                if actual_length != self.expected_frame_bytes:
+                    raise ValueError(
+                        f"PCM pump received incomplete frame:{actual_length}"
+                    )
+                if actual_length % CANONICAL_SAMPLE_WIDTH_BYTES:
+                    raise ValueError("PCM pump received odd-byte frame")
+            except TimeoutError:
+                with self._condition:
+                    self.producer_timeouts += 1
+                    self._inflight_epoch = None
+                    self._condition.notify_all()
+                continue
+            except (EOFError, OSError, RuntimeError, TypeError, ValueError) as error:
+                if self._stop_requested.is_set():
+                    return
+                with self._condition:
+                    self._inflight_epoch = None
+                    self.stream_ended = True
+                    source_terminal = getattr(self.source, "terminal_reason", "")
+                    self.terminal_reason = str(source_terminal or str(error))[:160]
+                    self._terminal_error = (error.__class__, str(error))
+                    self._condition.notify_all()
+                return
+
+            captured_at = float(self.clock())
+            with self._condition:
+                self._inflight_epoch = None
+                if read_epoch != self._reset_epoch:
+                    self.candidate_reset_discarded_frames += 1
+                    self.candidate_reset_discarded_bytes += len(immutable_frame)
+                    self._condition.notify_all()
+                    continue
+                self.pumped_frame_count += 1
+                source_sequence = self.pumped_frame_count
+                self.pumped_byte_count += len(immutable_frame)
+                self._record_frame_integrity(immutable_frame)
+                if self.pathological_duplicate_frame_detected:
+                    discarded_frames = len(self._queue)
+                    self._queue.clear()
+                    self.integrity_failure_count += 1
+                    self.integrity_guard_discarded_frames += discarded_frames
+                    self.integrity_guard_discarded_bytes += (
+                        discarded_frames * self.expected_frame_bytes
+                    )
+                    self.stream_ended = True
+                    self.terminal_reason = (
+                        "pathological_repeated_non_silent_pcm"
+                    )
+                    self._terminal_error = (
+                        RuntimeError,
+                        self.terminal_reason,
+                    )
+                    self._condition.notify_all()
+                    return
+                if len(self._queue) >= self.maximum_queue_frames:
+                    self._queue.popleft()
+                    self.queue_overflow_dropped_frames += 1
+                    self.queue_overflow_dropped_bytes += self.expected_frame_bytes
+                self._queue.append(
+                    (source_sequence, immutable_frame, captured_at)
+                )
+                self._condition.notify_all()
+
+    def _record_frame_integrity(self, frame: bytes) -> None:
+        current_hash = hashlib.sha256(frame).digest()
+        samples = decode_s16_le_samples(frame)
+        rms = calculate_s16_le_rms(frame)
+        minimum = min(samples, default=0)
+        maximum = max(samples, default=0)
+        non_silent = rms >= self.non_silent_rms
+        if self._last_pumped_hash and current_hash == self._last_pumped_hash:
+            self.repeated_frame_hashes += 1
+        if (
+            non_silent
+            and self._last_pumped_non_silent
+            and current_hash == self._last_pumped_hash
+        ):
+            self._current_repeated_non_silent_frames = max(
+                2,
+                self._current_repeated_non_silent_frames + 1,
+            )
+        else:
+            self._current_repeated_non_silent_frames = 1 if non_silent else 0
+        self.maximum_consecutive_repeated_non_silent_frames = max(
+            self.maximum_consecutive_repeated_non_silent_frames,
+            self._current_repeated_non_silent_frames,
+        )
+        if (
+            self.maximum_consecutive_repeated_non_silent_frames
+            >= self.pathological_duplicate_frames
+        ):
+            self.pathological_duplicate_frame_detected = True
+        if rms <= self.tiny_rms:
+            self._current_tiny_rms_frames += 1
+        else:
+            self._current_tiny_rms_frames = 0
+        self.maximum_consecutive_tiny_rms_frames = max(
+            self.maximum_consecutive_tiny_rms_frames,
+            self._current_tiny_rms_frames,
+        )
+        self.last_frame_rms = rms
+        self.last_frame_minimum_sample = int(minimum)
+        self.last_frame_maximum_sample = int(maximum)
+        self._last_pumped_hash = current_hash
+        self._last_pumped_non_silent = non_silent
+
+    def _stderr_loop(self) -> None:
+        stderr_pipe = getattr(self.process, "stderr", None)
+        if stderr_pipe is None:
+            return
+        try:
+            descriptor = stderr_pipe.fileno()
+        except (AttributeError, OSError, ValueError):
+            return
+        while not self._stop_requested.is_set():
+            try:
+                readable, _, _ = self._stderr_selector(
+                    [descriptor],
+                    [],
+                    [],
+                    0.10,
+                )
+            except (OSError, ValueError):
+                return
+            if not readable:
+                continue
+            try:
+                chunk = self._stderr_raw_reader(descriptor, 1024)
+            except (OSError, ValueError):
+                return
+            if not chunk:
+                return
+            immutable_chunk = bytes(chunk)
+            remaining = self._stderr_maximum_bytes - len(self._stderr_bytes)
+            if remaining > 0:
+                self._stderr_bytes.extend(immutable_chunk[:remaining])
+            self._stderr_discarded_bytes += max(0, len(immutable_chunk) - remaining)
+
+    def _raise_saved_terminal_error(self) -> None:
+        assert self._terminal_error is not None
+        error_type, message = self._terminal_error
+        if issubclass(error_type, EOFError):
+            raise EOFError(message)
+        if issubclass(error_type, ValueError):
+            raise ValueError(message)
+        if issubclass(error_type, TypeError):
+            raise TypeError(message)
+        if issubclass(error_type, OSError):
+            raise OSError(message)
+        raise RuntimeError(message)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.source, name)
+
+
+class SafePcmStreamRunner:
+    """Start one allowlisted arecord process with a continuous bounded PCM pump."""
+
+    def start(self, args: Sequence[str]) -> ContinuousPcmFrameSource:
+        raw_source = SubprocessPcmFrameSource(args)
+        return ContinuousPcmFrameSource(
+            raw_source,
+            expected_frame_bytes=CANONICAL_PCM_FRAME_BYTES,
+        )
 
 
 class DiagnosticPcmFrameSource:
@@ -654,11 +1276,19 @@ class RollingPcmFrameSource:
             return 0
         return math.ceil(max(0, discarded_bytes) / frame_bytes)
 
-    def snapshot(self) -> Dict[str, int | float | bool]:
+    def snapshot(self) -> Dict[str, Any]:
         source_snapshot = getattr(self.source, "snapshot", None)
         low_level = source_snapshot() if callable(source_snapshot) else {}
         if not isinstance(low_level, dict):
             low_level = {}
+        process_pid = int(low_level.get("process_pid", 0) or 0)
+        process_alive_value = low_level.get("process_alive")
+        process_liveness_observable = bool(
+            low_level.get(
+                "process_liveness_observable",
+                isinstance(process_alive_value, bool) or process_pid > 0,
+            )
+        )
         return {
             "history_frame_count": len(self._history),
             "pending_replay_frame_count": len(self._replay),
@@ -700,7 +1330,10 @@ class RollingPcmFrameSource:
             "discarded_bytes": int(low_level.get("discarded_bytes", 0) or 0),
             "zero_filled_bytes": int(low_level.get("zero_filled_bytes", 0) or 0)
             + self.zero_filled_bytes,
-            "repeated_frame_hashes": self.repeated_frame_hashes,
+            "repeated_frame_hashes": max(
+                int(low_level.get("repeated_frame_hashes", 0) or 0),
+                self.repeated_frame_hashes,
+            ),
             "mutable_buffer_reuse_detected": max(
                 int(low_level.get("mutable_buffer_reuse_detected", 0) or 0),
                 self.mutable_buffer_reuse_detected,
@@ -710,7 +1343,80 @@ class RollingPcmFrameSource:
             "pending_partial_bytes": int(
                 low_level.get("pending_partial_bytes", 0) or 0
             ),
+            "accumulated_partial_bytes": int(
+                low_level.get("accumulated_partial_bytes", 0) or 0
+            ),
+            "low_level_read_size_counts": dict(
+                low_level.get("low_level_read_size_counts", {}) or {}
+            ),
             "expected_frame_bytes": self.expected_frame_bytes,
+            "process_pid": process_pid,
+            "process_exit_status": low_level.get("process_exit_status"),
+            "process_alive": (
+                bool(process_alive_value)
+                if isinstance(process_alive_value, bool)
+                else True
+            ),
+            "process_liveness_observable": process_liveness_observable,
+            "eof_count": int(low_level.get("eof_count", 0) or 0),
+            "unexpected_eof_count": int(
+                low_level.get("unexpected_eof_count", 0) or 0
+            ),
+            "dead_process_detected": bool(
+                low_level.get("dead_process_detected", False)
+            ),
+            "stream_ended": bool(low_level.get("stream_ended", False)),
+            "terminal_reason": str(low_level.get("terminal_reason", "") or ""),
+            "transport_argv": list(low_level.get("transport_argv", []) or []),
+            "stdout_transport_mode": str(
+                low_level.get("stdout_transport_mode", "") or ""
+            ),
+            "stderr_transport_mode": str(
+                low_level.get("stderr_transport_mode", "") or ""
+            ),
+            "maximum_consecutive_repeated_non_silent_frames": int(
+                low_level.get(
+                    "maximum_consecutive_repeated_non_silent_frames",
+                    0,
+                )
+                or 0
+            ),
+            "pathological_duplicate_frame_detected": bool(
+                low_level.get("pathological_duplicate_frame_detected", False)
+            ),
+            "integrity_failure_count": int(
+                low_level.get("integrity_failure_count", 0) or 0
+            ),
+            "integrity_guard_discarded_frames": int(
+                low_level.get("integrity_guard_discarded_frames", 0) or 0
+            ),
+            "integrity_guard_discarded_bytes": int(
+                low_level.get("integrity_guard_discarded_bytes", 0) or 0
+            ),
+            "maximum_consecutive_tiny_rms_frames": int(
+                low_level.get("maximum_consecutive_tiny_rms_frames", 0) or 0
+            ),
+            "queue_depth_frames": int(
+                low_level.get("queue_depth_frames", 0) or 0
+            ),
+            "queue_depth_bytes": int(
+                low_level.get("queue_depth_bytes", 0) or 0
+            ),
+            "queue_overflow_dropped_frames": int(
+                low_level.get("queue_overflow_dropped_frames", 0) or 0
+            ),
+            "queue_overflow_dropped_bytes": int(
+                low_level.get("queue_overflow_dropped_bytes", 0) or 0
+            ),
+            "candidate_reset_discarded_frames": int(
+                low_level.get("candidate_reset_discarded_frames", 0) or 0
+            ),
+            "candidate_reset_discarded_bytes": int(
+                low_level.get("candidate_reset_discarded_bytes", 0) or 0
+            ),
+            "reset_boundary_timeouts": int(
+                low_level.get("reset_boundary_timeouts", 0) or 0
+            ),
             "closed": self.closed,
         }
 

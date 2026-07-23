@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from threading import Condition
 from types import SimpleNamespace
+import time
 import wave
 
 import pytest
@@ -13,9 +15,12 @@ from core import (
     CONTRACT_WAKE_LISTENER_REQUEST,
     CONTRACT_WAKE_LISTENER_RESULT,
     CONTRACT_WAKE_LISTENER_SNAPSHOT,
+    ContinuousPcmFrameSource,
     DEFAULT_CONTRACT_REGISTRY,
+    LinuxAlsaMicrophoneAdapter,
     LinuxStandbyWakeListener,
     QueuedStandbyWakeListener,
+    SafeProcessResult,
     StandbyListenResultV1,
     WakeDetectionResultV1,
     WakeAttemptResult,
@@ -32,6 +37,13 @@ from core import (
     classify_constrained_recognition,
     normalize_wake_phrase,
 )
+
+
+_CAPTURE_DEVICE_LIST = """**** List of CAPTURE Hardware Devices ****
+card 2: Device [USB Audio Device], device 0: USB Audio [USB Audio]
+"""
+_PCM_FRAME_BYTES = 640
+_PCM_SAMPLES_PER_FRAME = 320
 
 
 def _ok(status: str = "healthy", **values):
@@ -58,6 +70,130 @@ def _write_wav(
         output.writeframes(
             int(amplitude).to_bytes(2, "little", signed=True) * samples
         )
+
+
+def _pcm_frame(amplitude: int) -> bytes:
+    return (
+        int(amplitude).to_bytes(2, "little", signed=True)
+        * _PCM_SAMPLES_PER_FRAME
+    )
+
+
+class _CaptureDeviceRunner:
+    def which(self, executable):
+        return "/usr/bin/arecord"
+
+    def run(self, args, timeout_seconds):
+        return SafeProcessResult(
+            args=list(args),
+            returncode=0,
+            stdout=_CAPTURE_DEVICE_LIST,
+        )
+
+
+class _PromptAwarePcmSource:
+    """Deterministic live source whose queued bytes change at the ready point."""
+
+    def __init__(self, frames=()):
+        self.frames = [bytes(value) for value in frames]
+        self.read_frames = []
+        self.discarded_frames = []
+        self.closed = False
+        self.stderr = ""
+        self._condition = Condition()
+
+    def append(self, *frames):
+        with self._condition:
+            self.frames.extend(bytes(value) for value in frames)
+            self._condition.notify_all()
+
+    def read_frame(self, frame_bytes, timeout_seconds):
+        assert frame_bytes == _PCM_FRAME_BYTES
+        deadline = time.monotonic() + max(0.01, float(timeout_seconds))
+        with self._condition:
+            while not self.frames and not self.closed:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("deterministic_pcm_source_waiting")
+                self._condition.wait(timeout=remaining)
+            if self.closed:
+                raise EOFError("deterministic_pcm_source_closed")
+            immutable = bytes(self.frames.pop(0))
+            self.read_frames.append(immutable)
+            return immutable
+
+    def discard_available(self, maximum_bytes):
+        with self._condition:
+            maximum_frames = max(0, int(maximum_bytes) // _PCM_FRAME_BYTES)
+            count = min(maximum_frames, len(self.frames))
+            discarded = [bytes(self.frames.pop(0)) for _ in range(count)]
+            self.discarded_frames.extend(discarded)
+            return count * _PCM_FRAME_BYTES
+
+    def snapshot(self):
+        return {
+            "process_pid": 4242,
+            "process_exit_status": None,
+            "process_alive": not self.closed,
+            "eof_count": 0,
+            "unexpected_eof_count": 0,
+            "dead_process_detected": False,
+            "stream_ended": False,
+            "terminal_reason": "",
+            "expected_frame_bytes": _PCM_FRAME_BYTES,
+            "zero_filled_bytes": 0,
+        }
+
+    def close(self):
+        with self._condition:
+            self.closed = True
+            self._condition.notify_all()
+
+
+class _SingleSourceStreamRunner:
+    def __init__(self, source):
+        self.source = source
+        self.calls = []
+        self.pump = None
+
+    def start(self, args):
+        self.calls.append(list(args))
+        self.pump = ContinuousPcmFrameSource(
+            self.source,
+            expected_frame_bytes=_PCM_FRAME_BYTES,
+            maximum_queue_frames=50,
+            capture_stderr=False,
+        )
+        return self.pump
+
+
+def _wait_for_pump_queue(pump, minimum_frames, timeout_seconds=1.0):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        snapshot = pump.snapshot()
+        if snapshot["queue_depth_frames"] >= minimum_frames:
+            return snapshot
+        time.sleep(0.005)
+    pytest.fail(
+        f"PCM pump did not queue {minimum_frames} frames: {pump.snapshot()}"
+    )
+
+
+def _boundary_listener_config():
+    return WakeListenerConfig(
+        microphone_device="plughw:2,0",
+        calibration_duration_seconds=0.1,
+        calibration_maximum_seconds=0.1,
+        calibration_retry_count=0,
+        calibration_retry_delay_seconds=0,
+        speech_wait_timeout_seconds=0.5,
+        maximum_utterance_seconds=0.5,
+        silence_duration_seconds=0.1,
+        pre_roll_seconds=0.1,
+        speech_end_padding_seconds=0.02,
+        retry_delay_seconds=0,
+        diagnostic_wake=True,
+    )
 
 
 class FakeMicrophone:
@@ -720,6 +856,215 @@ def test_linux_listener_closes_on_leave_and_reopens_for_new_standby(tmp_path):
     listener.stop()
 
 
+def test_failed_listener_close_retains_handle_calibration_and_gate_for_retry(
+    tmp_path,
+):
+    class RetryCloseMicrophone(FakeMicrophone):
+        def __init__(self):
+            super().__init__(capture_status="no_speech_timeout", speech=False)
+            self.close_attempts = 0
+
+        def close_persistent_stream(self, handle, *, owner):
+            self.close_attempts += 1
+            if self.close_attempts == 1:
+                return _failed(
+                    "stream_close_failed",
+                    "injected persistent close failure",
+                )
+            return super().close_persistent_stream(handle, owner=owner)
+
+    microphone = RetryCloseMicrophone()
+    gate = VoiceRuntimeGate(settle_delay_seconds=0)
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=microphone,
+        wake_recognizer=FakeWakeRecognizer(),
+        project_root=tmp_path,
+        voice_io_gate=gate,
+    )
+    assert listener.start().success
+    original_handle = microphone.stream_handle
+
+    first = listener.leave_standby(
+        "activation",
+        handoff_destination="acknowledgement_playback",
+    )
+    failed_snapshot = listener.snapshot()
+
+    assert first.success is False
+    assert first.status == "standby_stream_close_failed"
+    assert first.data["alsa_device_closed_during_cleanup"] is False
+    assert first.data["stream_close_count"] == 0
+    assert microphone.stream_handle is original_handle
+    assert original_handle.closed is False
+    assert microphone.stream_close_count == 0
+    assert failed_snapshot.stream_active is True
+    assert failed_snapshot.stream_state == "FAILED"
+    assert failed_snapshot.calibration_count == 1
+    assert failed_snapshot.stream_close_count == 0
+    assert failed_snapshot.stream_close_reason == ""
+    assert failed_snapshot.stream_close_reasons == []
+    assert failed_snapshot.ownership_handoffs == []
+    assert gate.snapshot()["capture_owner"] == "standby_wake"
+    with pytest.raises(RuntimeError, match="microphone_capture_already_active"):
+        gate.begin_capture("active_command")
+
+    second = listener.leave_standby(
+        "activation_close_retry",
+        handoff_destination="acknowledgement_playback",
+    )
+    closed_snapshot = listener.snapshot()
+
+    assert second.success is True
+    assert microphone.close_attempts == 2
+    assert microphone.stream_close_count == 1
+    assert closed_snapshot.stream_active is False
+    assert closed_snapshot.stream_close_count == 1
+    assert closed_snapshot.stream_close_reasons == ["activation_close_retry"]
+    assert closed_snapshot.ownership_handoffs == [
+        (
+            "standby_wake_listener->acknowledgement_playback:"
+            "activation_close_retry"
+        )
+    ]
+    assert gate.snapshot()["capture_active"] is False
+    listener.stop()
+
+
+def test_known_dead_persistent_process_fails_listener_health_and_alsa_claim(
+    tmp_path,
+):
+    class LivenessMicrophone(FakeMicrophone):
+        def __init__(self):
+            super().__init__(capture_status="no_speech_timeout", speech=False)
+            self.transport = {
+                "process_pid": 9912,
+                "process_exit_status": None,
+                "process_alive": True,
+                "eof_count": 0,
+                "unexpected_eof_count": 0,
+                "dead_process_detected": False,
+                "stream_ended": False,
+                "terminal_reason": "",
+                "expected_frame_bytes": _PCM_FRAME_BYTES,
+                "zero_filled_bytes": 0,
+            }
+
+        def open_persistent_stream(self, *, owner, device=None):
+            handle = super().open_persistent_stream(owner=owner, device=device)
+            handle.command = (
+                "/usr/bin/arecord",
+                "-q",
+                "-f",
+                "S16_LE",
+                "-c",
+                "1",
+                "-r",
+                "16000",
+                "-t",
+                "raw",
+                "-D",
+                "plughw:2,0",
+                "-",
+            )
+            handle.requested_device = "plughw:2,0"
+            handle.resolved_device = "plughw:2,0"
+            handle.frame_source = SimpleNamespace(
+                snapshot=lambda: dict(self.transport)
+            )
+            return handle
+
+    microphone = LivenessMicrophone()
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=microphone,
+        wake_recognizer=FakeWakeRecognizer(),
+        project_root=tmp_path,
+    )
+    started = listener.start()
+    assert started.success
+    assert started.data["persistent_process_liveness_known"] is True
+    assert started.data["persistent_process_alive"] is True
+
+    microphone.transport.update(
+        {
+            "process_exit_status": 17,
+            "process_alive": False,
+            "eof_count": 1,
+            "unexpected_eof_count": 1,
+            "dead_process_detected": True,
+            "stream_ended": True,
+            "terminal_reason": "arecord_stdout_eof",
+        }
+    )
+    health = listener.health()
+    components = listener.component_health()
+    snapshot = listener.snapshot()
+
+    assert health.success is False
+    assert health.error_code == "standby_stream_unhealthy"
+    assert health.data["failing_subsystem"] == "standby_pcm_transport"
+    assert health.data["standby_listener_healthy"] is False
+    assert health.data["stream_active"] is False
+    assert health.data["alsa_device_open"] is False
+    assert health.data["persistent_transport_failure_detected"] is True
+    assert health.data["persistent_transport_healthy"] is False
+    assert health.data["persistent_process_liveness_known"] is True
+    assert health.data["persistent_process_alive"] is False
+    assert health.data["persistent_process_pid"] == 9912
+    assert health.data["persistent_process_exit_status"] == 17
+    assert health.data["persistent_unexpected_eof_count"] == 1
+    assert health.data["persistent_stream_ended"] is True
+    assert health.data["persistent_terminal_reason"] == "arecord_stdout_eof"
+    assert health.data["persistent_transport_snapshot"]["transport_argv"][-2:] == [
+        "plughw:2,0",
+        "-",
+    ]
+    assert components.success is False
+    assert components.data["failing_subsystem"] == "standby_pcm_transport"
+    assert components.data["alsa_device_open"] is False
+    assert snapshot.stream_active is False
+    assert snapshot.metadata["persistent_process_alive"] is False
+    assert snapshot.metadata["persistent_process_exit_status"] == 17
+    listener.stop()
+
+
+def test_unobservable_process_liveness_fallback_does_not_degrade_health(
+    tmp_path,
+):
+    class CompatibilitySnapshotMicrophone(FakeMicrophone):
+        def open_persistent_stream(self, *, owner, device=None):
+            handle = super().open_persistent_stream(owner=owner, device=device)
+            handle.frame_source = SimpleNamespace(
+                snapshot=lambda: {
+                    "process_pid": 0,
+                    "process_exit_status": None,
+                    "process_alive": True,
+                    "process_liveness_observable": False,
+                    "dead_process_detected": False,
+                    "stream_ended": False,
+                    "zero_filled_bytes": 0,
+                }
+            )
+            return handle
+
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=CompatibilitySnapshotMicrophone(),
+        wake_recognizer=FakeWakeRecognizer(),
+        project_root=tmp_path,
+    )
+
+    started = listener.start()
+    health = listener.health()
+
+    assert started.success is True
+    assert health.success is True
+    assert health.data["persistent_process_liveness_known"] is False
+    assert health.data["persistent_process_liveness_observable"] is False
+    assert health.data["persistent_process_alive"] is None
+    assert health.data["persistent_transport_failure_detected"] is False
+    assert health.data["alsa_device_open"] is True
+    listener.stop()
+
+
 def test_persistent_listener_holds_exclusive_gate_ownership_only_in_standby(tmp_path):
     gate = VoiceRuntimeGate(settle_delay_seconds=0)
     listener = LinuxStandbyWakeListener(
@@ -1232,6 +1577,149 @@ def test_owner_prompt_preparation_discards_only_candidate_state_without_reopen(t
     assert snapshot.stream_open_count == 1
     assert snapshot.calibration_count == 1
     assert snapshot.stream_close_count == 0
+    listener.stop()
+
+
+def test_listener_calibration_flows_into_live_speech_on_same_continuous_stream(
+    tmp_path,
+):
+    calibration_frames = [
+        _pcm_frame(level) for level in (40, 42, 39, 43, 38)
+    ]
+    pre_speech_frames = [_pcm_frame(level) for level in (45, 47, 44)]
+    speech_frames = [
+        _pcm_frame(level) for level in (800, 920, 1050, 960, 840)
+    ]
+    terminal_frames = [
+        _pcm_frame(level) for level in (50, 48, 46, 44, 42, 40, 38, 36)
+    ]
+    source = _PromptAwarePcmSource(
+        [
+            *calibration_frames,
+            *pre_speech_frames,
+            *speech_frames,
+            *terminal_frames,
+        ]
+    )
+    stream_runner = _SingleSourceStreamRunner(source)
+    microphone = LinuxAlsaMicrophoneAdapter(
+        device="plughw:2,0",
+        runner=_CaptureDeviceRunner(),
+        stream_runner=stream_runner,
+    )
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=microphone,
+        wake_recognizer=FakeWakeRecognizer("Ares"),
+        config=_boundary_listener_config(),
+        project_root=tmp_path,
+    )
+
+    assert listener.start().success
+    attempt = listener.listen_attempt(
+        _request(diagnostic_wake=True, listener_timeout_seconds=1.0)
+    )
+    snapshot = listener.snapshot()
+
+    assert attempt.result.wake_detected is True
+    assert attempt.capture_valid is True
+    assert attempt.recognizer_invoked is True
+    assert attempt.result.speech_detected is True
+    assert attempt.result.terminal_silence_confirmed is True
+    assert attempt.result.valid_microphone_bytes_delivered_to_vad >= (
+        len(calibration_frames) + len(pre_speech_frames) + len(speech_frames)
+    ) * _PCM_FRAME_BYTES
+    assert attempt.diagnostics.maximum_observed_rms >= 800
+    assert source.read_frames[: len(calibration_frames)] == calibration_frames
+    speech_start = source.read_frames.index(speech_frames[0])
+    assert source.read_frames[
+        speech_start : speech_start + len(speech_frames)
+    ] == speech_frames
+    assert len(stream_runner.calls) == 1
+    assert stream_runner.calls[0] == [
+        "/usr/bin/arecord",
+        "-q",
+        "-f",
+        "S16_LE",
+        "-c",
+        "1",
+        "-r",
+        "16000",
+        "-t",
+        "raw",
+        "-D",
+        "plughw:2,0",
+        "-",
+    ]
+    assert snapshot.stream_open_count == 1
+    assert snapshot.calibration_count == 1
+    assert snapshot.stream_close_count == 0
+    assert microphone.persistent_stream_snapshot()["open_count"] == 1
+    listener.stop()
+
+
+def test_audio_arriving_after_owner_ready_boundary_is_not_flushed_or_lost(
+    tmp_path,
+):
+    calibration_frames = [
+        _pcm_frame(level) for level in (40, 42, 39, 43, 38)
+    ]
+    source = _PromptAwarePcmSource(calibration_frames)
+    stream_runner = _SingleSourceStreamRunner(source)
+    microphone = LinuxAlsaMicrophoneAdapter(
+        device="plughw:2,0",
+        runner=_CaptureDeviceRunner(),
+        stream_runner=stream_runner,
+    )
+    listener = LinuxStandbyWakeListener(
+        microphone_adapter=microphone,
+        wake_recognizer=FakeWakeRecognizer("Ares"),
+        config=_boundary_listener_config(),
+        project_root=tmp_path,
+    )
+    assert listener.start().success
+    _wait_for_pump_queue(stream_runner.pump, 0)
+
+    stale_before_prompt = [_pcm_frame(level) for level in (71, 73, 75)]
+    source.append(*stale_before_prompt)
+    _wait_for_pump_queue(stream_runner.pump, len(stale_before_prompt))
+    prepared = listener.prepare_for_owner_prompt()
+    prepared_pump = stream_runner.pump.snapshot()
+    assert prepared.success
+    assert prepared_pump["candidate_reset_discarded_frames"] >= len(
+        stale_before_prompt
+    )
+
+    post_ready_frames = [
+        *[_pcm_frame(level) for level in (45, 47, 44)],
+        *[_pcm_frame(level) for level in (800, 920, 1050, 960, 840)],
+        *[_pcm_frame(level) for level in (50, 48, 46, 44, 42, 40, 38, 36)],
+    ]
+    # This append represents speech captured during the prompt pacing delay:
+    # no subsequent stale-audio flush is permitted before listen_attempt().
+    source.append(*post_ready_frames)
+    attempt = listener.listen_attempt(
+        _request(diagnostic_wake=True, listener_timeout_seconds=1.0)
+    )
+    pump = stream_runner.pump.snapshot()
+    discarded_levels = [
+        int.from_bytes(frame[:2], "little", signed=True)
+        for frame in source.discarded_frames
+    ]
+
+    assert attempt.result.wake_detected is True
+    assert attempt.capture_valid is True
+    assert attempt.result.speech_detected is True
+    assert attempt.result.terminal_silence_confirmed is True
+    assert attempt.diagnostics.maximum_observed_rms >= 800
+    assert pump["candidate_reset_discarded_frames"] >= len(stale_before_prompt)
+    assert not any(level >= 800 for level in discarded_levels)
+    post_ready_start = source.read_frames.index(post_ready_frames[0])
+    assert source.read_frames[
+        post_ready_start : post_ready_start + len(post_ready_frames)
+    ] == post_ready_frames
+    assert len(stream_runner.calls) == 1
+    assert listener.snapshot().stream_open_count == 1
+    assert listener.snapshot().calibration_count == 1
     listener.stop()
 
 

@@ -31,12 +31,19 @@ CANONICAL_PCM_FRAME_BYTES = (
 class PcmIntegrityStatistics:
     byte_count: int
     sample_count: int
+    duration_seconds: float
     minimum_signed_sample: int
     maximum_signed_sample: int
     mean_absolute_amplitude: float
     rms: float
     peak: int
+    nonzero_sample_count: int
+    distinct_sample_count: int
     zero_sample_percentage: float
+    absolute_sample_percentage_above_100: float
+    absolute_sample_percentage_above_300: float
+    absolute_sample_percentage_above_1000: float
+    absolute_sample_percentage_above_3000: float
     frame_count: int
     partial_frame_bytes: int
     repeated_frame_count: int
@@ -48,12 +55,27 @@ class PcmIntegrityStatistics:
         return {
             "byte_count": self.byte_count,
             "sample_count": self.sample_count,
+            "duration_seconds": self.duration_seconds,
             "minimum_signed_sample": self.minimum_signed_sample,
             "maximum_signed_sample": self.maximum_signed_sample,
             "mean_absolute_amplitude": self.mean_absolute_amplitude,
             "rms": self.rms,
             "peak": self.peak,
+            "nonzero_sample_count": self.nonzero_sample_count,
+            "distinct_sample_count": self.distinct_sample_count,
             "zero_sample_percentage": self.zero_sample_percentage,
+            "absolute_sample_percentage_above_100": (
+                self.absolute_sample_percentage_above_100
+            ),
+            "absolute_sample_percentage_above_300": (
+                self.absolute_sample_percentage_above_300
+            ),
+            "absolute_sample_percentage_above_1000": (
+                self.absolute_sample_percentage_above_1000
+            ),
+            "absolute_sample_percentage_above_3000": (
+                self.absolute_sample_percentage_above_3000
+            ),
             "frame_count": self.frame_count,
             "partial_frame_bytes": self.partial_frame_bytes,
             "repeated_frame_count": self.repeated_frame_count,
@@ -106,6 +128,8 @@ def analyze_s16_le_pcm_integrity(
     pcm: bytes | bytearray | memoryview,
     *,
     frame_bytes: int = CANONICAL_PCM_FRAME_BYTES,
+    sample_rate_hz: int = CANONICAL_SAMPLE_RATE_HZ,
+    channels: int = CANONICAL_CHANNELS,
 ) -> PcmIntegrityStatistics:
     """Calculate bounded signal and frame-repetition statistics for raw PCM."""
 
@@ -113,6 +137,10 @@ def analyze_s16_le_pcm_integrity(
         raise ValueError("frame_bytes must be positive")
     if int(frame_bytes) % CANONICAL_SAMPLE_WIDTH_BYTES:
         raise ValueError("frame_bytes must contain complete S16_LE samples")
+    if isinstance(sample_rate_hz, bool) or int(sample_rate_hz) <= 0:
+        raise ValueError("sample_rate_hz must be positive")
+    if isinstance(channels, bool) or int(channels) <= 0:
+        raise ValueError("channels must be positive")
     immutable_pcm = bytes(pcm)
     samples = decode_s16_le_samples(immutable_pcm)
     minimum = min(samples, default=0)
@@ -122,6 +150,12 @@ def analyze_s16_le_pcm_integrity(
         sum(absolute) / len(absolute) if absolute else 0.0
     )
     peak = max(absolute, default=0)
+    nonzero_count = sum(1 for sample in samples if sample != 0)
+    duration_seconds = (
+        len(samples) / (int(sample_rate_hz) * int(channels))
+        if samples
+        else 0.0
+    )
     zero_percentage = (
         (sum(1 for sample in samples if sample == 0) / len(samples)) * 100.0
         if samples
@@ -142,15 +176,44 @@ def analyze_s16_le_pcm_integrity(
     repeated_percentage = (
         (repeated / comparisons) * 100.0 if comparisons else 0.0
     )
+
+    def absolute_percentage_above(threshold: int) -> float:
+        if not absolute:
+            return 0.0
+        return (
+            sum(1 for value in absolute if value > threshold)
+            / len(absolute)
+            * 100.0
+        )
+
     return PcmIntegrityStatistics(
         byte_count=len(immutable_pcm),
         sample_count=len(samples),
+        duration_seconds=round(duration_seconds, 6),
         minimum_signed_sample=int(minimum),
         maximum_signed_sample=int(maximum),
         mean_absolute_amplitude=round(mean_absolute, 6),
         rms=calculate_s16_le_rms(immutable_pcm),
         peak=int(peak),
+        nonzero_sample_count=int(nonzero_count),
+        distinct_sample_count=len(set(samples)),
         zero_sample_percentage=round(zero_percentage, 6),
+        absolute_sample_percentage_above_100=round(
+            absolute_percentage_above(100),
+            6,
+        ),
+        absolute_sample_percentage_above_300=round(
+            absolute_percentage_above(300),
+            6,
+        ),
+        absolute_sample_percentage_above_1000=round(
+            absolute_percentage_above(1000),
+            6,
+        ),
+        absolute_sample_percentage_above_3000=round(
+            absolute_percentage_above(3000),
+            6,
+        ),
         frame_count=len(complete_frames),
         partial_frame_bytes=len(immutable_pcm) % int(frame_bytes),
         repeated_frame_count=int(repeated),

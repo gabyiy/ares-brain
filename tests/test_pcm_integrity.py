@@ -62,6 +62,13 @@ def test_canonical_sine_wave_rms_matches_decoded_sample_energy():
     assert statistics.peak == max(abs(sample) for sample in samples)
     assert statistics.minimum_signed_sample < 0
     assert statistics.maximum_signed_sample > 0
+    assert statistics.duration_seconds == pytest.approx(0.02)
+    assert statistics.nonzero_sample_count > 0
+    assert statistics.distinct_sample_count > 20
+    assert statistics.absolute_sample_percentage_above_100 > 90.0
+    assert statistics.absolute_sample_percentage_above_300 > 90.0
+    assert statistics.absolute_sample_percentage_above_1000 > 80.0
+    assert statistics.absolute_sample_percentage_above_3000 > 70.0
 
 
 def test_repeated_detection_counts_only_consecutive_identical_frames():
@@ -95,3 +102,23 @@ def test_concatenation_owns_immutable_copies_of_mutable_frames():
 
     assert isinstance(concatenated, bytes)
     assert concatenated == expected
+
+
+def test_integrity_statistics_report_nonzero_distinct_and_amplitude_bands():
+    samples = (0, 100, -101, 300, -301, 1000, -1001, 3000, -3001, 32767)
+    statistics = analyze_s16_le_pcm_integrity(
+        pack_samples(*samples),
+        frame_bytes=len(samples) * 2,
+        sample_rate_hz=10,
+    )
+
+    assert statistics.duration_seconds == pytest.approx(1.0)
+    assert statistics.nonzero_sample_count == 9
+    assert statistics.distinct_sample_count == 10
+    assert statistics.absolute_sample_percentage_above_100 == pytest.approx(80.0)
+    assert statistics.absolute_sample_percentage_above_300 == pytest.approx(60.0)
+    assert statistics.absolute_sample_percentage_above_1000 == pytest.approx(40.0)
+    assert statistics.absolute_sample_percentage_above_3000 == pytest.approx(20.0)
+    serialized = statistics.to_dict()
+    assert serialized["nonzero_sample_count"] == 9
+    assert serialized["distinct_sample_count"] == 10

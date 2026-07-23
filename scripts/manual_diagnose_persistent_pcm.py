@@ -6,6 +6,9 @@ import json
 import math
 import os
 from pathlib import Path
+import re
+import shutil
+import subprocess
 import sys
 from typing import Any, Callable, Dict, Optional, Sequence
 import wave
@@ -34,7 +37,7 @@ from core.WavAudio import (  # noqa: E402
     CANONICAL_CHANNELS,
     CANONICAL_SAMPLE_RATE_HZ,
     CANONICAL_SAMPLE_WIDTH_BYTES,
-    validate_canonical_wav,
+    analyze_wav_audio,
     write_audio_chunk_wav,
 )
 from memory.schema_migrations import MigrationError, StoreWriteLock  # noqa: E402
@@ -42,15 +45,25 @@ from memory.schema_migrations import MigrationError, StoreWriteLock  # noqa: E40
 
 DEFAULT_MICROPHONE_DEVICE = "plughw:2,0"
 DEFAULT_SPEAKER_DEVICE = "plughw:CARD=Device,DEV=0"
-DEFAULT_RECORD_SECONDS = 4
+DEFAULT_RECORD_SECONDS = 3
+DIRECT_NATIVE_SAMPLE_RATE_HZ = 44_100
+DIRECT_NATIVE_FRAME_BYTES = (
+    DIRECT_NATIVE_SAMPLE_RATE_HZ
+    * CANONICAL_PCM_FRAME_DURATION_MS
+    // 1000
+    * CANONICAL_CHANNELS
+    * CANONICAL_SAMPLE_WIDTH_BYTES
+)
 DEFAULT_RUNTIME_LOCK_PATH = REPO_ROOT / "data" / "runtime" / "ares_standby_voice.runtime"
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "data" / "runtime" / "pcm_integrity"
 MINIMUM_DIAGNOSTIC_SPOKEN_RMS = 50.0
 MINIMUM_DIAGNOSTIC_SPOKEN_PEAK = 200
 MINIMUM_DIAGNOSTIC_RMS_RATIO = 2.0
 MINIMUM_DIAGNOSTIC_RMS_DELTA = 25.0
-MAXIMUM_DIAGNOSTIC_REPEATED_FRAME_PERCENTAGE = 99.0
+MAXIMUM_DIAGNOSTIC_REPEATED_FRAME_PERCENTAGE = 50.0
 MAXIMUM_DIAGNOSTIC_ZERO_SAMPLE_PERCENTAGE = 99.0
+MINIMUM_PERSISTENT_TO_DIRECT_SPOKEN_RMS_RATIO = 0.20
+MINIMUM_CROSS_PATH_RMS_RATIO_COMPARABILITY = 0.10
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,7 +75,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--microphone-device", default=DEFAULT_MICROPHONE_DEVICE)
     parser.add_argument("--speaker-device", default=DEFAULT_SPEAKER_DEVICE)
-    parser.add_argument("--record-seconds", type=int, default=DEFAULT_RECORD_SECONDS)
+    parser.add_argument(
+        "--record-seconds",
+        type=int,
+        default=DEFAULT_RECORD_SECONDS,
+        help=(
+            "Seconds per quiet/spoken phase for each path (default: 3; the "
+            "bounded comparison therefore records 6 seconds per path)."
+        ),
+    )
     parser.add_argument("--playback", action="store_true")
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument(
@@ -80,6 +101,7 @@ def run_pcm_diagnostic(
     input_func: Callable[[str], str] = input,
     microphone_factory: Callable[..., Any] = LinuxAlsaMicrophoneAdapter,
     speaker_factory: Callable[..., Any] = LinuxAlsaSpeakerAdapter,
+    direct_capture_func: Optional[Callable[..., Dict[str, Any]]] = None,
 ) -> int:
     args = build_parser().parse_args(argv)
     issue = _validate_args(args)
@@ -101,6 +123,12 @@ def run_pcm_diagnostic(
                 input_func=input_func,
                 microphone_factory=microphone_factory,
                 speaker_factory=speaker_factory,
+                direct_capture_func=(
+                    direct_capture_func or _capture_direct_native_wav
+                ),
+                production_process_metadata_required=(
+                    microphone_factory is LinuxAlsaMicrophoneAdapter
+                ),
             )
     except KeyboardInterrupt:
         output_func("PCM diagnostic cancelled; ALSA ownership and runtime lock released.")
@@ -121,29 +149,87 @@ def _run_locked(
     input_func: Callable[[str], str],
     microphone_factory: Callable[..., Any],
     speaker_factory: Callable[..., Any],
+    direct_capture_func: Callable[..., Dict[str, Any]],
+    production_process_metadata_required: bool,
 ) -> int:
     contract = canonical_pcm_contract()
-    direct_path = run_directory / "direct_arecord.wav"
-    persistent_path = run_directory / "persistent_stream.wav"
+    phase_seconds = int(args.record_seconds)
+    direct_quiet_path = run_directory / "direct_quiet.wav"
+    direct_spoken_path = run_directory / "direct_spoken.wav"
+    persistent_quiet_path = run_directory / "persistent_quiet.wav"
+    persistent_spoken_path = run_directory / "persistent_spoken.wav"
     report_path = run_directory / "pcm_integrity_report.json"
-    comparison_device = str(
+    persistent_device = str(
         resolve_alsa_capture_device(
             args.microphone_device,
             require_conversion=True,
         )
         or ""
     )
+    direct_device = _native_direct_capture_device(args.microphone_device)
     adapter = microphone_factory(
-        device=comparison_device or None,
-        record_seconds=args.record_seconds,
+        device=persistent_device or None,
+        record_seconds=phase_seconds,
         sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
         channels=CANONICAL_CHANNELS,
         sample_format=CANONICAL_PCM_SAMPLE_FORMAT,
-        timeout_seconds=float(args.record_seconds + 5),
+        timeout_seconds=float(phase_seconds + 5),
     )
     handle = None
+    adapter_started = False
+    persistent_quiet_frames: list[bytes] = []
+    persistent_spoken_frames: list[bytes] = []
+    persistent_pre_close_snapshot: Dict[str, Any] = {}
+    persistent_post_close_snapshot: Dict[str, Any] = {}
+    direct_processes: list[Dict[str, Any]] = []
+    cleanup_failures: list[str] = []
+    capture_error = ""
+    capture_interrupted = False
+    report: Dict[str, Any] = {
+        "success": False,
+        "protocol": {
+            "quiet_seconds": phase_seconds,
+            "spoken_seconds": phase_seconds,
+            "direct_transport": "native_arecord_wav",
+            "persistent_transport": "production_raw_pcm_stream",
+        },
+        "requested_device": args.microphone_device,
+        "direct_native_device": direct_device,
+        "persistent_conversion_device": persistent_device,
+        "canonical_pcm_contract": contract,
+        "direct_native_pcm_contract": {
+            "sample_rate_hz": DIRECT_NATIVE_SAMPLE_RATE_HZ,
+            "channels": CANONICAL_CHANNELS,
+            "sample_format": CANONICAL_PCM_SAMPLE_FORMAT,
+            "sample_width_bytes": CANONICAL_SAMPLE_WIDTH_BYTES,
+            "frame_duration_ms": CANONICAL_PCM_FRAME_DURATION_MS,
+            "frame_bytes": DIRECT_NATIVE_FRAME_BYTES,
+        },
+        "production_process_metadata_required": bool(
+            production_process_metadata_required
+        ),
+        "direct_processes": direct_processes,
+        "persistent_process": {},
+        "direct": {},
+        "persistent": {},
+        "signal_comparison": {},
+        "persistent_stream_counters": {},
+        "persistent_post_close_counters": {},
+        "files": {
+            "direct_quiet_wav": str(direct_quiet_path),
+            "direct_spoken_wav": str(direct_spoken_path),
+            "persistent_quiet_wav": str(persistent_quiet_path),
+            "persistent_spoken_wav": str(persistent_spoken_path),
+            "json_report": str(report_path),
+        },
+    }
     output_func("ARES persistent PCM integrity diagnostic")
     output_func(f"Output directory: {run_directory}")
+    output_func(
+        "Direct native baseline: "
+        f"{DIRECT_NATIVE_SAMPLE_RATE_HZ} Hz mono {CANONICAL_PCM_SAMPLE_FORMAT} "
+        f"from {direct_device}."
+    )
     output_func(
         "Canonical standby PCM: "
         f"{contract['sample_rate_hz']} Hz, {contract['channels']} channel, "
@@ -151,220 +237,148 @@ def _run_locked(
         f"{contract['frame_duration_ms']} ms = {contract['samples_per_frame']} samples "
         f"= {contract['frame_bytes']} bytes."
     )
-    started = adapter.start()
-    if not bool(getattr(started, "success", False)):
-        try:
-            stopped = adapter.stop()
-        except Exception as error:
-            raise RuntimeError(
-                "microphone_preflight_and_cleanup_failed:"
-                f"{error.__class__.__name__}"
-            ) from error
-        if not bool(getattr(stopped, "success", False)):
-            raise RuntimeError("microphone_preflight_cleanup_failed")
-        output_func(
-            "Microphone preflight failed: "
-            f"{getattr(started, 'error_message', '') or getattr(started, 'status', '')}"
-        )
-        return 3
-    direct_results: list[Any] = []
-    direct_pcm = b""
-    persistent_pcm = b""
-    persistent_snapshot: Dict[str, Any] = {}
-    persistent_command: list[str] = []
-    resolved_device = ""
-    try:
-        _wait_for_owner(
-            input_func,
-            "Direct arecord room-silence capture is next. Press Enter when the room is quiet.",
-        )
-        output_func("Direct arecord: remain silent for 1 second.")
-        direct_silence_path = run_directory / "direct_arecord_room_silence.wav"
-        direct_silence_result = adapter.record_wav(
-            direct_silence_path,
-            seconds=1,
-            device=comparison_device or None,
-            timeout_seconds=6.0,
-            overwrite=False,
-            diagnostic_audio=True,
-        )
-        direct_results.append(direct_silence_result)
-        _require_capture_success(direct_silence_result, "direct_room_silence")
-        normalized_silence_pcm, direct_silence_wav = _read_canonical_wav_pcm(
-            direct_silence_path
-        )
-        direct_silence_raw_path, direct_silence_pcm, direct_silence_raw_wav = (
-            _retained_raw_direct_pcm(
-                direct_silence_result,
-                normalized_pcm=normalized_silence_pcm,
-                stage_name="room_silence",
-            )
-        )
-        _wait_for_owner(
-            input_func,
-            "Direct arecord spoken capture is next. Press Enter, then speak loudly.",
-        )
-        spoken_seconds = args.record_seconds - 1
-        output_func(
-            f"Direct arecord: SPEAK LOUDLY for {spoken_seconds} second(s)."
-        )
-        direct_spoken_path = run_directory / "direct_arecord_spoken.wav"
-        direct_spoken_result = adapter.record_wav(
-            direct_spoken_path,
-            seconds=spoken_seconds,
-            device=comparison_device or None,
-            timeout_seconds=float(spoken_seconds + 5),
-            overwrite=False,
-            diagnostic_audio=True,
-        )
-        direct_results.append(direct_spoken_result)
-        _require_capture_success(direct_spoken_result, "direct_spoken")
-        normalized_spoken_pcm, direct_spoken_wav = _read_canonical_wav_pcm(
-            direct_spoken_path
-        )
-        direct_spoken_raw_path, direct_spoken_pcm, direct_spoken_raw_wav = (
-            _retained_raw_direct_pcm(
-                direct_spoken_result,
-                normalized_pcm=normalized_spoken_pcm,
-                stage_name="spoken",
-            )
-        )
-        direct_pcm = direct_silence_pcm + direct_spoken_pcm
-        write_audio_chunk_wav(
-            AudioChunk(
-                data=direct_pcm,
-                sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
-                channels=CANONICAL_CHANNELS,
-                sample_width_bytes=CANONICAL_SAMPLE_WIDTH_BYTES,
-                source="direct_arecord_pcm_integrity_diagnostic",
-                metadata={
-                    "requested_device": args.microphone_device,
-                    "comparison_device": comparison_device,
-                    "room_silence_header": direct_silence_wav,
-                    "spoken_header": direct_spoken_wav,
-                    "raw_room_silence_header": direct_silence_raw_wav,
-                    "raw_spoken_header": direct_spoken_raw_wav,
-                },
-            ),
-            direct_path,
-        )
 
+    try:
+        for stage_name, output_path, prompt, instruction in (
+            (
+                "quiet",
+                direct_quiet_path,
+                "Direct native quiet capture is next. Press Enter when the room is quiet.",
+                f"Direct native arecord: remain quiet for {phase_seconds} seconds.",
+            ),
+            (
+                "spoken",
+                direct_spoken_path,
+                "Direct native spoken capture is next. Press Enter, then speak loudly.",
+                f"Direct native arecord: SPEAK LOUDLY for {phase_seconds} seconds.",
+            ),
+        ):
+            _wait_for_owner(input_func, prompt)
+            output_func(instruction)
+            process = dict(
+                direct_capture_func(
+                    output_path=output_path,
+                    device=direct_device,
+                    seconds=phase_seconds,
+                    sample_rate_hz=DIRECT_NATIVE_SAMPLE_RATE_HZ,
+                    channels=CANONICAL_CHANNELS,
+                    sample_format=CANONICAL_PCM_SAMPLE_FORMAT,
+                    timeout_seconds=float(phase_seconds + 5),
+                )
+                or {}
+            )
+            process["stage"] = stage_name
+            direct_processes.append(process)
+            _require_direct_capture_success(process, stage_name)
+            pcm, header = _read_s16_wav_pcm(
+                output_path,
+                expected_sample_rate_hz=DIRECT_NATIVE_SAMPLE_RATE_HZ,
+                expected_channels=CANONICAL_CHANNELS,
+                expected_sample_width_bytes=CANONICAL_SAMPLE_WIDTH_BYTES,
+                expected_duration_seconds=phase_seconds,
+            )
+            report["direct"][stage_name] = _stage_report(
+                pcm,
+                header=header,
+                sample_rate_hz=DIRECT_NATIVE_SAMPLE_RATE_HZ,
+                frame_bytes=DIRECT_NATIVE_FRAME_BYTES,
+            )
+
+        started = adapter.start()
+        if not bool(getattr(started, "success", False)):
+            detail = getattr(started, "error_message", "") or getattr(
+                started,
+                "status",
+                "",
+            )
+            raise RuntimeError(f"microphone_preflight_failed:{str(detail)[:120]}")
+        adapter_started = True
         _wait_for_owner(
             input_func,
-            "Persistent-stream capture is next. Press Enter when the room is quiet.",
+            (
+                "Persistent production-stream comparison is next: remain quiet "
+                f"for {phase_seconds} seconds, then speak loudly for "
+                f"{phase_seconds} seconds when prompted. Press Enter when ready."
+            ),
         )
         handle = adapter.open_persistent_stream(
             owner="persistent_pcm_diagnostic",
-            device=comparison_device or None,
+            device=persistent_device or None,
         )
-        persistent_command = list(getattr(handle, "command", ()) or ())
-        resolved_device = str(getattr(handle, "resolved_device", "") or "")
-        total_frames = _frame_count(args.record_seconds)
-        silence_frames = _frame_count(1)
-        output_func("Persistent stream: remain silent for 1 second.")
-        frames: list[bytes] = []
-        try:
-            for frame_index in range(total_frames):
-                if frame_index == silence_frames:
-                    output_func("Persistent stream: SPEAK LOUDLY NOW.")
-                source_frame = handle.frame_source.read_frame(
-                    CANONICAL_PCM_FRAME_BYTES,
-                    1.0,
-                )
-                actual_length = len(source_frame)
-                immutable_frame = bytes(source_frame[:actual_length])
-                if actual_length != CANONICAL_PCM_FRAME_BYTES:
-                    raise RuntimeError(
-                        "persistent_stream_returned_incomplete_pcm_frame:"
-                        f"{actual_length}"
-                    )
-                frames.append(immutable_frame)
-        except Exception as error:
-            persistent_snapshot = _safe_source_snapshot(handle.frame_source)
-            partial_pcm = concatenate_owned_pcm_frames(frames)
-            partial_path: Optional[Path] = None
-            if partial_pcm:
-                partial_path = run_directory / "persistent_stream_partial.wav"
-                write_audio_chunk_wav(
-                    AudioChunk(
-                        data=partial_pcm,
-                        sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
-                        channels=CANONICAL_CHANNELS,
-                        sample_width_bytes=CANONICAL_SAMPLE_WIDTH_BYTES,
-                        source="persistent_pcm_integrity_failure_diagnostic",
-                    ),
-                    partial_path,
-                )
-            failure_report = {
-                "success": False,
-                "failure_stage": "persistent_stream_capture",
-                "error": f"{error.__class__.__name__}:{str(error)[:160]}",
-                "requested_device": args.microphone_device,
-                "comparison_device": comparison_device,
-                "resolved_persistent_device": resolved_device,
-                "canonical_pcm_contract": contract,
-                "direct_arecord_commands": _direct_arecord_commands(
-                    direct_results
-                ),
-                "direct_arecord_raw_wav_headers": [
-                    direct_silence_raw_wav,
-                    direct_spoken_raw_wav,
-                ],
-                "persistent_arecord_command": persistent_command,
-                "persistent_stream_counters": persistent_snapshot,
-                "expected_persistent_frames": total_frames,
-                "captured_persistent_frames": len(frames),
-                "captured_persistent_bytes": len(partial_pcm),
-                "direct": {
-                    name: statistics.to_dict()
-                    for name, statistics in _stage_statistics(
-                        direct_pcm,
-                        args.record_seconds,
-                    ).items()
-                },
-                "persistent_partial": _partial_stage_statistics(partial_pcm),
-                "files": {
-                    "direct_arecord_wav": str(direct_path),
-                    "direct_raw_room_silence_wav": str(
-                        direct_silence_raw_path
-                    ),
-                    "direct_raw_spoken_wav": str(direct_spoken_raw_path),
-                    "persistent_partial_wav": (
-                        str(partial_path) if partial_path is not None else ""
-                    ),
-                },
-            }
-            _write_json_report(report_path, failure_report)
-            output_func(f"Diagnostic report: {report_path}")
-            _print_failure_signal_statistics(
-                failure_report,
-                output_func=output_func,
+        report["resolved_persistent_device"] = str(
+            getattr(handle, "resolved_device", "") or ""
+        )
+        report["persistent_arecord_command"] = list(
+            getattr(handle, "command", ()) or ()
+        )
+        report["persistent_stream_id"] = str(
+            getattr(handle, "stream_id", "") or ""
+        )
+        report["persistent_alsa_handle_id"] = str(
+            getattr(handle, "alsa_handle_id", "") or ""
+        )
+        output_func(
+            f"Persistent stream: remain quiet for {phase_seconds} seconds."
+        )
+        _capture_persistent_phase(
+            handle.frame_source,
+            seconds=phase_seconds,
+            destination=persistent_quiet_frames,
+        )
+        persistent_quiet_pcm = concatenate_owned_pcm_frames(
+            persistent_quiet_frames
+        )
+        _write_canonical_stage_wav(
+            persistent_quiet_path,
+            persistent_quiet_pcm,
+            source="persistent_pcm_integrity_quiet",
+        )
+        output_func(
+            f"Persistent stream: SPEAK LOUDLY NOW for {phase_seconds} seconds."
+        )
+        _capture_persistent_phase(
+            handle.frame_source,
+            seconds=phase_seconds,
+            destination=persistent_spoken_frames,
+        )
+        persistent_spoken_pcm = concatenate_owned_pcm_frames(
+            persistent_spoken_frames
+        )
+        _write_canonical_stage_wav(
+            persistent_spoken_path,
+            persistent_spoken_pcm,
+            source="persistent_pcm_integrity_spoken",
+        )
+        for stage_name, path, pcm in (
+            ("quiet", persistent_quiet_path, persistent_quiet_pcm),
+            ("spoken", persistent_spoken_path, persistent_spoken_pcm),
+        ):
+            loaded_pcm, header = _read_s16_wav_pcm(
+                path,
+                expected_sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
+                expected_channels=CANONICAL_CHANNELS,
+                expected_sample_width_bytes=CANONICAL_SAMPLE_WIDTH_BYTES,
+                expected_duration_seconds=phase_seconds,
             )
-            _print_counter_snapshot(
-                persistent_snapshot,
-                output_func=output_func,
-            )
-            raise
-        persistent_pcm = concatenate_owned_pcm_frames(frames)
-        persistent_snapshot = _safe_source_snapshot(handle.frame_source)
-        write_audio_chunk_wav(
-            AudioChunk(
-                data=persistent_pcm,
+            if loaded_pcm != pcm:
+                raise RuntimeError(
+                    f"persistent_{stage_name}_wav_pcm_mismatch"
+                )
+            report["persistent"][stage_name] = _stage_report(
+                pcm,
+                header=header,
                 sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
-                channels=CANONICAL_CHANNELS,
-                sample_width_bytes=CANONICAL_SAMPLE_WIDTH_BYTES,
-                source="persistent_pcm_integrity_diagnostic",
-                metadata={
-                    "requested_device": args.microphone_device,
-                    "resolved_device": resolved_device,
-                    "canonical_pcm": True,
-                },
-            ),
-            persistent_path,
+                frame_bytes=CANONICAL_PCM_FRAME_BYTES,
+            )
+        persistent_pre_close_snapshot = _safe_source_snapshot(
+            handle.frame_source
         )
+    except BaseException as error:
+        capture_error = f"{error.__class__.__name__}:{str(error)[:200]}"
+        capture_interrupted = isinstance(error, KeyboardInterrupt)
+        report["capture_error"] = capture_error
+        report["failure_stage"] = _failure_stage(report)
     finally:
-        cleanup_failures: list[str] = []
-        cleanup_interruption: Optional[BaseException] = None
         if handle is not None:
             try:
                 closed = adapter.close_persistent_stream(
@@ -378,82 +392,146 @@ def _run_locked(
                     "persistent_stream_close_error:"
                     f"{error.__class__.__name__}"
                 )
-                if not isinstance(error, Exception):
-                    cleanup_interruption = error
-        try:
-            stopped = adapter.stop()
-            if not bool(getattr(stopped, "success", False)):
-                cleanup_failures.append("microphone_stop_failed")
-        except BaseException as error:
-            cleanup_failures.append(
-                f"microphone_stop_error:{error.__class__.__name__}"
+            persistent_post_close_snapshot = _safe_source_snapshot(
+                handle.frame_source
             )
-            if not isinstance(error, Exception) and cleanup_interruption is None:
-                cleanup_interruption = error
-        if cleanup_interruption is not None:
-            raise cleanup_interruption
-        if cleanup_failures:
-            raise RuntimeError(";".join(cleanup_failures))
+        if adapter_started:
+            try:
+                stopped = adapter.stop()
+                if not bool(getattr(stopped, "success", False)):
+                    cleanup_failures.append("microphone_stop_failed")
+            except BaseException as error:
+                cleanup_failures.append(
+                    f"microphone_stop_error:{error.__class__.__name__}"
+                )
+        if handle is not None:
+            persistent_post_close_snapshot = _safe_source_snapshot(
+                handle.frame_source
+            )
 
-    loaded_direct_pcm, direct_wav = _read_canonical_wav_pcm(direct_path)
-    if loaded_direct_pcm != direct_pcm:
-        raise RuntimeError("direct_combined_wav_pcm_mismatch")
-    persistent_wav = validate_canonical_wav(persistent_path)
-    direct_stages = _stage_statistics(direct_pcm, args.record_seconds)
-    persistent_stages = _stage_statistics(persistent_pcm, args.record_seconds)
-    report = {
-        "success": False,
-        "requested_device": args.microphone_device,
-        "comparison_device": comparison_device,
-        "resolved_persistent_device": resolved_device,
-        "canonical_pcm_contract": contract,
-        "direct_arecord_commands": _direct_arecord_commands(direct_results),
-        "persistent_arecord_command": persistent_command,
-        "direct_wav": direct_wav,
-        "direct_arecord_raw_wav_headers": [
-            direct_silence_raw_wav,
-            direct_spoken_raw_wav,
-        ],
-        "persistent_wav": persistent_wav,
-        "direct": {
-            name: statistics.to_dict()
-            for name, statistics in direct_stages.items()
-        },
-        "persistent": {
-            name: statistics.to_dict()
-            for name, statistics in persistent_stages.items()
-        },
-        "persistent_stream_counters": persistent_snapshot,
-        "files": {
-            "direct_arecord_wav": str(direct_path),
-            "direct_room_silence_wav": str(direct_silence_path),
-            "direct_spoken_wav": str(direct_spoken_path),
-            "direct_raw_room_silence_wav": str(direct_silence_raw_path),
-            "direct_raw_spoken_wav": str(direct_spoken_raw_path),
-            "persistent_stream_wav": str(persistent_path),
-        },
+    if not persistent_pre_close_snapshot and handle is not None:
+        persistent_pre_close_snapshot = _safe_source_snapshot(
+            handle.frame_source
+        )
+    report["persistent_stream_counters"] = persistent_pre_close_snapshot
+    report["persistent_post_close_counters"] = persistent_post_close_snapshot
+    report["persistent_process"] = _persistent_process_report(
+        handle,
+        before_close=persistent_pre_close_snapshot,
+        after_close=persistent_post_close_snapshot,
+    )
+    report["persistent_transport"] = {
+        "short_read_count": int(
+            persistent_pre_close_snapshot.get("partial_reads", 0) or 0
+        ),
+        "accumulated_partial_bytes": int(
+            persistent_pre_close_snapshot.get(
+                "accumulated_partial_bytes",
+                0,
+            )
+            or 0
+        ),
+        "pending_partial_bytes": int(
+            persistent_pre_close_snapshot.get("pending_partial_bytes", 0)
+            or 0
+        ),
+        "consecutive_duplicate_frame_count": int(
+            persistent_pre_close_snapshot.get(
+                "maximum_consecutive_repeated_non_silent_frames",
+                0,
+            )
+            or 0
+        ),
+        "process_pid": report["persistent_process"].get("process_pid"),
+        "process_exit_status": report["persistent_process"].get(
+            "exit_status_after_close"
+        ),
+        "exact_capture_command": list(
+            report.get("persistent_arecord_command", []) or []
+        ),
     }
+    report["cleanup_failures"] = cleanup_failures
+    try:
+        _retain_partial_persistent_stage(
+            report,
+            path=persistent_quiet_path,
+            frames=persistent_quiet_frames,
+            stage_name="quiet",
+        )
+        _retain_partial_persistent_stage(
+            report,
+            path=persistent_spoken_path,
+            frames=persistent_spoken_frames,
+            stage_name="spoken",
+        )
+    except (OSError, RuntimeError, ValueError, wave.Error) as error:
+        cleanup_failures.append(
+            f"partial_stage_retention_error:{error.__class__.__name__}"
+        )
+    _populate_signal_comparison(report)
     structural_success = _render_report(report, output_func=output_func)
-    direct_signal_success = _signal_changed(direct_stages)
-    persistent_signal_success = _signal_changed(persistent_stages)
-    signal_success = bool(direct_signal_success and persistent_signal_success)
-    report["direct_speech_signal_changed"] = direct_signal_success
-    report["persistent_speech_signal_changed"] = persistent_signal_success
+    direct_signal_success = bool(
+        report["signal_comparison"].get("direct_signal_changed", False)
+    )
+    persistent_signal_success = bool(
+        report["signal_comparison"].get("persistent_signal_changed", False)
+    )
+    comparability_success = bool(
+        report["signal_comparison"].get("cross_path_comparable", False)
+    )
     playback_success = True
-    if args.playback:
+    direct_audible: Optional[bool] = None
+    persistent_audible: Optional[bool] = None
+    if (
+        args.playback
+        and not capture_error
+        and not cleanup_failures
+        and direct_spoken_path.exists()
+        and persistent_spoken_path.exists()
+    ):
         playback_success = _play_recordings(
             speaker_factory=speaker_factory,
             speaker_device=args.speaker_device,
-            paths=(direct_path, persistent_path),
+            paths=(direct_spoken_path, persistent_spoken_path),
             output_func=output_func,
         )
+        if playback_success:
+            direct_audible = _ask_owner_yes_no(
+                input_func,
+                "Was the direct spoken WAV clear and audible? [yes/no]",
+            )
+            persistent_audible = _ask_owner_yes_no(
+                input_func,
+                "Was the persistent spoken WAV clear and audible? [yes/no]",
+            )
+    elif args.playback:
+        playback_success = False
     report["playback_requested"] = bool(args.playback)
     report["playback_success"] = bool(playback_success)
+    report["direct_spoken_audible_confirmed"] = direct_audible
+    report["persistent_spoken_audible_confirmed"] = persistent_audible
+    audibility_success = bool(direct_audible and persistent_audible)
+    report["audibility_confirmed"] = audibility_success
     report["success"] = bool(
-        structural_success and signal_success and playback_success
+        not capture_error
+        and not cleanup_failures
+        and structural_success
+        and direct_signal_success
+        and persistent_signal_success
+        and comparability_success
+        and playback_success
+        and audibility_success
     )
     _write_json_report(report_path, report)
     output_func(f"Diagnostic report: {report_path}")
+    if capture_interrupted:
+        raise KeyboardInterrupt
+    if capture_error or cleanup_failures:
+        output_func(
+            "FAIL: capture or cleanup failed; the failure JSON and any completed "
+            "stage WAVs were retained."
+        )
+        return 3
     if not structural_success:
         output_func("FAIL: persistent PCM framing or ownership integrity did not pass.")
         return 4
@@ -469,17 +547,614 @@ def _run_locked(
             "amplitude. Do not run wake reliability yet."
         )
         return 5
-    if not playback_success:
+    if not comparability_success:
         output_func(
-            "FAIL: requested playback did not complete; audible comparison remains "
-            "unconfirmed. Do not run wake reliability yet."
+            "FAIL: persistent speech amplitude/contrast is not reasonably "
+            "comparable to the direct native baseline. Do not run wake reliability."
+        )
+        return 5
+    if not playback_success or not audibility_success:
+        output_func(
+            "FAIL: direct and persistent spoken WAV audibility was not explicitly "
+            "confirmed. Do not run wake reliability yet."
         )
         return 6
     output_func(
-        "PASS: persistent PCM is structurally valid and spoken audio changes its "
-        "signed S16_LE samples. Listen to both WAV files before wake reliability."
+        "PASS: the native direct and exact production persistent captures are "
+        "structurally valid, comparable, and explicitly confirmed audible."
     )
     return 0
+
+
+def _capture_direct_native_wav(
+    *,
+    output_path: Path,
+    device: str,
+    seconds: int,
+    sample_rate_hz: int,
+    channels: int,
+    sample_format: str,
+    timeout_seconds: float,
+) -> Dict[str, Any]:
+    arecord_path = shutil.which("arecord")
+    if not arecord_path:
+        return {
+            "success": False,
+            "command": [],
+            "process_pid": None,
+            "process_exit_status": None,
+            "timed_out": False,
+            "error": "arecord_missing",
+        }
+    command = [
+        arecord_path,
+        "-D",
+        str(device),
+        "-f",
+        str(sample_format),
+        "-r",
+        str(int(sample_rate_hz)),
+        "-c",
+        str(int(channels)),
+        "-d",
+        str(int(seconds)),
+        "-t",
+        "wav",
+        str(output_path),
+    ]
+    process: Any = None
+    timed_out = False
+    stderr = b""
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            shell=False,
+            bufsize=0,
+        )
+        try:
+            _, stderr = process.communicate(timeout=float(timeout_seconds))
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            process.terminate()
+            try:
+                _, stderr = process.communicate(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                _, stderr = process.communicate(timeout=2.0)
+    except (OSError, RuntimeError, ValueError) as error:
+        return {
+            "success": False,
+            "command": command,
+            "process_pid": getattr(process, "pid", None),
+            "process_exit_status": getattr(process, "returncode", None),
+            "timed_out": timed_out,
+            "stderr": "",
+            "error": f"{error.__class__.__name__}:{str(error)[:160]}",
+        }
+    returncode = getattr(process, "returncode", None)
+    stderr_text = bytes(stderr or b"").decode("utf-8", errors="replace")[:1000]
+    return {
+        "success": bool(
+            not timed_out
+            and returncode == 0
+            and output_path.exists()
+        ),
+        "command": command,
+        "process_pid": getattr(process, "pid", None),
+        "process_exit_status": returncode,
+        "timed_out": timed_out,
+        "stderr": stderr_text,
+        "error": (
+            ""
+            if not timed_out and returncode == 0
+            else ("process_timeout" if timed_out else f"arecord_exit_{returncode}")
+        ),
+    }
+
+
+def _native_direct_capture_device(device: Any) -> str:
+    clean = str(device or "").strip()
+    match = re.fullmatch(r"(?:plug)?hw:(\d+),(\d+)", clean)
+    if match is None:
+        raise ValueError(
+            "direct native comparison requires hw:CARD,DEVICE or "
+            "plughw:CARD,DEVICE"
+        )
+    return f"hw:{match.group(1)},{match.group(2)}"
+
+
+def _require_direct_capture_success(
+    process: Dict[str, Any],
+    stage_name: str,
+) -> None:
+    if bool(process.get("success")):
+        return
+    detail = process.get("error") or process.get("process_exit_status")
+    raise RuntimeError(
+        f"direct_{stage_name}_capture_failed:{str(detail)[:120]}"
+    )
+
+
+def _read_s16_wav_pcm(
+    path: Path,
+    *,
+    expected_sample_rate_hz: int,
+    expected_channels: int,
+    expected_sample_width_bytes: int,
+    expected_duration_seconds: Optional[float] = None,
+) -> tuple[bytes, Dict[str, Any]]:
+    validation = analyze_wav_audio(path)
+    if not validation.get("success"):
+        raise ValueError(
+            str(validation.get("error_message") or "diagnostic_wav_invalid")
+        )
+    actual_contract = (
+        int(validation.get("sample_rate_hz", 0) or 0),
+        int(validation.get("channels", 0) or 0),
+        int(validation.get("sample_width_bytes", 0) or 0),
+    )
+    expected_contract = (
+        int(expected_sample_rate_hz),
+        int(expected_channels),
+        int(expected_sample_width_bytes),
+    )
+    if actual_contract != expected_contract:
+        raise ValueError(
+            f"diagnostic_wav_format_mismatch:{actual_contract}:{expected_contract}"
+        )
+    if expected_duration_seconds is not None:
+        actual_duration = float(validation.get("duration_seconds", 0.0) or 0.0)
+        tolerance = 1.0 / max(1, int(expected_sample_rate_hz))
+        if not math.isclose(
+            actual_duration,
+            float(expected_duration_seconds),
+            abs_tol=tolerance,
+        ):
+            raise ValueError(
+                "diagnostic_wav_duration_mismatch:"
+                f"{actual_duration}:{expected_duration_seconds}"
+            )
+    with wave.open(str(path), "rb") as wav_file:
+        pcm = wav_file.readframes(wav_file.getnframes())
+    return bytes(pcm), validation
+
+
+def _stage_report(
+    pcm: bytes,
+    *,
+    header: Dict[str, Any],
+    sample_rate_hz: int,
+    frame_bytes: int,
+) -> Dict[str, Any]:
+    statistics = analyze_s16_le_pcm_integrity(
+        pcm,
+        frame_bytes=frame_bytes,
+        sample_rate_hz=sample_rate_hz,
+        channels=CANONICAL_CHANNELS,
+    ).to_dict()
+    return {
+        **statistics,
+        "wav_header": dict(header),
+        "complete": True,
+    }
+
+
+def _capture_persistent_phase(
+    source: Any,
+    *,
+    seconds: int,
+    destination: list[bytes],
+) -> None:
+    for _ in range(_frame_count(seconds)):
+        source_frame = source.read_frame(CANONICAL_PCM_FRAME_BYTES, 1.0)
+        if not isinstance(source_frame, (bytes, bytearray, memoryview)):
+            raise TypeError("persistent_stream_returned_non_bytes_pcm")
+        actual_length = len(source_frame)
+        immutable_frame = bytes(source_frame[:actual_length])
+        if actual_length != CANONICAL_PCM_FRAME_BYTES:
+            raise RuntimeError(
+                "persistent_stream_returned_incomplete_pcm_frame:"
+                f"{actual_length}"
+            )
+        destination.append(immutable_frame)
+
+
+def _write_canonical_stage_wav(
+    path: Path,
+    pcm: bytes,
+    *,
+    source: str,
+) -> None:
+    write_audio_chunk_wav(
+        AudioChunk(
+            data=bytes(pcm),
+            sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
+            channels=CANONICAL_CHANNELS,
+            sample_width_bytes=CANONICAL_SAMPLE_WIDTH_BYTES,
+            source=source,
+        ),
+        path,
+    )
+
+
+def _failure_stage(report: Dict[str, Any]) -> str:
+    if len(report.get("direct_processes", [])) < 2:
+        return "direct_native_capture"
+    if not report.get("persistent_arecord_command"):
+        return "persistent_stream_open"
+    return "persistent_stream_capture"
+
+
+def _persistent_process_report(
+    handle: Any,
+    *,
+    before_close: Dict[str, Any],
+    after_close: Dict[str, Any],
+) -> Dict[str, Any]:
+    source = getattr(handle, "frame_source", None) if handle is not None else None
+    process = getattr(source, "process", None) if source is not None else None
+    pid = before_close.get("process_pid")
+    if pid is None:
+        pid = getattr(process, "pid", None)
+    before_status = before_close.get("process_exit_status")
+    after_status = after_close.get("process_exit_status")
+    if after_status is None:
+        after_status = getattr(process, "returncode", None)
+    before_alive = before_close.get("process_alive")
+    after_alive = after_close.get("process_alive")
+    return {
+        "process_pid": pid,
+        "alive_before_close": before_alive,
+        "exit_status_before_close": before_status,
+        "alive_after_close": after_alive,
+        "exit_status_after_close": after_status,
+        "metadata_available_before_close": all(
+            key in before_close
+            for key in (
+                "process_pid",
+                "process_exit_status",
+                "process_alive",
+            )
+        ),
+        "metadata_available_after_close": all(
+            key in after_close
+            for key in (
+                "process_pid",
+                "process_exit_status",
+                "process_alive",
+            )
+        ),
+    }
+
+
+def _retain_partial_persistent_stage(
+    report: Dict[str, Any],
+    *,
+    path: Path,
+    frames: Sequence[bytes],
+    stage_name: str,
+) -> None:
+    if stage_name in dict(report.get("persistent", {}) or {}) or not frames:
+        return
+    pcm = concatenate_owned_pcm_frames(frames)
+    if not path.exists():
+        _write_canonical_stage_wav(
+            path,
+            pcm,
+            source=f"persistent_pcm_integrity_partial_{stage_name}",
+        )
+    loaded, header = _read_s16_wav_pcm(
+        path,
+        expected_sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
+        expected_channels=CANONICAL_CHANNELS,
+        expected_sample_width_bytes=CANONICAL_SAMPLE_WIDTH_BYTES,
+    )
+    if loaded != pcm:
+        raise RuntimeError(f"persistent_partial_{stage_name}_wav_pcm_mismatch")
+    stage = _stage_report(
+        pcm,
+        header=header,
+        sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
+        frame_bytes=CANONICAL_PCM_FRAME_BYTES,
+    )
+    stage["complete"] = False
+    report["persistent"][stage_name] = stage
+
+
+def _populate_signal_comparison(report: Dict[str, Any]) -> None:
+    direct = dict(report.get("direct", {}) or {})
+    persistent = dict(report.get("persistent", {}) or {})
+    direct_changed = _signal_changed_from_dict(direct)
+    persistent_changed = _signal_changed_from_dict(persistent)
+    direct_ratio = _spoken_quiet_rms_ratio(direct)
+    persistent_ratio = _spoken_quiet_rms_ratio(persistent)
+    direct_spoken = float(
+        dict(direct.get("spoken", {}) or {}).get("rms", 0.0) or 0.0
+    )
+    persistent_spoken = float(
+        dict(persistent.get("spoken", {}) or {}).get("rms", 0.0) or 0.0
+    )
+    spoken_ratio = (
+        persistent_spoken / direct_spoken
+        if direct_spoken > 0.0
+        else None
+    )
+    contrast_comparability = (
+        min(persistent_ratio / direct_ratio, direct_ratio / persistent_ratio)
+        if direct_ratio
+        and persistent_ratio
+        and direct_ratio > 0.0
+        and persistent_ratio > 0.0
+        else None
+    )
+    cross_path_comparable = bool(
+        direct_changed
+        and persistent_changed
+        and spoken_ratio is not None
+        and spoken_ratio >= MINIMUM_PERSISTENT_TO_DIRECT_SPOKEN_RMS_RATIO
+        and contrast_comparability is not None
+        and contrast_comparability
+        >= MINIMUM_CROSS_PATH_RMS_RATIO_COMPARABILITY
+    )
+    report["signal_comparison"] = {
+        "direct_signal_changed": direct_changed,
+        "persistent_signal_changed": persistent_changed,
+        "direct_spoken_quiet_rms_ratio": direct_ratio,
+        "persistent_spoken_quiet_rms_ratio": persistent_ratio,
+        "persistent_to_direct_spoken_rms_ratio": spoken_ratio,
+        "cross_path_rms_ratio_comparability": contrast_comparability,
+        "minimum_persistent_to_direct_spoken_rms_ratio": (
+            MINIMUM_PERSISTENT_TO_DIRECT_SPOKEN_RMS_RATIO
+        ),
+        "minimum_cross_path_rms_ratio_comparability": (
+            MINIMUM_CROSS_PATH_RMS_RATIO_COMPARABILITY
+        ),
+        "cross_path_comparable": cross_path_comparable,
+    }
+    report["direct_speech_signal_changed"] = direct_changed
+    report["persistent_speech_signal_changed"] = persistent_changed
+
+
+def _spoken_quiet_rms_ratio(stages: Dict[str, Any]) -> Optional[float]:
+    quiet = dict(stages.get("quiet", {}) or {})
+    spoken = dict(stages.get("spoken", {}) or {})
+    quiet_rms = float(quiet.get("rms", 0.0) or 0.0)
+    spoken_rms = float(spoken.get("rms", 0.0) or 0.0)
+    if quiet_rms <= 0.0 or spoken_rms < 0.0:
+        return None
+    return round(spoken_rms / quiet_rms, 6)
+
+
+def _ask_owner_yes_no(
+    input_func: Callable[[str], str],
+    prompt: str,
+) -> bool:
+    response = str(input_func(f"{prompt} ") or "").strip().lower()
+    return response in {"y", "yes"}
+
+
+def _direct_report_integrity(report: Dict[str, Any]) -> bool:
+    phase_seconds = int(
+        dict(report.get("protocol", {}) or {}).get("quiet_seconds", 0) or 0
+    )
+    device = str(report.get("direct_native_device", "") or "")
+    processes = list(report.get("direct_processes", []) or [])
+    stages = dict(report.get("direct", {}) or {})
+    if (
+        phase_seconds <= 0
+        or not re.fullmatch(r"hw:\d+,\d+", device)
+        or len(processes) != 2
+    ):
+        return False
+    paths = dict(report.get("files", {}) or {})
+    expected_paths = {
+        "quiet": paths.get("direct_quiet_wav", ""),
+        "spoken": paths.get("direct_spoken_wav", ""),
+    }
+    for process in processes:
+        stage_name = str(process.get("stage", "") or "")
+        if (
+            stage_name not in expected_paths
+            or not bool(process.get("success"))
+            or int(process.get("process_pid", 0) or 0) <= 0
+            or process.get("process_exit_status") != 0
+            or bool(process.get("timed_out", False))
+            or not _native_arecord_command(
+                process.get("command", []),
+                device=device,
+                seconds=phase_seconds,
+                output_path=expected_paths[stage_name],
+            )
+        ):
+            return False
+    return bool(
+        _stage_contract_is_valid(
+            stages,
+            sample_rate_hz=DIRECT_NATIVE_SAMPLE_RATE_HZ,
+            duration_seconds=phase_seconds,
+            frame_bytes=DIRECT_NATIVE_FRAME_BYTES,
+        )
+        and _stage_frame_variation_is_valid(stages)
+        and _stage_zero_density_is_valid(stages)
+    )
+
+
+def _persistent_report_integrity(report: Dict[str, Any]) -> bool:
+    protocol = dict(report.get("protocol", {}) or {})
+    phase_seconds = int(protocol.get("quiet_seconds", 0) or 0)
+    device = str(report.get("persistent_conversion_device", "") or "")
+    resolved = str(report.get("resolved_persistent_device", "") or "")
+    stages = dict(report.get("persistent", {}) or {})
+    counters = dict(report.get("persistent_stream_counters", {}) or {})
+    post_close = dict(report.get("persistent_post_close_counters", {}) or {})
+    expected_frames = 2 * _frame_count(phase_seconds)
+    expected_bytes = expected_frames * CANONICAL_PCM_FRAME_BYTES
+    if not (
+        phase_seconds > 0
+        and resolved == device
+        and _canonical_arecord_command(
+            report.get("persistent_arecord_command", []),
+            device,
+            capture_type="raw",
+        )
+        and _stage_contract_is_valid(
+            stages,
+            sample_rate_hz=CANONICAL_SAMPLE_RATE_HZ,
+            duration_seconds=phase_seconds,
+            frame_bytes=CANONICAL_PCM_FRAME_BYTES,
+        )
+        and _stage_frame_variation_is_valid(stages)
+        and _stage_zero_density_is_valid(stages)
+        and int(counters.get("valid_full_pcm_frames", 0) or 0)
+        >= expected_frames
+        and int(
+            counters.get("valid_microphone_bytes_delivered_to_vad", 0) or 0
+        )
+        == expected_bytes
+        and int(
+            counters.get("fresh_microphone_bytes_delivered_to_vad", 0) or 0
+        )
+        == expected_bytes
+        and int(counters.get("read_errors", 0) or 0) == 0
+        and int(counters.get("unexpected_eof_count", 0) or 0) == 0
+        and not bool(counters.get("dead_process_detected", False))
+        and int(counters.get("zero_filled_bytes", 0) or 0) == 0
+        and int(counters.get("pending_partial_bytes", 0) or 0) == 0
+        and int(counters.get("pending_discard_alignment_bytes", 0) or 0) == 0
+        and int(counters.get("discarded_bytes", 0) or 0) == 0
+        and int(counters.get("mutable_buffer_reuse_detected", 0) or 0) == 0
+        and int(counters.get("replayed_frame_count", 0) or 0) == 0
+        and not bool(counters.get("pathological_duplicate_frame_detected", False))
+        and int(counters.get("queue_overflow_dropped_frames", 0) or 0) == 0
+        and int(counters.get("queue_overflow_dropped_bytes", 0) or 0) == 0
+        and int(counters.get("candidate_reset_discarded_frames", 0) or 0) == 0
+        and int(counters.get("candidate_reset_discarded_bytes", 0) or 0) == 0
+    ):
+        return False
+    if not bool(report.get("production_process_metadata_required", False)):
+        return True
+    process = dict(report.get("persistent_process", {}) or {})
+    required_counter_fields = (
+        "process_pid",
+        "process_exit_status",
+        "process_alive",
+        "eof_count",
+        "unexpected_eof_count",
+        "dead_process_detected",
+        "accumulated_partial_bytes",
+        "pending_partial_bytes",
+        "low_level_read_size_counts",
+        "maximum_consecutive_repeated_non_silent_frames",
+        "pathological_duplicate_frame_detected",
+        "maximum_consecutive_tiny_rms_frames",
+        "queue_overflow_dropped_frames",
+        "queue_overflow_dropped_bytes",
+        "candidate_reset_discarded_frames",
+        "candidate_reset_discarded_bytes",
+        "transport_argv",
+        "stdout_transport_mode",
+        "stderr_transport_mode",
+        "expected_frame_bytes",
+    )
+    return bool(
+        all(field in counters for field in required_counter_fields)
+        and process.get("metadata_available_before_close") is True
+        and process.get("metadata_available_after_close") is True
+        and int(process.get("process_pid", 0) or 0) > 0
+        and process.get("alive_before_close") is True
+        and process.get("exit_status_before_close") is None
+        and process.get("alive_after_close") is False
+        and process.get("exit_status_after_close") is not None
+        and list(counters.get("transport_argv", []) or [])
+        == list(report.get("persistent_arecord_command", []) or [])
+        and str(report.get("persistent_stream_id", "") or "")
+        and str(report.get("persistent_alsa_handle_id", "") or "")
+        == f"arecord-pid-{int(process.get('process_pid', 0) or 0)}"
+        and counters.get("stdout_transport_mode")
+        in {"raw_pcm_pipe", "raw_pcm_pipe_continuous_pump"}
+        and counters.get("stderr_transport_mode") == "separate_bounded_pipe"
+        and int(counters.get("expected_frame_bytes", 0) or 0)
+        == CANONICAL_PCM_FRAME_BYTES
+        and int(post_close.get("unexpected_eof_count", 0) or 0) == 0
+        and not bool(post_close.get("dead_process_detected", False))
+    )
+
+
+def _stage_contract_is_valid(
+    stages: Dict[str, Any],
+    *,
+    sample_rate_hz: int,
+    duration_seconds: int,
+    frame_bytes: int,
+) -> bool:
+    for stage_name in ("quiet", "spoken"):
+        stage = dict(stages.get(stage_name, {}) or {})
+        header = dict(stage.get("wav_header", {}) or {})
+        if not (
+            stage.get("complete") is True
+            and bool(header.get("success"))
+            and int(header.get("sample_rate_hz", 0) or 0) == sample_rate_hz
+            and int(header.get("channels", 0) or 0) == CANONICAL_CHANNELS
+            and int(header.get("sample_width_bytes", 0) or 0)
+            == CANONICAL_SAMPLE_WIDTH_BYTES
+            and math.isclose(
+                float(header.get("duration_seconds", 0.0) or 0.0),
+                float(duration_seconds),
+                abs_tol=1.0 / sample_rate_hz,
+            )
+            and math.isclose(
+                float(stage.get("duration_seconds", 0.0) or 0.0),
+                float(duration_seconds),
+                abs_tol=1.0 / sample_rate_hz,
+            )
+            and int(stage.get("partial_frame_bytes", -1)) == 0
+            and int(stage.get("frame_count", 0) or 0)
+            == _frame_count(duration_seconds)
+            and int(stage.get("byte_count", 0) or 0)
+            == int(duration_seconds)
+            * sample_rate_hz
+            * CANONICAL_CHANNELS
+            * CANONICAL_SAMPLE_WIDTH_BYTES
+        ):
+            return False
+        if int(frame_bytes) <= 0:
+            return False
+    return True
+
+
+def _native_arecord_command(
+    command: Any,
+    *,
+    device: str,
+    seconds: int,
+    output_path: Any,
+) -> bool:
+    values = [str(value) for value in (command or [])]
+    expected = {
+        "-D": str(device),
+        "-f": CANONICAL_PCM_SAMPLE_FORMAT,
+        "-r": str(DIRECT_NATIVE_SAMPLE_RATE_HZ),
+        "-c": str(CANONICAL_CHANNELS),
+        "-d": str(int(seconds)),
+        "-t": "wav",
+    }
+    for flag, expected_value in expected.items():
+        try:
+            actual = values[values.index(flag) + 1]
+        except (ValueError, IndexError):
+            return False
+        if actual != expected_value:
+            return False
+    return bool(values and values[-1] == str(output_path))
+
+
+def _format_ratio(value: Any) -> str:
+    if value is None:
+        return "not_available"
+    return f"{float(value):.3f}"
 
 
 def _render_report(
@@ -487,109 +1162,65 @@ def _render_report(
     *,
     output_func: Callable[[str], None],
 ) -> bool:
+    if not report.get("signal_comparison"):
+        _populate_signal_comparison(report)
     output_func("")
     output_func("Side-by-side signal statistics")
-    for stage_name in ("room_silence", "spoken"):
+    for stage_name in ("quiet", "spoken"):
         output_func(f"  Stage: {stage_name}")
         for source_name in ("direct", "persistent"):
-            stats = dict(report[source_name][stage_name])
-            output_func(
-                f"    {source_name}: bytes={stats['byte_count']}; "
-                f"samples={stats['sample_count']}; "
-                f"min={stats['minimum_signed_sample']}; "
-                f"max={stats['maximum_signed_sample']}; "
-                f"mean_abs={stats['mean_absolute_amplitude']:.3f}; "
-                f"rms={stats['rms']:.3f}; peak={stats['peak']}; "
-                f"zero_samples={stats['zero_sample_percentage']:.3f}%; "
-                f"repeated_frames={stats['repeated_frame_percentage']:.3f}%; "
-                f"unique_frame_hashes={stats['unique_frame_hash_count']}"
+            stats = dict(
+                dict(report.get(source_name, {}) or {}).get(stage_name, {}) or {}
             )
             output_func(
-                "      first_32_signed_samples="
-                f"{stats['first_32_decoded_signed_samples']}"
+                f"    {source_name}: bytes={int(stats.get('byte_count', 0) or 0)}; "
+                f"samples={int(stats.get('sample_count', 0) or 0)}; "
+                f"duration={float(stats.get('duration_seconds', 0.0) or 0.0):.3f}s; "
+                f"min={int(stats.get('minimum_signed_sample', 0) or 0)}; "
+                f"max={int(stats.get('maximum_signed_sample', 0) or 0)}; "
+                f"mean_abs={float(stats.get('mean_absolute_amplitude', 0.0) or 0.0):.3f}; "
+                f"rms={float(stats.get('rms', 0.0) or 0.0):.3f}; "
+                f"peak={int(stats.get('peak', 0) or 0)}; "
+                f"nonzero={int(stats.get('nonzero_sample_count', 0) or 0)}; "
+                f"distinct={int(stats.get('distinct_sample_count', 0) or 0)}; "
+                f"repeated_frames={int(stats.get('repeated_frame_count', 0) or 0)}"
             )
-    counters = dict(report["persistent_stream_counters"])
+            output_func(
+                "      |sample| above "
+                f"100={float(stats.get('absolute_sample_percentage_above_100', 0.0) or 0.0):.3f}%; "
+                f"300={float(stats.get('absolute_sample_percentage_above_300', 0.0) or 0.0):.3f}%; "
+                f"1000={float(stats.get('absolute_sample_percentage_above_1000', 0.0) or 0.0):.3f}%; "
+                f"3000={float(stats.get('absolute_sample_percentage_above_3000', 0.0) or 0.0):.3f}%"
+            )
+    counters = dict(report.get("persistent_stream_counters", {}) or {})
     _print_counter_snapshot(counters, output_func=output_func)
-    direct_changed = _signal_changed_from_dict(report["direct"])
-    persistent_changed = _signal_changed_from_dict(report["persistent"])
-    direct_nonzero = _raw_bytes_nonzero(report["direct"])
-    persistent_nonzero = _raw_bytes_nonzero(report["persistent"])
-    expected_frames = int(report["persistent"]["all"]["frame_count"])
-    valid_frames = int(counters.get("valid_full_pcm_frames", 0) or 0)
-    expected_bytes = expected_frames * CANONICAL_PCM_FRAME_BYTES
-    delivered_bytes = int(
-        counters.get("valid_microphone_bytes_delivered_to_vad", 0) or 0
-    )
-    fresh_delivered_bytes = int(
-        counters.get("fresh_microphone_bytes_delivered_to_vad", 0) or 0
-    )
-    direct_integrity = bool(
-        _canonical_wav_metadata(report["direct_wav"])
-        and len(report.get("direct_arecord_commands", [])) == 2
-        and all(
-            _canonical_arecord_command(
-                command,
-                report["comparison_device"],
-                capture_type="wav",
-            )
-            for command in report.get("direct_arecord_commands", [])
-        )
-        and len(report.get("direct_arecord_raw_wav_headers", [])) == 2
-        and all(
-            _canonical_wav_metadata(header)
-            for header in report.get("direct_arecord_raw_wav_headers", [])
-        )
-        and _stage_frame_variation_is_valid(report["direct"])
-        and _stage_zero_density_is_valid(report["direct"])
-    )
-    persistent_integrity = bool(
-        _canonical_wav_metadata(report["persistent_wav"])
-        and _canonical_arecord_command(
-            report.get("persistent_arecord_command", []),
-            report["comparison_device"],
-            capture_type="raw",
-        )
-        and report["resolved_persistent_device"] == report["comparison_device"]
-        and valid_frames == expected_frames
-        and delivered_bytes == expected_bytes
-        and fresh_delivered_bytes == expected_bytes
-        and int(counters.get("total_low_level_reads", 0) or 0)
-        >= expected_frames
-        and int(counters.get("empty_reads", 0) or 0) == 0
-        and int(counters.get("read_errors", 0) or 0) == 0
-        and int(counters.get("zero_filled_bytes", 0) or 0) == 0
-        and int(counters.get("pending_partial_bytes", 0) or 0) == 0
-        and int(counters.get("discarded_bytes", 0) or 0) == 0
-        and int(counters.get("mutable_buffer_reuse_detected", 0) or 0) == 0
-        and int(counters.get("replayed_frame_count", 0) or 0) == 0
-        and _stage_frame_variation_is_valid(report["persistent"])
-        and _stage_zero_density_is_valid(report["persistent"])
-    )
-    shared_process_path = _commands_share_executable(
-        [
-            *report.get("direct_arecord_commands", []),
-            report.get("persistent_arecord_command", []),
-        ]
-    )
+    direct_integrity = _direct_report_integrity(report)
+    persistent_integrity = _persistent_report_integrity(report)
+    commands = [
+        *[
+            process.get("command", [])
+            for process in report.get("direct_processes", [])
+            if isinstance(process, dict)
+        ],
+        report.get("persistent_arecord_command", []),
+    ]
+    shared_process_path = _commands_share_executable(commands)
     structural_success = bool(
-        direct_integrity and persistent_integrity and shared_process_path
-    )
-    direct_valid = bool(direct_integrity and direct_changed)
-    persistent_valid = bool(
-        persistent_integrity and shared_process_path and persistent_changed
+        direct_integrity
+        and persistent_integrity
+        and shared_process_path
+        and not report.get("cleanup_failures")
     )
     report["direct_structural_integrity"] = direct_integrity
     report["persistent_structural_integrity"] = persistent_integrity
     report["same_arecord_process_path"] = shared_process_path
+    report["structural_integrity"] = structural_success
     output_func("")
     output_func("Diagnostic answers")
-    for command_index, command in enumerate(
-        report.get("direct_arecord_commands", []),
-        start=1,
-    ):
+    for process in report.get("direct_processes", []):
         output_func(
-            f"  Direct arecord command {command_index}: "
-            + " ".join(str(value) for value in command)
+            f"  Direct {process.get('stage', 'unknown')} arecord command: "
+            + " ".join(str(value) for value in process.get("command", []))
         )
     output_func(
         "  Persistent arecord command: "
@@ -597,77 +1228,36 @@ def _render_report(
             str(value) for value in report.get("persistent_arecord_command", [])
         )
     )
-    output_func(f"  Direct canonical WAV bytes nonzero: {_yes_no(direct_nonzero)}")
-    output_func(f"  Raw persistent ALSA bytes nonzero: {_yes_no(persistent_nonzero)}")
+    comparison = dict(report.get("signal_comparison", {}) or {})
     output_func(
-        "  Direct signed S16_LE samples change while speaking: "
-        f"{_yes_no(direct_changed)}"
+        "  Direct spoken/quiet RMS ratio: "
+        f"{_format_ratio(comparison.get('direct_spoken_quiet_rms_ratio'))}"
     )
     output_func(
-        "  Persistent signed S16_LE samples change while speaking: "
-        f"{_yes_no(persistent_changed)}"
+        "  Persistent spoken/quiet RMS ratio: "
+        f"{_format_ratio(comparison.get('persistent_spoken_quiet_rms_ratio'))}"
     )
     output_func(
-        "  Persistent source repeats pathologically within a stage: "
-        f"{_yes_no(not _stage_frame_variation_is_valid(report['persistent']))}"
+        "  Persistent/direct spoken RMS ratio: "
+        f"{_format_ratio(comparison.get('persistent_to_direct_spoken_rms_ratio'))}"
     )
     output_func(
-        "  Direct valid while persistent is not: "
-        f"{_yes_no(direct_valid and not persistent_valid)}"
+        "  Cross-path ratio comparability: "
+        f"{_format_ratio(comparison.get('cross_path_rms_ratio_comparability'))}; "
+        f"pass={_yes_no(bool(comparison.get('cross_path_comparable', False)))}"
     )
     output_func(
-        "  Selected persistent device: "
-        f"{report['resolved_persistent_device'] or '<default>'}"
-    )
-    output_func(
-        "  Persistent requested transport format: "
-        f"{CANONICAL_SAMPLE_RATE_HZ} Hz mono {CANONICAL_PCM_SAMPLE_FORMAT}; "
-        "raw stdout is headerless, so the command, exact frame sizes, and saved "
-        "WAV header are the available transport evidence."
-    )
-    for header_index, raw_header_value in enumerate(
-        report.get("direct_arecord_raw_wav_headers", []),
-        start=1,
-    ):
-        raw_header = dict(raw_header_value or {})
-        output_func(
-            f"  Direct arecord raw WAV header {header_index}: "
-            f"{int(raw_header.get('sample_rate_hz', 0) or 0)} Hz / "
-            f"{int(raw_header.get('channels', 0) or 0)} channel(s) / "
-            f"{int(raw_header.get('sample_width_bytes', 0) or 0)} bytes/sample"
-        )
-    direct_wav = dict(report.get("direct_wav", {}) or {})
-    persistent_wav = dict(report.get("persistent_wav", {}) or {})
-    output_func(
-        "  Saved direct/persistent WAV headers: "
-        f"{int(direct_wav.get('sample_rate_hz', 0) or 0)}Hz/"
-        f"{int(direct_wav.get('channels', 0) or 0)}ch/"
-        f"{int(direct_wav.get('sample_width_bytes', 0) or 0)}B; "
-        f"{int(persistent_wav.get('sample_rate_hz', 0) or 0)}Hz/"
-        f"{int(persistent_wav.get('channels', 0) or 0)}ch/"
-        f"{int(persistent_wav.get('sample_width_bytes', 0) or 0)}B"
-    )
-    output_func(
-        "  Complete frame boundary: "
-        f"{CANONICAL_PCM_FRAME_BYTES} bytes; expected={expected_frames}; "
-        f"valid={valid_frames}; partial_low_level_reads="
-        f"{int(counters.get('partial_reads', 0) or 0)}"
-    )
-    output_func(
-        "  Mutable source buffer reused across a boundary: "
-        f"{_yes_no(int(counters.get('mutable_buffer_reuse_detected', 0) or 0) > 0)}"
+        "  Persistent process: "
+        f"pid={report.get('persistent_process', {}).get('process_pid')}; "
+        f"alive_before_close={report.get('persistent_process', {}).get('alive_before_close')}; "
+        f"exit_after_close={report.get('persistent_process', {}).get('exit_status_after_close')}"
     )
     output_func(f"  Direct path integrity: {_yes_no(direct_integrity)}")
     output_func(f"  Persistent path integrity: {_yes_no(persistent_integrity)}")
     output_func(f"  Same arecord process path: {_yes_no(shared_process_path)}")
     output_func(f"  Structural PCM integrity: {_yes_no(structural_success)}")
-    output_func(f"  Direct WAV: {report['files']['direct_arecord_wav']}")
-    output_func(
-        "  Retained raw direct WAV stages: "
-        f"{report['files']['direct_raw_room_silence_wav']}; "
-        f"{report['files']['direct_raw_spoken_wav']}"
-    )
-    output_func(f"  Persistent WAV: {report['files']['persistent_stream_wav']}")
+    for key, value in dict(report.get("files", {}) or {}).items():
+        output_func(f"  {key}: {value}")
     return structural_success
 
 
@@ -682,89 +1272,59 @@ def _print_counter_snapshot(
         "total_low_level_reads",
         "valid_full_pcm_frames",
         "partial_reads",
+        "accumulated_partial_bytes",
         "empty_reads",
+        "eof_count",
+        "unexpected_eof_count",
         "read_errors",
         "discarded_bytes",
         "zero_filled_bytes",
         "repeated_frame_hashes",
+        "maximum_consecutive_repeated_non_silent_frames",
+        "pathological_duplicate_frame_detected",
+        "maximum_consecutive_tiny_rms_frames",
         "mutable_buffer_reuse_detected",
         "valid_microphone_bytes_delivered_to_vad",
         "fresh_microphone_bytes_delivered_to_vad",
         "pending_partial_bytes",
         "pending_discard_alignment_bytes",
+        "queue_overflow_dropped_frames",
+        "queue_overflow_dropped_bytes",
+        "candidate_reset_discarded_frames",
+        "candidate_reset_discarded_bytes",
     ):
-        output_func(f"  {key}: {int(counters.get(key, 0) or 0)}")
-
-
-def _print_failure_signal_statistics(
-    report: Dict[str, Any],
-    *,
-    output_func: Callable[[str], None],
-) -> None:
-    output_func("")
-    output_func("Partial side-by-side signal statistics")
-    for stage_name in ("room_silence", "spoken"):
-        output_func(f"  Stage: {stage_name}")
-        for source_name, report_key in (
-            ("direct", "direct"),
-            ("persistent_partial", "persistent_partial"),
-        ):
-            statistics = dict(
-                dict(report.get(report_key, {}) or {}).get(stage_name, {}) or {}
-            )
-            output_func(
-                f"    {source_name}: bytes={int(statistics.get('byte_count', 0) or 0)}; "
-                f"samples={int(statistics.get('sample_count', 0) or 0)}; "
-                f"min={int(statistics.get('minimum_signed_sample', 0) or 0)}; "
-                f"max={int(statistics.get('maximum_signed_sample', 0) or 0)}; "
-                f"mean_abs={float(statistics.get('mean_absolute_amplitude', 0.0) or 0.0):.3f}; "
-                f"rms={float(statistics.get('rms', 0.0) or 0.0):.3f}; "
-                f"peak={int(statistics.get('peak', 0) or 0)}; "
-                f"zero_samples={float(statistics.get('zero_sample_percentage', 0.0) or 0.0):.3f}%; "
-                f"repeated_frames={float(statistics.get('repeated_frame_percentage', 0.0) or 0.0):.3f}%; "
-                f"unique_frame_hashes={int(statistics.get('unique_frame_hash_count', 0) or 0)}"
-            )
-            output_func(
-                "      first_32_signed_samples="
-                f"{statistics.get('first_32_decoded_signed_samples', [])}"
-            )
+        value = counters.get(key, 0)
+        if isinstance(value, bool):
+            output_func(f"  {key}: {_yes_no(value)}")
+        else:
+            output_func(f"  {key}: {int(value or 0)}")
+    output_func(
+        "  low_level_read_size_counts: "
+        f"{dict(counters.get('low_level_read_size_counts', {}) or {})}"
+    )
 
 
 def _stage_statistics(
     pcm: bytes,
-    record_seconds: int,
+    phase_seconds: int,
 ) -> Dict[str, PcmIntegrityStatistics]:
     one_second_bytes = (
         CANONICAL_SAMPLE_RATE_HZ
         * CANONICAL_CHANNELS
         * CANONICAL_SAMPLE_WIDTH_BYTES
     )
-    expected_bytes = record_seconds * one_second_bytes
+    expected_bytes = 2 * phase_seconds * one_second_bytes
     if len(pcm) != expected_bytes:
         raise ValueError(
             f"diagnostic_pcm_duration_mismatch:{len(pcm)}:{expected_bytes}"
         )
-    silence = pcm[:one_second_bytes]
-    spoken = pcm[one_second_bytes:]
+    split_bytes = phase_seconds * one_second_bytes
+    quiet = pcm[:split_bytes]
+    spoken = pcm[split_bytes:]
     return {
-        "room_silence": analyze_s16_le_pcm_integrity(silence),
+        "quiet": analyze_s16_le_pcm_integrity(quiet),
         "spoken": analyze_s16_le_pcm_integrity(spoken),
         "all": analyze_s16_le_pcm_integrity(pcm),
-    }
-
-
-def _partial_stage_statistics(pcm: bytes) -> Dict[str, Dict[str, Any]]:
-    one_second_bytes = (
-        CANONICAL_SAMPLE_RATE_HZ
-        * CANONICAL_CHANNELS
-        * CANONICAL_SAMPLE_WIDTH_BYTES
-    )
-    room_silence = pcm[:one_second_bytes]
-    spoken = pcm[one_second_bytes:]
-    return {
-        "room_silence": analyze_s16_le_pcm_integrity(room_silence).to_dict(),
-        "spoken": analyze_s16_le_pcm_integrity(spoken).to_dict(),
-        "all": analyze_s16_le_pcm_integrity(pcm).to_dict(),
     }
 
 
@@ -781,100 +1341,43 @@ def _safe_source_snapshot(source: Any) -> Dict[str, Any]:
     return dict(value)
 
 
-def _direct_arecord_commands(results: Sequence[Any]) -> list[list[str]]:
-    return [
-        [
-            str(value)
-            for value in (
-                dict(getattr(result, "data", {}) or {})
-                .get("process", {})
-                .get("args", [])
-            )
-        ]
-        for result in results
-    ]
-
-
-def _read_canonical_wav_pcm(path: Path) -> tuple[bytes, Dict[str, Any]]:
-    validation = validate_canonical_wav(path)
-    if not validation.get("success"):
-        raise ValueError(
-            str(validation.get("error_message") or "diagnostic_wav_not_canonical")
-        )
-    with wave.open(str(path), "rb") as wav_file:
-        pcm = wav_file.readframes(wav_file.getnframes())
-    return bytes(pcm), validation
-
-
-def _retained_raw_direct_pcm(
-    result: Any,
-    *,
-    normalized_pcm: bytes,
-    stage_name: str,
-) -> tuple[Path, bytes, Dict[str, Any]]:
-    data = dict(getattr(result, "data", {}) or {})
-    raw_path_value = str(data.get("raw_wav_path", "") or "").strip()
-    if not raw_path_value:
-        raise RuntimeError(f"direct_{stage_name}_raw_wav_not_retained")
-    raw_path = Path(raw_path_value)
-    raw_pcm, raw_wav = _read_canonical_wav_pcm(raw_path)
-    if raw_pcm != normalized_pcm:
-        raise RuntimeError(f"direct_{stage_name}_raw_pcm_changed_by_normalization")
-    reported_raw_wav = dict(data.get("raw_wav", {}) or {})
-    if not _canonical_wav_metadata(reported_raw_wav):
-        raise RuntimeError(f"direct_{stage_name}_raw_wav_not_canonical")
-    for field_name in (
-        "sample_rate_hz",
-        "channels",
-        "sample_width_bytes",
-        "frames",
-    ):
-        if int(reported_raw_wav.get(field_name, 0) or 0) != int(
-            raw_wav.get(field_name, 0) or 0
-        ):
-            raise RuntimeError(
-                f"direct_{stage_name}_raw_header_mismatch:{field_name}"
-            )
-    return raw_path, raw_pcm, raw_wav
-
-
 def _signal_changed(stages: Dict[str, PcmIntegrityStatistics]) -> bool:
-    silence = stages["room_silence"]
-    spoken = stages["spoken"]
+    quiet = stages.get("quiet")
+    spoken = stages.get("spoken")
+    if quiet is None or spoken is None:
+        return False
     return bool(
         spoken.peak >= MINIMUM_DIAGNOSTIC_SPOKEN_PEAK
         and spoken.rms >= MINIMUM_DIAGNOSTIC_SPOKEN_RMS
-        and spoken.rms >= silence.rms * MINIMUM_DIAGNOSTIC_RMS_RATIO
-        and spoken.rms >= silence.rms + MINIMUM_DIAGNOSTIC_RMS_DELTA
+        and spoken.rms >= quiet.rms * MINIMUM_DIAGNOSTIC_RMS_RATIO
+        and spoken.rms >= quiet.rms + MINIMUM_DIAGNOSTIC_RMS_DELTA
         and spoken.maximum_signed_sample != spoken.minimum_signed_sample
     )
 
 
 def _signal_changed_from_dict(stages: Dict[str, Dict[str, Any]]) -> bool:
-    silence = stages["room_silence"]
-    spoken = stages["spoken"]
+    quiet = dict(stages.get("quiet", {}) or {})
+    spoken = dict(stages.get("spoken", {}) or {})
+    if not quiet or not spoken:
+        return False
     return bool(
-        float(spoken["peak"]) >= MINIMUM_DIAGNOSTIC_SPOKEN_PEAK
-        and float(spoken["rms"]) >= MINIMUM_DIAGNOSTIC_SPOKEN_RMS
-        and float(spoken["rms"])
-        >= float(silence["rms"]) * MINIMUM_DIAGNOSTIC_RMS_RATIO
-        and float(spoken["rms"])
-        >= float(silence["rms"]) + MINIMUM_DIAGNOSTIC_RMS_DELTA
-        and int(spoken["maximum_signed_sample"])
-        != int(spoken["minimum_signed_sample"])
-    )
-
-
-def _raw_bytes_nonzero(stages: Dict[str, Dict[str, Any]]) -> bool:
-    all_stats = stages["all"]
-    return bool(
-        int(all_stats["peak"]) > 0
-        and float(all_stats["zero_sample_percentage"]) < 100.0
+        float(spoken.get("peak", 0.0) or 0.0)
+        >= MINIMUM_DIAGNOSTIC_SPOKEN_PEAK
+        and float(spoken.get("rms", 0.0) or 0.0)
+        >= MINIMUM_DIAGNOSTIC_SPOKEN_RMS
+        and float(spoken.get("rms", 0.0) or 0.0)
+        >= float(quiet.get("rms", 0.0) or 0.0)
+        * MINIMUM_DIAGNOSTIC_RMS_RATIO
+        and float(spoken.get("rms", 0.0) or 0.0)
+        >= float(quiet.get("rms", 0.0) or 0.0)
+        + MINIMUM_DIAGNOSTIC_RMS_DELTA
+        and int(spoken.get("maximum_signed_sample", 0) or 0)
+        != int(spoken.get("minimum_signed_sample", 0) or 0)
     )
 
 
 def _stage_frame_variation_is_valid(stages: Dict[str, Dict[str, Any]]) -> bool:
-    for stage_name in ("room_silence", "spoken"):
+    for stage_name in ("quiet", "spoken"):
         statistics = dict(stages.get(stage_name, {}) or {})
         frame_count = int(statistics.get("frame_count", 0) or 0)
         unique_count = int(
@@ -893,7 +1396,7 @@ def _stage_frame_variation_is_valid(stages: Dict[str, Dict[str, Any]]) -> bool:
 
 
 def _stage_zero_density_is_valid(stages: Dict[str, Dict[str, Any]]) -> bool:
-    for stage_name in ("room_silence", "spoken"):
+    for stage_name in ("quiet", "spoken"):
         statistics = dict(stages.get(stage_name, {}) or {})
         if int(statistics.get("sample_count", 0) or 0) <= 0:
             return False
@@ -903,18 +1406,6 @@ def _stage_zero_density_is_valid(stages: Dict[str, Dict[str, Any]]) -> bool:
         ):
             return False
     return True
-
-
-def _canonical_wav_metadata(value: Any) -> bool:
-    metadata = dict(value or {}) if isinstance(value, dict) else {}
-    return bool(
-        metadata.get("success")
-        and int(metadata.get("sample_rate_hz", 0) or 0)
-        == CANONICAL_SAMPLE_RATE_HZ
-        and int(metadata.get("channels", 0) or 0) == CANONICAL_CHANNELS
-        and int(metadata.get("sample_width_bytes", 0) or 0)
-        == CANONICAL_SAMPLE_WIDTH_BYTES
-    )
 
 
 def _canonical_arecord_command(
@@ -1007,17 +1498,6 @@ def _play_recordings(
     return success
 
 
-def _require_capture_success(result: Any, stage_name: str) -> None:
-    if bool(getattr(result, "success", False)):
-        return
-    detail = getattr(result, "error_message", "") or getattr(
-        result,
-        "status",
-        "",
-    )
-    raise RuntimeError(f"{stage_name}_capture_failed:{str(detail)[:120]}")
-
-
 def _write_json_report(path: Path, report: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as handle:
@@ -1051,6 +1531,14 @@ def _validate_args(args: argparse.Namespace) -> str:
         clean = str(value or "").strip()
         if not clean or len(clean) > 128:
             return f"{label} device is invalid"
+    if not re.fullmatch(
+        r"(?:plug)?hw:\d+,\d+",
+        str(args.microphone_device or "").strip(),
+    ):
+        return (
+            "microphone device must be a numeric hw:CARD,DEVICE or "
+            "plughw:CARD,DEVICE identifier for the native comparison"
+        )
     return ""
 
 

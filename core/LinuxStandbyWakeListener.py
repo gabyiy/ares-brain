@@ -236,9 +236,13 @@ class LinuxStandbyWakeListener:
                     **dependencies.data,
                     **stream,
                     "failing_subsystem": (
-                        "standby_calibration"
-                        if stream.get("calibration_error_code")
-                        else "standby_stream"
+                        "standby_pcm_transport"
+                        if stream.get("persistent_transport_failure_detected")
+                        else (
+                            "standby_calibration"
+                            if stream.get("calibration_error_code")
+                            else "standby_stream"
+                        )
                     ),
                 },
             )
@@ -250,7 +254,7 @@ class LinuxStandbyWakeListener:
                 **stream,
                 "wake_model_healthy": True,
                 "microphone_adapter_healthy": True,
-                "alsa_device_open": True,
+                "alsa_device_open": bool(stream["alsa_device_open"]),
                 "calibration_healthy": True,
                 "failing_subsystem": "",
             },
@@ -261,9 +265,15 @@ class LinuxStandbyWakeListener:
 
         dependencies = self._dependency_health(runtime_id=runtime_id)
         stream = self._stream_metrics()
+        listener_healthy = bool(
+            dependencies.success
+            and stream["stream_state"] == STREAM_HEALTHY
+            and stream["stream_active"]
+            and stream["calibration_healthy"]
+        )
         return self._result(
-            dependencies.success and stream["stream_state"] == STREAM_HEALTHY,
-            "healthy" if dependencies.success and stream["stream_state"] == STREAM_HEALTHY else "unhealthy",
+            listener_healthy,
+            "healthy" if listener_healthy else "unhealthy",
             dependencies.error_code,
             dependencies.error_message,
             data={
@@ -280,12 +290,16 @@ class LinuxStandbyWakeListener:
                 "failing_subsystem": (
                     dependencies.data.get("failing_subsystem", "")
                     or (
-                        "standby_calibration"
-                        if stream.get("calibration_error_code")
+                        "standby_pcm_transport"
+                        if stream.get("persistent_transport_failure_detected")
                         else (
-                            "standby_stream"
-                            if stream["stream_state"] != STREAM_HEALTHY
-                            else ""
+                            "standby_calibration"
+                            if stream.get("calibration_error_code")
+                            else (
+                                "standby_stream"
+                                if not listener_healthy
+                                else ""
+                            )
                         )
                     )
                 ),
@@ -444,9 +458,7 @@ class LinuxStandbyWakeListener:
                         **self._stream_metrics(),
                         "wake_model_healthy": True,
                         "microphone_adapter_healthy": True,
-                        "alsa_device_open": False,
                         "alsa_device_open_attempt_succeeded": True,
-                        "alsa_device_closed_during_cleanup": True,
                         "calibration_healthy": False,
                         "failing_subsystem": "standby_calibration",
                     },
@@ -474,7 +486,6 @@ class LinuxStandbyWakeListener:
                     **self._stream_metrics(),
                     "wake_model_healthy": True,
                     "microphone_adapter_healthy": True,
-                    "alsa_device_open": False,
                     "calibration_healthy": False,
                     "failing_subsystem": "alsa_stream_open",
                 },
@@ -1099,6 +1110,7 @@ class LinuxStandbyWakeListener:
     close = stop
 
     def snapshot(self, *, runtime_id: str = "") -> WakeListenerSnapshotV1:
+        stream_metrics = self._stream_metrics()
         with self._lock:
             return WakeListenerSnapshotV1(
                 runtime_id=runtime_id or self._runtime_id,
@@ -1120,10 +1132,7 @@ class LinuxStandbyWakeListener:
                     self._stream_state == STREAM_HEALTHY
                     and self._calibration_thresholds is not None
                 ),
-                stream_active=bool(
-                    self._stream_handle is not None
-                    and not bool(getattr(self._stream_handle, "closed", False))
-                ),
+                stream_active=bool(stream_metrics["stream_active"]),
                 capture_owner=(
                     STANDBY_STREAM_OWNER if self._stream_handle is not None else ""
                 ),
@@ -1153,6 +1162,24 @@ class LinuxStandbyWakeListener:
                     "retained_turn_count": len(self._retained_directories),
                     "last_cleanup_status": self._last_cleanup_status,
                     "persistent_stream": True,
+                    "persistent_transport_healthy": bool(
+                        stream_metrics["persistent_transport_healthy"]
+                    ),
+                    "persistent_process_liveness_known": bool(
+                        stream_metrics["persistent_process_liveness_known"]
+                    ),
+                    "persistent_process_alive": (
+                        stream_metrics["persistent_process_alive"]
+                    ),
+                    "persistent_process_pid": stream_metrics[
+                        "persistent_process_pid"
+                    ],
+                    "persistent_process_exit_status": stream_metrics[
+                        "persistent_process_exit_status"
+                    ],
+                    "persistent_stream_ended": bool(
+                        stream_metrics["persistent_stream_ended"]
+                    ),
                 },
             )
 
@@ -1418,33 +1445,14 @@ class LinuxStandbyWakeListener:
         close_reason = str(reason or "leaving_standby")[:80]
         with self._lock:
             handle = self._stream_handle
-            self._stream_handle = None
-            self._calibration_at = None
-            self._calibration_thresholds = None
-            self._calibration_statistics = None
             gate_owned = self._capture_gate_owned
-            self._capture_gate_owned = False
             self._last_stop_reason = close_reason
-            self._last_close_reason = close_reason
-            self._stream_state = final_state
-            if handle is not None:
-                _append_bounded(self._stream_close_reasons, close_reason)
-            if handoff_source or handoff_destination:
-                self._record_handoff_locked(
-                    str(handoff_source or STANDBY_STREAM_OWNER)[:64],
-                    str(handoff_destination or "released")[:64],
-                    close_reason,
-                )
+        close_attempted = bool(
+            handle is not None and not bool(getattr(handle, "closed", False))
+        )
         success = True
-        if handle is not None and not bool(getattr(handle, "closed", False)):
+        if close_attempted:
             try:
-                clear_history = getattr(
-                    getattr(handle, "frame_source", None),
-                    "clear_history",
-                    None,
-                )
-                if callable(clear_history):
-                    clear_history()
                 result = self.microphone_adapter.close_persistent_stream(
                     handle,
                     owner=STANDBY_STREAM_OWNER,
@@ -1452,14 +1460,64 @@ class LinuxStandbyWakeListener:
                 success = _result_success(result)
             except (OSError, RuntimeError, TimeoutError, TypeError, ValueError):
                 success = False
-            finally:
-                with self._lock:
+        if not success:
+            # The adapter deliberately retains a failed-close handle so cleanup
+            # can be retried. Mirror that ownership transaction here: retaining
+            # the handle, calibration, and VoiceRuntimeGate owner prevents a
+            # second capture owner from entering while ALSA may still be locked.
+            with self._lock:
+                if self._stream_handle is handle:
+                    self._stream_state = STREAM_FAILED
+                    self._capture_gate_owned = gate_owned
+                self._last_alsa_closed_during_cleanup = False
+                self._last_cleanup_status = "stream_close_failed_retryable"
+            self._reset_recognizer_attempt_state(close_reason)
+            return False
+
+        if close_attempted:
+            clear_history = getattr(
+                getattr(handle, "frame_source", None),
+                "clear_history",
+                None,
+            )
+            if callable(clear_history):
+                try:
+                    clear_history()
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    pass
+
+        handle_changed = False
+        with self._lock:
+            if handle is not None and self._stream_handle is not handle:
+                self._last_alsa_closed_during_cleanup = False
+                self._last_cleanup_status = "stream_close_handle_changed"
+                handle_changed = True
+            else:
+                self._stream_handle = None
+                self._calibration_at = None
+                self._calibration_thresholds = None
+                self._calibration_statistics = None
+                self._capture_gate_owned = False
+                self._last_close_reason = close_reason
+                self._stream_state = final_state
+                self._last_alsa_closed_during_cleanup = bool(handle is not None)
+                if close_attempted:
                     self._stream_close_count += 1
-                    self._last_alsa_closed_during_cleanup = True
+                if handle is not None:
+                    _append_bounded(self._stream_close_reasons, close_reason)
+                if handoff_source or handoff_destination:
+                    self._record_handoff_locked(
+                        str(handoff_source or STANDBY_STREAM_OWNER)[:64],
+                        str(handoff_destination or "released")[:64],
+                        close_reason,
+                    )
+        if handle_changed:
+            self._reset_recognizer_attempt_state(close_reason)
+            return False
         if gate_owned:
             self._end_capture_gate()
         self._reset_recognizer_attempt_state(close_reason)
-        return success
+        return True
 
     def _stream_metrics(self) -> Dict[str, Any]:
         with self._lock:
@@ -1467,13 +1525,19 @@ class LinuxStandbyWakeListener:
             thresholds = self._calibration_thresholds
             statistics = self._calibration_statistics
             diagnostics = self._last_calibration_diagnostics
-            stream_active = bool(
+            listener_stream_state = self._stream_state
+            transport = self._persistent_transport_metrics(handle)
+            handle_active = bool(
                 handle is not None and not bool(getattr(handle, "closed", False))
             )
+            stream_active = bool(
+                handle_active and transport["persistent_transport_healthy"]
+            )
             calibration_healthy = bool(
-                self._stream_state == STREAM_HEALTHY and thresholds is not None
+                listener_stream_state == STREAM_HEALTHY and thresholds is not None
             )
             return {
+                **transport,
                 "stream_active": stream_active,
                 "alsa_device_open": stream_active,
                 "alsa_device_open_attempt_succeeded": self._last_alsa_open_succeeded,
@@ -1490,7 +1554,7 @@ class LinuxStandbyWakeListener:
                 "wake_vad_sensitivity": self.config.wake_vad_sensitivity,
                 "candidate_count": self._candidate_count,
                 "stream_generation": self._stream_generation,
-                "stream_state": self._stream_state,
+                "stream_state": listener_stream_state,
                 "calibration_healthy": calibration_healthy,
                 "calibration_quality_passed": bool(
                     diagnostics is not None
@@ -1533,6 +1597,183 @@ class LinuxStandbyWakeListener:
                 "calibration_attempts": list(self._calibration_attempt_summaries),
                 "safe": True,
             }
+
+    def _persistent_transport_metrics(self, handle: Any) -> Dict[str, Any]:
+        """Expose process truth without mistaking a retained handle for live PCM."""
+
+        adapter_snapshot: Dict[str, Any] = {}
+        snapshot_method = getattr(
+            self.microphone_adapter,
+            "persistent_stream_snapshot",
+            None,
+        )
+        if callable(snapshot_method):
+            try:
+                value = snapshot_method()
+                if isinstance(value, dict):
+                    adapter_snapshot = dict(value)
+            except (OSError, RuntimeError, TimeoutError, TypeError, ValueError):
+                adapter_snapshot = {}
+
+        source = getattr(handle, "frame_source", None) if handle is not None else None
+        source_snapshot: Dict[str, Any] = {}
+        source_snapshot_method = getattr(source, "snapshot", None)
+        if callable(source_snapshot_method):
+            try:
+                value = source_snapshot_method()
+                if isinstance(value, dict):
+                    source_snapshot = dict(value)
+            except (OSError, RuntimeError, TimeoutError, TypeError, ValueError):
+                source_snapshot = {}
+        nested = adapter_snapshot.get("rolling_pre_roll", {})
+        if isinstance(nested, dict):
+            merged_source_snapshot = dict(nested)
+            merged_source_snapshot.update(source_snapshot)
+            source_snapshot = merged_source_snapshot
+
+        def first_value(key: str, default: Any = None) -> Any:
+            if key in source_snapshot:
+                return source_snapshot[key]
+            return adapter_snapshot.get(key, default)
+
+        process_alive_value = first_value("process_alive")
+        liveness_observable_value = first_value(
+            "process_liveness_observable"
+        )
+        if isinstance(liveness_observable_value, bool):
+            process_liveness_known = bool(liveness_observable_value)
+        else:
+            process_liveness_known = isinstance(process_alive_value, bool)
+        process_alive: Optional[bool] = (
+            bool(process_alive_value)
+            if process_liveness_known and isinstance(process_alive_value, bool)
+            else None
+        )
+        process_pid = first_value("process_pid")
+        process_exit_status = first_value("process_exit_status")
+
+        process = getattr(source, "process", None) if source is not None else None
+        if process is not None:
+            if process_pid in {None, ""}:
+                process_pid = getattr(process, "pid", None)
+            if not process_liveness_known:
+                poll = getattr(process, "poll", None)
+                if callable(poll):
+                    try:
+                        process_exit_status = poll()
+                        process_alive = process_exit_status is None
+                        process_liveness_known = True
+                    except (OSError, RuntimeError, TypeError, ValueError):
+                        pass
+
+        stream_ended = bool(first_value("stream_ended", False))
+        source_closed = bool(first_value("closed", False))
+        dead_process_detected = bool(first_value("dead_process_detected", False))
+        unexpected_eof_count = _nonnegative_int(
+            first_value("unexpected_eof_count", 0)
+        )
+        eof_count = _nonnegative_int(first_value("eof_count", 0))
+        terminal_reason = str(first_value("terminal_reason", "") or "")[:160]
+        pathological_duplicate = bool(
+            first_value("pathological_duplicate_frame_detected", False)
+        )
+        zero_filled_bytes = _nonnegative_int(first_value("zero_filled_bytes", 0))
+        adapter_active_value = adapter_snapshot.get("active")
+        adapter_active_known = isinstance(adapter_active_value, bool)
+
+        if process_exit_status is not None or dead_process_detected:
+            process_alive = False
+            process_liveness_known = True
+        elif process_alive is None and stream_ended:
+            process_alive = False
+            process_liveness_known = True
+
+        handle_active = bool(
+            handle is not None and not bool(getattr(handle, "closed", False))
+        )
+        process_dead = bool(
+            process_liveness_known and process_alive is False
+        )
+        integrity_fault = bool(pathological_duplicate or zero_filled_bytes > 0)
+        transport_failure_detected = bool(
+            handle_active
+            and (
+                process_dead
+                or dead_process_detected
+                or stream_ended
+                or source_closed
+                or (adapter_active_known and not bool(adapter_active_value))
+                or integrity_fault
+            )
+        )
+        transport_healthy = bool(handle_active and not transport_failure_detected)
+
+        command = first_value("transport_argv")
+        if not command and handle is not None:
+            command = list(getattr(handle, "command", ()) or ())
+        transport_snapshot = {
+            **source_snapshot,
+            "active": (
+                bool(adapter_active_value)
+                if adapter_active_known
+                else handle_active
+            ),
+            "process_pid": process_pid,
+            "process_exit_status": process_exit_status,
+            "process_alive": process_alive,
+            "process_liveness_known": process_liveness_known,
+            "process_liveness_observable": process_liveness_known,
+            "eof_count": eof_count,
+            "unexpected_eof_count": unexpected_eof_count,
+            "dead_process_detected": dead_process_detected,
+            "stream_ended": stream_ended,
+            "terminal_reason": terminal_reason,
+            "transport_argv": list(command or ()),
+            "stdout_transport_mode": str(
+                first_value("stdout_transport_mode", "") or ""
+            )[:64],
+            "stderr_transport_mode": str(
+                first_value("stderr_transport_mode", "") or ""
+            )[:64],
+            "requested_device": str(
+                adapter_snapshot.get(
+                    "requested_device",
+                    getattr(handle, "requested_device", "") if handle else "",
+                )
+                or ""
+            )[:160],
+            "resolved_device": str(
+                adapter_snapshot.get(
+                    "resolved_device",
+                    getattr(handle, "resolved_device", "") if handle else "",
+                )
+                or ""
+            )[:160],
+            "pcm_contract": dict(adapter_snapshot.get("pcm_contract", {}) or {}),
+        }
+        return {
+            "persistent_transport_observable": bool(
+                adapter_snapshot or source_snapshot or process is not None
+            ),
+            "persistent_transport_healthy": transport_healthy,
+            "persistent_transport_failure_detected": (
+                transport_failure_detected
+            ),
+            "persistent_transport_integrity_fault": integrity_fault,
+            "persistent_process_liveness_known": process_liveness_known,
+            "persistent_process_liveness_observable": (
+                process_liveness_known
+            ),
+            "persistent_process_alive": process_alive,
+            "persistent_process_pid": process_pid,
+            "persistent_process_exit_status": process_exit_status,
+            "persistent_eof_count": eof_count,
+            "persistent_unexpected_eof_count": unexpected_eof_count,
+            "persistent_dead_process_detected": dead_process_detected,
+            "persistent_stream_ended": stream_ended,
+            "persistent_terminal_reason": terminal_reason,
+            "persistent_transport_snapshot": transport_snapshot,
+        }
 
     def _record_handoff_locked(
         self,
@@ -2709,6 +2950,13 @@ def _append_bounded(values: list[str], value: str, *, limit: int = 32) -> None:
     values.append(str(value or "")[:192])
     if len(values) > limit:
         del values[: len(values) - limit]
+
+
+def _nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def _safe_call(adapter: Any, method_name: str) -> Any:
