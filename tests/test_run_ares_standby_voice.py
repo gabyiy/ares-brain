@@ -68,10 +68,21 @@ class FakeWakeListener:
 
 
 class FakeRuntime:
-    def __init__(self, *, loop_success: bool = True, wake_healthy: bool = True):
+    def __init__(
+        self,
+        *,
+        loop_success: bool = True,
+        wake_healthy: bool = True,
+        stop_reason: str = "",
+    ):
         self.runtime_id = "fake-runtime"
         self.standby_wake_listener = FakeWakeListener(healthy=wake_healthy)
         self.loop_success = loop_success
+        self.stop_reason = stop_reason or (
+            "explicit_shutdown_command"
+            if loop_success
+            else "unrecoverable_failure"
+        )
         self.shutdown_count = 0
 
     def run(self):
@@ -80,16 +91,26 @@ class FakeRuntime:
             success=self.loop_success,
             status="stopped" if self.loop_success else "wake_listener_failed",
             error_code="" if self.loop_success else "injected_failure",
-            stop_reason="shutdown_requested",
+            stop_reason=self.stop_reason,
         )
 
     def shutdown(self, reason=""):
         self.shutdown_count += 1
 
 
-def _factory(*, pipeline_healthy=True, wake_healthy=True, loop_success=True):
+def _factory(
+    *,
+    pipeline_healthy=True,
+    wake_healthy=True,
+    loop_success=True,
+    stop_reason="",
+):
     pipeline = FakePipeline(healthy=pipeline_healthy)
-    runtime = FakeRuntime(loop_success=loop_success, wake_healthy=wake_healthy)
+    runtime = FakeRuntime(
+        loop_success=loop_success,
+        wake_healthy=wake_healthy,
+        stop_reason=stop_reason,
+    )
 
     def create(args, output_func=print):
         return runtime, pipeline, SingleTurnVoiceRequestV1()
@@ -228,6 +249,7 @@ def test_foreground_launcher_preflights_then_runs_and_stops_cleanly(tmp_path):
     assert runtime.standby_wake_listener.start_count == 1
     assert runtime.standby_wake_listener.stop_count == 1
     assert any("foreground standby" in line.casefold() for line in output)
+    assert "ARES runtime terminal reason: explicit_shutdown_command." in output
     assert output[-1] == "ARES standby voice runtime stopped cleanly."
     assert not store_lock_path(lock_target).exists()
 
@@ -256,6 +278,21 @@ def test_foreground_launcher_returns_wake_health_and_loop_failures(tmp_path):
         ["--runtime-lock-path", str(tmp_path / "loop-runtime")],
         runtime_factory=loop_factory,
     ) == 1
+
+
+def test_foreground_launcher_never_calls_nonexplicit_stop_clean(tmp_path):
+    factory, _, _ = _factory(stop_reason="end_of_input")
+    output = []
+
+    code = run_ares_standby_voice.run_standby_voice(
+        ["--runtime-lock-path", str(tmp_path / "runtime")],
+        output_func=output.append,
+        runtime_factory=factory,
+    )
+
+    assert code == 1
+    assert "ARES runtime terminal reason: end_of_input." in output
+    assert "ARES standby voice runtime stopped cleanly." not in output
 
 
 def test_standby_calibration_renderer_reports_quality_without_hiding_cleanup():
@@ -478,7 +515,9 @@ def test_production_composition_reuses_one_event_history_store(tmp_path):
         snapshot = start
         health = start
 
-    args = run_ares_standby_voice.build_parser().parse_args([])
+    args = run_ares_standby_voice.build_parser().parse_args(
+        ["--diagnostic-routing"]
+    )
     runtime, pipeline, _ = run_ares_standby_voice.create_runtime(
         args,
         pipeline_factory=pipeline_factory,
@@ -494,6 +533,8 @@ def test_production_composition_reuses_one_event_history_store(tmp_path):
     assert runtime.core_service._event_history_store is history
     assert runtime.core_service.resource_manager.event_history_store is history
     assert runtime.standby_wake_listener.config.wake_vad_sensitivity == "normal"
+    assert runtime.input_adapter.diagnostic_callback is not None
+    assert runtime.input_adapter.lifecycle_state_provider() == "STOPPED"
 
 
 def test_production_composition_selects_sensitive_wake_vad_profile(tmp_path):
@@ -562,7 +603,23 @@ def test_hardware_helper_is_bounded_and_uses_production_runtime_parser():
         ["--attempts-per-test", "0"], output_func=output.append
     )
     assert code == 2
-    assert "between 1 and 5" in output[0]
+    assert "between 1 and 3" in output[0]
+
+    output.clear()
+    code = manual_verify_standby_wake_hardware.run_hardware_verification(
+        ["--attempts-per-test", "4"], output_func=output.append
+    )
+    assert code == 2
+    assert "between 1 and 3" in output[0]
+
+
+def test_hardware_lifecycle_mode_selects_only_bounded_owner_lifecycle_stages():
+    assert [
+        stage.label
+        for stage in manual_verify_standby_wake_hardware._verification_stages(
+            "lifecycle"
+        )
+    ] == ["C", "E", "F", "G"]
 
 
 def test_hardware_helper_stage_e_requires_bypass_and_does_not_retry_unknown_fallback():
@@ -570,8 +627,14 @@ def test_hardware_helper_stage_e_requires_bypass_and_does_not_retry_unknown_fall
     passed, _ = manual_verify_standby_wake_hardware._stage_passed(
         "E",
         SimpleNamespace(
+            status="standby_entered",
+            command_category="standby",
             response_text="",
-            data={"core_service_bypassed": True},
+            data={
+                "core_service_bypassed": True,
+                "lifecycle_action": "standby",
+                "runtime_terminal": False,
+            },
         ),
         snapshot,
         None,
@@ -580,8 +643,13 @@ def test_hardware_helper_stage_e_requires_bypass_and_does_not_retry_unknown_fall
     fallback, _ = manual_verify_standby_wake_hardware._stage_passed(
         "E",
         SimpleNamespace(
+            status="command_completed",
+            command_category="ordinary",
             response_text="I cannot handle that request yet.",
-            data={"core_service_bypassed": False},
+            data={
+                "core_service_bypassed": False,
+                "lifecycle_action": "none",
+            },
         ),
         snapshot,
         None,
@@ -596,6 +664,285 @@ def test_hardware_helper_stage_e_requires_bypass_and_does_not_retry_unknown_fall
     assert not manual_verify_standby_wake_hardware._retry_allowed(
         "E", SimpleNamespace(status="command_completed")
     )
+
+
+def test_hardware_lifecycle_stages_require_survival_new_session_and_one_explicit_shutdown():
+    standby_snapshot = SimpleNamespace(
+        current_lifecycle_state="STANDBY",
+        session_id="",
+    )
+    standby_result = SimpleNamespace(
+        status="standby_entered",
+        command_category="standby",
+        response_text="",
+        data={
+            "core_service_bypassed": True,
+            "lifecycle_action": "standby",
+            "runtime_terminal": False,
+        },
+    )
+    returned, first_session = manual_verify_standby_wake_hardware._stage_passed(
+        "E",
+        standby_result,
+        standby_snapshot,
+        None,
+        "session-1",
+    )
+    assert returned is True
+    assert first_session == "session-1"
+
+    active_snapshot = SimpleNamespace(
+        current_lifecycle_state="ACTIVE",
+        session_id="session-2",
+    )
+    reactivated, _ = manual_verify_standby_wake_hardware._stage_passed(
+        "F",
+        SimpleNamespace(status="activated", data={}),
+        active_snapshot,
+        None,
+        first_session,
+    )
+    assert reactivated is True
+
+    shutdown_result = SimpleNamespace(
+        status="stopped",
+        command_category="shutdown",
+        stop_reason="explicit_shutdown_command",
+        data={
+            "core_service_bypassed": True,
+            "lifecycle_action": "shutdown",
+            "runtime_terminal": True,
+            "runtime_terminal_reason": "explicit_shutdown_command",
+        },
+    )
+    stopped_snapshot = SimpleNamespace(
+        current_lifecycle_state="STOPPED",
+        session_id="",
+    )
+    assert manual_verify_standby_wake_hardware._is_explicit_shutdown_result(
+        shutdown_result
+    )
+    stopped, _ = manual_verify_standby_wake_hardware._stage_passed(
+        "G",
+        shutdown_result,
+        stopped_snapshot,
+        None,
+        first_session,
+        explicit_shutdown_count=1,
+    )
+    duplicate, _ = manual_verify_standby_wake_hardware._stage_passed(
+        "G",
+        shutdown_result,
+        stopped_snapshot,
+        None,
+        first_session,
+        explicit_shutdown_count=2,
+    )
+    wrong_reason, _ = manual_verify_standby_wake_hardware._stage_passed(
+        "G",
+        SimpleNamespace(
+            **{
+                **shutdown_result.__dict__,
+                "stop_reason": "end_of_input",
+            }
+        ),
+        stopped_snapshot,
+        None,
+        first_session,
+        explicit_shutdown_count=1,
+    )
+    assert stopped is True
+    assert duplicate is False
+    assert wrong_reason is False
+    assert not manual_verify_standby_wake_hardware._retry_allowed(
+        "G", SimpleNamespace(status="stopped")
+    )
+
+
+def test_bounded_hardware_lifecycle_mode_reports_transcripts_and_exact_shutdown_once(
+    monkeypatch,
+):
+    class LifecycleWakeListener(FakeWakeListener):
+        def __init__(self):
+            super().__init__()
+            self.config = SimpleNamespace(calibration_duration_seconds=0)
+            self.last_result = None
+            self.last_diagnostics = None
+
+        def snapshot(self, runtime_id=""):
+            return SimpleNamespace(
+                listener_state="ready",
+                stream_open_count=1,
+                calibration_count=1,
+                stream_instance_id="lifecycle-stream",
+            )
+
+    class LifecycleRuntime:
+        def __init__(self):
+            self.runtime_id = "bounded-lifecycle-runtime"
+            self.standby_wake_listener = LifecycleWakeListener()
+            self.input_adapter = SimpleNamespace(last_diagnostics=None)
+            self.state = "STANDBY"
+            self.session_id = ""
+            self.poll_count = 0
+            self.explicit_shutdown_count = 0
+            self.cleanup_shutdown_count = 0
+
+        def start(self):
+            return SimpleNamespace(success=True, status="standby", error_code="")
+
+        def snapshot(self):
+            return SimpleNamespace(
+                current_lifecycle_state=self.state,
+                session_id=self.session_id,
+            )
+
+        def _wake(self, session_id):
+            self.standby_wake_listener.last_result = StandbyListenResultV1(
+                success=True,
+                status="wake_detected",
+                capture_valid=True,
+                recognizer_invoked=True,
+                speech_detected=True,
+                wake_detected=True,
+                sample_rate_hz=16000,
+                channels=1,
+                sample_width_bytes=2,
+                duration_seconds=0.8,
+                stream_open_count=1,
+                calibration_count=1,
+                stream_instance_id="lifecycle-stream",
+                classification_path="vosk_constrained_grammar",
+                classification_reason="accepted_exact_wake",
+            )
+            self.standby_wake_listener.last_diagnostics = WakeLocalDiagnostics(
+                raw_transcript="ares",
+                normalized_transcript="ares",
+                raw_recognition_result="ares",
+                recognizer_name="vosk_constrained_grammar",
+            )
+            self.state = "ACTIVE"
+            self.session_id = session_id
+            return SimpleNamespace(
+                success=True,
+                status="activated",
+                command_category="activation",
+                current_lifecycle_state="ACTIVE",
+                response_text="Yes Gabi.",
+                stop_reason="",
+                error_code="",
+                normalized_input="ares",
+                data={
+                    "core_service_bypassed": True,
+                    "lifecycle_action": "activate",
+                    "speech_detected": True,
+                },
+            )
+
+        def poll_once(self):
+            self.poll_count += 1
+            if self.poll_count == 1:
+                return self._wake("session-1")
+            if self.poll_count == 2:
+                self.input_adapter.last_diagnostics = ActiveCommandLocalDiagnostics(
+                    raw_transcript="Goodbye, Ares.",
+                    cleaned_transcript="goodbye ares",
+                    alias_canonicalized_transcript="goodbye ares",
+                    transcription_status="transcribed",
+                )
+                self.state = "STANDBY"
+                self.session_id = ""
+                return SimpleNamespace(
+                    success=True,
+                    status="standby_entered",
+                    command_category="standby",
+                    current_lifecycle_state="STANDBY",
+                    response_text="",
+                    stop_reason="owner_standby_phrase",
+                    error_code="",
+                    normalized_input="goodbye ares",
+                    data={
+                        "core_service_bypassed": True,
+                        "lifecycle_action": "standby",
+                        "runtime_terminal": False,
+                    },
+                )
+            if self.poll_count == 3:
+                return self._wake("session-2")
+            self.input_adapter.last_diagnostics = ActiveCommandLocalDiagnostics(
+                raw_transcript="Shutdown Ares.",
+                cleaned_transcript="shutdown ares",
+                alias_canonicalized_transcript="shutdown ares",
+                transcription_status="transcribed",
+            )
+            self.state = "STOPPED"
+            self.session_id = ""
+            self.explicit_shutdown_count += 1
+            return SimpleNamespace(
+                success=True,
+                status="stopped",
+                command_category="shutdown",
+                current_lifecycle_state="STOPPED",
+                response_text="",
+                stop_reason="explicit_shutdown_command",
+                error_code="",
+                normalized_input="shutdown ares",
+                data={
+                    "core_service_bypassed": True,
+                    "lifecycle_action": "shutdown",
+                    "runtime_terminal": True,
+                    "runtime_terminal_reason": "explicit_shutdown_command",
+                },
+            )
+
+        def shutdown(self, reason=""):
+            self.cleanup_shutdown_count += 1
+            self.state = "STOPPED"
+
+    runtime = LifecycleRuntime()
+    pipeline = FakePipeline()
+
+    def factory(args, output_func=print):
+        return runtime, pipeline, SingleTurnVoiceRequestV1()
+
+    monkeypatch.setattr(
+        manual_verify_standby_wake_hardware,
+        "inspect_linux_alsa_capture",
+        lambda _device: {
+            "capture_device": "plughw:2,0",
+            "sample_rate_hz": 16000,
+            "channels": 1,
+            "sample_width_bytes": 2,
+            "format_status": "canonical",
+            "status": "available",
+        },
+    )
+    output = []
+    code = manual_verify_standby_wake_hardware.run_hardware_verification(
+        ["--verification-mode", "lifecycle"],
+        output_func=output.append,
+        runtime_factory=factory,
+    )
+    text = "\n".join(output)
+
+    assert code == 0
+    assert runtime.poll_count == 4
+    assert runtime.explicit_shutdown_count == 1
+    assert runtime.cleanup_shutdown_count == 0
+    assert "Test 1/4 (C): Say 'Ares'." in text
+    assert "Test 2/4 (E): Say 'goodbye Ares' once" in text
+    assert "Test 3/4 (F): Say 'Ares'." in text
+    assert "Test 4/4 (G): Say 'shutdown Ares'." in text
+    assert "Raw recognition result: Goodbye, Ares." in text
+    assert "Classification result: standby" in text
+    assert "Persistent runtime: alive in STANDBY; active session cleared." in text
+    assert "Reactivation: new active session confirmed." in text
+    assert "Raw recognition result: Shutdown Ares." in text
+    assert "Classification result: shutdown" in text
+    assert "Runtime terminal reason: explicit_shutdown_command" in text
+    assert "Explicit shutdown count / reason: 1 / explicit_shutdown_command" in text
+    assert "Active-command transcripts: Goodbye, Ares. | Shutdown Ares." in text
+    assert "calculate two plus two" not in text
 
 
 class ReliabilityListener:
@@ -1007,7 +1354,16 @@ def test_hardware_helper_active_summary_uses_active_diagnostics_not_stale_wake_r
         output.append,
         diagnostics=diagnostics,
         wake_result=None,
-        result=SimpleNamespace(command_category="standby", error_code=""),
+        result=SimpleNamespace(
+            command_category="standby",
+            current_lifecycle_state="STANDBY",
+            stop_reason="owner_standby_phrase",
+            error_code="",
+            data={
+                "lifecycle_action": "standby",
+                "runtime_terminal": False,
+            },
+        ),
         before_state="ACTIVE",
         diagnostic_enabled=True,
     )
@@ -1015,6 +1371,10 @@ def test_hardware_helper_active_summary_uses_active_diagnostics_not_stale_wake_r
     assert "Recognizer used: whisper_active_command" in text
     assert "Raw recognition result: goodbye aris" in text
     assert "Normalized phrase: goodbye ares" in text
+    assert "Classification result: standby" in text
+    assert "Selected lifecycle action: standby" in text
+    assert "Runtime terminal: no" in text
+    assert "Runtime terminal reason: not_terminal" in text
     assert "active_command_or_none" not in text
     assert "Active audio: capture=2.400s; finalized=1.100s" in text
     assert "format=16000Hz/1ch/2B" in text
@@ -1230,6 +1590,8 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
         raw_transcript="Goodbye Aris.",
         cleaned_transcript="goodbye aris",
         alias_canonicalized_transcript="goodbye ares",
+        lifecycle_normalized_transcript="goodbye ares",
+        canonical_name="ares",
         lifecycle_classification="standby",
         selected_lifecycle_action="standby",
         core_service_bypassed=True,
@@ -1259,6 +1621,9 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
         routing_completed_at="2026-07-16T10:00:00.640000Z",
         temporary_audio_cleanup_status="removed",
         microphone_gate_released_before_inference=True,
+        pipeline_status="runtime_transport_captured",
+        runtime_terminal=False,
+        runtime_terminal_reason="not_terminal",
     )
 
     rendered = "\n".join(
@@ -1267,10 +1632,15 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
 
     assert "Raw Whisper transcript: Goodbye Aris." in rendered
     assert "Alias-canonicalized transcript: goodbye ares" in rendered
+    assert "Lifecycle-normalized transcript: goodbye ares" in rendered
+    assert "Canonical name: ares" in rendered
     assert "Lifecycle classification: standby" in rendered
     assert "CoreService routing bypassed: yes" in rendered
     assert "Lifecycle state: ACTIVE -> STANDBY" in rendered
     assert "Active session: session-1 -> none" in rendered
+    assert "Pipeline status: runtime_transport_captured" in rendered
+    assert "Runtime terminal: no" in rendered
+    assert "Runtime terminal reason: not_terminal" in rendered
     assert "Raw capture duration: 2.400s" in rendered
     assert "Finalized candidate duration: 1.200s" in rendered
     assert "WAV byte size: 38444" in rendered

@@ -223,6 +223,37 @@ def test_constrained_aris_alias_activates_once_without_core_routing(tmp_path):
     assert runtime.poll_once().status == "stopped"
 
 
+def test_persistent_runtime_end_to_end_lifecycle_sequence(tmp_path):
+    (
+        runtime,
+        _microphone,
+        whisper,
+        piper,
+        _speaker,
+        _spoken,
+        wake,
+    ) = manual_wake._build_voice_runtime(tmp_path, manual_wake.FakeClock())
+    wake.push("Ares")
+    wake.push("Ares")
+    whisper.push("calculate two plus two")
+    whisper.push("goodbye Ares")
+    whisper.push("shutdown Ares")
+
+    loop = runtime.run()
+
+    assert loop.success is True
+    assert loop.status == "stopped"
+    assert loop.stop_reason == "explicit_shutdown_command"
+    assert loop.iteration_count == 5
+    assert runtime.session_manager.state == BRAIN_STOPPED
+    assert runtime.session_manager.session_id == ""
+    assert runtime.snapshot().activation_count == 2
+    assert runtime.snapshot().standby_return_count == 1
+    assert "Result: 4" in piper.texts
+    assert piper.texts.count("Yes Gabi.") == 2
+    assert wake.snapshot().listener_state == "stopped"
+
+
 def test_runtime_serializes_standby_and_active_microphone_ownership(tmp_path):
     runtime, active, _, wake = _runtime(tmp_path)
     runtime.start()

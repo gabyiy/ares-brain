@@ -47,6 +47,7 @@ class SingleTurnPreBrainDecision:
 
 
 PreBrainHook = Callable[[str], Optional[SingleTurnPreBrainDecision]]
+RawTranscriptHook = Callable[[str], Optional[SingleTurnPreBrainDecision]]
 
 
 @dataclass

@@ -223,11 +223,7 @@ def test_runtime_configuration_defaults_are_bounded_and_explicit():
         "standby ares",
         "sleep ares",
     )
-    assert config.shutdown_phrases == (
-        "shutdown ares",
-        "shut down ares",
-        "stop ares completely",
-    )
+    assert config.shutdown_phrases == ("shutdown ares",)
     assert config.active_acknowledgement == "Yes Gabi."
     assert config.inactivity_timeout_seconds == 30.0
     assert config.maximum_consecutive_failures == 3
@@ -260,6 +256,7 @@ def test_runtime_configuration_defaults_are_bounded_and_explicit():
         {"command_timeout_seconds": 601},
         {"shutdown_phrases": ["Ares"]},
         {"standby_phrases": ["shutdown ares"], "shutdown_phrases": ["shutdown ares"]},
+        {"standby_phrases": ["shut down ares"], "shutdown_phrases": ["shutdown ares"]},
     ],
 )
 def test_runtime_configuration_rejects_malformed_or_ambiguous_values(changes):
@@ -323,7 +320,10 @@ def test_activation_does_not_use_loose_substring_matching(text):
     assert classification.command_category == RUNTIME_COMMAND_ORDINARY
 
 
-@pytest.mark.parametrize("text", ["Ares", "HEY ARES!", " hello, Ares ", "Wake up, Ares."])
+@pytest.mark.parametrize(
+    "text",
+    ["Ares", "Aris", " Aries. ", "HEY ARES!", " hello, Ares ", "Wake up, Ares."],
+)
 def test_activation_phrase_classification_is_exact_and_bounded(text):
     runtime, _ = _runtime()
 
@@ -467,6 +467,7 @@ def test_unsupported_active_command_returns_safe_response_and_runtime_survives(t
         "goodbye Ares",
         "goodbye, Aris",
         "goodbye Aries",
+        "good bye Ares",
         "go to standby Ares",
         "go to standby Aris",
         "go to sleep Ares",
@@ -507,7 +508,6 @@ def test_standby_phrase_while_standby_is_noop_and_creates_no_session():
         "shut down Ares",
         "shut down Aris",
         "shut down Aries",
-        "stop Ares completely",
     ],
 )
 def test_shutdown_phrases_stop_runtime_and_clear_session(phrase):
@@ -583,7 +583,7 @@ def test_shutdown_alias_bypasses_core_route_and_releases_runtime():
     result = runtime.handle_text("Shut down, Aries.")
 
     assert result.status == "stopped"
-    assert result.normalized_input == "shut down ares"
+    assert result.normalized_input == "shutdown ares"
     assert result.data["core_service_bypassed"] is True
     assert calls == []
     assert runtime.session_manager.state == BRAIN_STOPPED
@@ -702,6 +702,31 @@ def test_cancellation_and_end_of_input_stop_cleanly(input_result, expected_statu
     assert runtime.session_manager.session_id == ""
 
 
+def test_source_local_end_of_input_does_not_terminate_persistent_runtime():
+    inputs = QueuedRuntimeInputAdapter(
+        [
+            "Ares",
+            RuntimeInputResult(
+                status="end_of_input",
+                metadata={
+                    "runtime_terminal": False,
+                    "input_scope": "active_command",
+                },
+            ),
+            "shutdown Ares",
+        ]
+    )
+    runtime, _ = _runtime(inputs=inputs)
+
+    result = runtime.run()
+
+    assert result.success is True
+    assert result.status == "stopped"
+    assert result.stop_reason == "explicit_shutdown_command"
+    assert result.iteration_count == 3
+    assert runtime.session_manager.state == BRAIN_STOPPED
+
+
 def test_input_adapter_exception_is_structured_and_runtime_remains_until_limit():
     class Broken:
         def wait_for_input(self, timeout_seconds):
@@ -755,6 +780,24 @@ def test_brain_response_output_failure_preserves_lifecycle_consistency():
     assert result.status == "output_failed"
     assert runtime.session_manager.state == BRAIN_STANDBY
     assert runtime.session_manager.session_id == ""
+
+
+def test_failure_driven_shutdown_is_never_reported_as_clean_runtime_completion():
+    config = BrainRuntimeConfig(maximum_consecutive_failures=1)
+    output = CollectingRuntimeOutputAdapter(fail_after=1)
+    runtime, _ = _runtime(
+        inputs=QueuedRuntimeInputAdapter(["Ares", "ordinary command"]),
+        output=output,
+        handler=lambda text: f"response:{text}",
+        config=config,
+    )
+
+    result = runtime.run()
+
+    assert result.success is False
+    assert result.status == "output_failed"
+    assert result.stop_reason == "output_failure_recovery"
+    assert runtime.session_manager.state == BRAIN_STOPPED
 
 
 def test_output_adapter_exception_is_structured():
@@ -886,7 +929,8 @@ def test_runtime_loop_is_bounded_when_maximum_iterations_is_supplied():
 
     result = runtime.run(maximum_iterations=2)
 
-    assert result.success
+    assert result.success is False
+    assert result.status == "maximum_iterations_reached"
     assert result.iteration_count == 2
     assert result.stop_reason == "maximum_iterations_reached"
     assert runtime.session_manager.state == BRAIN_STOPPED

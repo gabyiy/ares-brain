@@ -109,11 +109,17 @@ from core.AresIdentity import (
     validate_ares_name_aliases,
 )
 from core.LifecycleControl import (
+    DEFAULT_LIFECYCLE_ACTIVATION_PHRASES,
+    DEFAULT_LIFECYCLE_SHUTDOWN_PHRASES,
+    DEFAULT_LIFECYCLE_STANDBY_PHRASES,
+    LIFECYCLE_ACTION_ACTIVATE,
     LIFECYCLE_ACTION_NONE,
     LIFECYCLE_ACTION_SHUTDOWN,
     LIFECYCLE_ACTION_STANDBY,
+    LifecycleCommandResult,
     LifecycleControlClassification,
     classify_lifecycle_control,
+    normalize_lifecycle_command,
 )
 from core.BrainRuntime import (
     DEFAULT_ACTIVATION_PHRASES,
@@ -781,8 +787,14 @@ __all__ = [
     "normalize_spoken_phrase",
     "validate_ares_name_aliases",
     "LifecycleControlClassification",
+    "LifecycleCommandResult",
     "classify_lifecycle_control",
+    "normalize_lifecycle_command",
+    "DEFAULT_LIFECYCLE_ACTIVATION_PHRASES",
+    "DEFAULT_LIFECYCLE_STANDBY_PHRASES",
+    "DEFAULT_LIFECYCLE_SHUTDOWN_PHRASES",
     "LIFECYCLE_ACTION_NONE",
+    "LIFECYCLE_ACTION_ACTIVATE",
     "LIFECYCLE_ACTION_STANDBY",
     "LIFECYCLE_ACTION_SHUTDOWN",
     "ActiveCommandLocalDiagnostics",

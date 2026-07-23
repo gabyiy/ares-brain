@@ -13,7 +13,6 @@ from memory.schema_migrations import MigrationError
 from core.AresIdentity import (
     DEFAULT_ARES_NAME_ALIASES,
     canonicalize_ares_name_tokens,
-    match_ares_alias_phrase,
     normalize_spoken_phrase,
     validate_ares_name_aliases,
 )
@@ -54,9 +53,13 @@ from core.Contracts import (
 from core.CoreService import CoreService
 from core.EventBus import PRIORITY_CRITICAL, PRIORITY_NORMAL, Event, EventBus
 from core.LifecycleControl import (
+    DEFAULT_LIFECYCLE_ACTIVATION_PHRASES,
+    DEFAULT_LIFECYCLE_SHUTDOWN_PHRASES,
+    DEFAULT_LIFECYCLE_STANDBY_PHRASES,
+    LIFECYCLE_ACTION_ACTIVATE,
     LIFECYCLE_ACTION_SHUTDOWN,
     LIFECYCLE_ACTION_STANDBY,
-    classify_lifecycle_control,
+    normalize_lifecycle_command,
 )
 from core.StandbyWakeListener import (
     WAKE_CATEGORY_ACTIVATION,
@@ -94,19 +97,9 @@ EVENT_WAKE_REJECTED = "brain_wake_rejected"
 EVENT_WAKE_LISTENER_FAILED = "brain_wake_listener_failed"
 EVENT_WAKE_LISTENER_STOPPED = "brain_wake_listener_stopped"
 
-DEFAULT_ACTIVATION_PHRASES = ("ares", "hey ares", "hello ares", "wake up ares")
-DEFAULT_STANDBY_PHRASES = (
-    "goodbye ares",
-    "go to standby ares",
-    "go to sleep ares",
-    "standby ares",
-    "sleep ares",
-)
-DEFAULT_SHUTDOWN_PHRASES = (
-    "shutdown ares",
-    "shut down ares",
-    "stop ares completely",
-)
+DEFAULT_ACTIVATION_PHRASES = DEFAULT_LIFECYCLE_ACTIVATION_PHRASES
+DEFAULT_STANDBY_PHRASES = DEFAULT_LIFECYCLE_STANDBY_PHRASES
+DEFAULT_SHUTDOWN_PHRASES = DEFAULT_LIFECYCLE_SHUTDOWN_PHRASES
 DEFAULT_ACTIVE_ACKNOWLEDGEMENT = "Yes Gabi."
 DEFAULT_ALREADY_ACTIVE_ACKNOWLEDGEMENT = "Yes Gabi, I am listening."
 DEFAULT_UNKNOWN_RESPONSE = "I cannot handle that request yet."
@@ -157,6 +150,16 @@ class BrainRuntimeConfig:
             aliases,
         )
         _validate_phrase_collisions(activation, standby, shutdown)
+        # Validate the exact production normalizer's compound-word and alias
+        # canonicalization too, so configuration cannot hide a cross-category
+        # collision such as "shut down ares" versus "shutdown ares".
+        normalize_lifecycle_command(
+            "__ares_lifecycle_configuration_validation__",
+            activation_phrases=activation,
+            standby_phrases=standby,
+            shutdown_phrases=shutdown,
+            ares_name_aliases=aliases,
+        )
         object.__setattr__(self, "ares_name_aliases", aliases)
         object.__setattr__(self, "activation_phrases", activation)
         object.__setattr__(self, "standby_phrases", standby)
@@ -429,18 +432,14 @@ class BrainRuntime:
         *,
         correlation_id: str = "",
     ) -> BrainRuntimeCommandClassificationV1:
-        control = classify_lifecycle_control(
+        control = normalize_lifecycle_command(
             text,
+            activation_phrases=self.config.activation_phrases,
             standby_phrases=self.config.standby_phrases,
             shutdown_phrases=self.config.shutdown_phrases,
             ares_name_aliases=self.config.ares_name_aliases,
         )
-        activation_match = match_ares_alias_phrase(
-            text,
-            self.config.activation_phrases,
-            self.config.ares_name_aliases,
-        )
-        normalized = control.canonicalized_input
+        normalized = control.normalized_transcript
         state = self.session_manager.state
         category = RUNTIME_COMMAND_ORDINARY
         matched = ""
@@ -452,10 +451,9 @@ class BrainRuntime:
         elif control.action == LIFECYCLE_ACTION_STANDBY:
             category = RUNTIME_COMMAND_STANDBY
             matched = control.matched_phrase
-        elif activation_match:
+        elif control.action == LIFECYCLE_ACTION_ACTIVATE:
             category = RUNTIME_COMMAND_ACTIVATION
-            normalized = activation_match
-            matched = activation_match
+            matched = control.matched_phrase
         return BrainRuntimeCommandClassificationV1(
             success=True,
             status="classified",
@@ -471,6 +469,10 @@ class BrainRuntime:
                 "source": "brain_runtime",
                 "lifecycle_action": control.action,
                 "routing_reason": control.routing_reason,
+                "lifecycle_cleaned_transcript": control.cleaned_transcript,
+                "lifecycle_normalized_transcript": control.normalized_transcript,
+                "lifecycle_canonical_name": control.canonical_name,
+                "lifecycle_rejection_reason": control.rejection_reason,
                 "core_service_bypassed": category
                 in {
                     RUNTIME_COMMAND_ACTIVATION,
@@ -561,7 +563,7 @@ class BrainRuntime:
             if classification.command_category == RUNTIME_COMMAND_SHUTDOWN:
                 return self.shutdown(
                     correlation_id=normalized_request.correlation_id,
-                    reason="owner_shutdown_phrase",
+                    reason="explicit_shutdown_command",
                     command_category=RUNTIME_COMMAND_SHUTDOWN,
                     normalized_input=classification.normalized_input,
                 )
@@ -653,16 +655,22 @@ class BrainRuntime:
             if input_result.status == RUNTIME_INPUT_TIMEOUT:
                 return self._handle_input_timeout()
             if input_result.status == RUNTIME_INPUT_CANCELLED:
-                self.shutdown(reason="input_cancelled")
+                self.shutdown(reason="owner_cancellation")
                 return self._result(
                     False,
                     "cancelled",
                     correlation_id=new_correlation_id("runtime-cancel"),
-                    stop_reason="input_cancelled",
+                    stop_reason="owner_cancellation",
                     error_code="input_cancelled",
                     error_message="runtime input was cancelled",
                 )
             if input_result.status == RUNTIME_INPUT_END:
+                if not bool(input_result.metadata.get("runtime_terminal", True)):
+                    # A bounded active-command source may finish one capture without
+                    # ending the persistent owner runtime. Treat that source-local
+                    # EOF like an empty/no-speech turn and retain normal inactivity
+                    # handling; only terminal-capable foreground adapters may end.
+                    return self._handle_input_timeout()
                 self.shutdown(reason="end_of_input")
                 return self._result(
                     False,
@@ -706,21 +714,27 @@ class BrainRuntime:
                 break
         if terminal_result is None:
             terminal_result = self._result(
-                True,
+                False,
                 "stopped",
                 correlation_id=new_correlation_id("runtime-loop"),
                 stop_reason=self._last_stop_reason,
             )
-        loop_success = terminal_result.status not in {
-            "cancelled",
-            "end_of_input",
-            "start_failed",
-            "lifecycle_failure",
-            "maximum_failures_reached",
-        }
+        terminal_reason = _canonical_runtime_terminal_reason(terminal_result)
+        terminal_result = replace(terminal_result, stop_reason=terminal_reason)
+        loop_success = (
+            terminal_result.status == "stopped"
+            and terminal_reason == "explicit_shutdown_command"
+        )
+        loop_status = (
+            "stopped"
+            if loop_success
+            else terminal_reason
+            if terminal_result.status == "stopped"
+            else terminal_result.status
+        )
         return self._loop_result(
             loop_success,
-            "stopped" if loop_success else terminal_result.status,
+            loop_status,
             iterations,
             terminal_result,
         )
@@ -876,7 +890,7 @@ class BrainRuntime:
                 response_text=self.config.active_acknowledgement,
                 data={
                     "core_service_bypassed": True,
-                    "lifecycle_action": "activation",
+                    "lifecycle_action": LIFECYCLE_ACTION_ACTIVATE,
                 },
             )
         if state == BRAIN_ACTIVE:
@@ -907,7 +921,7 @@ class BrainRuntime:
                 response_text=self.config.already_active_acknowledgement,
                 data={
                     "core_service_bypassed": True,
-                    "lifecycle_action": "activation",
+                    "lifecycle_action": LIFECYCLE_ACTION_ACTIVATE,
                 },
             )
         self._publish(
@@ -1786,6 +1800,19 @@ class BrainRuntime:
 
 def normalize_runtime_phrase(value: Any) -> str:
     return normalize_spoken_phrase(value)
+
+
+def _canonical_runtime_terminal_reason(result: BrainRuntimeResultV1) -> str:
+    """Return the explicit outer-runtime terminal reason for one loop result."""
+
+    reason = str(getattr(result, "stop_reason", "") or "").strip()
+    if reason in {"explicit_shutdown_command", "owner_shutdown_phrase"}:
+        return "explicit_shutdown_command"
+    if reason in {"input_cancelled", "owner_cancellation"} or str(
+        getattr(result, "status", "") or ""
+    ) == "cancelled":
+        return "owner_cancellation"
+    return reason or "unrecoverable_failure"
 
 
 def _canonicalized_runtime_phrases(

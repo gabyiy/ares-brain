@@ -64,8 +64,16 @@ STAGES = (
         "return to STANDBY without ordinary routing",
     ),
     HardwareTestStage("F", "Say 'Ares'.", "ACTIVE with a new session"),
-    HardwareTestStage("G", "Say 'shutdown Ares'.", "clean STOPPED state"),
+    HardwareTestStage(
+        "G",
+        "Say 'shutdown Ares'.",
+        "one explicit shutdown transition and clean STOPPED state",
+    ),
 )
+
+MAX_ATTEMPTS_PER_TEST = 3
+LIFECYCLE_STAGE_LABELS = ("C", "E", "F", "G")
+EXPLICIT_SHUTDOWN_REASON = "explicit_shutdown_command"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -145,8 +153,14 @@ def _run_hardware_verification_locked(
     runtime_holder: Optional[dict[str, Any]] = None,
 ) -> int:
     args = build_parser().parse_args(argv)
-    if isinstance(args.attempts_per_test, bool) or not 1 <= args.attempts_per_test <= 5:
-        output_func("Configuration error: --attempts-per-test must be between 1 and 5.")
+    if (
+        isinstance(args.attempts_per_test, bool)
+        or not 1 <= args.attempts_per_test <= MAX_ATTEMPTS_PER_TEST
+    ):
+        output_func(
+            "Configuration error: --attempts-per-test must be between "
+            f"1 and {MAX_ATTEMPTS_PER_TEST}."
+        )
         return 2
     if (
         isinstance(args.wake_reliability_attempts, bool)
@@ -283,6 +297,7 @@ def _run_hardware_verification_locked(
     first_session = ""
     wake_transcripts: list[str] = []
     active_command_transcripts: list[str] = []
+    explicit_shutdown_count = 0
     cleanup_done = False
 
     def shutdown_once(reason: str) -> None:
@@ -293,15 +308,14 @@ def _run_hardware_verification_locked(
         cleanup_done = True
 
     try:
-        stages = (
-            STAGES[:2]
-            if args.verification_mode == "reliability"
-            else STAGES
-        )
+        stages = _verification_stages(args.verification_mode)
         for index, stage in enumerate(stages, start=1):
             if stage.label == "C":
-                output_func("Phase 4: Full wake, command, standby, and shutdown lifecycle.")
-            output_func(f"Test {index}/{len(STAGES)} ({stage.label}): {stage.instruction}")
+                output_func(
+                    "Phase 4: Bounded activation, standby return, reactivation, "
+                    "and explicit shutdown lifecycle."
+                )
+            output_func(f"Test {index}/{len(stages)} ({stage.label}): {stage.instruction}")
             output_func(f"Expected: {stage.expected}.")
             passed = False
             for attempt in range(1, args.attempts_per_test + 1):
@@ -334,7 +348,10 @@ def _run_hardware_verification_locked(
                         )
                         shutdown_once("inconsistent_wake_attempt")
                         return 1
-                if args.diagnostic_wake and diagnostics is not None:
+                transcript_diagnostics_enabled = bool(
+                    args.diagnostic_wake or not standby_attempt
+                )
+                if transcript_diagnostics_enabled and diagnostics is not None:
                     transcript = str(getattr(diagnostics, "raw_transcript", "") or "")
                     target = wake_transcripts if standby_attempt else active_command_transcripts
                     if transcript and transcript not in target:
@@ -368,7 +385,7 @@ def _run_hardware_verification_locked(
                     wake_result=wake_result,
                     result=result,
                     before_state=before.current_lifecycle_state,
-                    diagnostic_enabled=bool(args.diagnostic_wake),
+                    diagnostic_enabled=transcript_diagnostics_enabled,
                 )
                 output_func(
                     "  Active session created: "
@@ -387,14 +404,32 @@ def _run_hardware_verification_locked(
                         f"raw={float(getattr(wake_result, 'raw_capture_duration_seconds', 0.0)):.3f}s; "
                         f"cleanup={getattr(wake_result, 'cleanup_status', 'unknown')}"
                     )
+                if _is_explicit_shutdown_result(result):
+                    explicit_shutdown_count += 1
                 passed, first_session = _stage_passed(
                     stage.label,
                     result,
                     snapshot,
                     wake_result,
                     first_session,
+                    explicit_shutdown_count=explicit_shutdown_count,
                 )
                 if passed:
+                    if stage.label == "E":
+                        output_func(
+                            "  Persistent runtime: alive in STANDBY; active "
+                            "session cleared."
+                        )
+                    elif stage.label == "F":
+                        output_func(
+                            "  Reactivation: new active session confirmed."
+                        )
+                    elif stage.label == "G":
+                        output_func(
+                            "  Explicit shutdown count / reason: "
+                            f"{explicit_shutdown_count} / "
+                            f"{EXPLICIT_SHUTDOWN_REASON}"
+                        )
                     output_func(f"  Test {stage.label}: PASS")
                     break
                 if not _retry_allowed(stage.label, result):
@@ -438,7 +473,14 @@ def _run_hardware_verification_locked(
             shutdown_once("wake_reliability_verification_complete")
             output_func("Wake reliability verification completed; adapters cleaned up.")
             return 0
-        if args.diagnostic_wake:
+        if explicit_shutdown_count != 1:
+            output_func(
+                "Lifecycle verification failed: expected exactly one explicit "
+                f"shutdown, observed {explicit_shutdown_count}."
+            )
+            shutdown_once("hardware_verification_shutdown_count_failed")
+            return 1
+        if args.diagnostic_wake or args.verification_mode == "lifecycle":
             _print_transcript_summary(
                 output_func,
                 wake_transcripts,
@@ -471,6 +513,15 @@ def _run_hardware_verification_locked(
                 state = ""
             if state != BRAIN_STOPPED:
                 shutdown_once("hardware_verifier_finally")
+
+
+def _verification_stages(mode: str) -> tuple[HardwareTestStage, ...]:
+    if mode == "reliability":
+        return STAGES[:2]
+    if mode == "lifecycle":
+        selected = set(LIFECYCLE_STAGE_LABELS)
+        return tuple(stage for stage in STAGES if stage.label in selected)
+    return STAGES
 
 
 def _run_wake_reliability(
@@ -1201,8 +1252,14 @@ def _stage_passed(
     snapshot: Any,
     wake_result: Any,
     first_session: str,
+    *,
+    explicit_shutdown_count: int = 0,
 ) -> tuple[bool, str]:
     state = snapshot.current_lifecycle_state
+    data = dict(getattr(result, "data", {}) or {})
+    category = str(getattr(result, "command_category", "") or "")
+    action = str(data.get("lifecycle_action") or "")
+    status = str(getattr(result, "status", "") or "")
     if label == "A":
         return (
             state == BRAIN_STANDBY
@@ -1218,7 +1275,12 @@ def _stage_passed(
         )
     if label == "C":
         session = str(snapshot.session_id or "")
-        return state == BRAIN_ACTIVE and bool(session), session or first_session
+        return (
+            state == BRAIN_ACTIVE
+            and bool(session)
+            and status == "activated",
+            session or first_session,
+        )
     if label == "D":
         response = str(getattr(result, "response_text", "") or "")
         return state == BRAIN_ACTIVE and "result: 4" in response.casefold(), first_session
@@ -1226,9 +1288,13 @@ def _stage_passed(
         return (
             state == BRAIN_STANDBY
             and not snapshot.session_id
+            and status == "standby_entered"
+            and category == "standby"
+            and action == "standby"
+            and not bool(data.get("runtime_terminal", False))
             and str(getattr(result, "response_text", "") or "")
             != "I cannot handle that request yet."
-            and bool(dict(getattr(result, "data", {}) or {}).get("core_service_bypassed")),
+            and bool(data.get("core_service_bypassed")),
             first_session,
         )
     if label == "F":
@@ -1236,12 +1302,35 @@ def _stage_passed(
         return (
             state == BRAIN_ACTIVE
             and bool(session)
-            and session != first_session,
+            and session != first_session
+            and status == "activated",
             first_session,
         )
     if label == "G":
-        return state == BRAIN_STOPPED, first_session
+        return (
+            state == BRAIN_STOPPED
+            and status == "stopped"
+            and category == "shutdown"
+            and action == "shutdown"
+            and bool(data.get("core_service_bypassed"))
+            and str(getattr(result, "stop_reason", "") or "")
+            == EXPLICIT_SHUTDOWN_REASON
+            and explicit_shutdown_count == 1,
+            first_session,
+        )
     return False, first_session
+
+
+def _is_explicit_shutdown_result(result: Any) -> bool:
+    data = dict(getattr(result, "data", {}) or {})
+    return (
+        str(getattr(result, "status", "") or "") == "stopped"
+        and str(getattr(result, "command_category", "") or "") == "shutdown"
+        and str(data.get("lifecycle_action") or "") == "shutdown"
+        and bool(data.get("core_service_bypassed"))
+        and str(getattr(result, "stop_reason", "") or "")
+        == EXPLICIT_SHUTDOWN_REASON
+    )
 
 
 def _print_recognition_summary(
@@ -1317,6 +1406,41 @@ def _print_recognition_summary(
             f"{getattr(wake_result, 'ownership_handoff_destination', '') or 'none'}"
         )
     else:
+        result_data = dict(getattr(result, "data", {}) or {})
+        lifecycle_action = str(
+            result_data.get("lifecycle_action")
+            or (
+                classification
+                if classification in {"standby", "shutdown"}
+                else "none"
+            )
+        )
+        pipeline_status = str(
+            getattr(diagnostics, "pipeline_status", "")
+            or getattr(diagnostics, "transcription_status", "")
+            or "unknown"
+        )
+        runtime_terminal = bool(
+            result_data.get("runtime_terminal", False)
+            or str(getattr(result, "current_lifecycle_state", "") or "")
+            == BRAIN_STOPPED
+        )
+        terminal_reason = (
+            str(
+                result_data.get("runtime_terminal_reason")
+                or getattr(result, "stop_reason", "")
+                or "unknown"
+            )
+            if runtime_terminal
+            else "not_terminal"
+        )
+        output_func(f"  Selected lifecycle action: {lifecycle_action}")
+        output_func(f"  Pipeline status: {pipeline_status}")
+        output_func(
+            "  Runtime terminal: "
+            f"{'yes' if runtime_terminal else 'no'}"
+        )
+        output_func(f"  Runtime terminal reason: {terminal_reason}")
         output_func(
             "  Active audio: "
             f"capture={float(getattr(diagnostics, 'raw_capture_duration_seconds', 0.0)):.3f}s; "
@@ -1351,7 +1475,7 @@ def _print_recognition_summary(
 
 
 def _retry_allowed(label: str, result: Any) -> bool:
-    if label != "E":
+    if label not in {"E", "G"}:
         return True
     return str(getattr(result, "status", "") or "") in {
         "input_timeout",

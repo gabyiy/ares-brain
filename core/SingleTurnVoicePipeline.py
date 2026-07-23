@@ -25,6 +25,7 @@ from core.SingleTurnVoiceSupport import (
     PIPELINE_CLEANUP_DELETE_ALWAYS,
     PIPELINE_CLEANUP_KEEP,
     PreBrainHook,
+    RawTranscriptHook,
     SingleTurnRunState,
     VoiceStageCoordinator,
     contract_failure_result,
@@ -191,10 +192,17 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         request: SingleTurnVoiceRequestV1,
         cancellation_token: Optional[CancellationToken] = None,
         pre_brain_hook: Optional[PreBrainHook] = None,
+        raw_transcript_hook: Optional[RawTranscriptHook] = None,
     ) -> SingleTurnVoiceResultV1:
         state = SingleTurnRunState(request=request, started_at=self.clock())
         self._emit(state, EVENT_SINGLE_TURN_STARTED, "pipeline", "started", True)
-        return self._execute_ready(request, state, cancellation_token, pre_brain_hook)
+        return self._execute_ready(
+            request,
+            state,
+            cancellation_token,
+            pre_brain_hook,
+            raw_transcript_hook,
+        )
 
     def stop(self, request: Optional[SingleTurnVoiceRequestV1] = None) -> LifecycleResult:
         if request is not None:
@@ -221,6 +229,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         request: SingleTurnVoiceRequestV1 | Dict[str, Any],
         cancellation_token: Optional[CancellationToken] = None,
         pre_brain_hook: Optional[PreBrainHook] = None,
+        raw_transcript_hook: Optional[RawTranscriptHook] = None,
     ) -> SingleTurnVoiceResultV1:
         try:
             normalized = validated_single_turn_request(request)
@@ -261,6 +270,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
                         state,
                         cancellation_token,
                         pre_brain_hook,
+                        raw_transcript_hook,
                     )
         except KeyboardInterrupt:
             if cancellation_token is not None and cancellation_token.supports_cancellation:
@@ -408,6 +418,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         state: SingleTurnRunState,
         cancellation_token: Optional[CancellationToken],
         pre_brain_hook: Optional[PreBrainHook] = None,
+        raw_transcript_hook: Optional[RawTranscriptHook] = None,
         stage_runner: Optional[Callable[..., SingleTurnVoiceResultV1]] = None,
     ) -> SingleTurnVoiceResultV1:
         if self.lifecycle_manager.status(SINGLE_TURN_MODULE_NAME).state != LIFECYCLE_READY:
@@ -444,6 +455,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
                     state,
                     cancellation_token,
                     pre_brain_hook,
+                    raw_transcript_hook,
                 )
             except KeyboardInterrupt:
                 if cancellation_token is not None and cancellation_token.supports_cancellation:
@@ -503,6 +515,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         state: SingleTurnRunState,
         cancellation_token: Optional[CancellationToken],
         _pre_brain_hook: Optional[PreBrainHook] = None,
+        _raw_transcript_hook: Optional[RawTranscriptHook] = None,
     ) -> SingleTurnVoiceResultV1:
         cancelled = self._cancelled(state, cancellation_token, "before_synthesis")
         if cancelled:

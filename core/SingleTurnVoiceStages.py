@@ -16,6 +16,7 @@ from core.Microphone import AudioChunk, MicrophoneResult
 from core.ResourceBudget import CancellationToken
 from core.SingleTurnVoiceSupport import (
     PreBrainHook,
+    RawTranscriptHook,
     SingleTurnPreBrainDecision,
     SingleTurnRunState,
     VoiceStageConflict,
@@ -50,6 +51,7 @@ class SingleTurnVoiceStageMixin:
         state: SingleTurnRunState,
         cancellation_token: Optional[CancellationToken],
         pre_brain_hook: Optional[PreBrainHook] = None,
+        raw_transcript_hook: Optional[RawTranscriptHook] = None,
     ) -> SingleTurnVoiceResultV1:
         cancelled = self._cancelled(state, cancellation_token, "before_recording")
         if cancelled:
@@ -84,6 +86,16 @@ class SingleTurnVoiceStageMixin:
             if isinstance(transcription, SingleTurnVoiceResultV1):
                 return transcription
 
+        raw_decision = self._apply_raw_transcript_hook(
+            state,
+            raw_transcript_hook,
+            state.raw_transcript or transcription.text,
+        )
+        if isinstance(raw_decision, SingleTurnVoiceResultV1):
+            return raw_decision
+        if raw_decision is not None and raw_decision.handled:
+            return self._complete_intercepted_turn(state, raw_decision)
+
         transcription = self._normalize_transcription(request, state, transcription)
         if isinstance(transcription, SingleTurnVoiceResultV1):
             return transcription
@@ -91,26 +103,17 @@ class SingleTurnVoiceStageMixin:
         cancelled = self._cancelled(state, cancellation_token, "before_brain")
         if cancelled:
             return cancelled
-        decision = self._apply_pre_brain_hook(state, pre_brain_hook)
+        decision = self._apply_pre_brain_hook(
+            state,
+            pre_brain_hook,
+            transcription.text,
+        )
         if isinstance(decision, SingleTurnVoiceResultV1):
             return decision
         if decision is None or not decision.handled:
             self._brain_stage(request, state, transcription)
         elif not decision.continue_to_output:
-            result = self._result(
-                state,
-                success=True,
-                status=decision.status or "intercepted_before_brain",
-            )
-            self._emit(
-                state,
-                self.EVENT_SINGLE_TURN_COMPLETED,
-                "pipeline",
-                result.status,
-                True,
-                {"pre_brain_intercepted": True},
-            )
-            return replace(result, events=[dict(event) for event in state.events])
+            return self._complete_intercepted_turn(state, decision)
 
         cancelled = self._cancelled(state, cancellation_token, "before_synthesis")
         if cancelled:
@@ -161,15 +164,98 @@ class SingleTurnVoiceStageMixin:
         )
         return replace(result, events=[dict(event) for event in state.events])
 
+    def _apply_raw_transcript_hook(
+        self,
+        state: SingleTurnRunState,
+        raw_transcript_hook: Optional[RawTranscriptHook],
+        raw_transcript: str,
+    ) -> Optional[SingleTurnPreBrainDecision | SingleTurnVoiceResultV1]:
+        if raw_transcript_hook is None:
+            return None
+        state.raw_transcript = str(raw_transcript or "")
+        try:
+            decision = raw_transcript_hook(state.raw_transcript)
+        except Exception as error:
+            return self._failure(
+                state,
+                "raw_transcript_hook",
+                safe_exception(error),
+                "raw_transcript_hook_failed",
+            )
+        if decision is None:
+            return None
+        if not isinstance(decision, SingleTurnPreBrainDecision):
+            return self._failure(
+                state,
+                "raw_transcript_hook",
+                "invalid_raw_transcript_decision",
+                "raw_transcript_hook_failed",
+            )
+        if not decision.handled:
+            return decision
+        if decision.continue_to_output and not decision.response_text.strip():
+            return self._failure(
+                state,
+                "raw_transcript_hook",
+                "local_output_text_required",
+                "raw_transcript_hook_failed",
+            )
+        state.cleaned_transcript = state.raw_transcript.strip()
+        state.recognized_text = state.raw_transcript
+        state.brain_execution_status = decision.status or "intercepted_before_normalization"
+        state.brain_text_response = decision.response_text.strip()
+        state.data["raw_transcript_decision"] = {
+            "handled": True,
+            "status": state.brain_execution_status,
+            "continue_to_output": decision.continue_to_output,
+            "data": dict(decision.data or {}),
+        }
+        self._emit(
+            state,
+            self.EVENT_BRAIN_EXECUTION_COMPLETED,
+            "brain_execution",
+            state.brain_execution_status,
+            True,
+            {
+                "bypassed": True,
+                "transcript_normalization_bypassed": True,
+                "response_length": len(state.brain_text_response),
+            },
+        )
+        return decision
+
+    def _complete_intercepted_turn(
+        self,
+        state: SingleTurnRunState,
+        decision: SingleTurnPreBrainDecision,
+    ) -> SingleTurnVoiceResultV1:
+        result = self._result(
+            state,
+            success=True,
+            status=decision.status or "intercepted_before_brain",
+        )
+        self._emit(
+            state,
+            self.EVENT_SINGLE_TURN_COMPLETED,
+            "pipeline",
+            result.status,
+            True,
+            {"pre_brain_intercepted": True},
+        )
+        return replace(result, events=[dict(event) for event in state.events])
+
     def _apply_pre_brain_hook(
         self,
         state: SingleTurnRunState,
         pre_brain_hook: Optional[PreBrainHook],
+        normalized_transcript: str = "",
     ) -> Optional[SingleTurnPreBrainDecision | SingleTurnVoiceResultV1]:
         if pre_brain_hook is None:
             return None
         try:
-            decision = pre_brain_hook(state.recognized_text)
+            decision = pre_brain_hook(
+                str(normalized_transcript or state.recognized_text)
+            )
         except Exception as error:
             return self._failure(
                 state,
@@ -227,6 +313,7 @@ class SingleTurnVoiceStageMixin:
         self._emit(state, self.EVENT_RECORDING_COMPLETED, "recording", state.recording_status, True)
         self._stage(3, "Transcribing", "skipped: simulated text input")
         state.transcription_status = "simulated_text_input"
+        state.raw_transcript = request.text_input
         state.recognized_text = request.text_input.strip()
         result = TranscriptionResult(
             success=True,
@@ -296,7 +383,8 @@ class SingleTurnVoiceStageMixin:
                 "transcription_timeout",
             )
         state.transcription_status = transcription.status
-        state.recognized_text = " ".join(transcription.text.split())
+        state.raw_transcript = str(transcription.text or "")
+        state.recognized_text = " ".join(state.raw_transcript.split())
         transcription = replace(transcription, text=state.recognized_text)
         state.transcription_processing_time_seconds = float(
             transcription.data.get("processing_time_seconds", 0.0)
@@ -346,7 +434,7 @@ class SingleTurnVoiceStageMixin:
     ) -> TranscriptionResult | SingleTurnVoiceResultV1:
         normalization = self.transcript_normalizer.normalize(
             TranscriptNormalizationRequestV1(
-                raw_transcript=transcription.text,
+                raw_transcript=state.raw_transcript or transcription.text,
                 correlation_id=request.correlation_id,
                 session_id=request.session_id,
                 metadata={"source": "single_turn_voice_pipeline"},

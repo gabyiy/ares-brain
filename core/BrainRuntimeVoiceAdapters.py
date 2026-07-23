@@ -17,11 +17,16 @@ from core.Contracts import (
     new_correlation_id,
     utc_contract_timestamp,
 )
+from core.LifecycleControl import (
+    LIFECYCLE_ACTION_NONE,
+    normalize_lifecycle_command,
+)
 from core.ResourceBudget import CancellationToken
 from core.SingleTurnVoiceSupport import SingleTurnPreBrainDecision
 
 
 _INPUT_TIMEOUT_STATUSES = {
+    "end_of_input",
     "no_speech_timeout",
     "silent_audio",
     "blank_transcription",
@@ -37,6 +42,8 @@ class ActiveCommandLocalDiagnostics:
     raw_transcript: str = ""
     cleaned_transcript: str = ""
     alias_canonicalized_transcript: str = ""
+    lifecycle_normalized_transcript: str = ""
+    canonical_name: str = ""
     lifecycle_classification: str = "ordinary"
     selected_lifecycle_action: str = "none"
     core_service_bypassed: bool = False
@@ -66,6 +73,9 @@ class ActiveCommandLocalDiagnostics:
     routing_completed_at: str = ""
     temporary_audio_cleanup_status: str = "unknown"
     microphone_gate_released_before_inference: bool = False
+    pipeline_status: str = "not_started"
+    runtime_terminal: bool = False
+    runtime_terminal_reason: str = "not_terminal"
 
 
 class VoiceRuntimeGate:
@@ -172,6 +182,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
         pipeline: Any,
         base_request: SingleTurnVoiceRequestV1,
         session_id_provider: Callable[[], str],
+        lifecycle_state_provider: Optional[Callable[[], str]] = None,
         voice_io_gate: Optional[VoiceRuntimeGate] = None,
         diagnostic_callback: Optional[
             Callable[[ActiveCommandLocalDiagnostics], None]
@@ -182,9 +193,12 @@ class SingleTurnPipelineRuntimeInputAdapter:
             raise ValueError("pipeline must support run_once")
         if not callable(session_id_provider):
             raise ValueError("session_id_provider must be callable")
+        if lifecycle_state_provider is not None and not callable(lifecycle_state_provider):
+            raise ValueError("lifecycle_state_provider must be callable")
         self.pipeline = pipeline
         self.base_request = base_request
         self.session_id_provider = session_id_provider
+        self.lifecycle_state_provider = lifecycle_state_provider or (lambda: "")
         self.voice_io_gate = voice_io_gate or VoiceRuntimeGate(settle_delay_seconds=0.0)
         self.diagnostic_callback = diagnostic_callback
         self.status_callback = status_callback
@@ -199,9 +213,19 @@ class SingleTurnPipelineRuntimeInputAdapter:
     def wait_for_input(self, timeout_seconds: float) -> RuntimeInputResult:
         with self._lock:
             if self._closed:
-                return RuntimeInputResult.end()
+                return RuntimeInputResult(
+                    status="end_of_input",
+                    metadata={
+                        "safe": True,
+                        "source": "single_turn_voice_pipeline",
+                        "runtime_terminal": False,
+                        "input_scope": "active_command",
+                    },
+                )
             self.last_diagnostics = None
             self._routing_started_at = ""
+        lifecycle_state_before = _provided_text(self.lifecycle_state_provider)
+        session_id_before = _provided_text(self.session_id_provider)
         emitted_statuses: set[str] = set()
 
         def emit_once(message: str) -> None:
@@ -218,7 +242,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
         request = replace(
             self.base_request,
             correlation_id=correlation,
-            session_id=str(self.session_id_provider() or ""),
+            session_id=session_id_before,
             recording_output_path=str(output_path),
             text_input="",
             playback_enabled=False,
@@ -231,13 +255,39 @@ class SingleTurnPipelineRuntimeInputAdapter:
         token = CancellationToken(task_id=f"runtime-voice-input:{correlation}")
         captured: dict[str, str] = {}
 
-        def intercept(text: str) -> SingleTurnPreBrainDecision:
+        def transport_intercept(text: str) -> SingleTurnPreBrainDecision:
             captured["text"] = str(text or "").strip()
             return SingleTurnPreBrainDecision(
                 handled=True,
                 status="runtime_transport_captured",
                 continue_to_output=False,
                 data={"transport_only": True},
+            )
+
+        def lifecycle_intercept(raw_text: str) -> SingleTurnPreBrainDecision:
+            lifecycle = normalize_lifecycle_command(raw_text)
+            if lifecycle.action == LIFECYCLE_ACTION_NONE:
+                return SingleTurnPreBrainDecision(
+                    handled=False,
+                    status="not_lifecycle_command",
+                    data={
+                        "transport_only": True,
+                        "lifecycle_action": lifecycle.action,
+                    },
+                )
+            captured["text"] = str(raw_text or "").strip()
+            return SingleTurnPreBrainDecision(
+                handled=True,
+                status="runtime_lifecycle_transport_captured",
+                continue_to_output=False,
+                data={
+                    "transport_only": True,
+                    "lifecycle_action": lifecycle.action,
+                    "lifecycle_normalized_transcript": (
+                        lifecycle.normalized_transcript
+                    ),
+                    "canonical_name": lifecycle.canonical_name,
+                },
             )
 
         with self._lock:
@@ -269,13 +319,34 @@ class SingleTurnPipelineRuntimeInputAdapter:
             result = self.pipeline.run_once(
                 request,
                 cancellation_token=token,
-                pre_brain_hook=intercept,
+                pre_brain_hook=transport_intercept,
+                raw_transcript_hook=lifecycle_intercept,
             )
             self.last_result = result
         except KeyboardInterrupt:
             token.cancel("keyboard_interrupt")
+            self.last_diagnostics = ActiveCommandLocalDiagnostics(
+                lifecycle_state_before=lifecycle_state_before,
+                lifecycle_state_after=_provided_text(self.lifecycle_state_provider),
+                session_id_before=session_id_before,
+                session_id_after=_provided_text(self.session_id_provider),
+                pipeline_status="cancelled",
+                runtime_terminal=False,
+                runtime_terminal_reason="not_terminal",
+            )
+            self._emit_local_diagnostics()
             return RuntimeInputResult.cancelled()
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
+            self.last_diagnostics = ActiveCommandLocalDiagnostics(
+                lifecycle_state_before=lifecycle_state_before,
+                lifecycle_state_after=_provided_text(self.lifecycle_state_provider),
+                session_id_before=session_id_before,
+                session_id_after=_provided_text(self.session_id_provider),
+                pipeline_status="pipeline_exception",
+                runtime_terminal=False,
+                runtime_terminal_reason="not_terminal",
+            )
+            self._emit_local_diagnostics()
             return RuntimeInputResult.failed(
                 "active_voice_pipeline_exception",
                 f"{error.__class__.__name__}:{str(error)[:120]}",
@@ -288,7 +359,13 @@ class SingleTurnPipelineRuntimeInputAdapter:
             with self._lock:
                 self._current_token = None
         status = str(getattr(result, "status", "") or "")
-        self.last_diagnostics = _active_command_diagnostics(result)
+        self.last_diagnostics = replace(
+            _active_command_diagnostics(result),
+            lifecycle_state_before=lifecycle_state_before,
+            lifecycle_state_after=_provided_text(self.lifecycle_state_provider),
+            session_id_before=session_id_before,
+            session_id_after=_provided_text(self.session_id_provider),
+        )
         if status == "cancelled" or str(getattr(result, "error_stage", "")) == "cancellation":
             self._emit_local_diagnostics()
             return RuntimeInputResult.cancelled()
@@ -323,6 +400,19 @@ class SingleTurnPipelineRuntimeInputAdapter:
                     "contains_audio": False,
                 },
             )
+        if not text and bool(getattr(result, "success", False)):
+            emit_once("No command heard; still active")
+            self._emit_local_diagnostics()
+            return RuntimeInputResult(
+                status="timeout",
+                metadata={
+                    "safe": True,
+                    "source": "single_turn_voice_pipeline",
+                    "capture_status": status or "empty_transcript",
+                    "runtime_terminal": False,
+                    "contains_audio": False,
+                },
+            )
         if status in _INPUT_TIMEOUT_STATUSES or str(getattr(result, "error_stage", "")) in {
             "recording_validation",
             "transcription",
@@ -354,6 +444,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
                     "safe": True,
                     "source": "single_turn_voice_pipeline",
                     "capture_status": status,
+                    "runtime_terminal": False,
                     "contains_audio": False,
                 },
             )
@@ -394,13 +485,41 @@ class SingleTurnPipelineRuntimeInputAdapter:
             return
         category = str(getattr(runtime_result, "command_category", "") or "ordinary")
         data = dict(getattr(runtime_result, "data", {}) or {})
-        action = category if category in {"standby", "shutdown"} else "none"
+        lifecycle_data = dict(
+            data.get("lifecycle_command")
+            or data.get("lifecycle_normalization")
+            or {}
+        )
+        action = str(
+            lifecycle_data.get("action")
+            or data.get("lifecycle_action")
+            or (category if category in {"activation", "standby", "shutdown"} else "none")
+        )
+        lifecycle_normalized = str(
+            lifecycle_data.get("normalized_transcript")
+            or getattr(runtime_result, "normalized_input", "")
+            or diagnostics.cleaned_transcript
+        )
+        canonical_name = str(lifecycle_data.get("canonical_name") or "")
+        if (
+            not canonical_name
+            and action in {"activation", "standby", "shutdown"}
+            and "ares" in lifecycle_normalized.split()
+        ):
+            canonical_name = "ares"
+        current_state = str(
+            getattr(runtime_result, "current_lifecycle_state", "") or ""
+        )
+        runtime_terminal = current_state == "STOPPED"
+        terminal_reason = _diagnostic_terminal_reason(
+            str(getattr(runtime_result, "stop_reason", "") or ""),
+            runtime_terminal=runtime_terminal,
+        )
         completed = replace(
             diagnostics,
-            alias_canonicalized_transcript=str(
-                getattr(runtime_result, "normalized_input", "")
-                or diagnostics.cleaned_transcript
-            ),
+            alias_canonicalized_transcript=lifecycle_normalized,
+            lifecycle_normalized_transcript=lifecycle_normalized,
+            canonical_name=canonical_name,
             lifecycle_classification=category,
             selected_lifecycle_action=action,
             core_service_bypassed=bool(
@@ -408,15 +527,15 @@ class SingleTurnPipelineRuntimeInputAdapter:
                 or category in {"activation", "standby", "shutdown"}
             ),
             lifecycle_state_before=str(lifecycle_state_before or ""),
-            lifecycle_state_after=str(
-                getattr(runtime_result, "current_lifecycle_state", "") or ""
-            ),
+            lifecycle_state_after=current_state,
             session_id_before=str(session_id_before or ""),
             session_id_after=str(getattr(runtime_result, "session_id", "") or ""),
             routing_started_at=(
                 diagnostics.routing_started_at or self._routing_started_at
             ),
             routing_completed_at=utc_contract_timestamp(),
+            runtime_terminal=runtime_terminal,
+            runtime_terminal_reason=terminal_reason,
         )
         with self._lock:
             self.last_diagnostics = completed
@@ -659,4 +778,23 @@ def _active_command_diagnostics(result: Any) -> ActiveCommandLocalDiagnostics:
         microphone_gate_released_before_inference=bool(
             transcription_boundary.get("microphone_capture_released")
         ),
+        pipeline_status=str(getattr(result, "status", "") or "unknown"),
     )
+
+
+def _provided_text(provider: Callable[[], str]) -> str:
+    try:
+        return str(provider() or "")
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return ""
+
+
+def _diagnostic_terminal_reason(reason: str, *, runtime_terminal: bool) -> str:
+    clean = str(reason or "").strip()
+    if not runtime_terminal:
+        return "not_terminal"
+    if clean in {"explicit_shutdown_command", "owner_shutdown_phrase"}:
+        return "explicit_shutdown_command"
+    if clean in {"input_cancelled", "owner_cancellation"}:
+        return "owner_cancellation"
+    return clean or "unrecoverable_failure"

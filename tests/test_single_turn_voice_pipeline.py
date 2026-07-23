@@ -1060,6 +1060,71 @@ def test_pre_brain_hook_can_intercept_stop_phrase_before_handler(tmp_path):
     assert "piper.synthesize" not in order
 
 
+def test_raw_transcript_hook_intercepts_before_generic_transcript_normalization(tmp_path):
+    pipeline, order, _, stt, tts, speaker, handled, _ = _pipeline(tmp_path)
+    stt.text = "  Good bye,   Aris.  "
+    observed = []
+
+    def normalization_must_not_run(_request):
+        raise AssertionError("generic transcript normalization ran before lifecycle transport")
+
+    pipeline.transcript_normalizer.normalize = normalization_must_not_run
+    result = pipeline.run_once(
+        _request(tmp_path),
+        raw_transcript_hook=lambda text: (
+            observed.append(text)
+            or SingleTurnPreBrainDecision(
+                handled=True,
+                status="runtime_transport_captured",
+                data={"transport_only": True},
+            )
+        ),
+    )
+
+    assert result.success is True
+    assert result.status == "runtime_transport_captured"
+    assert observed == ["Good bye,   Aris."]
+    assert result.raw_transcript == "Good bye,   Aris."
+    assert result.cleaned_transcript == "Good bye,   Aris."
+    assert result.normalized_command == ""
+    assert result.data["raw_transcript_decision"]["data"]["transport_only"] is True
+    assert handled == []
+    assert tts.requests == []
+    assert speaker.play_count == 0
+    assert "piper.synthesize" not in order
+
+
+def test_unmatched_raw_lifecycle_hook_continues_to_normalized_ordinary_transport(tmp_path):
+    pipeline, _, _, stt, _, _, handled, _ = _pipeline(tmp_path)
+    stt.text = "Calculate two plus two."
+    raw_seen = []
+    normalized_seen = []
+
+    result = pipeline.run_once(
+        _request(tmp_path),
+        raw_transcript_hook=lambda text: (
+            raw_seen.append(text) or SingleTurnPreBrainDecision()
+        ),
+        pre_brain_hook=lambda text: (
+            normalized_seen.append(text)
+            or SingleTurnPreBrainDecision(
+                handled=True,
+                status="runtime_transport_captured",
+                data={"transport_only": True},
+            )
+        ),
+    )
+
+    assert result.success is True
+    assert result.status == "runtime_transport_captured"
+    assert raw_seen == ["Calculate two plus two."]
+    assert normalized_seen == ["calculate 2 + 2"]
+    assert result.raw_transcript == "Calculate two plus two."
+    assert result.cleaned_transcript == "Calculate two plus two"
+    assert result.normalized_command == "calculate 2 + 2"
+    assert handled == []
+
+
 def test_local_output_uses_pipeline_tts_and_speaker_without_brain(tmp_path):
     pipeline, order, _, _, tts, speaker, handled, _ = _pipeline(tmp_path)
 

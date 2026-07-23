@@ -53,7 +53,13 @@ class FakePipeline:
         for observer in list(self.stage_observers):
             observer(index, 6, label, status)
 
-    def run_once(self, request, cancellation_token=None, pre_brain_hook=None):
+    def run_once(
+        self,
+        request,
+        cancellation_token=None,
+        pre_brain_hook=None,
+        raw_transcript_hook=None,
+    ):
         self.requests.append(request)
         self._stage(2, "Recording", "running")
         if self.input_text:
@@ -61,10 +67,19 @@ class FakePipeline:
             self._stage(3, "Transcribing", "running")
             if self.on_transcribing is not None:
                 self.on_transcribing()
-        if pre_brain_hook is not None and self.input_text:
+        raw_decision = None
+        if raw_transcript_hook is not None and self.input_text:
+            raw_decision = raw_transcript_hook(self.input_text)
+        if (
+            self.input_text
+            and (raw_decision is None or not raw_decision.handled)
+            and pre_brain_hook is not None
+        ):
             decision = pre_brain_hook(self.input_text)
             assert decision.handled is True
             assert decision.continue_to_output is False
+        elif raw_decision is not None:
+            assert raw_decision.continue_to_output is False
         return SimpleNamespace(
             success=self.input_success,
             status=self.input_status,
@@ -287,6 +302,51 @@ def test_active_voice_no_speech_timeout_is_visible_and_keeps_adapter_open(tmp_pa
     assert adapter.capture_count == 2
 
 
+def test_successful_pipeline_with_empty_transcript_is_nonterminal_and_retries(tmp_path):
+    pipeline = FakePipeline()
+    pipeline.input_text = ""
+    pipeline.input_success = True
+    pipeline.input_status = "runtime_transport_captured"
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: "session-1",
+    )
+
+    first = adapter.wait_for_input(1.0)
+    second = adapter.wait_for_input(1.0)
+
+    assert first.status == second.status == "timeout"
+    assert adapter.capture_count == 2
+    assert adapter.last_diagnostics.pipeline_status == "runtime_transport_captured"
+    assert adapter.last_diagnostics.runtime_terminal is False
+
+
+def test_source_local_end_of_input_is_nonterminal_and_does_not_close_adapter(tmp_path):
+    pipeline = FakePipeline()
+    pipeline.input_text = ""
+    pipeline.input_success = False
+    pipeline.input_status = "end_of_input"
+    pipeline.input_error_stage = "recording"
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: "session-1",
+    )
+
+    first = adapter.wait_for_input(1.0)
+    pipeline.input_text = "calculate two plus two"
+    pipeline.input_success = True
+    pipeline.input_status = "runtime_transport_captured"
+    pipeline.input_error_stage = ""
+    second = adapter.wait_for_input(1.0)
+
+    assert first.status == "timeout"
+    assert first.metadata["runtime_terminal"] is False
+    assert second.status == "input"
+    assert adapter.capture_count == 2
+
+
 def test_active_command_diagnostics_use_current_command_capture_and_runtime_result(tmp_path):
     pipeline = FakePipeline()
     pipeline.input_text = "goodbye aris"
@@ -316,6 +376,8 @@ def test_active_command_diagnostics_use_current_command_capture_and_runtime_resu
     diagnostics = emitted[0]
     assert diagnostics.raw_transcript == "goodbye aris"
     assert diagnostics.alias_canonicalized_transcript == "goodbye ares"
+    assert diagnostics.lifecycle_normalized_transcript == "goodbye ares"
+    assert diagnostics.canonical_name == "ares"
     assert diagnostics.selected_lifecycle_action == "standby"
     assert diagnostics.core_service_bypassed is True
     assert diagnostics.lifecycle_state_before == "ACTIVE"
@@ -339,6 +401,9 @@ def test_active_command_diagnostics_use_current_command_capture_and_runtime_resu
     assert diagnostics.temporary_audio_cleanup_status == "removed"
     assert diagnostics.routing_started_at
     assert diagnostics.routing_completed_at
+    assert diagnostics.pipeline_status == "runtime_transport_captured"
+    assert diagnostics.runtime_terminal is False
+    assert diagnostics.runtime_terminal_reason == "not_terminal"
 
 
 @pytest.mark.parametrize(
@@ -502,7 +567,10 @@ def test_release_and_close_are_idempotent_and_leave_gate_idle(tmp_path):
     output.close()
     assert gate.snapshot()["capture_active"] is False
     assert gate.snapshot()["playback_active"] is False
-    assert active_input.wait_for_input(0.1).status == "end_of_input"
+    closed = active_input.wait_for_input(0.1)
+    assert closed.status == "end_of_input"
+    assert closed.metadata["runtime_terminal"] is False
+    assert closed.metadata["input_scope"] == "active_command"
 
 
 def test_voice_runtime_adapters_do_not_duplicate_hardware_or_brain_implementations():

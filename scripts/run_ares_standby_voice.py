@@ -185,10 +185,11 @@ def create_runtime(
         pipeline=pipeline,
         base_request=base_request,
         session_id_provider=lambda: session_manager.session_id,
+        lifecycle_state_provider=lambda: session_manager.state,
         voice_io_gate=gate,
         diagnostic_callback=(
             _active_command_diagnostic_callback(output_func)
-            if args.diagnostic_wake
+            if args.diagnostic_wake or args.diagnostic_routing
             else None
         ),
         status_callback=output_func,
@@ -297,6 +298,7 @@ def run_standby_voice(
         runtime = runtime_holder.get("runtime")
         if runtime is not None:
             runtime.shutdown(reason=f"signal_{error.signum}_during_preflight")
+        output_func("ARES runtime terminal reason: owner_cancellation.")
         output_func(
             f"ARES standby voice runtime terminated by signal {error.signum}; "
             "ownership lock released."
@@ -305,7 +307,8 @@ def run_standby_voice(
     except KeyboardInterrupt:
         runtime = runtime_holder.get("runtime")
         if runtime is not None:
-            runtime.shutdown(reason="keyboard_interrupt_during_preflight")
+            runtime.shutdown(reason="owner_cancellation")
+        output_func("ARES runtime terminal reason: owner_cancellation.")
         output_func("ARES standby voice runtime cancelled and cleaned up.")
         return 130
     except ValueError as error:
@@ -395,23 +398,32 @@ def _run_standby_voice_locked(
     try:
         result = runtime.run()
     except KeyboardInterrupt:
-        runtime.shutdown(reason="keyboard_interrupt")
+        runtime.shutdown(reason="owner_cancellation")
+        output_func("ARES runtime terminal reason: owner_cancellation.")
         output_func("ARES standby voice runtime cancelled and cleaned up.")
         return 130
     except RuntimeTerminationRequested as error:
         runtime.shutdown(reason=f"signal_{error.signum}")
+        output_func("ARES runtime terminal reason: owner_cancellation.")
         output_func(
             f"ARES standby voice runtime received signal {error.signum} and cleaned up."
         )
         return 128 + error.signum
     except (OSError, RuntimeError, TimeoutError) as error:
         runtime.shutdown(reason="foreground_runtime_error")
+        output_func("ARES runtime terminal reason: unrecoverable_failure.")
         output_func(
             "ARES standby voice runtime failed and cleaned up: "
             f"{error.__class__.__name__}:{str(error)[:160]}"
         )
         return 1
-    if result.success and result.status == "stopped":
+    terminal_reason = _reported_terminal_reason(result)
+    output_func(f"ARES runtime terminal reason: {terminal_reason}.")
+    if (
+        result.success
+        and result.status == "stopped"
+        and terminal_reason == "explicit_shutdown_command"
+    ):
         output_func("ARES standby voice runtime stopped cleanly.")
         return 0
     output_func(
@@ -419,6 +431,15 @@ def _run_standby_voice_locked(
         f"{result.error_code or result.stop_reason}."
     )
     return 1
+
+
+def _reported_terminal_reason(result: Any) -> str:
+    reason = str(getattr(result, "stop_reason", "") or "").strip()
+    if reason in {"explicit_shutdown_command", "owner_shutdown_phrase"}:
+        return "explicit_shutdown_command"
+    if reason in {"input_cancelled", "owner_cancellation"}:
+        return "owner_cancellation"
+    return reason or "unrecoverable_failure"
 
 
 @contextmanager
@@ -547,6 +568,9 @@ def render_active_command_diagnostics(
         f"  Cleaned transcript: {diagnostics.cleaned_transcript or '<empty>'}",
         "  Alias-canonicalized transcript: "
         f"{diagnostics.alias_canonicalized_transcript or '<empty>'}",
+        "  Lifecycle-normalized transcript: "
+        f"{diagnostics.lifecycle_normalized_transcript or '<empty>'}",
+        f"  Canonical name: {diagnostics.canonical_name or '<none>'}",
         f"  Lifecycle classification: {diagnostics.lifecycle_classification}",
         f"  Selected lifecycle action: {diagnostics.selected_lifecycle_action}",
         "  CoreService routing bypassed: "
@@ -557,6 +581,13 @@ def render_active_command_diagnostics(
         "  Active session: "
         f"{diagnostics.session_id_before or 'none'} -> "
         f"{diagnostics.session_id_after or 'none'}",
+        f"  State before: {diagnostics.lifecycle_state_before or 'unknown'}",
+        f"  State after: {diagnostics.lifecycle_state_after or 'unknown'}",
+        f"  Session before: {diagnostics.session_id_before or 'none'}",
+        f"  Session after: {diagnostics.session_id_after or 'none'}",
+        f"  Pipeline status: {diagnostics.pipeline_status}",
+        f"  Runtime terminal: {'yes' if diagnostics.runtime_terminal else 'no'}",
+        f"  Runtime terminal reason: {diagnostics.runtime_terminal_reason}",
         f"  Capture stop reason: {diagnostics.capture_stop_reason or 'unknown'}",
         f"  Raw capture duration: {diagnostics.raw_capture_duration_seconds:.3f}s",
         "  Finalized candidate duration: "
