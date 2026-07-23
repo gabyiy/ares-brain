@@ -4,7 +4,7 @@ Last Updated: 2026-07-23
 
 Current Version
 
-ARES v2.12 - Deterministic Active Lifecycle Control
+ARES v2.13 - Lifecycle-Only Acoustic Name Canonicalization
 
 ---
 
@@ -12,7 +12,7 @@ Current Status
 
 ARES is at the completed Architecture Hardening foundation plus a central deterministic Capital/Core Brain session manager, persistent foreground runtime, and injected Raspberry Pi standby wake listener. Verified components include ALSA input/output, constrained Vosk standby recognition, bounded offline Whisper active-command STT, offline Piper TTS, configurable voice profiles, controlled single-turn and bounded multi-turn pipelines, adaptive RMS end-of-speech capture, complete ordered utterance assembly, duration-checked canonical 16 kHz mono PCM normalization, production natural-language calculator routing, and central explicit long-term owner memory with confirmation-gated CRUD.
 
-Owner Raspberry Pi evidence now proves the Phase 108 transport is healthy in the production route: it calibrates, detects `Ares`, plays `Yes Gabi.`, starts active capture, detects and finalizes owner speech, and starts Whisper transcription. Persistent PCM and wake thresholds are not the current defect. Phase 109 instead fixes active lifecycle control: raw Whisper text reaches one exact deterministic normalizer before arithmetic normalization or ordinary routing; goodbye returns to standby without ending the process; only an explicit supported shutdown phrase ends normal foreground operation; and every actual exit prints a terminal reason. All 2252 collected tests pass, while real Raspberry Pi lifecycle behavior remains the next bounded owner proof.
+Owner Raspberry Pi evidence proves the Phase 108 transport is healthy in the production route: it calibrates, detects `Ares`, plays `Yes Gabi.`, starts active capture, detects and finalizes owner speech, and runs Whisper. The latest shutdown failure was deterministic: Whisper produced `Shut down RS`, while Phase 109 accepted only `Ares`/`Aris`/`Aries` in name-last lifecycle phrases. Phase 110 keeps the exact parser boundary and adds lifecycle-only acoustic `RS` tokenization plus name-first controls. All 2325 collected tests pass; real Raspberry Pi standby and shutdown behavior remains the bounded owner proof.
 
 Checkpoint root causes and fixes:
 
@@ -23,8 +23,8 @@ Checkpoint root causes and fixes:
 - Checkpoint 3 adds one injected `StandbyWakeListener` to the Capital-owned runtime. Linux standby uses calibrated RMS VAD as the low-cost first stage, canonical 16 kHz mono PCM, and an injected `WakeRecognizer` only for a bounded candidate. Non-wake speech remains silent in standby and never reaches CoreService.
 - Standby holds one explicitly owned ALSA stream, calibrates once per standby epoch, retains bounded rolling pre-roll, and reuses both across unlimited timeout/rejection candidates. Auditing the latest `7/7` diagnostics showed rejected candidates were not reopening the stream: the hardware verifier activated and returned to standby after every accepted reliability prompt, deliberately closing for speaker/active ownership and starting a new standby epoch. The reliability phase now remains in standby and reuses one listener/stream/calibration across all ten prompts. Timed/manual recalibration happens on the same stream; device failure closes and reopens one replacement stream.
 - Active voice input/output reuse `SingleTurnVoicePipeline`. A shared capture/playback gate and post-playback delay prevent simultaneous input/output and self-wake. Candidate files are unique and removed by default, events contain no transcript/audio content, and shutdown cancels adapters without a lifecycle, recognition, or command worker loop. The only added threads are bounded transport helpers inside the already-owned ALSA adapter: one stdout PCM pump and one isolated stderr drain. No City activation, systemd, boot hook, daemon, GPT, cloud, network listener, or barge-in was added.
-- `normalize_lifecycle_command()` is the only production lifecycle phrase authority. It receives the raw Whisper transcript before calculator normalization, `IntentParser`, `CoreService`, planning, or skills; preserves raw and cleaned forms; removes only ordinary punctuation; collapses whitespace; normalizes `good bye` to `goodbye`; normalizes `shut down` and `shutdown` to one internal form; and canonicalizes only the complete owner-name aliases `ares`, `aris`, and `aries` to `ares`. It uses exact whole-phrase matching without substring, fuzzy, edit-distance, semantic, or broad-alias behavior.
-- Exact standby commands are `goodbye <name>`, `standby <name>`, `go to standby <name>`, `sleep <name>`, and `go to sleep <name>`; `good bye <name>` is an accepted surface form that normalizes to `goodbye <name>`. Exact shutdown commands are only `shutdown <name>` and `shut down <name>`, where `<name>` is `Ares`, `Aris`, or `Aries`. Longer sentences, missing names, unrelated suffixes, negatives such as `do not shutdown Ares`, and phrases that merely mention lifecycle words remain ordinary input.
+- `normalize_lifecycle_command()` is the only production lifecycle phrase authority. It receives the raw Whisper transcript before calculator normalization, `IntentParser`, `CoreService`, planning, or skills; preserves raw and cleaned forms; removes only ordinary punctuation; collapses whitespace; normalizes `good bye` to `goodbye`; and normalizes `shut down` and `shutdown` to one internal form. General identity and wake recognition still use only `ares`, `aris`, and `aries`. Inside an exact standby/shutdown name slot only, `rs`, split `r s`, and split `are s` canonicalize to `ares`, with diagnostics reporting an `acoustic_alias`. Ordinary text is never globally rewritten.
+- Exact standby commands are `goodbye <name>`, `<name> goodbye`, `standby <name>`, `<name> standby`, `go to standby <name>`, `sleep <name>`, and `go to sleep <name>`; `good bye` is an accepted surface form. Exact shutdown commands are `shutdown <name>`, `shut down <name>`, `<name> shutdown`, and `<name> shut down`, including `Ares shut down`. Lifecycle `<name>` accepts `Ares`, `Aris`, `Aries`, or the bounded active-Whisper acoustic form `RS`; `R S` and `Are S` are accepted only as the same complete slot. Negation is evaluated first. Longer sentences, missing names, unrelated suffixes, `do not`/`don't`/`never`/`should not` controls, zodiac questions, and ordinary `rs` text remain ordinary input.
 - A standby classification bypasses `CoreService`, clears the active session through `BrainSessionManager`, transitions `ACTIVE -> RETURNING_TO_STANDBY -> STANDBY`, and continues the same foreground loop. A shutdown classification bypasses `CoreService`, transitions `ACTIVE -> SHUTTING_DOWN -> STOPPED`, and terminates exactly once. Empty transcripts, no-speech, timeouts, transcription errors, unknown commands, phrase mismatches, completed single voice turns, and source-local EOF remain nonterminal and can never be reclassified as shutdown.
 - Active-command diagnostics print the raw, cleaned, lifecycle-normalized, and canonical-name values; lifecycle classification/action; CoreService bypass; state/session before and after; pipeline status; and runtime terminal flag/reason. The launcher prints an explicit exit reason such as `explicit_shutdown_command`, `owner_cancellation`, or `unrecoverable_failure` instead of reporting an unexplained clean stop after `Transcribing command`.
 - `VoskWakeRecognizer` loads the configured local model once and constrains decoding to exact `ares`, `aris`, and `aries` alias slots under the empty, `hey`, `hello`, `okay`, and `wake up` prefixes, exact standby/shutdown controls, and `[unk]`. Complete-phrase token matching remains mandatory; there is no substring, edit-distance, fuzzy, or learned-alias fallback.
@@ -188,7 +188,7 @@ Confirmed Phase 3 foundation:
 - Output-only acknowledgement TTS/playback with no fake single-turn input event
 - Architecture Hardening Checkpoint before real hardware/adapters
 
-Phase 109 final full-suite total: 2252 passed.
+Phase 110 final full-suite total: 2325 passed.
 
 Hardware-free Raspberry Pi verification after pulling:
 
@@ -220,18 +220,25 @@ python scripts/manual_diagnose_persistent_pcm.py \
 
 This command remains available for bounded transport diagnosis, but the owner has now proved the repaired persistent production route through calibration, wake recognition, acknowledgement, active capture, speech detection, command finalization, and Whisper start. Do not repeat PCM or threshold tuning to diagnose the current lifecycle failure.
 
-The next bounded Raspberry Pi action is lifecycle verification, with at most three attempts per requested phrase:
+The next bounded Raspberry Pi action is lifecycle verification, with at most three attempts per requested phrase. Run the standby sequence and direct shutdown sequence separately:
 
 ```bash
 python scripts/manual_verify_standby_wake_hardware.py \
-  --verification-mode lifecycle \
+  --verification-mode standby \
+  --attempts-per-test 3 \
+  --diagnostic-routing \
+  --diagnostic-wake \
+  --wake-vad-sensitive
+
+python scripts/manual_verify_standby_wake_hardware.py \
+  --verification-mode shutdown \
   --attempts-per-test 3 \
   --diagnostic-routing \
   --diagnostic-wake \
   --wake-vad-sensitive
 ```
 
-The helper must print the actual Whisper transcript and central lifecycle classification. It asks for `Ares`, confirms `Yes Gabi.`, asks for `goodbye Ares`, proves the process remains alive in standby, reactivates with a new session ID, then asks for `shutdown Ares` and proves one clean explicit shutdown. This owner run is physical lifecycle proof; deterministic tests cannot prove Raspberry Pi Whisper output or audible state transitions.
+The helper must print the actual Whisper transcript and central lifecycle classification. Standby mode asks for `Ares`, confirms `Yes Gabi.`, asks for `goodbye Ares`, proves the process remains alive in standby, reactivates with a new session ID, then asks for `Ares shut down`. Shutdown mode asks for `Ares` and then `Ares, shut down`. A real `RS` result must show acoustic-alias canonicalization and one clean explicit shutdown. These owner runs are physical lifecycle proof; deterministic tests cannot prove Raspberry Pi Whisper output or audible state transitions.
 
 Raspberry Pi post-pull verification:
 
@@ -2244,15 +2251,15 @@ Text REPL
 
 Immediate Next Milestone
 
-Pull Phase 109 and run the bounded lifecycle verifier. Persistent PCM is owner-proven healthy through wake, acknowledgement, active capture, command finalization, and Whisper start, so microphone, VAD, Vosk, wake-confidence, and threshold tuning are outside this checkpoint. The verifier must prove that `goodbye Ares` returns to standby while the foreground process stays alive, a second `Ares` creates a new session, and `shutdown Ares` alone produces one explicit normal termination. It must show the actual Whisper transcript and lifecycle classification for each requested phrase. Runtime ownership remains in Capital/Core. Do not add boot startup, daemonization, barge-in, GPT, cloud services, autonomous City activation, or a second lifecycle/timer system.
+Pull Phase 110 and run the two bounded lifecycle verifier modes. Persistent PCM is owner-proven healthy through wake, acknowledgement, active capture, command finalization, and Whisper, so microphone, VAD, Vosk, wake-confidence, and threshold tuning are outside this checkpoint. Standby mode must prove that `goodbye Ares` returns to standby while the foreground process stays alive, a second `Ares` creates a new session, and `Ares shut down` terminates once. Shutdown mode must prove the shorter `Ares, shut down` sequence. If Whisper emits `RS`, `R S`, or `Are S`, diagnostics must show lifecycle-only canonicalization to `ares` and CoreService bypass. Runtime ownership remains in Capital/Core. Do not add boot startup, daemonization, barge-in, GPT, cloud services, autonomous City activation, or a second lifecycle/timer system.
 
 Next technical choices:
 
-- Pull latest `main` and run `python scripts/manual_verify_standby_wake_hardware.py --verification-mode lifecycle --attempts-per-test 3 --diagnostic-routing --diagnostic-wake --wake-vad-sensitive`. Do not require ten repetitions for this bounded lifecycle checkpoint.
+- Pull latest `main` and run `python scripts/manual_verify_standby_wake_hardware.py --verification-mode standby --attempts-per-test 3 --diagnostic-routing --diagnostic-wake --wake-vad-sensitive`, then repeat with `--verification-mode shutdown`. Do not require ten repetitions for this bounded lifecycle checkpoint.
 - Inspect owner state only through `python scripts/inspect_owner_memory.py --summary --pending` or its focused flags; malformed durable or transient data must fail closed rather than be reset and executed.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
 - An exact `ares`, `aris`, or exact-slot `aries` result resolves to canonical `ares`. Confidence `>= 0.55` accepts; `0.40` through less than `0.55` requires two identical exact results within eight seconds; below `0.40`, `[unk]`, unrelated words, and partial words reject. Missing confidence is permitted only for one exact activation backed by validated VAD/canonical audio. Do not add output-driven aliases, substring matching, or fuzzy matching.
-- `core.AresIdentity` remains the bounded owner-name alias authority. `core.LifecycleControl.normalize_lifecycle_command()` is the one lifecycle command authority and runs on raw Whisper text before calculator normalization, `CoreService`, parser, planner, `SkillManager`, or skills.
+- `core.AresIdentity` remains the bounded wake/general owner-name alias authority. `core.LifecycleControl.normalize_lifecycle_command()` is the one lifecycle command authority and runs on raw Whisper text before calculator normalization, `CoreService`, parser, planner, `SkillManager`, or skills. Lifecycle-only `rs`, `r s`, and `are s` are never added to the general alias list.
 - Wake-candidate and active-command diagnostics are separate owner-terminal streams. The prior active-stage `2.260s`/`5.220s` maximum-duration display came from the stale wake result; active diagnostics now use the current `SingleTurnVoicePipeline` recording metadata. Command wait, capture ownership, speech, transcription, processing, and no-speech states are visible. Command VAD remains at its independently validated 15-second maximum and 0.9-second terminal silence.
 - Do not retune the owner-proven PCM, wake, Vosk, or threshold path for an active lifecycle classification or runtime-loop defect.
 - Keep systemd/boot startup for the next separately reviewed checkpoint after hardware stability is demonstrated.
@@ -2297,7 +2304,7 @@ Verification Notes
 - `scripts/verify_phase2_events_memory.py` verifies router event publication and memory turn storage with temporary memory files.
 - Run it with `python scripts/verify_phase2_events_memory.py`.
 - Automated tests run with `py -m pytest`.
-- Phase 109 final pytest collection and result: 2252 passed.
+- Phase 110 final pytest collection and result: 2325 passed.
 - Phase 3 skill package compiles with `py -m compileall skills`.
 - `SkillManager` was manually checked with the built-in time/date skill.
 - Text REPL was verified with `hello`, `what time is it`, `what date is it`, and `quit`.
@@ -2561,7 +2568,7 @@ Next Planned Step
 - Architecture hardening before real hardware/adapters is complete: lifecycle, contracts, manifests, migrations, health/fallback, and measured resource budgets are implemented.
 - Phase 3 now includes the Capital-owned foreground standby wake runtime with one persistent ALSA stream per standby epoch, one-time/in-place calibration, rolling pre-roll, constrained Vosk grammar, exact `Ares`/`Aris`/`Aries` name slots, owner-local wake diagnostics, bounded confidence tiers, and finalized-WAV duration guards in deterministic verification.
 - Persistent PCM is owner-proven healthy through calibration, Vosk wake, acknowledgement, active capture, speech endpointing, and Whisper start. Do not restart threshold tuning for the current active lifecycle defect.
-- Pull `main` on Raspberry Pi and run `python scripts/manual_verify_standby_wake_hardware.py --verification-mode lifecycle --attempts-per-test 3 --diagnostic-routing --diagnostic-wake --wake-vad-sensitive`. Require visible raw Whisper text and lifecycle classification, goodbye-to-standby without exit, reactivation with a new session ID, and one explicit shutdown before recording physical lifecycle proof.
+- Pull `main` on Raspberry Pi and run the hardware verifier's `standby` and `shutdown` modes with three attempts, routing diagnostics, wake diagnostics, and the sensitive wake profile. Require visible raw Whisper text, lifecycle-only `RS` canonicalization when applicable, goodbye-to-standby without exit, reactivation with a new session ID, and one explicit shutdown before recording physical lifecycle proof.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not enable default real weather/market API behavior, Google Calendar integration, GPT, embeddings, vision, scheduling, notifications, or background automation yet.
