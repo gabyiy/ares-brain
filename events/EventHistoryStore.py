@@ -1,3 +1,4 @@
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DEFAULT_EVENT_HISTORY_PATH = DATA_DIR / "event_history.json"
 DEFAULT_MAX_HISTORY = 100
+DEFAULT_EVENT_HISTORY_APPEND_LOCK_TIMEOUT_SECONDS = 0.05
 EVENT_PRIORITIES = {"low", "normal", "high", "critical"}
 
 
@@ -119,6 +121,7 @@ class EventHistoryStore:
         recover_dead_owner_lock: bool = True,
         stale_lock_seconds: float = DEFAULT_STALE_LOCK_SECONDS,
         lock_process_alive: Optional[Callable[[int], Optional[bool]]] = None,
+        append_lock_timeout_seconds: float = DEFAULT_EVENT_HISTORY_APPEND_LOCK_TIMEOUT_SECONDS,
     ):
         self.path = Path(path) if path else (_event_history_path_from_env() or DEFAULT_EVENT_HISTORY_PATH)
         self.max_records = max(0, int(max_records))
@@ -134,26 +137,49 @@ class EventHistoryStore:
         self._recover_dead_owner_lock = recover_dead_owner_lock
         self._stale_lock_seconds = float(stale_lock_seconds)
         self._lock_process_alive = lock_process_alive
+        self._append_lock_timeout_seconds = _validated_append_lock_timeout_seconds(
+            append_lock_timeout_seconds
+        )
         self._lock = RLock()
+        self._diagnostic_lock = RLock()
         self._dropped_event_count = 0
         self._reported_failures: set[str] = set()
 
     @property
     def dropped_event_count(self) -> int:
-        with self._lock:
+        with self._diagnostic_lock:
             return self._dropped_event_count
 
     def add(self, event: Any, result: Any) -> Optional[EventHistoryRecord]:
         record = EventHistoryRecord.from_event_result(event, result)
-        with self._lock:
-            try:
-                records = self._load()
-                records.append(record)
-                self._save(self._bounded(records))
-            except (MigrationError, OSError) as error:
-                self._record_dropped_event(error)
-                return None
-            return record
+        acquired = self._lock.acquire(timeout=self._append_lock_timeout_seconds)
+        if not acquired:
+            warning = self._record_dropped_event(
+                MigrationError(
+                    "Event history append lock acquisition timed out after "
+                    f"{self._append_lock_timeout_seconds:.3f} seconds",
+                    schema_name=SCHEMA_EVENT_HISTORY,
+                    path=self.path,
+                    status="append_lock_timeout",
+                )
+            )
+            self._emit_warning(warning)
+            return None
+
+        warning: Optional[str] = None
+        recorded: Optional[EventHistoryRecord] = None
+        try:
+            records = self._load()
+            records.append(record)
+            self._save(self._bounded(records))
+            recorded = record
+        except (MigrationError, OSError) as error:
+            warning = self._record_dropped_event(error)
+        finally:
+            self._lock.release()
+
+        self._emit_warning(warning)
+        return recorded
 
     def list(self) -> List[EventHistoryRecord]:
         with self._lock:
@@ -217,8 +243,7 @@ class EventHistoryStore:
             return []
         return list(records)[-self.max_records :]
 
-    def _record_dropped_event(self, error: Exception) -> None:
-        self._dropped_event_count += 1
+    def _record_dropped_event(self, error: Exception) -> Optional[str]:
         status = error.status if isinstance(error, MigrationError) else type(error).__name__
         reason = (
             "store locked"
@@ -227,14 +252,29 @@ class EventHistoryStore:
         )
         warning = f"WARNING: event history append skipped: {reason}: {self.path}"
         warning_key = f"{status}:{str(error)[:160]}"
-        if warning_key in self._reported_failures:
-            return
-        self._reported_failures.add(warning_key)
-        self._warning_callback(warning)
+        with self._diagnostic_lock:
+            self._dropped_event_count += 1
+            if warning_key in self._reported_failures:
+                return None
+            self._reported_failures.add(warning_key)
+        return warning
+
+    def _emit_warning(self, warning: Optional[str]) -> None:
+        if warning is not None:
+            self._warning_callback(warning)
 
 
 def _default_warning(message: str) -> None:
     print(message, file=sys.stderr)
+
+
+def _validated_append_lock_timeout_seconds(value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("append_lock_timeout_seconds must be numeric")
+    seconds = float(value)
+    if not math.isfinite(seconds) or not 0.001 <= seconds <= 5.0:
+        raise ValueError("append_lock_timeout_seconds must be between 0.001 and 5 seconds")
+    return seconds
 
 
 def _event_to_dict(event: Any) -> Dict[str, Any]:

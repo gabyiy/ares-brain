@@ -391,6 +391,11 @@ class SingleTurnVoiceStageMixin:
         )
         state.data["transcription"] = transcription.to_dict()
         if not transcription.success:
+            failure_status = (
+                "transcription_timeout"
+                if transcription.status == "transcription_timeout"
+                else "transcription_failed"
+            )
             self._stage(
                 3,
                 "Transcribing",
@@ -402,7 +407,7 @@ class SingleTurnVoiceStageMixin:
                 state,
                 "transcription",
                 transcription.error_message or transcription.status,
-                "transcription_failed",
+                failure_status,
             )
         if not state.recognized_text:
             self._stage(3, "Transcribing", "empty")

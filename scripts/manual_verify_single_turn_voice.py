@@ -21,6 +21,7 @@ from core import (  # noqa: E402
     LinuxWhisperSpeechToTextAdapter,
     SingleTurnVoicePipeline,
     SingleTurnVoiceRequestV1,
+    WhisperSubprocessRunner,
     get_global_conversation_context,
 )
 from events import EventHistoryStore, get_global_bus  # noqa: E402
@@ -346,6 +347,9 @@ def create_pipeline(
     speech_to_text_adapter: Any = None,
     text_to_speech_adapter: Any = None,
     speaker_adapter: Any = None,
+    whisper_status_callback: Optional[Callable[[str], None]] = None,
+    whisper_termination_grace_seconds: float = 1.0,
+    whisper_hard_cleanup_deadline_seconds: float = 3.0,
 ) -> SingleTurnVoicePipeline:
     core_service = (
         skill_manager.core_service
@@ -369,6 +373,11 @@ def create_pipeline(
         language=args.language,
         timeout_seconds=_transcription_timeout(args),
         minimum_rms=args.min_rms,
+        runner=WhisperSubprocessRunner(
+            termination_grace_seconds=whisper_termination_grace_seconds,
+            hard_cleanup_deadline_seconds=whisper_hard_cleanup_deadline_seconds,
+            status_callback=whisper_status_callback,
+        ),
     )
     text_to_speech = text_to_speech_adapter or LinuxPiperTextToSpeechAdapter(
         piper_command=_default_piper_command(),

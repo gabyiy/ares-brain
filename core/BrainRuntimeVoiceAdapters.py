@@ -30,6 +30,7 @@ _INPUT_TIMEOUT_STATUSES = {
     "no_speech_timeout",
     "silent_audio",
     "blank_transcription",
+    "transcription_timeout",
     "transcription_rejected",
     "transcript_rejected",
 }
@@ -73,6 +74,15 @@ class ActiveCommandLocalDiagnostics:
     transcription_completed_at: str = ""
     transcription_status: str = "not_started"
     transcription_timeout_seconds: float = 0.0
+    whisper_process_pid: int = 0
+    whisper_process_group_id: int = 0
+    whisper_process_exit_code: Optional[int] = None
+    whisper_process_elapsed_seconds: float = 0.0
+    whisper_process_terminated: bool = False
+    whisper_process_killed: bool = False
+    whisper_process_reaped: bool = False
+    whisper_process_cleanup_completed: bool = False
+    whisper_output_handles_closed: bool = False
     transcript_parsing_status: str = "not_started"
     routing_started_at: str = ""
     routing_completed_at: str = ""
@@ -433,10 +443,22 @@ class SingleTurnPipelineRuntimeInputAdapter:
                         or 0.0
                     )
                     emit_once(
-                        "Command transcription timed out"
+                        "Command transcription timeout handled"
                         + (f" after {timeout:g} seconds" if timeout else "")
-                        + "; still active"
+                        + "; ARES remains active"
                     )
+                    gate_released = not bool(
+                        self.voice_io_gate.snapshot().get("capture_active")
+                    )
+                    emit_once(
+                        "Microphone gate released: "
+                        + ("yes" if gate_released else "no")
+                    )
+                    emit_once(
+                        "Temporary audio cleanup: "
+                        + self.last_diagnostics.temporary_audio_cleanup_status
+                    )
+                    emit_once("ARES: I could not transcribe that. Please try again.")
                 else:
                     emit_once(
                         f"Command transcription failed: {error_reason[:120]}; still active"
@@ -449,6 +471,19 @@ class SingleTurnPipelineRuntimeInputAdapter:
                     "safe": True,
                     "source": "single_turn_voice_pipeline",
                     "capture_status": status,
+                    "transcription_failure_type": (
+                        "transcription_timeout"
+                        if status == "transcription_timeout"
+                        or "timeout" in error_reason.casefold()
+                        else "transcription_failed"
+                    ),
+                    "retryable": True,
+                    "microphone_gate_released": not bool(
+                        self.voice_io_gate.snapshot().get("capture_active")
+                    ),
+                    "temporary_audio_cleanup_status": (
+                        self.last_diagnostics.temporary_audio_cleanup_status
+                    ),
                     "runtime_terminal": False,
                     "contains_audio": False,
                 },
@@ -708,6 +743,8 @@ def _active_command_diagnostics(result: Any) -> ActiveCommandLocalDiagnostics:
     audio_finalization = dict(data.get("audio_finalization") or {})
     transcription_contract = dict(data.get("transcription") or {})
     transcription = dict(transcription_contract.get("data") or {})
+    process = dict(transcription.get("process") or {})
+    process_metadata = dict(process.get("metadata") or {})
     transcription_boundary = dict(data.get("transcription_boundary") or {})
     cleanup = dict(data.get("cleanup") or {})
     stop_reason = _capture_stop_reason(result)
@@ -794,6 +831,25 @@ def _active_command_diagnostics(result: Any) -> ActiveCommandLocalDiagnostics:
             transcription.get("transcription_timeout_seconds")
             or transcription_boundary.get("timeout_seconds")
             or 0.0
+        ),
+        whisper_process_pid=int(process_metadata.get("pid", 0) or 0),
+        whisper_process_group_id=int(process_metadata.get("pgid", 0) or 0),
+        whisper_process_exit_code=(
+            int(process.get("returncode"))
+            if process.get("returncode") is not None
+            else None
+        ),
+        whisper_process_elapsed_seconds=float(
+            process_metadata.get("elapsed_seconds", 0.0) or 0.0
+        ),
+        whisper_process_terminated=bool(process_metadata.get("terminated")),
+        whisper_process_killed=bool(process_metadata.get("killed")),
+        whisper_process_reaped=bool(process_metadata.get("reaped")),
+        whisper_process_cleanup_completed=bool(
+            process_metadata.get("cleanup_completed")
+        ),
+        whisper_output_handles_closed=bool(
+            process_metadata.get("output_handles_closed")
         ),
         transcript_parsing_status=str(
             transcription.get("transcript_parsing_status") or "not_started"

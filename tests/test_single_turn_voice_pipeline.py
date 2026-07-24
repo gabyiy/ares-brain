@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from threading import Event as ThreadEvent, Thread
+import time
 import wave
 
 import pytest
@@ -227,15 +229,28 @@ class FinalizedPathVadMicrophone(FakeVadMicrophone):
 
 
 class FakeSpeechToText:
-    def __init__(self, order, text="calculate 2 + 2", fail=False, clock=None, advance=0, on_call=None):
+    def __init__(
+        self,
+        order,
+        text="calculate 2 + 2",
+        fail=False,
+        failure_status="transcription_failed",
+        failure_message="whisper_fail",
+        clock=None,
+        advance=0,
+        on_call=None,
+    ):
         self.order = order
         self.text = text
         self.fail = fail
+        self.failure_status = failure_status
+        self.failure_message = failure_message
         self.clock = clock
         self.advance = advance
         self.on_call = on_call
         self.calls = 0
         self.audio_chunks = []
+        self.cancel_count = 0
 
     def health_check(self):
         return TranscriptionResult(True, "healthy", data={})
@@ -249,7 +264,11 @@ class FakeSpeechToText:
         if self.clock:
             self.clock.advance(self.advance)
         if self.fail:
-            return TranscriptionResult(False, "transcription_failed", error_message="whisper_fail")
+            return TranscriptionResult(
+                False,
+                self.failure_status,
+                error_message=self.failure_message,
+            )
         return TranscriptionResult(
             True,
             "transcribed",
@@ -257,6 +276,14 @@ class FakeSpeechToText:
             confidence=0.95,
             data={"processing_time_seconds": self.advance or 0.25},
         )
+
+    def cancel_current(self):
+        self.cancel_count += 1
+        self.order.append("whisper.cancel")
+
+    def stop(self):
+        self.order.append("whisper.stop")
+        return TranscriptionResult(True, "stopped")
 
 
 class FakeTextToSpeech:
@@ -547,6 +574,15 @@ def test_corrupt_recording_fails_before_whisper(tmp_path):
     [
         (lambda order: FakeSpeechToText(order, text=""), "blank_transcription"),
         (lambda order: FakeSpeechToText(order, fail=True), "transcription_failed"),
+        (
+            lambda order: FakeSpeechToText(
+                order,
+                fail=True,
+                failure_status="transcription_timeout",
+                failure_message="whisper_transcription_timeout",
+            ),
+            "transcription_timeout",
+        ),
     ],
 )
 def test_transcription_failures_stop_before_brain_and_tts(tmp_path, stt, expected_status):
@@ -788,12 +824,13 @@ def test_brain_timeout_uses_safe_fallback(tmp_path):
 
 
 def test_stop_requests_child_cleanup_hooks(tmp_path):
-    pipeline, _, microphone, _, tts, speaker, _, _ = _pipeline(tmp_path)
+    pipeline, _, microphone, stt, tts, speaker, _, _ = _pipeline(tmp_path)
 
     result = pipeline.run_once(_request(tmp_path))
 
     assert result.success is True
     assert microphone.cancel_count >= 1
+    assert stt.cancel_count >= 1
     assert tts.cancel_count >= 1
     assert speaker.cancel_count >= 1
 
@@ -1179,6 +1216,43 @@ def test_locked_event_history_does_not_block_acknowledgement_or_calculator(tmp_p
     assert any("event history append skipped" in warning for warning in warnings)
 
 
+def test_contended_in_process_event_history_cannot_block_transcription_or_response(
+    tmp_path,
+):
+    warnings = []
+    history = EventHistoryStore(
+        path=tmp_path / "events.json",
+        warning_callback=warnings.append,
+        append_lock_timeout_seconds=0.001,
+    )
+    pipeline, *_ = _pipeline(tmp_path, event_history_store=history)
+    lock_held = ThreadEvent()
+    release_lock = ThreadEvent()
+
+    def hold_append_lock():
+        with history._lock:
+            lock_held.set()
+            release_lock.wait(2.0)
+
+    owner = Thread(target=hold_append_lock)
+    owner.start()
+    assert lock_held.wait(1.0)
+    try:
+        started = time.monotonic()
+        result = pipeline.run_once(_request(tmp_path, playback_enabled=False))
+        elapsed = time.monotonic() - started
+    finally:
+        release_lock.set()
+        owner.join(timeout=1.0)
+
+    assert result.success is True
+    assert result.brain_text_response == "Result: 4"
+    assert elapsed < 0.5
+    assert not owner.is_alive()
+    assert history.dropped_event_count > 0
+    assert len(warnings) == 1
+
+
 def test_microphone_and_event_store_lock_are_released_before_whisper(tmp_path):
     history_path = tmp_path / "events.json"
     history = EventHistoryStore(path=history_path)
@@ -1239,6 +1313,31 @@ def test_delete_always_removes_temporary_audio_after_transcription_failure(tmp_p
     result = pipeline.run_once(request)
 
     assert result.success is False
+    assert result.error_stage == "transcription"
+    assert not Path(request.recording_output_path).exists()
+    assert request.recording_output_path in result.data["cleanup"]["removed"]
+
+
+def test_delete_always_removes_temporary_audio_after_typed_transcription_timeout(
+    tmp_path,
+):
+    order = []
+    stt = FakeSpeechToText(
+        order,
+        fail=True,
+        failure_status="transcription_timeout",
+        failure_message="whisper_transcription_timeout",
+    )
+    pipeline, *_ = _pipeline(tmp_path, stt=stt)
+    request = _request(
+        tmp_path,
+        playback_enabled=False,
+        cleanup_policy="delete_always",
+    )
+
+    result = pipeline.run_once(request)
+
+    assert result.status == "transcription_timeout"
     assert result.error_stage == "transcription"
     assert not Path(request.recording_output_path).exists()
     assert request.recording_output_path in result.data["cleanup"]["removed"]

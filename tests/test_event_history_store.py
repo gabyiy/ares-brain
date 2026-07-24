@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 import json
 import socket
+from threading import Event as ThreadEvent, Thread
+import time
 
 import pytest
 
@@ -145,6 +147,58 @@ def test_event_history_lock_failure_warns_counts_drop_and_does_not_raise(tmp_pat
     assert len(warnings) == 1
     assert warnings[0].startswith("WARNING: event history append skipped: store locked:")
     assert str(path) in warnings[0]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [True, "0.05", float("-inf"), float("inf"), 0, 0.0009, 5.001],
+)
+def test_event_history_append_lock_timeout_is_strictly_validated(tmp_path, value):
+    with pytest.raises(ValueError, match="append_lock_timeout_seconds"):
+        EventHistoryStore(
+            path=tmp_path / "events.json",
+            append_lock_timeout_seconds=value,
+        )
+
+
+def test_contended_append_returns_within_bound_and_preserves_live_store_lock(tmp_path):
+    path = tmp_path / "events.json"
+    warnings = []
+    store = EventHistoryStore(
+        path=path,
+        warning_callback=warnings.append,
+        append_lock_timeout_seconds=0.01,
+    )
+    owner_ready = ThreadEvent()
+    owner_release = ThreadEvent()
+
+    def hold_internal_append_lock():
+        with store._lock:
+            owner_ready.set()
+            owner_release.wait(2.0)
+
+    owner = Thread(target=hold_internal_append_lock)
+    owner.start()
+    assert owner_ready.wait(1.0)
+
+    try:
+        with StoreWriteLock(path):
+            started = time.monotonic()
+            first = store.add(_event(), _result())
+            second = store.add(_event(), _result())
+            elapsed = time.monotonic() - started
+
+            assert store_lock_path(path).exists()
+    finally:
+        owner_release.set()
+        owner.join(timeout=1.0)
+
+    assert not owner.is_alive()
+    assert first is None and second is None
+    assert elapsed < 0.5
+    assert store.dropped_event_count == 2
+    assert len(warnings) == 1
+    assert "append_lock_timeout" in warnings[0]
 
 
 def test_event_history_unexpected_programming_error_still_surfaces(tmp_path, monkeypatch):

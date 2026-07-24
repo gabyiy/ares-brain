@@ -626,6 +626,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         for name, adapter in (
             ("speaker", self.speaker_adapter),
             ("microphone", self.microphone_adapter),
+            ("speech_to_text", self.speech_to_text_adapter),
             ("text_to_speech", self.text_to_speech_adapter),
         ):
             cancel = getattr(adapter, "cancel_current", None)
@@ -638,7 +639,19 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
                         "error_message": safe_exception(error),
                     }
                     success = False
-            stopped = self._safe_adapter_call(adapter, "stop")
+            stop = getattr(adapter, "stop", None)
+            stopped = (
+                self._safe_adapter_call(adapter, "stop")
+                if callable(stop)
+                else {
+                    "success": True,
+                    "status": "no_persistent_resources",
+                    "metadata": {
+                        "safe": True,
+                        "source": "single_turn_voice_pipeline",
+                    },
+                }
+            )
             results[name] = result_dict(stopped)
             success = success and result_success(stopped)
         self.coordinator.reset()

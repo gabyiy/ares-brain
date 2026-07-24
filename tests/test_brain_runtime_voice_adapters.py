@@ -122,6 +122,19 @@ class FakePipeline:
                         "transcription_timeout_seconds": (
                             request.transcription_timeout_seconds or 30.0
                         ),
+                        "process": {
+                            "returncode": 0,
+                            "metadata": {
+                                "pid": 4102,
+                                "pgid": 4102,
+                                "elapsed_seconds": 0.42,
+                                "terminated": False,
+                                "killed": False,
+                                "reaped": True,
+                                "cleanup_completed": True,
+                                "output_handles_closed": True,
+                            },
+                        },
                         "transcript_parsing_status": (
                             "completed" if self.input_success else "not_started"
                         ),
@@ -229,7 +242,7 @@ def test_active_transcription_timeout_is_visible_bounded_and_keeps_session_input
     pipeline = FakePipeline()
     pipeline.input_text = ""
     pipeline.input_success = False
-    pipeline.input_status = "transcription_failed"
+    pipeline.input_status = "transcription_timeout"
     pipeline.input_error_stage = "transcription"
     pipeline.input_error_reason = "whisper_transcription_timeout"
     statuses = []
@@ -237,7 +250,7 @@ def test_active_transcription_timeout_is_visible_bounded_and_keeps_session_input
     request = replace(
         _request(tmp_path),
         cleanup_policy="delete_always",
-        transcription_timeout_seconds=30.0,
+        transcription_timeout_seconds=15.0,
     )
     adapter = SingleTurnPipelineRuntimeInputAdapter(
         pipeline=pipeline,
@@ -250,10 +263,26 @@ def test_active_transcription_timeout_is_visible_bounded_and_keeps_session_input
     result = adapter.wait_for_input(1.0)
 
     assert result.status == "timeout"
-    assert "Command transcription timed out after 30 seconds; still active" in statuses
+    assert result.metadata["transcription_failure_type"] == "transcription_timeout"
+    assert result.metadata["retryable"] is True
+    assert result.metadata["microphone_gate_released"] is True
+    assert (
+        "Command transcription timeout handled after 15 seconds; "
+        "ARES remains active"
+    ) in statuses
+    assert "Microphone gate released: yes" in statuses
+    assert "Temporary audio cleanup: removed" in statuses
+    assert "ARES: I could not transcribe that. Please try again." in statuses
     assert statuses[-1] == "No command heard; still active"
     assert len(diagnostics) == 1
-    assert adapter.wait_for_input(1.0).status == "timeout"
+    pipeline.input_text = "calculate two plus two"
+    pipeline.input_success = True
+    pipeline.input_status = "runtime_transport_captured"
+    pipeline.input_error_stage = ""
+    pipeline.input_error_reason = ""
+    retry = adapter.wait_for_input(1.0)
+    assert retry.status == "input"
+    assert retry.text == "calculate two plus two"
 
 
 @pytest.mark.parametrize("captured_text", ["goodbye ares", "shutdown ares"])
@@ -264,9 +293,9 @@ def test_failed_transcription_never_emits_lifecycle_control_input(
     pipeline = FakePipeline()
     pipeline.input_text = captured_text
     pipeline.input_success = False
-    pipeline.input_status = "transcription_failed"
+    pipeline.input_status = "transcription_timeout"
     pipeline.input_error_stage = "transcription"
-    pipeline.input_error_reason = "whisper_exit_2"
+    pipeline.input_error_reason = "whisper_transcription_timeout"
     adapter = SingleTurnPipelineRuntimeInputAdapter(
         pipeline=pipeline,
         base_request=_request(tmp_path),
@@ -277,6 +306,7 @@ def test_failed_transcription_never_emits_lifecycle_control_input(
 
     assert result.status == "timeout"
     assert result.text == ""
+    assert result.metadata["transcription_failure_type"] == "transcription_timeout"
 
 
 def test_active_voice_no_speech_timeout_is_visible_and_keeps_adapter_open(tmp_path):
@@ -413,6 +443,13 @@ def test_active_command_diagnostics_use_current_command_capture_and_runtime_resu
     assert diagnostics.transcription_backend == "whisper.cpp"
     assert diagnostics.transcription_status == "transcribed"
     assert diagnostics.transcription_timeout_seconds == 30.0
+    assert diagnostics.whisper_process_pid == 4102
+    assert diagnostics.whisper_process_group_id == 4102
+    assert diagnostics.whisper_process_exit_code == 0
+    assert diagnostics.whisper_process_elapsed_seconds == pytest.approx(0.42)
+    assert diagnostics.whisper_process_reaped is True
+    assert diagnostics.whisper_process_cleanup_completed is True
+    assert diagnostics.whisper_output_handles_closed is True
     assert diagnostics.transcript_parsing_status == "completed"
     assert diagnostics.microphone_gate_released_before_inference is True
     assert diagnostics.temporary_audio_cleanup_status == "removed"

@@ -131,7 +131,9 @@ def test_production_standby_voice_cli_defaults_match_verified_raspberry_pi_stack
     assert args.voice_profile == "en_US-hfc_male-medium"
     assert args.inactivity_seconds == 30
     assert args.timeout == 300
-    assert args.active_transcription_timeout == 30
+    assert args.active_transcription_timeout == 15
+    assert args.whisper_termination_grace == 1
+    assert args.whisper_hard_cleanup_deadline == 3
     assert args.diagnostic_routing is False
     assert args.diagnostic_wake is False
     assert args.wake_vad_sensitive is False
@@ -153,6 +155,8 @@ def test_production_standby_voice_cli_supports_required_overrides():
             "--voice-profile", "alternate",
             "--inactivity-seconds", "45",
             "--active-transcription-timeout", "22",
+            "--whisper-termination-grace", "0.75",
+            "--whisper-hard-cleanup-deadline", "2.5",
             "--diagnostic-routing",
             "--diagnostic-wake",
             "--wake-vad-sensitive",
@@ -170,6 +174,8 @@ def test_production_standby_voice_cli_supports_required_overrides():
     assert args.voice_profile == "alternate"
     assert args.inactivity_seconds == 45
     assert args.active_transcription_timeout == 22
+    assert args.whisper_termination_grace == 0.75
+    assert args.whisper_hard_cleanup_deadline == 2.5
     assert args.diagnostic_routing and args.diagnostic_wake and args.retain_diagnostic_audio
     assert args.wake_vad_sensitive is True
 
@@ -181,9 +187,9 @@ def test_active_command_pipeline_uses_separate_hard_whisper_timeout():
     request = run_ares_standby_voice.single_turn.request_from_args(command_args)
 
     assert command_args.timeout == 300
-    assert command_args.transcription_timeout == 30
+    assert command_args.transcription_timeout == 15
     assert request.timeout_seconds == 300
-    assert request.transcription_timeout_seconds == 30
+    assert request.transcription_timeout_seconds == 15
 
 
 @pytest.mark.parametrize("value", ["0", "nan", "301"])
@@ -207,6 +213,46 @@ def test_active_transcription_timeout_fails_closed_before_runtime_creation(
 
     assert code == 2
     assert "active transcription timeout" in output[0]
+    assert runtime.standby_wake_listener.start_count == 0
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["--whisper-termination-grace", "0"], "termination grace"),
+        (["--whisper-termination-grace", "nan"], "termination grace"),
+        (
+            [
+                "--whisper-termination-grace",
+                "2",
+                "--whisper-hard-cleanup-deadline",
+                "1",
+            ],
+            "hard cleanup deadline",
+        ),
+        (["--whisper-hard-cleanup-deadline", "31"], "hard cleanup deadline"),
+    ],
+)
+def test_whisper_cleanup_bounds_fail_closed_before_runtime_creation(
+    arguments,
+    message,
+    tmp_path,
+):
+    factory, runtime, _ = _factory()
+    output = []
+
+    code = run_ares_standby_voice.run_standby_voice(
+        [
+            *arguments,
+            "--runtime-lock-path",
+            str(tmp_path / "runtime"),
+        ],
+        output_func=output.append,
+        runtime_factory=factory,
+    )
+
+    assert code == 2
+    assert message in output[0].casefold()
     assert runtime.standby_wake_listener.start_count == 0
 
 
@@ -528,6 +574,9 @@ def test_production_composition_reuses_one_event_history_store(tmp_path):
     assert pipeline.event_history_store is history
     assert captured["event_history_store"] is history
     assert captured["skill_manager"].event_history_store is history
+    assert captured["whisper_status_callback"] is print
+    assert captured["whisper_termination_grace_seconds"] == 1.0
+    assert captured["whisper_hard_cleanup_deadline_seconds"] == 3.0
     assert runtime._event_history_store is history
     assert runtime.session_manager._event_history_store is history
     assert runtime.core_service._event_history_store is history
@@ -1649,7 +1698,16 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
         transcription_started_at="2026-07-16T10:00:00.020000Z",
         transcription_completed_at="2026-07-16T10:00:00.620000Z",
         transcription_status="transcribed",
-        transcription_timeout_seconds=30.0,
+        transcription_timeout_seconds=15.0,
+        whisper_process_pid=4312,
+        whisper_process_group_id=4312,
+        whisper_process_exit_code=-9,
+        whisper_process_elapsed_seconds=18.0,
+        whisper_process_terminated=True,
+        whisper_process_killed=True,
+        whisper_process_reaped=True,
+        whisper_process_cleanup_completed=True,
+        whisper_output_handles_closed=True,
         transcript_parsing_status="completed",
         routing_started_at="2026-07-16T10:00:00.630000Z",
         routing_completed_at="2026-07-16T10:00:00.640000Z",
@@ -1685,7 +1743,11 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
     assert "Finalized candidate duration: 1.200s" in rendered
     assert "WAV byte size: 38444" in rendered
     assert "WAV format: 16000 Hz, 1 channel(s), 2-byte samples" in rendered
-    assert "Transcription hard timeout: 30.000s" in rendered
+    assert "Transcription hard timeout: 15.000s" in rendered
+    assert "Whisper PID / PGID: 4312 / 4312" in rendered
+    assert "Whisper exit / elapsed: -9 / 18.000s" in rendered
+    assert "Whisper TERM / KILL / reaped: yes / yes / yes" in rendered
+    assert "Whisper cleanup / output handles closed: completed / yes" in rendered
     assert "Microphone gate released before inference: yes" in rendered
     assert "Temporary audio cleanup: removed" in rendered
 

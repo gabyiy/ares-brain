@@ -53,12 +53,14 @@ DEFAULT_COMMAND_WHISPER_MODEL = single_turn.DEFAULT_WHISPER_MODEL
 DEFAULT_VOICE_PROFILE = single_voice_launcher._configured_default_voice_profile()
 DEFAULT_INACTIVITY_SECONDS = 30.0
 DEFAULT_TIMEOUT_SECONDS = 300.0
-DEFAULT_ACTIVE_TRANSCRIPTION_TIMEOUT_SECONDS = 30.0
+DEFAULT_ACTIVE_TRANSCRIPTION_TIMEOUT_SECONDS = 15.0
+DEFAULT_WHISPER_TERMINATION_GRACE_SECONDS = 1.0
+DEFAULT_WHISPER_HARD_CLEANUP_DEADLINE_SECONDS = 3.0
 DEFAULT_RUNTIME_LOCK_PATH = REPO_ROOT / "data" / "runtime" / "ares_standby_voice.runtime"
 DEFAULT_RUNTIME_LOCK_STALE_SECONDS = 30.0
 
 
-class RuntimeTerminationRequested(Exception):
+class RuntimeTerminationRequested(BaseException):
     def __init__(self, signum: int) -> None:
         super().__init__(f"termination signal {signum}")
         self.signum = int(signum)
@@ -102,6 +104,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_ACTIVE_TRANSCRIPTION_TIMEOUT_SECONDS,
         help="hard timeout for each active-command Whisper subprocess",
+    )
+    parser.add_argument(
+        "--whisper-termination-grace",
+        type=float,
+        default=DEFAULT_WHISPER_TERMINATION_GRACE_SECONDS,
+        help="bounded SIGTERM grace before active Whisper receives SIGKILL",
+    )
+    parser.add_argument(
+        "--whisper-hard-cleanup-deadline",
+        type=float,
+        default=DEFAULT_WHISPER_HARD_CLEANUP_DEADLINE_SECONDS,
+        help="absolute bound for active Whisper process-group cleanup",
     )
     parser.add_argument("--diagnostic-routing", action="store_true")
     parser.add_argument("--diagnostic-wake", action="store_true")
@@ -179,6 +193,11 @@ def create_runtime(
         output_func=lambda _text: None,
         skill_manager=skill_manager,
         event_history_store=history,
+        whisper_status_callback=output_func,
+        whisper_termination_grace_seconds=args.whisper_termination_grace,
+        whisper_hard_cleanup_deadline_seconds=(
+            args.whisper_hard_cleanup_deadline
+        ),
     )
     gate = VoiceRuntimeGate(settle_delay_seconds=0.35)
     active_input = SingleTurnPipelineRuntimeInputAdapter(
@@ -331,6 +350,28 @@ def _run_standby_voice_locked(
         output_func(
             "ARES standby voice configuration error: active transcription timeout "
             "must be between 1 and 300 seconds."
+        )
+        return 2
+    if (
+        isinstance(args.whisper_termination_grace, bool)
+        or not math.isfinite(float(args.whisper_termination_grace))
+        or not 0.1 <= float(args.whisper_termination_grace) <= 10.0
+    ):
+        output_func(
+            "ARES standby voice configuration error: Whisper termination grace "
+            "must be between 0.1 and 10 seconds."
+        )
+        return 2
+    if (
+        isinstance(args.whisper_hard_cleanup_deadline, bool)
+        or not math.isfinite(float(args.whisper_hard_cleanup_deadline))
+        or not float(args.whisper_termination_grace)
+        <= float(args.whisper_hard_cleanup_deadline)
+        <= 30.0
+    ):
+        output_func(
+            "ARES standby voice configuration error: Whisper hard cleanup deadline "
+            "must be between the termination grace and 30 seconds."
         )
         return 2
     if args.retain_diagnostic_audio and not args.diagnostic_wake:
@@ -620,6 +661,19 @@ def render_active_command_diagnostics(
         f"{diagnostics.transcription_timeout_seconds:.3f}s",
         "  Whisper processing duration: "
         f"{diagnostics.whisper_processing_duration_seconds:.3f}s",
+        "  Whisper PID / PGID: "
+        f"{diagnostics.whisper_process_pid or 'unavailable'} / "
+        f"{diagnostics.whisper_process_group_id or 'unavailable'}",
+        "  Whisper exit / elapsed: "
+        f"{diagnostics.whisper_process_exit_code if diagnostics.whisper_process_exit_code is not None else 'unavailable'} / "
+        f"{diagnostics.whisper_process_elapsed_seconds:.3f}s",
+        "  Whisper TERM / KILL / reaped: "
+        f"{'yes' if diagnostics.whisper_process_terminated else 'no'} / "
+        f"{'yes' if diagnostics.whisper_process_killed else 'no'} / "
+        f"{'yes' if diagnostics.whisper_process_reaped else 'no'}",
+        "  Whisper cleanup / output handles closed: "
+        f"{'completed' if diagnostics.whisper_process_cleanup_completed else 'incomplete'} / "
+        f"{'yes' if diagnostics.whisper_output_handles_closed else 'no'}",
         f"  Transcript parsing: {diagnostics.transcript_parsing_status}",
         "  Routing timing: "
         f"{diagnostics.routing_started_at or 'not_started'} -> "

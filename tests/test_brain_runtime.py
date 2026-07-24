@@ -685,6 +685,33 @@ def test_inactivity_before_exact_and_after_boundary_is_deterministic():
     assert runtime.session_manager.session_id == ""
 
 
+def test_active_transcription_timeout_is_nonterminal_and_preserves_retryable_session():
+    inputs = QueuedRuntimeInputAdapter()
+    routed = []
+    runtime, _ = _runtime(
+        inputs=inputs,
+        handler=lambda text: routed.append(text) or "unexpected",
+    )
+    session_id = _start_active(runtime)
+    inputs.push(
+        RuntimeInputResult(
+            status="timeout",
+            metadata={
+                "transcription_failure_type": "transcription_timeout",
+                "retryable": True,
+                "runtime_terminal": False,
+            },
+        )
+    )
+
+    result = runtime.poll_once()
+
+    assert result.status == "input_timeout"
+    assert runtime.session_manager.state == BRAIN_ACTIVE
+    assert runtime.session_manager.session_id == session_id
+    assert routed == []
+
+
 def test_inactivity_after_boundary_returns_to_standby():
     inputs = QueuedRuntimeInputAdapter()
     runtime, clock = _runtime(inputs=inputs)

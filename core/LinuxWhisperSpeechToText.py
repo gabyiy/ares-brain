@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import errno
 import math
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import tempfile
+from threading import RLock
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence
 import wave
@@ -25,9 +28,13 @@ from core.WavAudio import (
 DEFAULT_WHISPER_COMMAND = "whisper-cli"
 DEFAULT_WHISPER_MODEL_PATH = "models/whisper/ggml-tiny.en.bin"
 DEFAULT_WHISPER_LANGUAGE = "auto"
-DEFAULT_WHISPER_TIMEOUT_SECONDS = 30.0
+DEFAULT_WHISPER_TIMEOUT_SECONDS = 15.0
 MAX_WHISPER_TIMEOUT_SECONDS = 900.0
-DEFAULT_WHISPER_TERMINATION_GRACE_SECONDS = 2.0
+DEFAULT_WHISPER_TERMINATION_GRACE_SECONDS = 1.0
+DEFAULT_WHISPER_HARD_CLEANUP_DEADLINE_SECONDS = 3.0
+MAX_WHISPER_CAPTURE_OUTPUT_BYTES = 4 * 1024 * 1024
+WHISPER_TERMINATE_SIGNAL = int(getattr(signal, "SIGTERM", 15))
+WHISPER_KILL_SIGNAL = int(getattr(signal, "SIGKILL", 9))
 
 WHISPER_STATUS_BINARY_MISSING = "whisper_binary_missing"
 WHISPER_STATUS_MODEL_MISSING = "whisper_model_missing"
@@ -48,159 +55,521 @@ NO_SPEECH_MARKERS = frozenset(
 )
 
 Clock = Callable[[], float]
+StatusCallback = Callable[[str], None]
+ProcessGroupGetter = Callable[[int], int]
+ProcessGroupSignaler = Callable[[int, int], None]
 
 
 class WhisperSubprocessRunner(SafeSubprocessRunner):
-    """Run whisper.cpp with bounded pipe draining and explicit child cleanup."""
+    """Run whisper.cpp under one bounded, cancellable process-group boundary.
+
+    stdout and stderr go to private temporary files rather than pipes.  A noisy
+    or wedged child therefore cannot fill a pipe and block before the parent
+    reaches its wall-clock deadline.
+    """
 
     def __init__(
         self,
         *,
         process_factory: Callable[..., Any] = subprocess.Popen,
         termination_grace_seconds: float = DEFAULT_WHISPER_TERMINATION_GRACE_SECONDS,
+        hard_cleanup_deadline_seconds: float = (
+            DEFAULT_WHISPER_HARD_CLEANUP_DEADLINE_SECONDS
+        ),
         clock: Clock = time.perf_counter,
+        status_callback: Optional[StatusCallback] = None,
+        process_group_getter: Optional[ProcessGroupGetter] = None,
+        process_group_signaler: Optional[ProcessGroupSignaler] = None,
     ) -> None:
         grace = float(termination_grace_seconds)
         if not 0.1 <= grace <= 10.0:
             raise ValueError("termination_grace_seconds must be between 0.1 and 10")
+        cleanup_deadline = float(hard_cleanup_deadline_seconds)
+        if not grace <= cleanup_deadline <= 30.0:
+            raise ValueError(
+                "hard_cleanup_deadline_seconds must be between "
+                "termination_grace_seconds and 30"
+            )
         self.process_factory = process_factory
         self.termination_grace_seconds = grace
+        self.hard_cleanup_deadline_seconds = cleanup_deadline
         self.clock = clock
+        self.status_callback = status_callback
+        self._process_groups_enabled = bool(
+            os.name == "posix"
+            or (
+                process_group_getter is not None
+                and process_group_signaler is not None
+            )
+        )
+        self._process_group_getter = process_group_getter or getattr(
+            os,
+            "getpgid",
+            lambda pid: int(pid),
+        )
+        self._process_group_signaler = process_group_signaler or getattr(
+            os,
+            "killpg",
+            None,
+        )
+        self._active_lock = RLock()
+        self._cleanup_lock = RLock()
+        self._run_lock = RLock()
+        self._active_process: Any = None
+        self._active_pid = 0
+        self._active_pgid = 0
+        self._active_cancelled = False
+        self._active_cancel_reason = ""
+
+    @property
+    def active_pid(self) -> int:
+        with self._active_lock:
+            return self._active_pid
+
+    @property
+    def active_pgid(self) -> int:
+        with self._active_lock:
+            return self._active_pgid
 
     def run(self, args: Sequence[str], timeout_seconds: float) -> SafeProcessResult:
+        with self._run_lock:
+            return self._run_serialized(args, timeout_seconds)
+
+    def cancel_current(self, reason: str = "cancelled") -> bool:
+        """Terminate the active Whisper group without waiting without a bound."""
+
+        with self._active_lock:
+            process = self._active_process
+            pgid = self._active_pgid
+            if process is None:
+                return False
+            self._active_cancelled = True
+            self._active_cancel_reason = str(reason or "cancelled")[:120]
+        self._cleanup_process(
+            process,
+            pgid,
+            cleanup_reason=self._active_cancel_reason,
+        )
+        return True
+
+    def _run_serialized(
+        self,
+        args: Sequence[str],
+        timeout_seconds: float,
+    ) -> SafeProcessResult:
         safe_args = [str(arg) for arg in args]
         timeout = _bounded_timeout(timeout_seconds)
         started = self.clock()
+        stdout_capture = tempfile.TemporaryFile(mode="w+b")
+        stderr_capture = tempfile.TemporaryFile(mode="w+b")
+        process: Any = None
+        pid = 0
+        pgid = 0
+        process_group_started = False
+        cleanup: Dict[str, Any] = self._empty_cleanup_metadata()
+        timed_out = False
+        process_error = ""
+        process_errno: Optional[int] = None
+        stdout = ""
+        stderr = ""
+        stdout_truncated = False
+        stderr_truncated = False
+        handles_closed = False
+        cancelled = False
+        cancel_reason = ""
+
+        popen_kwargs: Dict[str, Any] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": stdout_capture,
+            "stderr": stderr_capture,
+            "shell": False,
+        }
+        if self._process_groups_enabled:
+            popen_kwargs["start_new_session"] = True
+            process_group_started = True
         try:
-            process = self.process_factory(
-                safe_args,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                shell=False,
-            )
+            process = self.process_factory(safe_args, **popen_kwargs)
+            pid = int(getattr(process, "pid", 0) or 0)
+            pgid = self._resolve_pgid(pid)
+            self._register_active(process, pid, pgid)
+            self._emit(f"Whisper process started: pid={pid}, pgid={pgid}")
+            self._emit(f"Whisper timeout: {timeout:g} seconds")
+            try:
+                self._wait_process(process, timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                self._emit(
+                    f"Whisper transcription timed out after {timeout:g} seconds"
+                )
+                cleanup = self._cleanup_process(
+                    process,
+                    pgid,
+                    cleanup_reason="transcription_timeout",
+                )
+            except OSError as error:
+                process_error = f"process_io_error:{error.__class__.__name__}"
+                process_errno = getattr(error, "errno", None)
+                cleanup = self._cleanup_process(
+                    process,
+                    pgid,
+                    cleanup_reason="process_io_error",
+                )
+            except BaseException:
+                self._mark_cancelled("base_exception")
+                self._cleanup_process(
+                    process,
+                    pgid,
+                    cleanup_reason="base_exception",
+                )
+                raise
+            else:
+                active_cancelled, active_cancel_reason = self._active_cancel_state(
+                    process
+                )
+                if active_cancelled:
+                    cleanup = self._cleanup_process(
+                        process,
+                        pgid,
+                        cleanup_reason=active_cancel_reason or "cancelled",
+                    )
+                elif self._group_alive(process, pgid):
+                    cleanup = self._cleanup_process(
+                        process,
+                        pgid,
+                        cleanup_reason="descendant_after_parent_exit",
+                    )
+                else:
+                    cleanup = {
+                        **self._empty_cleanup_metadata(),
+                        "reaped": self._process_reaped(process),
+                        "cleanup_completed": self._process_reaped(process),
+                    }
         except FileNotFoundError:
-            return SafeProcessResult(
-                args=safe_args,
-                returncode=-1,
-                error_message="process_not_found",
-            )
+            process_error = "process_not_found"
         except OSError as error:
-            return SafeProcessResult(
-                args=safe_args,
-                returncode=-1,
-                error_message=f"process_os_error:{error.__class__.__name__}",
-                metadata={"errno": getattr(error, "errno", None)},
+            process_error = f"process_os_error:{error.__class__.__name__}"
+            process_errno = getattr(error, "errno", None)
+        finally:
+            if process is not None:
+                cancelled, cancel_reason = self._active_cancel_state(process)
+            stdout, stdout_truncated = self._read_capture(stdout_capture)
+            stderr, stderr_truncated = self._read_capture(stderr_capture)
+            self._close_capture(stdout_capture)
+            self._close_capture(stderr_capture)
+            handles_closed = bool(
+                getattr(stdout_capture, "closed", False)
+                and getattr(stderr_capture, "closed", False)
             )
+            if process is not None:
+                self._unregister_active(process)
 
-        pid = int(getattr(process, "pid", 0) or 0)
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except KeyboardInterrupt:
-            self._force_reap(process)
-            raise
-        except subprocess.TimeoutExpired as error:
-            stdout, stderr, cleanup = self._terminate_and_reap(process, error)
-            return SafeProcessResult(
-                args=safe_args,
-                returncode=int(getattr(process, "returncode", -1) or -1),
-                stdout=_process_text(stdout),
-                stderr=_process_text(stderr),
-                timed_out=True,
-                error_message="process_timeout",
-                metadata={
-                    "pid": pid,
-                    "timeout_seconds": timeout,
-                    "elapsed_seconds": round(_elapsed(self.clock, started), 6),
-                    **cleanup,
-                },
-            )
-        except OSError as error:
-            cleanup = self._force_reap(process)
-            return SafeProcessResult(
-                args=safe_args,
-                returncode=int(getattr(process, "returncode", -1) or -1),
-                error_message=f"process_io_error:{error.__class__.__name__}",
-                metadata={
-                    "pid": pid,
-                    "elapsed_seconds": round(_elapsed(self.clock, started), 6),
-                    **cleanup,
-                },
-            )
-
+        elapsed = round(_elapsed(self.clock, started), 6)
+        returncode = self._returncode(process)
+        cleanup = {
+            **cleanup,
+            "cleanup_completed": bool(
+                cleanup.get("cleanup_completed") and handles_closed
+            ),
+        }
+        metadata: Dict[str, Any] = {
+            "pid": pid,
+            "pgid": pgid,
+            "timeout_seconds": timeout,
+            "elapsed_seconds": elapsed,
+            "process_group_started": process_group_started,
+            "stdout_transport": "bounded_temporary_file",
+            "stderr_transport": "bounded_temporary_file",
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
+            "output_handles_closed": handles_closed,
+            "hard_cleanup_deadline_seconds": self.hard_cleanup_deadline_seconds,
+            "cancelled": cancelled,
+            "cancel_reason": cancel_reason,
+            **cleanup,
+        }
+        if process_errno is not None:
+            metadata["errno"] = process_errno
+        if timed_out:
+            metadata["typed_status"] = WHISPER_STATUS_TRANSCRIPTION_TIMEOUT
+            process_error = "process_timeout"
+        elif cancelled:
+            process_error = "process_cancelled"
+        if process is not None:
+            if cleanup.get("cleanup_reason"):
+                self._emit(
+                    "Whisper process cleanup: "
+                    + (
+                        "completed"
+                        if cleanup["cleanup_completed"]
+                        else "incomplete"
+                    )
+                )
+            self._emit(f"Whisper completed: exit={returncode}, elapsed={elapsed:g} seconds")
         return SafeProcessResult(
             args=safe_args,
-            returncode=int(getattr(process, "returncode", 0) or 0),
-            stdout=_process_text(stdout),
-            stderr=_process_text(stderr),
-            metadata={
-                "pid": pid,
-                "timeout_seconds": timeout,
-                "elapsed_seconds": round(_elapsed(self.clock, started), 6),
-                "terminated": False,
-                "killed": False,
-                "reaped": getattr(process, "poll", lambda: None)() is not None,
-            },
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=timed_out,
+            error_message=process_error,
+            metadata=metadata,
         )
 
-    def _terminate_and_reap(
+    def _cleanup_process(
         self,
         process: Any,
-        timeout_error: subprocess.TimeoutExpired,
-    ) -> tuple[str, str, Dict[str, bool]]:
-        terminated = False
-        killed = False
-        try:
-            process.terminate()
-            terminated = True
-        except OSError:
-            pass
-        try:
-            stdout, stderr = process.communicate(
-                timeout=self.termination_grace_seconds
+        pgid: int,
+        *,
+        cleanup_reason: str,
+    ) -> Dict[str, Any]:
+        with self._cleanup_lock:
+            cleanup_started = self.clock()
+            cleanup_deadline = cleanup_started + self.hard_cleanup_deadline_seconds
+            terminated = False
+            killed = False
+            if not self._process_alive(process) and not self._group_alive(process, pgid):
+                result = {
+                    "terminated": False,
+                    "killed": False,
+                    "reaped": self._process_reaped(process),
+                    "cleanup_completed": self._process_reaped(process),
+                    "cleanup_reason": cleanup_reason,
+                    "cleanup_elapsed_seconds": round(
+                        _elapsed(self.clock, cleanup_started),
+                        6,
+                    ),
+                }
+                return result
+
+            self._emit("Terminating Whisper process group")
+            terminated = self._signal_process(
+                process,
+                pgid,
+                WHISPER_TERMINATE_SIGNAL,
             )
-        except subprocess.TimeoutExpired:
-            try:
-                process.kill()
-                killed = True
-            except OSError:
-                pass
-            try:
-                stdout, stderr = process.communicate(
-                    timeout=self.termination_grace_seconds
+            self._wait_until(
+                process,
+                pgid,
+                min(
+                    self.termination_grace_seconds,
+                    self._remaining(cleanup_deadline),
+                ),
+                require_group_exit=True,
+            )
+            if self._process_alive(process) or self._group_alive(process, pgid):
+                killed = self._signal_process(
+                    process,
+                    pgid,
+                    WHISPER_KILL_SIGNAL,
                 )
-            except (OSError, subprocess.TimeoutExpired):
-                stdout = timeout_error.stdout or ""
-                stderr = timeout_error.stderr or ""
-        except OSError:
-            stdout = timeout_error.stdout or ""
-            stderr = timeout_error.stderr or ""
-        return (
-            _process_text(stdout or timeout_error.stdout),
-            _process_text(stderr or timeout_error.stderr),
-            {
+            self._wait_until(
+                process,
+                pgid,
+                self._remaining(cleanup_deadline),
+                require_group_exit=True,
+            )
+            reaped = self._process_reaped(process)
+            cleanup_completed = bool(
+                reaped and not self._process_alive(process)
+                and not self._group_alive(process, pgid)
+            )
+            result = {
                 "terminated": terminated,
                 "killed": killed,
-                "reaped": getattr(process, "poll", lambda: None)() is not None,
-            },
-        )
+                "reaped": reaped,
+                "cleanup_completed": cleanup_completed,
+                "cleanup_reason": cleanup_reason,
+                "cleanup_elapsed_seconds": round(
+                    _elapsed(self.clock, cleanup_started),
+                    6,
+                ),
+            }
+            return result
 
-    def _force_reap(self, process: Any) -> Dict[str, bool]:
-        killed = False
+    def _wait_until(
+        self,
+        process: Any,
+        pgid: int,
+        timeout_seconds: float,
+        *,
+        require_group_exit: bool,
+    ) -> None:
+        timeout = max(0.0, float(timeout_seconds))
+        deadline = self.clock() + timeout
+        if self._process_alive(process) and timeout > 0:
+            try:
+                self._wait_process(process, timeout)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if not require_group_exit or not self._process_groups_enabled:
+            return
+        while self._group_alive(process, pgid) and self._remaining(deadline) > 0:
+            time.sleep(min(0.01, self._remaining(deadline)))
+
+    def _wait_process(self, process: Any, timeout_seconds: float) -> int:
+        wait = getattr(process, "wait", None)
+        if not callable(wait):
+            raise OSError("process_wait_unavailable")
+        return int(wait(timeout=max(0.0, float(timeout_seconds))))
+
+    def _resolve_pgid(self, pid: int) -> int:
+        if pid <= 0:
+            return 0
+        if not self._process_groups_enabled:
+            return pid
         try:
-            process.kill()
-            killed = True
+            return int(self._process_group_getter(pid))
+        except (OSError, TypeError, ValueError):
+            return pid
+
+    def _signal_process(self, process: Any, pgid: int, signal_number: int) -> bool:
+        if (
+            self._process_groups_enabled
+            and pgid > 0
+            and callable(self._process_group_signaler)
+        ):
+            try:
+                self._process_group_signaler(pgid, signal_number)
+                return True
+            except ProcessLookupError:
+                return False
+            except OSError as error:
+                if getattr(error, "errno", None) == errno.ESRCH:
+                    return False
+        method_name = (
+            "terminate"
+            if signal_number == WHISPER_TERMINATE_SIGNAL
+            else "kill"
+        )
+        method = getattr(process, method_name, None)
+        if not callable(method):
+            return False
+        try:
+            method()
+            return True
+        except OSError:
+            return False
+
+    def _group_alive(self, process: Any, pgid: int) -> bool:
+        if (
+            not self._process_groups_enabled
+            or pgid <= 0
+            or not callable(self._process_group_signaler)
+        ):
+            return self._process_alive(process)
+        try:
+            self._process_group_signaler(pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError as error:
+            return getattr(error, "errno", None) != errno.ESRCH
+
+    @staticmethod
+    def _process_alive(process: Any) -> bool:
+        poll = getattr(process, "poll", None)
+        if not callable(poll):
+            return True
+        try:
+            return poll() is None
+        except OSError:
+            return False
+
+    @staticmethod
+    def _process_reaped(process: Any) -> bool:
+        poll = getattr(process, "poll", None)
+        if not callable(poll):
+            return False
+        try:
+            return poll() is not None
+        except OSError:
+            return False
+
+    @staticmethod
+    def _returncode(process: Any) -> int:
+        if process is None:
+            return -1
+        value = getattr(process, "returncode", None)
+        if value is None:
+            poll = getattr(process, "poll", None)
+            if callable(poll):
+                try:
+                    value = poll()
+                except OSError:
+                    value = None
+        return int(value) if value is not None else -1
+
+    @staticmethod
+    def _read_capture(handle: Any) -> tuple[str, bool]:
+        try:
+            handle.flush()
+            handle.seek(0)
+            payload = handle.read(MAX_WHISPER_CAPTURE_OUTPUT_BYTES + 1)
+        except (OSError, ValueError):
+            return "", False
+        truncated = len(payload) > MAX_WHISPER_CAPTURE_OUTPUT_BYTES
+        if truncated:
+            payload = payload[:MAX_WHISPER_CAPTURE_OUTPUT_BYTES]
+        return _process_text(payload), truncated
+
+    @staticmethod
+    def _close_capture(handle: Any) -> None:
+        try:
+            handle.close()
         except OSError:
             pass
+
+    def _register_active(self, process: Any, pid: int, pgid: int) -> None:
+        with self._active_lock:
+            self._active_process = process
+            self._active_pid = pid
+            self._active_pgid = pgid
+            self._active_cancelled = False
+            self._active_cancel_reason = ""
+
+    def _unregister_active(self, process: Any) -> None:
+        with self._active_lock:
+            if self._active_process is process:
+                self._active_process = None
+                self._active_pid = 0
+                self._active_pgid = 0
+                self._active_cancelled = False
+                self._active_cancel_reason = ""
+
+    def _active_cancel_state(self, process: Any) -> tuple[bool, str]:
+        with self._active_lock:
+            if self._active_process is not process:
+                return False, ""
+            return self._active_cancelled, self._active_cancel_reason
+
+    def _mark_cancelled(self, reason: str) -> None:
+        with self._active_lock:
+            if self._active_process is not None:
+                self._active_cancelled = True
+                self._active_cancel_reason = str(reason or "cancelled")[:120]
+
+    def _remaining(self, deadline: float) -> float:
+        return max(0.0, float(deadline) - float(self.clock()))
+
+    def _emit(self, message: str) -> None:
+        if self.status_callback is None:
+            return
         try:
-            process.communicate(timeout=self.termination_grace_seconds)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+            self.status_callback(str(message))
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return
+
+    @staticmethod
+    def _empty_cleanup_metadata() -> Dict[str, Any]:
         return {
             "terminated": False,
-            "killed": killed,
-            "reaped": getattr(process, "poll", lambda: None)() is not None,
+            "killed": False,
+            "reaped": False,
+            "cleanup_completed": False,
+            "cleanup_reason": "",
+            "cleanup_elapsed_seconds": 0.0,
         }
 
 
@@ -244,6 +613,7 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
         runner: Optional[SafeSubprocessRunner] = None,
         clock: Clock = time.perf_counter,
         source: str = "linux_whisper_speech_to_text_adapter",
+        status_callback: Optional[StatusCallback] = None,
     ):
         self.model_path = Path(
             model_path
@@ -258,12 +628,23 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
         self.language = str(language or DEFAULT_WHISPER_LANGUAGE).strip()
         self.timeout_seconds = _bounded_timeout(timeout_seconds)
         self.minimum_rms = _non_negative_float(minimum_rms, "minimum_rms")
-        self.runner = runner or WhisperSubprocessRunner()
+        self.runner = runner or WhisperSubprocessRunner(
+            status_callback=status_callback,
+        )
         self.clock = clock
         self.source = source
         self.transcription_count = 0
         self.speech_engine_accessed = False
         self.audio_hardware_accessed = False
+
+    def cancel_current(self, reason: str = "cancelled") -> bool:
+        cancel = getattr(self.runner, "cancel_current", None)
+        if not callable(cancel):
+            return False
+        try:
+            return bool(cancel(reason))
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
 
     def transcribe(self, audio_chunk: AudioChunk) -> TranscriptionResult:
         if audio_chunk.byte_count == 0:

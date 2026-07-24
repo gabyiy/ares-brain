@@ -1,5 +1,10 @@
+import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
+from threading import Thread
+import time
 import wave
 
 import pytest
@@ -193,7 +198,7 @@ def test_linux_whisper_transcribes_wav_file_with_metadata(tmp_path):
 def test_linux_whisper_default_timeout_is_bounded_for_raspberry_pi(tmp_path):
     adapter = create_adapter(tmp_path)
 
-    assert adapter.timeout_seconds == 30.0
+    assert adapter.timeout_seconds == 15.0
 
 
 def test_audio_chunk_request_timeout_overrides_long_adapter_timeout(tmp_path):
@@ -444,7 +449,12 @@ def test_linux_whisper_timeout_fails_safely(tmp_path):
 
 
 def test_whisper_process_timeout_terminates_and_reaps_child():
-    runner = WhisperSubprocessRunner(termination_grace_seconds=0.2)
+    statuses = []
+    runner = WhisperSubprocessRunner(
+        termination_grace_seconds=0.2,
+        hard_cleanup_deadline_seconds=0.4,
+        status_callback=statuses.append,
+    )
 
     result = runner.run(
         [sys.executable, "-c", "import time; time.sleep(10)"],
@@ -454,8 +464,17 @@ def test_whisper_process_timeout_terminates_and_reaps_child():
     assert result.timed_out is True
     assert result.error_message == "process_timeout"
     assert result.metadata["pid"] > 0
+    assert result.metadata["pgid"] > 0
     assert result.metadata["terminated"] or result.metadata["killed"]
     assert result.metadata["reaped"] is True
+    assert result.metadata["cleanup_completed"] is True
+    assert result.metadata["output_handles_closed"] is True
+    assert result.metadata["typed_status"] == WHISPER_STATUS_TRANSCRIPTION_TIMEOUT
+    assert runner.active_pid == 0
+    assert any(line.startswith("Whisper process started: pid=") for line in statuses)
+    assert "Whisper transcription timed out after 0.1 seconds" in statuses
+    assert "Terminating Whisper process group" in statuses
+    assert "Whisper process cleanup: completed" in statuses
 
 
 def test_whisper_process_is_killed_and_reaped_on_keyboard_interrupt():
@@ -464,34 +483,351 @@ def test_whisper_process_is_killed_and_reaped_on_keyboard_interrupt():
 
         def __init__(self):
             self.returncode = None
+            self.terminated = False
             self.killed = False
             self.calls = 0
 
-        def communicate(self, timeout=None):
+        def wait(self, timeout=None):
             self.calls += 1
             if self.calls == 1:
                 raise KeyboardInterrupt
-            self.returncode = -9
-            return "", ""
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -15
 
         def kill(self):
             self.killed = True
+            self.returncode = -9
 
         def poll(self):
             return self.returncode
 
     process = InterruptedProcess()
+    handles = {}
+
+    def process_factory(*args, **kwargs):
+        handles["stdout"] = kwargs["stdout"]
+        handles["stderr"] = kwargs["stderr"]
+        return process
+
     runner = WhisperSubprocessRunner(
-        process_factory=lambda *args, **kwargs: process,
+        process_factory=process_factory,
         termination_grace_seconds=0.1,
+        hard_cleanup_deadline_seconds=0.2,
     )
 
     with pytest.raises(KeyboardInterrupt):
         runner.run(["whisper-cli"], timeout_seconds=1.0)
 
-    assert process.killed is True
-    assert process.calls == 2
-    assert process.poll() == -9
+    assert process.terminated or process.killed
+    assert process.poll() is not None
+    assert handles["stdout"].closed is True
+    assert handles["stderr"].closed is True
+    assert runner.active_pid == 0
+
+
+def test_whisper_runner_normal_completion_captures_output_and_closes_handles():
+    statuses = []
+    runner = WhisperSubprocessRunner(status_callback=statuses.append)
+
+    result = runner.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('normal stdout'); print('normal stderr', file=sys.stderr)",
+        ],
+        timeout_seconds=2.0,
+    )
+
+    assert result.returncode == 0
+    assert result.timed_out is False
+    assert "normal stdout" in result.stdout
+    assert "normal stderr" in result.stderr
+    assert result.metadata["reaped"] is True
+    assert result.metadata["cleanup_completed"] is True
+    assert result.metadata["output_handles_closed"] is True
+    assert runner.active_pid == 0
+    assert any(line.startswith("Whisper completed: exit=0") for line in statuses)
+
+
+def test_whisper_runner_nonzero_exit_is_bounded_and_reaped():
+    runner = WhisperSubprocessRunner()
+
+    result = runner.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('decode failed', file=sys.stderr); raise SystemExit(7)",
+        ],
+        timeout_seconds=2.0,
+    )
+
+    assert result.returncode == 7
+    assert result.timed_out is False
+    assert "decode failed" in result.stderr
+    assert result.metadata["reaped"] is True
+    assert result.metadata["output_handles_closed"] is True
+    assert runner.active_pid == 0
+
+
+def test_whisper_runner_stdout_and_stderr_saturation_cannot_deadlock_parent():
+    runner = WhisperSubprocessRunner()
+
+    result = runner.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os; "
+                "os.write(1, b'o' * 524288); "
+                "os.write(2, b'e' * 524288)"
+            ),
+        ],
+        timeout_seconds=2.0,
+    )
+
+    assert result.returncode == 0
+    assert len(result.stdout) == 524288
+    assert len(result.stderr) == 524288
+    assert result.metadata["stdout_transport"] == "bounded_temporary_file"
+    assert result.metadata["stderr_transport"] == "bounded_temporary_file"
+    assert result.metadata["stdout_truncated"] is False
+    assert result.metadata["stderr_truncated"] is False
+    assert result.metadata["reaped"] is True
+    assert runner.active_pid == 0
+
+
+def test_whisper_runner_ignoring_sigterm_is_group_killed_and_reaped():
+    terminate_signal = int(getattr(signal, "SIGTERM", 15))
+    kill_signal = int(getattr(signal, "SIGKILL", 9))
+
+    class IgnoringProcess:
+        pid = 42001
+
+        def __init__(self):
+            self.returncode = None
+            self.wait_calls = []
+
+        def wait(self, timeout=None):
+            self.wait_calls.append(timeout)
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired("fake-whisper", timeout)
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+    process = IgnoringProcess()
+    group = {"alive": True, "signals": []}
+    launch = {}
+
+    def group_signaler(pgid, signal_number):
+        if signal_number == 0:
+            if group["alive"]:
+                return
+            raise ProcessLookupError
+        group["signals"].append((pgid, signal_number))
+        if signal_number == terminate_signal:
+            return
+        if signal_number == kill_signal:
+            process.returncode = -kill_signal
+            group["alive"] = False
+
+    def process_factory(*args, **kwargs):
+        launch.update(kwargs)
+        return process
+
+    runner = WhisperSubprocessRunner(
+        process_factory=process_factory,
+        termination_grace_seconds=0.1,
+        hard_cleanup_deadline_seconds=0.2,
+        process_group_getter=lambda _pid: 42001,
+        process_group_signaler=group_signaler,
+    )
+
+    result = runner.run(["fake-whisper"], timeout_seconds=0.01)
+
+    assert launch["start_new_session"] is True
+    assert result.timed_out is True
+    assert result.metadata["process_group_started"] is True
+    assert result.metadata["pgid"] == 42001
+    assert result.metadata["terminated"] is True
+    assert result.metadata["killed"] is True
+    assert result.metadata["reaped"] is True
+    assert result.metadata["cleanup_completed"] is True
+    assert group["signals"] == [
+        (42001, terminate_signal),
+        (42001, kill_signal),
+    ]
+    assert runner.active_pid == 0
+
+
+def test_whisper_runner_hard_cleanup_deadline_returns_if_kill_cannot_reap():
+    class UnreapableProcess:
+        pid = 43001
+        returncode = None
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("fake-unreapable-whisper", timeout)
+
+        def poll(self):
+            return None
+
+    class AdvancingClock:
+        def __init__(self):
+            self.value = 100.0
+
+        def __call__(self):
+            self.value += 0.025
+            return self.value
+
+    signals = []
+
+    def group_signaler(_pgid, signal_number):
+        if signal_number != 0:
+            signals.append(signal_number)
+
+    statuses = []
+    runner = WhisperSubprocessRunner(
+        process_factory=lambda *args, **kwargs: UnreapableProcess(),
+        termination_grace_seconds=0.1,
+        hard_cleanup_deadline_seconds=0.2,
+        clock=AdvancingClock(),
+        status_callback=statuses.append,
+        process_group_getter=lambda _pid: 43001,
+        process_group_signaler=group_signaler,
+    )
+
+    result = runner.run(["fake-unreapable-whisper"], timeout_seconds=0.01)
+
+    assert result.timed_out is True
+    assert result.metadata["terminated"] is True
+    assert result.metadata["killed"] is True
+    assert result.metadata["reaped"] is False
+    assert result.metadata["cleanup_completed"] is False
+    assert result.metadata["output_handles_closed"] is True
+    assert runner.active_pid == 0
+    assert int(getattr(signal, "SIGTERM", 15)) in signals
+    assert int(getattr(signal, "SIGKILL", 9)) in signals
+    assert "Whisper process cleanup: incomplete" in statuses
+
+
+def test_whisper_cleanup_completion_is_reported_only_after_output_handles_close():
+    class TimeoutProcess:
+        pid = 44001
+
+        def __init__(self):
+            self.returncode = None
+
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired("fake-whisper", timeout)
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+    process = TimeoutProcess()
+    group_alive = {"value": True}
+    handles = {}
+    cleanup_handle_states = []
+
+    def process_factory(*args, **kwargs):
+        handles["stdout"] = kwargs["stdout"]
+        handles["stderr"] = kwargs["stderr"]
+        return process
+
+    def group_signaler(_pgid, signal_number):
+        if signal_number == 0:
+            if group_alive["value"]:
+                return
+            raise ProcessLookupError
+        process.returncode = -int(signal_number)
+        group_alive["value"] = False
+
+    def status(message):
+        if message == "Whisper process cleanup: completed":
+            cleanup_handle_states.append(
+                (handles["stdout"].closed, handles["stderr"].closed)
+            )
+
+    runner = WhisperSubprocessRunner(
+        process_factory=process_factory,
+        termination_grace_seconds=0.1,
+        hard_cleanup_deadline_seconds=0.2,
+        status_callback=status,
+        process_group_getter=lambda _pid: 44001,
+        process_group_signaler=group_signaler,
+    )
+
+    result = runner.run(["fake-whisper"], timeout_seconds=0.01)
+
+    assert result.timed_out is True
+    assert result.metadata["cleanup_completed"] is True
+    assert cleanup_handle_states == [(True, True)]
+
+
+def test_whisper_runner_active_cancellation_is_bounded_and_retryable():
+    runner = WhisperSubprocessRunner(
+        termination_grace_seconds=0.1,
+        hard_cleanup_deadline_seconds=0.3,
+    )
+    completed = {}
+
+    def execute():
+        completed["result"] = runner.run(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout_seconds=10.0,
+        )
+
+    worker = Thread(target=execute)
+    worker.start()
+    deadline = time.monotonic() + 2.0
+    while runner.active_pid == 0 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    active_pid = runner.active_pid
+
+    assert active_pid > 0
+    assert runner.cancel_current("owner_cancellation") is True
+    worker.join(timeout=2.0)
+    assert worker.is_alive() is False
+    result = completed["result"]
+    assert result.error_message == "process_cancelled"
+    assert result.metadata["cancelled"] is True
+    assert result.metadata["cancel_reason"] == "owner_cancellation"
+    assert result.metadata["reaped"] is True
+    assert result.metadata["cleanup_completed"] is True
+    assert result.metadata["output_handles_closed"] is True
+    assert runner.active_pid == 0
+    assert runner.cancel_current() is False
+
+    retry = runner.run(
+        [sys.executable, "-c", "print('retry works')"],
+        timeout_seconds=2.0,
+    )
+    assert retry.returncode == 0
+    assert "retry works" in retry.stdout
+    assert retry.metadata["reaped"] is True
+    assert runner.active_pid == 0
+
+
+def test_linux_whisper_adapter_delegates_active_process_cancellation(tmp_path):
+    class CancellableRunner(FakeWhisperRunner):
+        def __init__(self):
+            super().__init__()
+            self.cancel_reasons = []
+
+        def cancel_current(self, reason):
+            self.cancel_reasons.append(reason)
+            return True
+
+    runner = CancellableRunner()
+    adapter = create_adapter(tmp_path, runner=runner)
+
+    assert adapter.cancel_current("runtime_shutdown") is True
+    assert runner.cancel_reasons == ["runtime_shutdown"]
 
 
 def test_linux_whisper_input_wav_is_closed_before_process_launch(tmp_path):
