@@ -437,6 +437,7 @@ class RmsVoiceActivityCapture:
         request: VoiceActivityCaptureRequestV1,
         frame_source: PcmFrameSource,
         cancel_requested: Optional[CancelCheck | Any] = None,
+        capture_ready_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> VoiceActivityCaptureResultV1:
         started_at = self.clock()
         try:
@@ -459,7 +460,13 @@ class RmsVoiceActivityCapture:
         self.state = VAD_STATE_BUSY
         self.execution_count += 1
         try:
-            return self._capture(request, frame_source, cancel_requested, started_at)
+            return self._capture(
+                request,
+                frame_source,
+                cancel_requested,
+                started_at,
+                capture_ready_callback,
+            )
         finally:
             self.state = VAD_STATE_READY
 
@@ -469,6 +476,7 @@ class RmsVoiceActivityCapture:
         frame_source: PcmFrameSource,
         cancel_requested: Optional[CancelCheck | Any],
         started_at: float,
+        capture_ready_callback: Optional[Callable[[Dict[str, Any]], None]],
     ) -> VoiceActivityCaptureResultV1:
         frame_seconds = request.frame_duration_ms / 1000.0
         samples_per_frame = pcm_frame_sample_count(
@@ -543,12 +551,61 @@ class RmsVoiceActivityCapture:
         silence_at_stop = 0.0
         terminal_quiet_frame_count = 0
         post_roll_frames_retained = 0
+        possible_silence_had_terminal_quiet = False
         detection_state = (
             DETECTION_STATE_CALIBRATING
             if request.calibration_enabled
             else DETECTION_STATE_WAITING
         )
+        capture_ready_notified = False
+        capture_ready_timestamp_monotonic = 0.0
+        capture_start_reason = ""
         source_start_snapshot = _pcm_source_snapshot(frame_source)
+
+        def notify_capture_ready(reason: str) -> None:
+            """Announce the first frame-safe owner speech boundary exactly once.
+
+            Opening the ALSA transport and calibrating are implementation details,
+            not an invitation for the owner to speak.  A caller that prints its
+            prompt before this boundary can lose the first words to calibration.
+            The callback is deliberately synchronous: once it returns, the next
+            PCM frame enters WAITING and therefore the rolling pre-roll buffer.
+            """
+
+            nonlocal capture_ready_notified
+            nonlocal capture_ready_timestamp_monotonic
+            nonlocal capture_start_reason
+            if capture_ready_notified:
+                return
+            capture_ready_notified = True
+            capture_ready_timestamp_monotonic = self.clock()
+            capture_start_reason = str(reason or "capture_ready")[:80]
+            if capture_ready_callback is None:
+                return
+            payload = {
+                "capture_start_reason": capture_start_reason,
+                "capture_ready_timestamp_monotonic": (
+                    capture_ready_timestamp_monotonic
+                ),
+                "sample_rate_hz": request.sample_rate_hz,
+                "channels": request.channels,
+                "sample_width_bytes": request.sample_width_bytes,
+                "frame_duration_ms": request.frame_duration_ms,
+                "expected_frame_bytes": frame_bytes,
+                "pre_roll_frames": pre_roll_frames,
+                "pre_roll_seconds": request.pre_roll_seconds,
+                "terminal_silence_seconds": request.silence_duration_seconds,
+                "calibration_frames_consumed": len(calibration_levels),
+            }
+            try:
+                capture_ready_callback(payload)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                # Terminal/status diagnostics are noncritical and may never make
+                # a healthy microphone capture fail.
+                return
+
+        if detection_state == DETECTION_STATE_WAITING:
+            notify_capture_ready("calibration_disabled_stream_ready")
 
         def observability_data() -> Dict[str, Any]:
             source_end_snapshot = _pcm_source_snapshot(frame_source)
@@ -646,6 +703,12 @@ class RmsVoiceActivityCapture:
                 ),
                 "terminal_silence_confirmed": terminal_silence_confirmed,
                 "terminal_silence_reset_count": terminal_silence_reset_count,
+                "capture_ready_notified": capture_ready_notified,
+                "capture_ready_timestamp_monotonic": round(
+                    capture_ready_timestamp_monotonic,
+                    6,
+                ),
+                "capture_start_reason": capture_start_reason,
                 "first_speech_frame": speech_start_frame,
                 "last_speech_frame": last_speech_frame,
                 "speech_start_threshold_crossing_count": (
@@ -887,6 +950,7 @@ class RmsVoiceActivityCapture:
                         rms,
                     )
                     detection_state = DETECTION_STATE_WAITING
+                    notify_capture_ready("calibration_completed_stream_ready")
                 continue
 
             listening_frames += 1
@@ -927,10 +991,11 @@ class RmsVoiceActivityCapture:
                         for _, _, frame_index in retained_pre_roll
                     )
                     if retained_pre_roll:
-                        leading_silence_frames_trimmed = max(
-                            0,
-                            retained_pre_roll[0][2] - 1,
-                        )
+                        # The bounded WAITING history older than the configured
+                        # rolling window is not part of the candidate and is not
+                        # a leading-audio trim.  Every retained pre-roll and start
+                        # evidence frame is written unchanged for Whisper.
+                        leading_silence_frames_trimmed = 0
                     qualifying = [
                         level
                         for _, level, frame_index in retained_pre_roll
@@ -1022,6 +1087,9 @@ class RmsVoiceActivityCapture:
                         )
                         else 0
                     )
+                    possible_silence_had_terminal_quiet = (
+                        consecutive_below_silence > 0
+                    )
                     _record_transition(
                         transitions,
                         DETECTION_STATE_SPEECH,
@@ -1032,7 +1100,6 @@ class RmsVoiceActivityCapture:
                     detection_state = DETECTION_STATE_POSSIBLE_SILENCE
             elif detection_state == DETECTION_STATE_POSSIBLE_SILENCE:
                 pending_silence.append((frame, rms, total_frames))
-                terminal_quiet_before_frame = consecutive_below_silence
                 if rms >= thresholds.speech_continue_rms:
                     consecutive_resume += 1
                     consecutive_below_silence = 0
@@ -1057,11 +1124,12 @@ class RmsVoiceActivityCapture:
                     )
                     if wake_short_profile or rms <= thresholds.silence_rms:
                         consecutive_below_silence += 1
+                        possible_silence_had_terminal_quiet = True
                     else:
                         consecutive_below_silence = 0
 
                 if consecutive_resume >= request.required_continue_frames:
-                    if terminal_quiet_before_frame > 0:
+                    if possible_silence_had_terminal_quiet:
                         terminal_silence_reset_count += 1
                     append_captured_items(pending_silence)
                     resumed_levels = [
@@ -1090,6 +1158,7 @@ class RmsVoiceActivityCapture:
                     detection_state = DETECTION_STATE_SPEECH
                     consecutive_resume = 0
                     consecutive_below_silence = 0
+                    possible_silence_had_terminal_quiet = False
                 elif consecutive_below_silence >= max(
                     silence_frames,
                     request.required_silence_frames,
@@ -1379,6 +1448,7 @@ class RmsVoiceActivityCapture:
                 "speech_start_status": VAD_STATUS_SPEECH_DETECTED,
                 "silence_frames_required": silence_frames,
                 "pre_roll_frames": pre_roll_frames,
+                "expected_pre_roll_frames": pre_roll_frames,
                 "speech_end_padding_frames": speech_end_padding_frames,
                 "pre_roll_frames_retained": pre_roll_frames_retained,
                 "speech_frames_retained": speech_frame_count,
@@ -1392,6 +1462,16 @@ class RmsVoiceActivityCapture:
                 ),
                 "completion_reason": completion_reason,
                 "leading_silence_frames_trimmed": leading_silence_frames_trimmed,
+                "leading_audio_trimmed_seconds": 0.0,
+                "trailing_audio_trimmed_seconds": round(
+                    trailing_silence_frames_trimmed * frame_seconds,
+                    6,
+                ),
+                "beginning_clipped": (
+                    "no"
+                    if speech_start_frame in appended_frame_indexes
+                    else "yes"
+                ),
                 "total_frames_read": total_frames,
                 "total_raw_samples": total_frames * samples_per_frame,
                 "raw_byte_count": total_frames * frame_bytes,

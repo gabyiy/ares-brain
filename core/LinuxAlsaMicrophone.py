@@ -14,7 +14,7 @@ import tempfile
 from threading import Condition, Event, RLock, Thread
 import time
 import wave
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from core.Contracts import VoiceActivityCaptureRequestV1, VoiceActivityCaptureResultV1
 from core.Microphone import AudioChunk, CancelCheck, MicrophoneAdapter, MicrophoneResult
@@ -2174,6 +2174,9 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         diagnostic_rms_interval_frames: int = 5,
         diagnostic_audio: bool = False,
         cancel_requested: Optional[CancelCheck | Any] = None,
+        capture_ready_callback: Optional[
+            Callable[[Dict[str, Any]], None]
+        ] = None,
         correlation_id: str = "",
         session_id: str = "",
         persistent_stream: Optional[PersistentPcmStreamHandle] = None,
@@ -2298,6 +2301,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 request,
                 stream,
                 cancel_requested=cancel_requested,
+                capture_ready_callback=capture_ready_callback,
             )
             if owns_stream:
                 stream.close()

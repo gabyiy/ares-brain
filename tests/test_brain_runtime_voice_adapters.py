@@ -38,6 +38,8 @@ class FakePipeline:
         self.stop_count = 0
         self.output_success = True
         self.stage_observers = []
+        self.capture_ready_observers = []
+        self.before_capture_ready = None
         self.on_transcribing = None
         self.raw_decisions = []
         self.pre_brain_decisions = []
@@ -55,6 +57,15 @@ class FakePipeline:
         for observer in list(self.stage_observers):
             observer(index, 6, label, status)
 
+    def add_capture_ready_observer(self, observer):
+        self.capture_ready_observers.append(observer)
+
+        def unsubscribe():
+            if observer in self.capture_ready_observers:
+                self.capture_ready_observers.remove(observer)
+
+        return unsubscribe
+
     def run_once(
         self,
         request,
@@ -64,6 +75,16 @@ class FakePipeline:
     ):
         self.requests.append(request)
         self._stage(2, "Recording", "running")
+        if self.before_capture_ready is not None:
+            self.before_capture_ready()
+        for observer in list(self.capture_ready_observers):
+            observer(
+                {
+                    "capture_start_reason": "calibration_completed_stream_ready",
+                    "pre_roll_frames": 25,
+                    "pre_roll_seconds": 0.5,
+                }
+            )
         if self.input_text:
             self._stage(2, "Recording", "completed")
             self._stage(3, "Transcribing", "running")
@@ -190,6 +211,10 @@ def test_active_voice_input_delegates_capture_and_transcription_to_single_turn_p
     assert request.playback_enabled is False
     assert request.text_input == ""
     assert request.recording_output_path != str(tmp_path / "base.wav")
+    assert request.pre_roll_seconds == pytest.approx(0.5)
+    assert request.silence_duration_seconds == pytest.approx(0.9)
+    assert request.metadata["capture_profile"] == "active_command_v1"
+    assert request.metadata["canonical_pcm"] == "16000_hz_mono_s16_le"
     assert result.metadata["capture_stop_reason"] == "completed_after_silence"
     assert result.metadata["raw_capture_duration_seconds"] == pytest.approx(2.8)
     assert result.metadata["finalized_candidate_duration_seconds"] == pytest.approx(1.1)
@@ -217,6 +242,30 @@ def test_active_voice_input_reports_visible_bounded_progress_in_order(tmp_path):
         "Processing command",
     ]
     assert pipeline.stage_observers == []
+    assert pipeline.capture_ready_observers == []
+
+
+def test_active_prompt_waits_for_frame_safe_post_calibration_boundary(tmp_path):
+    pipeline = FakePipeline()
+    statuses = []
+    statuses_before_ready = []
+    pipeline.before_capture_ready = lambda: statuses_before_ready.extend(statuses)
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: "session-1",
+        status_callback=statuses.append,
+    )
+
+    result = adapter.wait_for_input(1.0)
+
+    assert result.status == "input"
+    assert statuses_before_ready == []
+    assert statuses.count("ARES is waiting for your command...") == 1
+    assert statuses.count("Active microphone capture started") == 1
+    assert adapter.last_diagnostics.audio_capture_start_reason == (
+        "calibration_completed_stream_ready"
+    )
 
 
 @pytest.mark.parametrize(
@@ -470,6 +519,7 @@ def test_active_command_diagnostics_use_current_command_capture_and_runtime_resu
     assert diagnostics.selected_lifecycle_action == "standby"
     assert diagnostics.matched_lifecycle_phrase == "goodbye"
     assert diagnostics.core_service_bypassed is True
+    assert diagnostics.activation_handler_called is False
     assert diagnostics.lifecycle_state_before == "ACTIVE"
     assert diagnostics.lifecycle_state_after == "STANDBY"
     assert diagnostics.session_id_before == "session-1"

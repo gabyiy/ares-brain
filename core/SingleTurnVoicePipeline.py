@@ -59,6 +59,7 @@ EVENT_SINGLE_TURN_FAILED = "voice_single_turn_failed"
 
 Clock = Callable[[], float]
 StageCallback = Callable[[int, int, str, str], None]
+CaptureReadyCallback = Callable[[Dict[str, Any]], None]
 
 
 class _LifecycleDelegate:
@@ -137,6 +138,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         self.transcript_normalizer = transcript_normalizer or TranscriptNormalizer()
         self.stage_callback = stage_callback
         self._stage_observers: List[StageCallback] = []
+        self._capture_ready_observers: List[CaptureReadyCallback] = []
         self.clock = clock
         self.coordinator = VoiceStageCoordinator()
         self._active_request: Optional[SingleTurnVoiceRequestV1] = None
@@ -397,6 +399,37 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
                 self._stage_observers.remove(observer)
 
         return unsubscribe
+
+    def add_capture_ready_observer(
+        self,
+        observer: CaptureReadyCallback,
+    ) -> Callable[[], None]:
+        """Observe the safe owner-speech boundary for a real recording.
+
+        Unlike the generic ``Recording/running`` stage, this notification is
+        emitted only after the microphone transport is open and any requested
+        ambient calibration has completed.  Callers may therefore print their
+        owner prompt without sacrificing speech to setup or calibration.
+        """
+
+        if not callable(observer):
+            raise ValueError("capture ready observer must be callable")
+        self._capture_ready_observers.append(observer)
+
+        def unsubscribe() -> None:
+            if observer in self._capture_ready_observers:
+                self._capture_ready_observers.remove(observer)
+
+        return unsubscribe
+
+    def _notify_capture_ready(self, diagnostics: Dict[str, Any]) -> None:
+        payload = dict(diagnostics or {})
+        for observer in list(self._capture_ready_observers):
+            try:
+                observer(dict(payload))
+            except (OSError, RuntimeError, TypeError, ValueError):
+                # A terminal-only diagnostic observer cannot invalidate audio.
+                continue
 
     def coordination_status(self) -> Dict[str, Any]:
         status = self.coordinator.to_dict()

@@ -35,6 +35,7 @@ from core import (  # noqa: E402
     WakeListenerConfig,
     VOSK_MODEL_INSTALL_COMMAND,
     VoskWakeRecognizer,
+    normalize_active_lifecycle_command,
 )
 from events import EventHistoryStore  # noqa: E402
 from memory.schema_migrations import MigrationError, StoreWriteLock  # noqa: E402
@@ -58,6 +59,7 @@ DEFAULT_WHISPER_TERMINATION_GRACE_SECONDS = 1.0
 DEFAULT_WHISPER_HARD_CLEANUP_DEADLINE_SECONDS = 3.0
 DEFAULT_RUNTIME_LOCK_PATH = REPO_ROOT / "data" / "runtime" / "ares_standby_voice.runtime"
 DEFAULT_RUNTIME_LOCK_STALE_SECONDS = 30.0
+ACTIVE_VOICE_COMPOSITION_REVISION = "active_state_isolated_capture_ready_v1"
 
 
 class RuntimeTerminationRequested(BaseException):
@@ -393,6 +395,10 @@ def _run_standby_voice_locked(
         output_func(f"ARES standby voice setup failed: {error}")
         return 2
 
+    if args.diagnostic_routing or args.diagnostic_wake:
+        for line in render_production_composition_diagnostics(runtime, pipeline):
+            output_func(line)
+
     preflight = single_voice_launcher._preflight_pipeline(pipeline, request)
     if not preflight.success:
         output_func("ARES command voice dependency check failed before microphone capture.")
@@ -481,6 +487,57 @@ def _reported_terminal_reason(result: Any) -> str:
     if reason in {"input_cancelled", "owner_cancellation"}:
         return "owner_cancellation"
     return reason or "unrecoverable_failure"
+
+
+def render_production_composition_diagnostics(
+    runtime: Any,
+    pipeline: Any,
+) -> list[str]:
+    """Identify the privacy-safe implementation graph used by the launcher.
+
+    These lines make a stale checkout or alternate launcher visible on hardware
+    without exposing owner audio or transcripts.  Behavior is still proved by
+    the production-composition test; the revision is only an operator marker.
+    """
+
+    input_adapter = getattr(runtime, "input_adapter", None)
+    output_adapter = getattr(runtime, "output_adapter", None)
+    input_gate = getattr(input_adapter, "voice_io_gate", None)
+    output_gate = getattr(output_adapter, "voice_io_gate", None)
+    return [
+        "PRODUCTION VOICE COMPOSITION",
+        f"  Routing revision: {ACTIVE_VOICE_COMPOSITION_REVISION}",
+        f"  Runtime: {_qualified_implementation(runtime)}",
+        "  Lifecycle authority: "
+        f"{_qualified_implementation(getattr(runtime, 'session_manager', None))}",
+        f"  Standby listener: "
+        f"{_qualified_implementation(getattr(runtime, 'standby_wake_listener', None))}",
+        f"  Active input adapter: {_qualified_implementation(input_adapter)}",
+        f"  Active voice pipeline: {_qualified_implementation(pipeline)}",
+        "  Active microphone adapter: "
+        f"{_qualified_implementation(getattr(pipeline, 'microphone_adapter', None))}",
+        "  Active Whisper adapter: "
+        f"{_qualified_implementation(getattr(pipeline, 'speech_to_text_adapter', None))}",
+        "  Active lifecycle normalizer: "
+        f"{_qualified_implementation(normalize_active_lifecycle_command)}",
+        "  Input/output gate shared: "
+        f"{'yes' if input_gate is not None and input_gate is output_gate else 'no'}",
+    ]
+
+
+def _qualified_implementation(value: Any) -> str:
+    if value is None:
+        return "unavailable"
+    target = value if isinstance(value, type) else getattr(value, "__class__", type(value))
+    if callable(value) and hasattr(value, "__module__") and hasattr(value, "__qualname__"):
+        target = value
+    module = str(getattr(target, "__module__", "") or "")
+    name = str(
+        getattr(target, "__qualname__", "")
+        or getattr(target, "__name__", "")
+        or type(value).__name__
+    )
+    return f"{module}.{name}" if module else name
 
 
 @contextmanager
@@ -604,9 +661,31 @@ def render_active_command_diagnostics(
     diagnostics: ActiveCommandLocalDiagnostics,
 ) -> list[str]:
     return [
-        "Lifecycle diagnostic:",
+        "ACTIVE COMMAND DIAGNOSTIC",
         f"  Raw Whisper transcript: {diagnostics.raw_transcript or '<empty>'}",
         f"  Cleaned transcript: {diagnostics.cleaned_transcript or '<empty>'}",
+        "  Audio capture start reason: "
+        f"{diagnostics.audio_capture_start_reason or '<unknown>'}",
+        "  First speech frame: "
+        f"{diagnostics.first_speech_frame or 'absent'}",
+        "  Last speech frame: "
+        f"{diagnostics.last_speech_frame or 'absent'}",
+        "  Pre-roll frames retained: "
+        f"{diagnostics.pre_roll_frames_retained}/"
+        f"{diagnostics.expected_pre_roll_frames}",
+        f"  Beginning clipped: {diagnostics.beginning_clipped}",
+        "  Candidate duration: "
+        f"{diagnostics.finalized_candidate_duration_seconds:.3f}s",
+        f"  Raw capture duration: {diagnostics.raw_capture_duration_seconds:.3f}s",
+        "  Leading audio trimmed: "
+        f"{diagnostics.leading_audio_trimmed_seconds:.3f}s",
+        "  Trailing audio trimmed: "
+        f"{diagnostics.trailing_audio_trimmed_seconds:.3f}s",
+        "  Assistant alias detected: "
+        f"{diagnostics.matched_assistant_alias or '<none>'}",
+        f"  Assistant alias position: {diagnostics.alias_position}",
+        "  Transcript after alias removal: "
+        f"{diagnostics.lifecycle_normalized_transcript or '<empty>'}",
         "  Lifecycle-normalized transcript: "
         f"{diagnostics.lifecycle_normalized_transcript or '<empty>'}",
         "  Canonicalized transcript: "
@@ -639,11 +718,16 @@ def render_active_command_diagnostics(
         f"  State after: {diagnostics.lifecycle_state_after or 'unknown'}",
         f"  Session before: {diagnostics.session_id_before or 'none'}",
         f"  Session after: {diagnostics.session_id_after or 'none'}",
+        "  Runtime state before routing: "
+        f"{diagnostics.lifecycle_state_before or 'unknown'}",
+        "  Session ID before routing: "
+        f"{diagnostics.session_id_before or 'none'}",
+        "  Activation handler called: "
+        f"{'yes' if diagnostics.activation_handler_called else 'no'}",
         f"  Pipeline status: {diagnostics.pipeline_status}",
         f"  Runtime terminal: {'yes' if diagnostics.runtime_terminal else 'no'}",
         f"  Runtime terminal reason: {diagnostics.runtime_terminal_reason}",
         f"  Capture stop reason: {diagnostics.capture_stop_reason or 'unknown'}",
-        f"  Raw capture duration: {diagnostics.raw_capture_duration_seconds:.3f}s",
         "  Finalized candidate duration: "
         f"{diagnostics.finalized_candidate_duration_seconds:.3f}s",
         "  Audio finalization: "

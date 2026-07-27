@@ -46,6 +46,8 @@ DEFAULT_LIFECYCLE_SHUTDOWN_PHRASES = (
     "ares turn off",
     "power down ares",
     "ares power down",
+    "stop runtime ares",
+    "ares stop runtime",
 )
 
 LIFECYCLE_ALIAS_TYPE_CANONICAL = "canonical"

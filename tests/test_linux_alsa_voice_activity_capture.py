@@ -39,10 +39,12 @@ class DeviceRunner:
 class FrameSource:
     def __init__(self, frames):
         self.frames = list(frames)
+        self.read_count = 0
         self.closed = False
         self.stderr = ""
 
     def read_frame(self, frame_bytes, timeout_seconds):
+        self.read_count += 1
         if not self.frames:
             raise EOFError("done")
         return self.frames.pop(0)
@@ -487,6 +489,64 @@ def test_linux_alsa_auto_stop_streams_raw_pcm_with_argument_list(tmp_path):
     assert result.duration_invariant_status == "duration_consistent"
     assert result.data["process"]["shell"] is False
     assert result.metadata["subprocess_shell"] is False
+
+
+def test_linux_alsa_ready_boundary_waits_for_live_stream_and_calibration(tmp_path):
+    source = FrameSource([frame(40)] * 5)
+    stream_runner = StreamRunner(source)
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=stream_runner,
+    )
+    ready_events = []
+
+    def ready(details):
+        ready_events.append(
+            {
+                **dict(details),
+                "read_count": source.read_count,
+                "stream_open_count": len(stream_runner.calls),
+            }
+        )
+        source.frames.extend(
+            [
+                *([frame(50)] * 25),
+                frame(400),
+                frame(500),
+                *([frame(20)] * 5),
+            ]
+        )
+
+    assert adapter.start().success is True
+    result = adapter.record_until_silence(
+        tmp_path / "active-ready.wav",
+        calibration_enabled=True,
+        calibration_duration_seconds=0.1,
+        required_speech_frames=2,
+        required_continue_frames=1,
+        required_silence_frames=1,
+        silence_seconds=0.1,
+        speech_wait_timeout_seconds=1.0,
+        maximum_utterance_seconds=1.0,
+        pre_roll_seconds=0.5,
+        capture_profile="active_command_v1",
+        capture_ready_callback=ready,
+    )
+
+    assert result.success is True
+    assert len(ready_events) == 1
+    assert ready_events[0]["read_count"] == 5
+    assert ready_events[0]["stream_open_count"] == 1
+    assert ready_events[0]["capture_start_reason"] == (
+        "calibration_completed_stream_ready"
+    )
+    assert result.pre_roll_frames_retained == 25
+    assert result.data["beginning_clipped"] == "no"
+    assert result.actual_sample_rate_hz == 16000
+    assert result.actual_channels == 1
+    assert result.actual_sample_width_bytes == 2
+    assert source.closed is True
 
 
 def test_linux_alsa_auto_stop_diagnostics_keep_distinct_raw_and_trimmed_wavs(tmp_path):

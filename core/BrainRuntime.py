@@ -914,7 +914,13 @@ class BrainRuntime:
                 reason="runtime_activation_phrase",
             )
             if not activated.success:
-                if self.standby_wake_listener is not None:
+                # Reopen standby capture only when STANDBY is still the
+                # authority's current state. A concurrent lifecycle change
+                # must not resurrect the wake listener in ACTIVE/shutdown.
+                if (
+                    self.standby_wake_listener is not None
+                    and self.session_manager.state == BRAIN_STANDBY
+                ):
                     self.standby_wake_listener.enter_standby(
                         runtime_id=self.runtime_id,
                         reason="activation_rollback",
@@ -951,13 +957,10 @@ class BrainRuntime:
                     "lifecycle_action": LIFECYCLE_ACTION_ACTIVATE,
                 },
             )
-        if state == BRAIN_ACTIVE:
-            return self._handle_attention_only(
-                replace(
-                    classification,
-                    command_category=RUNTIME_COMMAND_ATTENTION_ONLY,
-                )
-            )
+        # Name-only ACTIVE input is classified as attention_only before this
+        # handler. If an activation category nevertheless reaches this
+        # boundary, reject it. Parser correctness is not the lifecycle safety
+        # boundary and must never be able to replay the activation response.
         self._publish(
             EVENT_ACTIVATION_REJECTED,
             correlation,

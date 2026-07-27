@@ -254,6 +254,42 @@ def test_activation_creates_unique_session_ids_across_sessions():
     assert first != second
 
 
+@pytest.mark.parametrize(
+    "source_state",
+    [
+        BRAIN_STOPPED,
+        BRAIN_BOOTING,
+        BRAIN_INITIALIZING,
+        BRAIN_ACTIVE,
+        BRAIN_PROCESSING,
+        BRAIN_RESPONDING,
+        BRAIN_RETURNING_TO_STANDBY,
+        BRAIN_SHUTTING_DOWN,
+        BRAIN_ERROR,
+    ],
+)
+def test_activation_authority_rejects_every_non_standby_state_without_mutation(
+    source_state,
+):
+    manager = _manager_in_state(source_state)
+    before = manager.snapshot()
+    history_before = manager.history()
+
+    rejected = manager.activate_session(
+        correlation_id="illegal-reactivation",
+        reason="runtime_activation_phrase",
+    )
+
+    assert rejected.success is False
+    assert rejected.status == "transition_rejected"
+    assert rejected.error_code == "activation_not_allowed"
+    assert rejected.current_state == before.current_state
+    assert rejected.session_id == before.session_id
+    assert manager.state == before.current_state
+    assert manager.session_id == before.session_id
+    assert manager.history() == history_before
+
+
 def test_standby_clears_active_session_but_retains_last_activity_timestamp():
     clock = FakeClock()
     manager = _manager(clock=clock)

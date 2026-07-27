@@ -238,6 +238,8 @@ def test_runtime_configuration_defaults_are_bounded_and_explicit():
         "ares turn off",
         "power down ares",
         "ares power down",
+        "stop runtime ares",
+        "ares stop runtime",
     )
     assert config.active_acknowledgement == "Yes Gabi."
     assert config.already_active_acknowledgement == ""
@@ -444,6 +446,31 @@ def test_attention_only_spoken_response_requires_explicit_configuration():
     assert output.texts == ["Yes Gabi.", "ARES is already active."]
 
 
+def test_activation_handler_rejects_active_request_without_acknowledgement_or_session_change():
+    output = CollectingRuntimeOutputAdapter()
+    runtime, _ = _runtime(output=output)
+    session_id = _start_active(runtime)
+    before = runtime.snapshot()
+    classification = BrainRuntimeCommandClassificationV1(
+        runtime_id=runtime.runtime_id,
+        current_lifecycle_state=BRAIN_ACTIVE,
+        command_category=RUNTIME_COMMAND_ACTIVATION,
+        normalized_input="ares",
+        matched_phrase="ares",
+        correlation_id="forced-active-reactivation",
+    )
+
+    rejected = runtime._handle_activation(classification)
+
+    assert rejected.success is False
+    assert rejected.status == "activation_rejected"
+    assert rejected.error_code == "activation_not_allowed"
+    assert runtime.session_manager.state == BRAIN_ACTIVE
+    assert runtime.session_manager.session_id == session_id
+    assert runtime.snapshot().activation_count == before.activation_count == 1
+    assert output.texts == ["Yes Gabi."]
+
+
 def test_multiple_commands_use_same_session_and_required_state_flow():
     runtime, _ = _runtime(handler=lambda text: f"response:{text}")
     session_id = _start_active(runtime)
@@ -594,6 +621,9 @@ def test_standby_phrase_while_standby_is_noop_and_creates_no_session():
         "Aries shut down",
         "turn off Ares",
         "power down Ares",
+        "stop runtime",
+        "stop runtime Ares",
+        "Aris stop runtime",
     ],
 )
 def test_shutdown_phrases_stop_runtime_and_clear_session(phrase):
@@ -625,6 +655,8 @@ def test_goodbye_is_not_full_shutdown():
         "I said goodbye to Ares yesterday",
         "tell me about standby",
         "what does shutdown mean",
+        "explain stop runtime",
+        "schedule stop runtime tomorrow",
         "do not shutdown Ares",
         "don't shutdown Ares",
         "Ares should not shut down",
@@ -709,6 +741,8 @@ def test_rs_shutdown_bypasses_core_route_and_exposes_lifecycle_match():
         ("Do not shut down Ares", "Do not shut down"),
         ("Don't shutdown Ares", "Don't shutdown"),
         ("Ares should not shut down", "should not shut down"),
+        ("Never shut down Ares", "Never shut down"),
+        ("Do not stop runtime Ares", "Do not stop runtime"),
         ("Never goodbye Ares", "Never goodbye"),
         ("Don't go to sleep", "Don't go to sleep"),
         ("Do not go to standby Ares", "Do not go to standby"),

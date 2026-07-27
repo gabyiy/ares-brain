@@ -35,6 +35,38 @@ _INPUT_TIMEOUT_STATUSES = {
     "transcript_rejected",
 }
 
+ACTIVE_COMMAND_CAPTURE_PROFILE = "active_command_v1"
+ACTIVE_COMMAND_MINIMUM_PRE_ROLL_SECONDS = 0.5
+ACTIVE_COMMAND_TERMINAL_SILENCE_SECONDS = 0.9
+
+
+def active_command_capture_request(
+    request: SingleTurnVoiceRequestV1,
+) -> SingleTurnVoiceRequestV1:
+    """Apply the production ACTIVE recorder's non-threshold timing profile.
+
+    Thresholds and ALSA format stay untouched.  The profile only guarantees a
+    full rolling lead-in and a natural terminal-quiet window, and is shared by
+    the foreground runtime and its bounded hardware diagnostic.
+    """
+
+    if not isinstance(request, SingleTurnVoiceRequestV1):
+        raise TypeError("single turn voice request required")
+    return replace(
+        request,
+        pre_roll_seconds=max(
+            ACTIVE_COMMAND_MINIMUM_PRE_ROLL_SECONDS,
+            float(request.pre_roll_seconds),
+        ),
+        silence_duration_seconds=ACTIVE_COMMAND_TERMINAL_SILENCE_SECONDS,
+        metadata={
+            **dict(request.metadata or {}),
+            "capture_profile": ACTIVE_COMMAND_CAPTURE_PROFILE,
+            "active_command_capture": True,
+            "canonical_pcm": "16000_hz_mono_s16_le",
+        },
+    )
+
 
 @dataclass(frozen=True)
 class ActiveCommandLocalDiagnostics:
@@ -55,13 +87,22 @@ class ActiveCommandLocalDiagnostics:
     matched_lifecycle_phrase: str = ""
     lifecycle_rejection_reason: str = ""
     core_service_bypassed: bool = False
+    activation_handler_called: bool = False
     lifecycle_state_before: str = ""
     lifecycle_state_after: str = ""
     session_id_before: str = ""
     session_id_after: str = ""
     capture_stop_reason: str = ""
+    audio_capture_start_reason: str = ""
+    first_speech_frame: int = 0
+    last_speech_frame: int = 0
+    pre_roll_frames_retained: int = 0
+    expected_pre_roll_frames: int = 0
+    beginning_clipped: str = "not_applicable"
     raw_capture_duration_seconds: float = 0.0
     finalized_candidate_duration_seconds: float = 0.0
+    leading_audio_trimmed_seconds: float = 0.0
+    trailing_audio_trimmed_seconds: float = 0.0
     whisper_processing_duration_seconds: float = 0.0
     terminal_silence_status: str = "unknown"
     audio_finalization_started_at: str = ""
@@ -255,15 +296,16 @@ class SingleTurnPipelineRuntimeInputAdapter:
             return RuntimeInputResult.timeout()
         correlation = new_correlation_id("runtime-voice-command")
         output_path = _unique_runtime_input_path(self.base_request.recording_output_path)
+        capture_base = active_command_capture_request(self.base_request)
         request = replace(
-            self.base_request,
+            capture_base,
             correlation_id=correlation,
             session_id=session_id_before,
             recording_output_path=str(output_path),
             text_input="",
             playback_enabled=False,
             metadata={
-                **dict(self.base_request.metadata or {}),
+                **dict(capture_base.metadata or {}),
                 "source": "brain_runtime_active_voice_input",
                 "runtime_transport_only": True,
             },
@@ -314,13 +356,36 @@ class SingleTurnPipelineRuntimeInputAdapter:
             self._current_token = token
             self.capture_count += 1
         unsubscribe: Optional[Callable[[], None]] = None
+        unsubscribe_capture_ready: Optional[Callable[[], None]] = None
         capture_gate_owned = False
+        capture_ready_details: dict[str, Any] = {}
+
+        add_capture_ready_observer = getattr(
+            self.pipeline,
+            "add_capture_ready_observer",
+            None,
+        )
+        capture_ready_observable = callable(add_capture_ready_observer)
+
+        def observe_capture_ready(details: dict[str, Any]) -> None:
+            capture_ready_details.update(dict(details or {}))
+            emit_once("ARES is waiting for your command...")
+            emit_once("Active microphone capture started")
 
         def observe_stage(_index: int, _total: int, label: str, status: str) -> None:
             nonlocal capture_gate_owned
             normalized_label = str(label or "").strip().casefold()
             normalized_status = str(status or "").strip().casefold()
-            if normalized_label == "recording" and normalized_status == "completed":
+            if normalized_label == "recording" and normalized_status == "running":
+                # Test/fallback pipelines without the frame-safe callback still
+                # announce at the closest available stage.  The production
+                # pipeline announces only after ALSA is open and calibration is
+                # complete through observe_capture_ready above.
+                if not capture_ready_observable:
+                    observe_capture_ready(
+                        {"capture_start_reason": "recording_stage_ready"}
+                    )
+            elif normalized_label == "recording" and normalized_status == "completed":
                 if capture_gate_owned:
                     self.voice_io_gate.end_capture("active_command")
                     capture_gate_owned = False
@@ -332,15 +397,13 @@ class SingleTurnPipelineRuntimeInputAdapter:
         add_observer = getattr(self.pipeline, "add_stage_observer", None)
         if callable(add_observer):
             unsubscribe = add_observer(observe_stage)
+        if capture_ready_observable:
+            unsubscribe_capture_ready = add_capture_ready_observer(
+                observe_capture_ready
+            )
         try:
             self.voice_io_gate.begin_capture("active_command")
             capture_gate_owned = True
-            # Announce a real waiting phase only after playback and its settling
-            # window have completed and capture ownership is secured. The runtime
-            # polling interval can be shorter than that window; announcing before
-            # the gate produced duplicate prompts even though no capture began.
-            emit_once("ARES is waiting for your command...")
-            emit_once("Active microphone capture started")
             result = self.pipeline.run_once(
                 request,
                 cancellation_token=token,
@@ -379,13 +442,20 @@ class SingleTurnPipelineRuntimeInputAdapter:
         finally:
             if unsubscribe is not None:
                 unsubscribe()
+            if unsubscribe_capture_ready is not None:
+                unsubscribe_capture_ready()
             if capture_gate_owned:
                 self.voice_io_gate.end_capture("active_command")
             with self._lock:
                 self._current_token = None
         status = str(getattr(result, "status", "") or "")
+        capture_diagnostics = _active_command_diagnostics(result)
         self.last_diagnostics = replace(
-            _active_command_diagnostics(result),
+            capture_diagnostics,
+            audio_capture_start_reason=(
+                capture_diagnostics.audio_capture_start_reason
+                or str(capture_ready_details.get("capture_start_reason") or "")
+            ),
             lifecycle_state_before=lifecycle_state_before,
             lifecycle_state_after=_provided_text(self.lifecycle_state_provider),
             session_id_before=session_id_before,
@@ -615,6 +685,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
                 or category
                 in {"activation", "attention_only", "standby", "shutdown"}
             ),
+            activation_handler_called=category == "activation",
             lifecycle_state_before=str(lifecycle_state_before or ""),
             lifecycle_state_after=current_state,
             session_id_before=str(session_id_before or ""),
@@ -770,6 +841,7 @@ def _capture_stop_reason(result: Any) -> str:
 def _active_command_diagnostics(result: Any) -> ActiveCommandLocalDiagnostics:
     data = dict(getattr(result, "data", {}) or {})
     recording = dict(data.get("recording") or {})
+    recording_data = dict(recording.get("data") or {})
     audio_finalization = dict(data.get("audio_finalization") or {})
     transcription_contract = dict(data.get("transcription") or {})
     transcription = dict(transcription_contract.get("data") or {})
@@ -812,8 +884,44 @@ def _active_command_diagnostics(result: Any) -> ActiveCommandLocalDiagnostics:
             or ""
         ),
         capture_stop_reason=stop_reason,
+        audio_capture_start_reason=str(
+            recording_data.get("capture_start_reason") or ""
+        ),
+        first_speech_frame=int(
+            recording.get("first_speech_frame")
+            or recording_data.get("first_speech_frame")
+            or 0
+        ),
+        last_speech_frame=int(
+            recording.get("last_speech_frame")
+            or recording_data.get("last_speech_frame")
+            or 0
+        ),
+        pre_roll_frames_retained=int(
+            recording.get("pre_roll_frames_retained")
+            or recording_data.get("pre_roll_frames_retained")
+            or 0
+        ),
+        expected_pre_roll_frames=int(
+            recording_data.get("expected_pre_roll_frames")
+            or recording_data.get("pre_roll_frames")
+            or 0
+        ),
+        beginning_clipped=str(
+            recording_data.get("beginning_clipped") or "not_applicable"
+        ),
         raw_capture_duration_seconds=raw_duration,
         finalized_candidate_duration_seconds=candidate_duration,
+        leading_audio_trimmed_seconds=float(
+            recording_data.get("leading_audio_trimmed_seconds")
+            or recording.get("leading_silence_trimmed_seconds")
+            or 0.0
+        ),
+        trailing_audio_trimmed_seconds=float(
+            recording_data.get("trailing_audio_trimmed_seconds")
+            or recording.get("trailing_silence_trimmed_seconds")
+            or 0.0
+        ),
         whisper_processing_duration_seconds=float(
             getattr(result, "transcription_processing_time_seconds", 0.0) or 0.0
         ),

@@ -92,10 +92,14 @@ from core.BrainRuntimeAdapters import (
     RuntimeOutputResult,
 )
 from core.BrainRuntimeVoiceAdapters import (
+    ACTIVE_COMMAND_CAPTURE_PROFILE,
+    ACTIVE_COMMAND_MINIMUM_PRE_ROLL_SECONDS,
+    ACTIVE_COMMAND_TERMINAL_SILENCE_SECONDS,
     ActiveCommandLocalDiagnostics,
     SingleTurnPipelineRuntimeInputAdapter,
     SingleTurnPipelineRuntimeOutputAdapter,
     VoiceRuntimeGate,
+    active_command_capture_request,
 )
 from core.AresIdentity import (
     CANONICAL_ARES_NAME,
@@ -809,9 +813,13 @@ __all__ = [
     "LIFECYCLE_ACTION_STANDBY",
     "LIFECYCLE_ACTION_SHUTDOWN",
     "ActiveCommandLocalDiagnostics",
+    "ACTIVE_COMMAND_CAPTURE_PROFILE",
+    "ACTIVE_COMMAND_MINIMUM_PRE_ROLL_SECONDS",
+    "ACTIVE_COMMAND_TERMINAL_SILENCE_SECONDS",
     "SingleTurnPipelineRuntimeInputAdapter",
     "SingleTurnPipelineRuntimeOutputAdapter",
     "VoiceRuntimeGate",
+    "active_command_capture_request",
     "StandbyWakeListener",
     "LinuxStandbyWakeListener",
     "inspect_linux_alsa_capture",

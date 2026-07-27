@@ -80,6 +80,9 @@ def test_active_standby_variants_match_command_body(
         ("Shutdown RS", "shutdown", "rs", "suffix"),
         ("Turn off Ares", "turn off", "ares", "suffix"),
         ("Ares power down", "power down", "ares", "prefix"),
+        ("Stop runtime", "stop runtime", "", "none"),
+        ("Stop runtime Ares", "stop runtime", "ares", "suffix"),
+        ("Aris stop runtime", "stop runtime", "aris", "prefix"),
     ],
 )
 def test_active_shutdown_variants_match_command_body(
@@ -120,6 +123,7 @@ def test_active_lifecycle_diagnostics_preserve_cleaned_text_and_removed_alias():
         "Do not go to sleep",
         "Don't say goodbye",
         "Never standby Ares",
+        "Never shut down Ares",
         "Ares should not shut down",
     ],
 )
@@ -137,6 +141,8 @@ def test_active_negation_preempts_lifecycle_execution(transcript):
         "Why did you shut down",
         "Explain shutdown",
         "Schedule a shutdown tomorrow",
+        "Explain stop runtime",
+        "Schedule stop runtime tomorrow",
         "I said goodbye yesterday",
         "Ares goodbye message",
         "Paris shutdown",

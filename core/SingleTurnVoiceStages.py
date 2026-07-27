@@ -601,12 +601,20 @@ class SingleTurnVoiceStageMixin:
                         request.duration_loss_tolerance_seconds
                     ),
                     frame_debug_enabled=request.frame_debug_enabled,
+                    capture_profile=str(
+                        dict(request.metadata or {}).get("capture_profile") or ""
+                    ),
                     diagnostic_audio=request.diagnostic_audio,
                     frame_read_timeout_seconds=min(
                         1.0,
                         request.recording_timeout_seconds or 1.0,
                     ),
                     cancel_requested=cancellation_token,
+                    capture_ready_callback=getattr(
+                        self,
+                        "_notify_capture_ready",
+                        None,
+                    ),
                     correlation_id=request.correlation_id,
                     session_id=request.session_id,
                 )

@@ -180,6 +180,29 @@ def test_production_standby_voice_cli_supports_required_overrides():
     assert args.wake_vad_sensitive is True
 
 
+def test_diagnostic_launcher_prints_privacy_safe_production_composition(tmp_path):
+    factory, _, _ = _factory()
+    output = []
+
+    code = run_ares_standby_voice.run_standby_voice(
+        [
+            "--diagnostic-routing",
+            "--runtime-lock-path",
+            str(tmp_path / "runtime"),
+        ],
+        output_func=output.append,
+        runtime_factory=factory,
+    )
+
+    assert code == 0
+    rendered = "\n".join(output)
+    assert "PRODUCTION VOICE COMPOSITION" in rendered
+    assert "Routing revision: active_state_isolated_capture_ready_v1" in rendered
+    assert "Runtime: test_run_ares_standby_voice.FakeRuntime" in rendered
+    assert "Active lifecycle normalizer: " in rendered
+    assert "Raw Whisper transcript" not in rendered
+
+
 def test_active_command_pipeline_uses_separate_hard_whisper_timeout():
     args = run_ares_standby_voice.build_parser().parse_args([])
 
@@ -584,6 +607,257 @@ def test_production_composition_reuses_one_event_history_store(tmp_path):
     assert runtime.standby_wake_listener.config.wake_vad_sensitivity == "normal"
     assert runtime.input_adapter.diagnostic_callback is not None
     assert runtime.input_adapter.lifecycle_state_provider() == "STOPPED"
+
+
+def test_production_composition_routes_active_transcripts_through_state_aware_adapter(
+    tmp_path,
+):
+    """Exercise the adapters constructed by the real production factory.
+
+    This deliberately crosses the pipeline raw-transcript hook and then calls
+    ``BrainRuntime.poll_once``.  A test that calls the lifecycle normalizer or a
+    separately assembled runtime directly would not prove that the foreground
+    launcher actually uses the corrected ACTIVE path.
+    """
+
+    history = EventHistoryStore(path=tmp_path / "events.json")
+
+    class ProductionPathPipeline:
+        def __init__(self):
+            self.transcripts = []
+            self.local_outputs = []
+            self.raw_hook_actions = []
+            self.capture_requests = []
+            self.capture_ready_observers = []
+            self.trace = []
+
+        def add_capture_ready_observer(self, observer):
+            self.capture_ready_observers.append(observer)
+
+            def unsubscribe():
+                self.capture_ready_observers.remove(observer)
+
+            return unsubscribe
+
+        def run_once(
+            self,
+            request,
+            cancellation_token=None,
+            pre_brain_hook=None,
+            raw_transcript_hook=None,
+        ):
+            self.capture_requests.append(request)
+            self.trace.append("calibration_completed")
+            for observer in list(self.capture_ready_observers):
+                observer(
+                    {
+                        "capture_start_reason": (
+                            "calibration_completed_stream_ready"
+                        ),
+                        "pre_roll_seconds": request.pre_roll_seconds,
+                    }
+                )
+            self.trace.append("owner_speech_window_open")
+            transcript = self.transcripts.pop(0)
+            decision = raw_transcript_hook(transcript)
+            if decision.handled:
+                self.raw_hook_actions.append(decision.data.get("lifecycle_action"))
+            else:
+                decision = pre_brain_hook(transcript)
+                self.raw_hook_actions.append("ordinary")
+            return SimpleNamespace(
+                success=True,
+                status=decision.status,
+                recognized_text=transcript,
+                raw_transcript=transcript,
+                cleaned_transcript=transcript,
+                recording_duration_seconds=1.0,
+                transcription_processing_time_seconds=0.1,
+                data={},
+            )
+
+        def run_local_output(self, request, text, cancellation_token=None):
+            self.local_outputs.append(text)
+            return SimpleNamespace(success=True, status="completed_local_output")
+
+        def stop(self, request=None):
+            return SimpleNamespace(success=True, status="stopped")
+
+    pipeline = ProductionPathPipeline()
+
+    class ProductionPathWakeListener:
+        def __init__(self, *, config, **kwargs):
+            self.config = config
+
+        @staticmethod
+        def _success(*args, **kwargs):
+            return SimpleNamespace(
+                success=True,
+                status="ok",
+                error_code="",
+                error_message="",
+            )
+
+        start = _success
+        enter_standby = _success
+        leave_standby = _success
+        listen_once = _success
+        cancel = _success
+        stop = _success
+        snapshot = _success
+        health = _success
+
+    args = run_ares_standby_voice.build_parser().parse_args([])
+    runtime, assembled_pipeline, _ = run_ares_standby_voice.create_runtime(
+        args,
+        output_func=lambda line: pipeline.trace.append(f"output:{line}"),
+        pipeline_factory=lambda _args, **_kwargs: pipeline,
+        wake_listener_factory=ProductionPathWakeListener,
+        event_history_store=history,
+    )
+
+    assert isinstance(
+        runtime.input_adapter,
+        run_ares_standby_voice.SingleTurnPipelineRuntimeInputAdapter,
+    )
+    assert isinstance(
+        runtime.output_adapter,
+        run_ares_standby_voice.SingleTurnPipelineRuntimeOutputAdapter,
+    )
+    assert runtime.input_adapter.pipeline is assembled_pipeline is pipeline
+    assert runtime.output_adapter.pipeline is pipeline
+    assert runtime.input_adapter.voice_io_gate is runtime.output_adapter.voice_io_gate
+    composition = "\n".join(
+        run_ares_standby_voice.render_production_composition_diagnostics(
+            runtime,
+            pipeline,
+        )
+    )
+    assert "PRODUCTION VOICE COMPOSITION" in composition
+    assert "Routing revision: active_state_isolated_capture_ready_v1" in composition
+    assert "Runtime: core.BrainRuntime.BrainRuntime" in composition
+    assert "Lifecycle authority: core.BrainSessionManager.BrainSessionManager" in composition
+    assert (
+        "Active input adapter: "
+        "core.BrainRuntimeVoiceAdapters.SingleTurnPipelineRuntimeInputAdapter"
+    ) in composition
+    assert (
+        "Active lifecycle normalizer: "
+        "core.LifecycleControl.normalize_active_lifecycle_command"
+    ) in composition
+    assert "Input/output gate shared: yes" in composition
+    # Keep this deterministic while retaining the same gate and adapters.
+    runtime.input_adapter.voice_io_gate.settle_delay_seconds = 0.0
+    activation_handler_states = []
+    authoritative_activation_handler = runtime._handle_activation
+
+    def observe_activation_handler(classification):
+        activation_handler_states.append(runtime.session_manager.state)
+        return authoritative_activation_handler(classification)
+
+    runtime._handle_activation = observe_activation_handler
+
+    assert runtime.start().success
+    first_activation = runtime.handle_text("Ares")
+    first_session = runtime.snapshot().session_id
+    assert first_activation.status == "activated"
+    assert first_session
+    assert pipeline.local_outputs == ["Yes Gabi."]
+    assert activation_handler_states == ["STANDBY"]
+
+    pipeline.transcripts.append("Ares")
+    attention = runtime.poll_once()
+    assert attention.status == "attention_only"
+    assert attention.command_category == "attention_only"
+    assert runtime.snapshot().current_lifecycle_state == "ACTIVE"
+    assert runtime.snapshot().session_id == first_session
+    assert pipeline.local_outputs == ["Yes Gabi."]
+    assert activation_handler_states == ["STANDBY"]
+    assert runtime.input_adapter.last_diagnostics.activation_handler_called is False
+    first_request = pipeline.capture_requests[0]
+    assert first_request.pre_roll_seconds >= 0.5
+    assert first_request.silence_duration_seconds == pytest.approx(0.9)
+    assert first_request.metadata["capture_profile"] == "active_command_v1"
+    calibration_index = pipeline.trace.index("calibration_completed")
+    prompt_index = pipeline.trace.index("output:ARES is waiting for your command...")
+    speech_window_index = pipeline.trace.index("owner_speech_window_open")
+    assert calibration_index < prompt_index < speech_window_index
+
+    pipeline.transcripts.append("goodbye Ares")
+    standby = runtime.poll_once()
+    assert standby.status == "standby_entered"
+    assert runtime.snapshot().current_lifecycle_state == "STANDBY"
+    assert runtime.snapshot().session_id == ""
+
+    second_activation = runtime.handle_text("Ares")
+    second_session = runtime.snapshot().session_id
+    assert second_activation.status == "activated"
+    assert second_session and second_session != first_session
+    assert activation_handler_states == ["STANDBY", "STANDBY"]
+
+    pipeline.transcripts.append("shutdown Ares")
+    shutdown = runtime.poll_once()
+    assert shutdown.status == "stopped"
+    assert runtime.snapshot().current_lifecycle_state == "STOPPED"
+    assert pipeline.raw_hook_actions == ["attention_only", "standby", "shutdown"]
+    assert pipeline.local_outputs.count("Yes Gabi.") == 2
+
+
+def test_production_factory_selects_real_active_recorder_and_whisper_implementations(
+    tmp_path,
+):
+    """Construction is hardware-free but uses the launcher's default factory."""
+
+    class WakeListenerWithoutHardware:
+        def __init__(self, *, config, **kwargs):
+            self.config = config
+
+        @staticmethod
+        def operation(*args, **kwargs):
+            return SimpleNamespace(
+                success=True,
+                status="ok",
+                error_code="",
+                error_message="",
+            )
+
+        start = operation
+        enter_standby = operation
+        leave_standby = operation
+        listen_once = operation
+        cancel = operation
+        stop = operation
+        snapshot = operation
+        health = operation
+
+    args = run_ares_standby_voice.build_parser().parse_args(
+        ["--diagnostic-routing"]
+    )
+    runtime, pipeline, request = run_ares_standby_voice.create_runtime(
+        args,
+        output_func=lambda _line: None,
+        wake_listener_factory=WakeListenerWithoutHardware,
+        event_history_store=EventHistoryStore(path=tmp_path / "events.json"),
+    )
+
+    composition = "\n".join(
+        run_ares_standby_voice.render_production_composition_diagnostics(
+            runtime,
+            pipeline,
+        )
+    )
+    assert "Active voice pipeline: core.SingleTurnVoicePipeline.SingleTurnVoicePipeline" in composition
+    assert (
+        "Active microphone adapter: "
+        "core.LinuxAlsaMicrophone.LinuxAlsaMicrophoneAdapter"
+    ) in composition
+    assert (
+        "Active Whisper adapter: "
+        "core.LinuxWhisperSpeechToText.LinuxWhisperSpeechToTextAdapter"
+    ) in composition
+    assert runtime.input_adapter.base_request is request
+    assert runtime.output_adapter.base_request is request
+    assert runtime.input_adapter.diagnostic_callback is not None
 
 
 def test_production_composition_selects_sensitive_wake_vad_profile(tmp_path):
@@ -1724,7 +1998,7 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
         run_ares_standby_voice.render_active_command_diagnostics(diagnostics)
     )
 
-    assert "Lifecycle diagnostic:" in rendered
+    assert "ACTIVE COMMAND DIAGNOSTIC" in rendered
     assert "Raw Whisper transcript: Shut down RS" in rendered
     assert "Lifecycle-normalized transcript: shutdown rs" in rendered
     assert "Canonicalized transcript: shutdown ares" in rendered
@@ -1745,6 +2019,7 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
     assert "Runtime terminal reason: explicit_shutdown_command" in rendered
     assert "Raw capture duration: 2.400s" in rendered
     assert "Finalized candidate duration: 1.200s" in rendered
+    assert "Activation handler called: no" in rendered
     assert "WAV byte size: 38444" in rendered
     assert "WAV format: 16000 Hz, 1 channel(s), 2-byte samples" in rendered
     assert "Transcription hard timeout: 15.000s" in rendered

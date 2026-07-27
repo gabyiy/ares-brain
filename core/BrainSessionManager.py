@@ -270,7 +270,39 @@ class BrainSessionManager:
         correlation_id: str = "",
         reason: str = "owner_session_requested",
     ) -> BrainSessionSnapshotV1:
-        return self._request(BRAIN_ACTIVE, correlation_id, reason)
+        # Activation is a semantic lifecycle operation, not merely a request
+        # to reach ACTIVE. Keep this invariant at the lifecycle-authority
+        # boundary so a bad parser classification or a direct caller cannot
+        # reactivate an existing session (or replace its session id).
+        correlation = _safe_correlation_id(correlation_id)
+        clean_reason = _safe_reason(reason)
+        with self._lock:
+            if not clean_reason:
+                return self._reject_locked(
+                    requested_state=BRAIN_ACTIVE,
+                    correlation_id=correlation,
+                    reason="invalid_activation_reason",
+                    error_code="invalid_transition_reason",
+                    error_message=(
+                        "activation reason must be a bounded machine-safe code"
+                    ),
+                )
+            if self._state != BRAIN_STANDBY:
+                return self._reject_locked(
+                    requested_state=BRAIN_ACTIVE,
+                    correlation_id=correlation,
+                    reason=clean_reason,
+                    error_code="activation_not_allowed",
+                    error_message=(
+                        "activation is allowed only while state is STANDBY; "
+                        f"current state is {self._state}"
+                    ),
+                )
+            return self._transition_locked(
+                BRAIN_ACTIVE,
+                correlation,
+                clean_reason,
+            )
 
     def begin_processing(
         self,

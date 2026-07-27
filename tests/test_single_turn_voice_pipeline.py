@@ -145,6 +145,14 @@ class FakeVadMicrophone(FakeMicrophone):
     def record_until_silence(self, output_path, **kwargs):
         self.order.append("microphone.vad_record")
         self.vad_calls.append(dict(kwargs))
+        ready_callback = kwargs.get("capture_ready_callback")
+        if callable(ready_callback):
+            ready_callback(
+                {
+                    "capture_start_reason": "calibration_completed_stream_ready",
+                    "pre_roll_frames": 25,
+                }
+            )
         if self.vad_status == VAD_STATUS_NO_SPEECH_TIMEOUT:
             return VoiceActivityCaptureResultV1(
                 success=False,
@@ -1406,6 +1414,37 @@ def test_auto_stop_capture_calls_whisper_once_with_final_trimmed_wav(tmp_path):
     assert microphone.vad_calls[0]["required_silence_frames"] == 5
     assert result.data["recording"]["data"]["terminal_silence_trimmed"] is True
     assert order.index("microphone.vad_record") < order.index("whisper.transcribe")
+
+
+def test_auto_stop_propagates_frame_safe_capture_ready_boundary(tmp_path):
+    order = []
+    microphone = FakeVadMicrophone(order)
+    pipeline, _, _, _, _, _, _, _ = _pipeline(
+        tmp_path,
+        microphone=microphone,
+    )
+    ready_events = []
+    unsubscribe = pipeline.add_capture_ready_observer(ready_events.append)
+
+    result = pipeline.run_once(
+        _request(
+            tmp_path,
+            capture_mode=CAPTURE_MODE_AUTO_STOP,
+            playback_enabled=False,
+            pre_roll_seconds=0.5,
+        )
+    )
+    unsubscribe()
+
+    assert result.success is True
+    assert ready_events == [
+        {
+            "capture_start_reason": "calibration_completed_stream_ready",
+            "pre_roll_frames": 25,
+        }
+    ]
+    assert callable(microphone.vad_calls[0]["capture_ready_callback"])
+    assert pipeline._capture_ready_observers == []
 
 
 def test_auto_stop_rejects_unexplained_duration_loss_before_whisper(tmp_path):
