@@ -609,6 +609,107 @@ def test_production_composition_reuses_one_event_history_store(tmp_path):
     assert runtime.input_adapter.lifecycle_state_provider() == "STOPPED"
 
 
+def test_launcher_uses_shared_production_active_audio_factory(
+    tmp_path,
+    monkeypatch,
+):
+    history = EventHistoryStore(path=tmp_path / "events.json")
+    pipeline = SimpleNamespace(
+        run_once=lambda *args, **kwargs: SimpleNamespace(
+            success=True,
+            status="runtime_transport_captured",
+        ),
+        run_local_output=lambda *args, **kwargs: SimpleNamespace(
+            success=True,
+            status="completed_local_output",
+        ),
+        stop=lambda *args, **kwargs: SimpleNamespace(
+            success=True,
+            status="stopped",
+        ),
+    )
+
+    class WakeListenerWithoutHardware:
+        def __init__(self, *, config, **kwargs):
+            self.config = config
+
+        @staticmethod
+        def operation(*args, **kwargs):
+            return SimpleNamespace(
+                success=True,
+                status="ok",
+                error_code="",
+                error_message="",
+            )
+
+        start = operation
+        enter_standby = operation
+        leave_standby = operation
+        listen_once = operation
+        cancel = operation
+        stop = operation
+        snapshot = operation
+        health = operation
+
+    pipeline_calls = []
+
+    def injected_pipeline_factory(pipeline_args, **kwargs):
+        pipeline_calls.append((pipeline_args, kwargs))
+        return pipeline
+
+    shared_factory = (
+        run_ares_standby_voice.build_production_active_audio_pipeline
+    )
+    factory_calls = []
+
+    def observing_shared_factory(args, **kwargs):
+        composition = shared_factory(args, **kwargs)
+        factory_calls.append((args, kwargs, composition))
+        return composition
+
+    monkeypatch.setattr(
+        run_ares_standby_voice,
+        "build_production_active_audio_pipeline",
+        observing_shared_factory,
+    )
+    args = run_ares_standby_voice.build_parser().parse_args(
+        [
+            "--microphone-device",
+            "plughw:9,1",
+            "--speaker-device",
+            "plughw:CARD=Diagnostic,DEV=0",
+        ]
+    )
+
+    runtime, assembled_pipeline, request = run_ares_standby_voice.create_runtime(
+        args,
+        output_func=lambda _line: None,
+        pipeline_factory=injected_pipeline_factory,
+        wake_listener_factory=WakeListenerWithoutHardware,
+        event_history_store=history,
+    )
+
+    assert len(factory_calls) == 1
+    _, factory_kwargs, composition = factory_calls[0]
+    assert factory_kwargs["pipeline_factory"] is injected_pipeline_factory
+    assert factory_kwargs["event_history_store"] is history
+    assert len(pipeline_calls) == 1
+    pipeline_args, pipeline_kwargs = pipeline_calls[0]
+    assert pipeline_args is composition.pipeline_args
+    assert pipeline_args.microphone_device == "plughw:9,1"
+    assert pipeline_args.speaker_device == "plughw:CARD=Diagnostic,DEV=0"
+    assert pipeline_kwargs["event_history_store"] is history
+    assert assembled_pipeline is composition.pipeline is pipeline
+    assert request is composition.base_request
+    assert request.microphone_device == "plughw:9,1"
+    assert request.speaker_device == "plughw:CARD=Diagnostic,DEV=0"
+    assert request.pre_roll_seconds == 0.5
+    assert request.silence_duration_seconds == 0.9
+    assert request.metadata["capture_profile"] == "active_command_v1"
+    assert runtime.input_adapter.voice_io_gate is composition.voice_io_gate
+    assert runtime.output_adapter.voice_io_gate is composition.voice_io_gate
+
+
 def test_production_composition_routes_active_transcripts_through_state_aware_adapter(
     tmp_path,
 ):
@@ -858,6 +959,19 @@ def test_production_factory_selects_real_active_recorder_and_whisper_implementat
     assert runtime.input_adapter.base_request is request
     assert runtime.output_adapter.base_request is request
     assert runtime.input_adapter.diagnostic_callback is not None
+    assert pipeline.microphone_adapter.device == args.microphone_device
+    assert pipeline.microphone_adapter.sample_rate_hz == 16000
+    assert pipeline.microphone_adapter.channels == 1
+    assert pipeline.microphone_adapter.sample_format == "S16_LE"
+    assert request.microphone_device == args.microphone_device
+    assert request.pre_roll_seconds == 0.5
+    assert request.silence_duration_seconds == 0.9
+    assert request.metadata["capture_profile"] == "active_command_v1"
+    assert str(pipeline.speech_to_text_adapter.model_path) == request.whisper_model_profile
+    assert (
+        pipeline.speech_to_text_adapter.whisper_command
+        == request.whisper_executable_path
+    )
 
 
 def test_production_composition_selects_sensitive_wake_vad_profile(tmp_path):

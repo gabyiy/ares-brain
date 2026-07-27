@@ -605,6 +605,12 @@ class SingleTurnVoiceStageMixin:
                         dict(request.metadata or {}).get("capture_profile") or ""
                     ),
                     diagnostic_audio=request.diagnostic_audio,
+                    diagnostic_exception_traceback=(
+                        dict(request.metadata or {}).get(
+                            "diagnostic_exception_traceback"
+                        )
+                        is True
+                    ),
                     frame_read_timeout_seconds=min(
                         1.0,
                         request.recording_timeout_seconds or 1.0,

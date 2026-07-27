@@ -49,6 +49,34 @@ class SyntheticFrameSource:
         self.closed = True
 
 
+class ObservableFailureSource(SyntheticFrameSource):
+    def snapshot(self):
+        return {
+            "transport_argv": [
+                "/usr/bin/arecord",
+                "-q",
+                "-f",
+                "S16_LE",
+                "-c",
+                "1",
+                "-r",
+                "16000",
+                "-t",
+                "raw",
+                "-D",
+                "plughw:2,0",
+                "-",
+            ],
+            "process_pid": 4321,
+            "process_exit_status": 1,
+            "process_liveness_observable": True,
+            "stream_ended": True,
+            "terminal_reason": "arecord_process_exited",
+            "stderr_preview": "arecord: audio open error: Device or resource busy",
+            "closed": False,
+        }
+
+
 def request(tmp_path, **overrides):
     values = {
         "output_wav_path": str(tmp_path / "capture.wav"),
@@ -89,6 +117,116 @@ def test_no_speech_returns_timeout_without_wav(tmp_path):
     assert result.speech_detected is False
     assert result.ambient_rms == pytest.approx(40.0)
     assert not Path(request(tmp_path).output_wav_path).exists()
+
+
+def test_pcm_read_failure_preserves_exact_message_and_structured_source_context(
+    tmp_path,
+):
+    detector = RmsVoiceActivityCapture()
+    detector.start()
+    source = ObservableFailureSource(
+        failure=RuntimeError("arecord_process_exited:1")
+    )
+
+    result = detector.execute(request(tmp_path), source)
+
+    assert result.success is False
+    assert result.status == VAD_STATUS_DEVICE_ERROR
+    assert result.error_message == (
+        "pcm_stream_error:RuntimeError:arecord_process_exited:1"
+    )
+    failure = result.data["pcm_exception"]
+    assert failure["exception_class"] == "RuntimeError"
+    assert failure["exception_message"] == "arecord_process_exited:1"
+    assert failure["failing_method"] == "read_frame"
+    assert failure["microphone_device"] == "hw:2,0"
+    assert failure["requested_pcm_format"]["expected_frame_bytes"] == FRAME_BYTES
+    assert failure["alsa_child_process_id"] == 4321
+    assert failure["alsa_process_exit_status"] == 1
+    assert failure["alsa_stderr"].endswith("Device or resource busy")
+    assert failure["stream_lifecycle_state"] == "ended"
+    assert "traceback" not in failure
+
+
+def test_pcm_read_traceback_is_retained_only_with_explicit_diagnostic_opt_in(
+    tmp_path,
+):
+    detector = RmsVoiceActivityCapture()
+    detector.start()
+    source = ObservableFailureSource(
+        failure=RuntimeError("arecord_stdout_closed_while_process_alive")
+    )
+
+    result = detector.execute(
+        request(
+            tmp_path,
+            metadata={"diagnostic_exception_traceback": True},
+        ),
+        source,
+    )
+
+    failure = result.data["pcm_exception"]
+    assert failure["exception_message"] == (
+        "arecord_stdout_closed_while_process_alive"
+    )
+    assert "RuntimeError: arecord_stdout_closed_while_process_alive" in failure[
+        "traceback"
+    ]
+
+
+def test_invalid_pcm_read_preserves_exact_type_message_and_diagnostic_context(
+    tmp_path,
+):
+    detector = RmsVoiceActivityCapture()
+    detector.start()
+    source = ObservableFailureSource(
+        failure=ValueError("odd_byte_pcm_payload:639")
+    )
+
+    result = detector.execute(
+        request(
+            tmp_path,
+            metadata={"diagnostic_exception_traceback": True},
+        ),
+        source,
+    )
+
+    assert result.success is False
+    assert result.status == VAD_STATUS_INVALID_AUDIO
+    assert result.error_message == (
+        "invalid_pcm_stream:ValueError:odd_byte_pcm_payload:639"
+    )
+    failure = result.data["pcm_exception"]
+    assert failure["exception_class"] == "ValueError"
+    assert failure["exception_message"] == "odd_byte_pcm_payload:639"
+    assert failure["failing_method"] == "read_frame"
+    assert "ValueError: odd_byte_pcm_payload:639" in failure["traceback"]
+
+
+def test_stream_calibration_preserves_exact_pcm_failure_without_normal_traceback(
+    tmp_path,
+):
+    detector = RmsVoiceActivityCapture()
+    detector.start()
+    source = ObservableFailureSource(
+        failure=RuntimeError("arecord_process_exited:7")
+    )
+    calibration_request = request(
+        tmp_path,
+        calibration_enabled=True,
+        calibration_duration_seconds=0.1,
+    )
+
+    result = detector.calibrate_stream(calibration_request, source)
+
+    assert result.success is False
+    assert result.error_message == (
+        "pcm_stream_error:RuntimeError:arecord_process_exited:7"
+    )
+    assert result.data["pcm_exception"]["exception_message"] == (
+        "arecord_process_exited:7"
+    )
+    assert "traceback" not in result.data["pcm_exception"]
 
 
 def test_immediate_speech_completes_after_silence_and_trims_tail(tmp_path):
@@ -422,6 +560,9 @@ def test_frame_timeout_is_structured(tmp_path):
 
     assert result.success is False
     assert result.status == VAD_STATUS_TIMEOUT
+    assert result.data["pcm_exception"]["exception_class"] == "TimeoutError"
+    assert result.data["pcm_exception"]["exception_message"] == "timeout"
+    assert "traceback" not in result.data["pcm_exception"]
 
 
 def test_invalid_pcm_frame_is_rejected(tmp_path):

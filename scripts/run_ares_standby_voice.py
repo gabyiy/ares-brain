@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import importlib.util
 import math
 from pathlib import Path
@@ -30,11 +30,13 @@ from core import (  # noqa: E402
     PIPELINE_CLEANUP_DELETE_ALWAYS,
     SingleTurnPipelineRuntimeInputAdapter,
     SingleTurnPipelineRuntimeOutputAdapter,
+    SingleTurnVoiceRequestV1,
     VoiceRuntimeGate,
     WakeLocalDiagnostics,
     WakeListenerConfig,
     VOSK_MODEL_INSTALL_COMMAND,
     VoskWakeRecognizer,
+    active_command_capture_request,
     normalize_active_lifecycle_command,
 )
 from events import EventHistoryStore  # noqa: E402
@@ -66,6 +68,21 @@ class RuntimeTerminationRequested(BaseException):
     def __init__(self, signum: int) -> None:
         super().__init__(f"termination signal {signum}")
         self.signum = int(signum)
+
+
+@dataclass(frozen=True)
+class ProductionActiveAudioPipeline:
+    """The authoritative production ACTIVE audio composition.
+
+    Both the foreground runtime and bounded hardware diagnostics use this
+    boundary so request construction cannot drift away from the concrete ALSA,
+    VAD, and Whisper pipeline selected for production.
+    """
+
+    pipeline_args: argparse.Namespace
+    base_request: SingleTurnVoiceRequestV1
+    pipeline: Any
+    voice_io_gate: VoiceRuntimeGate
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -141,6 +158,62 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_production_active_audio_pipeline(
+    args: argparse.Namespace,
+    *,
+    output_func: Callable[[str], None] = print,
+    skill_manager: Any = None,
+    event_history_store: Optional[EventHistoryStore] = None,
+    pipeline_factory: Optional[Callable[..., Any]] = None,
+) -> ProductionActiveAudioPipeline:
+    """Build the exact ACTIVE microphone/VAD/Whisper production boundary.
+
+    Routing dependencies remain injectable, but the CLI mapping, active capture
+    profile, pipeline construction, and voice ownership gate have one shared
+    source of truth.  A diagnostic may replace only action/output fields on the
+    returned request; it must not reconstruct the audio adapters independently.
+    """
+
+    pipeline_args = _command_pipeline_args(args)
+    base_request = single_turn.request_from_args(pipeline_args)
+    base_request = active_command_capture_request(
+        replace(
+            base_request,
+            playback_enabled=True,
+            cleanup_policy=(
+                "keep"
+                if args.retain_diagnostic_audio
+                else PIPELINE_CLEANUP_DELETE_ALWAYS
+            ),
+            diagnostic_audio=bool(args.retain_diagnostic_audio),
+            metadata={
+                **dict(base_request.metadata or {}),
+                "source": "run_ares_standby_voice",
+                "foreground_runtime": True,
+                "background_listening": False,
+            },
+        )
+    )
+    factory = pipeline_factory or single_turn.create_pipeline
+    pipeline = factory(
+        pipeline_args,
+        output_func=lambda _text: None,
+        skill_manager=skill_manager,
+        event_history_store=event_history_store,
+        whisper_status_callback=output_func,
+        whisper_termination_grace_seconds=args.whisper_termination_grace,
+        whisper_hard_cleanup_deadline_seconds=(
+            args.whisper_hard_cleanup_deadline
+        ),
+    )
+    return ProductionActiveAudioPipeline(
+        pipeline_args=pipeline_args,
+        base_request=base_request,
+        pipeline=pipeline,
+        voice_io_gate=VoiceRuntimeGate(settle_delay_seconds=0.35),
+    )
+
+
 def create_runtime(
     args: argparse.Namespace,
     *,
@@ -171,37 +244,16 @@ def create_runtime(
     if args.diagnostic_routing:
         command_handler = _diagnostic_handler(command_handler, output_func)
 
-    manual_args = _command_pipeline_args(args)
-    base_request = single_turn.request_from_args(manual_args)
-    base_request = replace(
-        base_request,
-        playback_enabled=True,
-        cleanup_policy=(
-            "keep"
-            if args.retain_diagnostic_audio
-            else PIPELINE_CLEANUP_DELETE_ALWAYS
-        ),
-        diagnostic_audio=bool(args.retain_diagnostic_audio),
-        metadata={
-            **dict(base_request.metadata or {}),
-            "source": "run_ares_standby_voice",
-            "foreground_runtime": True,
-            "background_listening": False,
-        },
-    )
-    factory = pipeline_factory or single_turn.create_pipeline
-    pipeline = factory(
-        manual_args,
-        output_func=lambda _text: None,
+    active_audio = build_production_active_audio_pipeline(
+        args,
+        output_func=output_func,
         skill_manager=skill_manager,
         event_history_store=history,
-        whisper_status_callback=output_func,
-        whisper_termination_grace_seconds=args.whisper_termination_grace,
-        whisper_hard_cleanup_deadline_seconds=(
-            args.whisper_hard_cleanup_deadline
-        ),
+        pipeline_factory=pipeline_factory,
     )
-    gate = VoiceRuntimeGate(settle_delay_seconds=0.35)
+    base_request = active_audio.base_request
+    pipeline = active_audio.pipeline
+    gate = active_audio.voice_io_gate
     active_input = SingleTurnPipelineRuntimeInputAdapter(
         pipeline=pipeline,
         base_request=base_request,

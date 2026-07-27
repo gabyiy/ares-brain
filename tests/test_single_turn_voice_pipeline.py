@@ -1447,6 +1447,29 @@ def test_auto_stop_propagates_frame_safe_capture_ready_boundary(tmp_path):
     assert pipeline._capture_ready_observers == []
 
 
+def test_auto_stop_propagates_explicit_diagnostic_exception_traceback_opt_in(
+    tmp_path,
+):
+    order = []
+    microphone = FakeVadMicrophone(order)
+    pipeline, _, _, _, _, _, _, _ = _pipeline(
+        tmp_path,
+        microphone=microphone,
+    )
+
+    result = pipeline.run_once(
+        _request(
+            tmp_path,
+            capture_mode=CAPTURE_MODE_AUTO_STOP,
+            playback_enabled=False,
+            metadata={"diagnostic_exception_traceback": True},
+        )
+    )
+
+    assert result.success is True
+    assert microphone.vad_calls[0]["diagnostic_exception_traceback"] is True
+
+
 def test_auto_stop_rejects_unexplained_duration_loss_before_whisper(tmp_path):
     order = []
     microphone = TruncatedVadMicrophone(order)

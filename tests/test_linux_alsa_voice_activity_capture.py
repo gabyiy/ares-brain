@@ -102,6 +102,52 @@ class StreamRunner:
         return self.source
 
 
+class PreflightFrameSource:
+    def __init__(self, events, *, payload=None, failure=None, stderr=""):
+        self.events = events
+        self.payload = frame(0) if payload is None else payload
+        self.failure = failure
+        self.stderr = stderr
+        self.closed = False
+
+    def read_frame(self, frame_bytes, timeout_seconds):
+        self.events.append(("read", frame_bytes, timeout_seconds))
+        if self.failure is not None:
+            raise self.failure
+        return self.payload
+
+    def close(self):
+        self.events.append(("close",))
+        self.closed = True
+
+    def snapshot(self):
+        return {
+            "transport_argv": ["/usr/bin/arecord", "-t", "raw", "-"],
+            "stdout_transport_mode": "raw_pcm_pipe_continuous_pump",
+            "process_pid": 2468,
+            "process_exit_status": 1 if self.failure is not None else 0,
+            "process_liveness_observable": True,
+            "stderr_preview": self.stderr,
+            "stream_ended": self.failure is not None,
+            "terminal_reason": (
+                "arecord_process_exited" if self.failure is not None else ""
+            ),
+            "closed": self.closed,
+        }
+
+
+class PreflightStreamRunner:
+    def __init__(self, source, events):
+        self.source = source
+        self.events = events
+        self.calls = []
+
+    def start(self, args):
+        self.calls.append(list(args))
+        self.events.append(("open", list(args)))
+        return self.source
+
+
 def test_persistent_stream_opens_once_across_rejected_and_accepted_candidates(tmp_path):
     source = FrameSource(
         [
@@ -711,6 +757,209 @@ def test_linux_alsa_auto_stop_stream_start_failure_is_safe(tmp_path):
     assert result.success is False
     assert result.status == VAD_STATUS_DEVICE_ERROR
     assert "device busy" in result.error_message
+    assert result.data["pcm_exception"]["exception_class"] == "OSError"
+    assert result.data["pcm_exception"]["exception_message"] == "device busy"
+    assert result.data["pcm_exception"]["failing_method"] == (
+        "SafePcmStreamRunner.start"
+    )
+    assert result.data["pcm_stream_cleanup"]["status"] == "not_started"
+    assert "traceback" not in result.data["pcm_exception"]
+
+
+def test_stream_start_failure_retains_traceback_only_for_diagnostic_capture(tmp_path):
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(failure=OSError("device busy exact")),
+    )
+    adapter.start()
+
+    result = adapter.record_until_silence(
+        tmp_path / "failed-diagnostic.wav",
+        diagnostic_exception_traceback=True,
+    )
+
+    assert result.error_message == "device busy exact"
+    failure = result.data["pcm_exception"]
+    assert failure["exception_message"] == "device busy exact"
+    assert "OSError: device busy exact" in failure["traceback"]
+
+
+def test_pcm_preflight_uses_production_command_and_opens_before_bounded_read():
+    events = []
+    source = PreflightFrameSource(events, payload=frame(0))
+    stream_runner = PreflightStreamRunner(source, events)
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="plughw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=stream_runner,
+    )
+    assert adapter.start().success is True
+
+    result = adapter.preflight_pcm_stream(
+        frame_read_timeout_seconds=0.25,
+        owner="diagnostic_active_capture",
+    )
+
+    assert result.success is True
+    assert result.status == "pcm_preflight_passed"
+    assert [event[0] for event in events] == ["open", "read", "close"]
+    command = stream_runner.calls[0]
+    assert command[command.index("-D") + 1] == "plughw:2,0"
+    assert command[command.index("-r") + 1] == "16000"
+    assert command[command.index("-c") + 1] == "1"
+    assert command[command.index("-f") + 1] == "S16_LE"
+    assert command[command.index("-t") + 1] == "raw"
+    assert command[-1] == "-"
+    assert result.data["open_success"] is True
+    assert result.data["first_pcm_read_success"] is True
+    assert result.data["first_frame_byte_count"] == 640
+    assert result.data["expected_frame_byte_count"] == 640
+    assert result.data["first_frame_sample_count"] == 320
+    assert result.data["first_frame_nonzero"] is False
+    assert result.data["first_frame_rms"] == 0.0
+    assert result.data["alsa_child_process_id"] == 2468
+    assert result.data["cleanup_result"] == "completed"
+    assert result.data["microphone_ownership_released"] is True
+    assert adapter._active_stream is None
+    assert adapter._active_stream_owner == ""
+
+
+def test_pcm_preflight_preserves_arecord_error_stderr_and_releases_ownership():
+    events = []
+    source = PreflightFrameSource(
+        events,
+        failure=RuntimeError("arecord_process_exited:1"),
+        stderr="arecord: main:831: audio open error: Device or resource busy",
+    )
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="plughw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=PreflightStreamRunner(source, events),
+    )
+    assert adapter.start().success is True
+
+    result = adapter.preflight_pcm_stream()
+
+    assert result.success is False
+    assert result.status == "microphone_open_error"
+    assert result.error_message == "RuntimeError:arecord_process_exited:1"
+    assert result.data["exception_class"] == "RuntimeError"
+    assert result.data["exception_message"] == "arecord_process_exited:1"
+    assert result.data["failing_method"] == "read_frame"
+    assert result.data["alsa_stderr"].endswith("Device or resource busy")
+    assert result.data["close_success"] is True
+    assert result.data["microphone_ownership_released"] is True
+    assert "traceback" not in result.data
+    assert source.closed is True
+    assert adapter._active_stream is None
+
+
+def test_pcm_preflight_traceback_requires_explicit_diagnostic_flag():
+    events = []
+    source = PreflightFrameSource(
+        events,
+        failure=RuntimeError("arecord_stdout_closed_while_process_alive"),
+    )
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="plughw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=PreflightStreamRunner(source, events),
+    )
+    assert adapter.start().success is True
+
+    result = adapter.preflight_pcm_stream(diagnostic_traceback=True)
+
+    assert result.success is False
+    assert "RuntimeError: arecord_stdout_closed_while_process_alive" in result.data[
+        "traceback"
+    ]
+    assert result.data["microphone_ownership_released"] is True
+
+
+def test_pcm_preflight_reports_invalid_runner_source_without_losing_cleanup_state():
+    class InvalidSource:
+        pass
+
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="plughw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(InvalidSource()),
+    )
+    assert adapter.start().success is True
+
+    result = adapter.preflight_pcm_stream(diagnostic_traceback=True)
+
+    assert result.success is False
+    assert result.status == "microphone_open_error"
+    assert result.data["exception_class"] == "TypeError"
+    assert result.data["exception_message"] == (
+        "PCM stream runner returned an invalid frame source"
+    )
+    assert result.data["close_called"] is True
+    assert result.data["close_success"] is False
+    assert result.data["cleanup_result"] == "incomplete"
+    assert result.data["microphone_ownership_released"] is True
+
+
+def test_pcm_preflight_retries_bounded_close_and_releases_ownership():
+    source = RetryCloseFrameSource([frame(0)])
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="plughw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(source),
+    )
+    assert adapter.start().success is True
+
+    result = adapter.preflight_pcm_stream()
+
+    assert result.success is True
+    assert source.close_attempts == 2
+    assert source.closed is True
+    assert result.data["close_attempts"] == 2
+    assert result.data["cleanup_result"] == "completed"
+    assert result.data["microphone_ownership_released"] is True
+    assert adapter._active_stream is None
+
+
+def test_auto_stop_failure_merges_post_close_stderr_snapshot_and_cleanup(tmp_path):
+    events = []
+    source = PreflightFrameSource(
+        events,
+        failure=RuntimeError("arecord_process_exited:1"),
+        stderr="arecord: audio open error: Device or resource busy",
+    )
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="plughw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=PreflightStreamRunner(source, events),
+    )
+    assert adapter.start().success is True
+
+    result = adapter.record_until_silence(
+        tmp_path / "failure.wav",
+        calibration_enabled=False,
+        diagnostic_exception_traceback=True,
+    )
+
+    assert result.success is False
+    assert result.error_message == (
+        "pcm_stream_error:RuntimeError:arecord_process_exited:1"
+    )
+    assert result.data["pcm_stream_cleanup"]["status"] == "completed"
+    assert result.data["pcm_stream_cleanup"]["attempts"] == 1
+    assert result.data["pcm_source_snapshot_after_close"]["closed"] is True
+    assert result.data["process"]["pid"] == 2468
+    assert result.data["process"]["returncode"] == 1
+    assert result.data["process"]["stderr"].endswith("Device or resource busy")
+    failure = result.data["pcm_exception"]
+    assert failure["exception_message"] == "arecord_process_exited:1"
+    assert failure["cleanup_result"] == "completed"
+    assert failure["source_snapshot_after_close"]["closed"] is True
+    assert failure["alsa_stderr"].endswith("Device or resource busy")
+    assert "RuntimeError: arecord_process_exited:1" in failure["traceback"]
+    assert adapter._active_stream is None
+    assert adapter._active_stream_owner == ""
 
 
 def test_linux_alsa_capabilities_advertise_activity_capture():

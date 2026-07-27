@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 from threading import Condition, Event, RLock, Thread
 import time
+import traceback
 import wave
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -1506,6 +1507,299 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             data={"health": health.to_dict()},
         )
 
+    def preflight_pcm_stream(
+        self,
+        *,
+        device: Optional[str] = None,
+        frame_duration_ms: int = CANONICAL_PCM_FRAME_DURATION_MS,
+        frame_read_timeout_seconds: float = 1.0,
+        diagnostic_traceback: bool = False,
+        owner: str = "diagnostic_active_capture",
+    ) -> MicrophoneResult:
+        """Open the production raw transport and validate one complete frame.
+
+        ``start()`` verifies dependencies but deliberately does not open ALSA.
+        This bounded preflight crosses the real hardware boundary using the same
+        command and stream runner as one-shot VAD capture.  A structurally valid
+        all-zero frame is accepted: signal amplitude is an observation, not an
+        open/read criterion.
+        """
+
+        started_at = time.monotonic()
+        clean_owner = str(owner or "")
+        expected_samples = CANONICAL_PCM_SAMPLES_PER_FRAME
+        expected_frame_bytes = (
+            expected_samples * CANONICAL_CHANNELS * CANONICAL_SAMPLE_WIDTH_BYTES
+        )
+        requested_device = self.device
+        resolved_device = self.device
+        command: List[str] = []
+        source: Optional[Any] = None
+        first_frame = b""
+        source_before_close: Dict[str, Any] = {}
+        source_after_close: Dict[str, Any] = {}
+        open_called = False
+        open_success = False
+        read_called = False
+        read_success = False
+        close_called = False
+        close_success = source is None
+        close_attempts = 0
+        failure_reason = ""
+        failing_method = ""
+        caught_error: Optional[BaseException] = None
+        exception_traceback = ""
+        last_close_error: Optional[BaseException] = None
+        last_close_traceback = ""
+
+        with self._stream_lock:
+            ownership_before = self._active_stream_owner
+
+        try:
+            clean_owner = _normalize_stream_owner(owner)
+            requested_device = (
+                _normalize_optional_device(device) if device is not None else self.device
+            )
+            resolved_device = resolve_alsa_capture_device(
+                requested_device,
+                require_conversion=True,
+            )
+            if not self.started:
+                raise RuntimeError("microphone_not_started")
+            if int(frame_duration_ms) != CANONICAL_PCM_FRAME_DURATION_MS:
+                raise ValueError(
+                    "PCM preflight requires canonical 20 ms frames"
+                )
+            if (
+                isinstance(frame_read_timeout_seconds, bool)
+                or not 0.01 <= float(frame_read_timeout_seconds) <= 5.0
+            ):
+                raise ValueError(
+                    "frame_read_timeout_seconds must be between 0.01 and 5"
+                )
+            if self.sample_format.upper() != DEFAULT_ALSA_SAMPLE_FORMAT:
+                raise ValueError("voice_activity_capture_requires_s16_le")
+            arecord_path = self._find_arecord()
+            if not arecord_path:
+                raise FileNotFoundError("arecord_missing")
+            command = self._stream_command(
+                arecord_path=arecord_path,
+                device=resolved_device,
+            )
+            failing_method = "SafePcmStreamRunner.start"
+            with self._stream_lock:
+                if self._active_stream is not None:
+                    raise RuntimeError(
+                        "microphone_capture_already_owned:"
+                        f"{self._active_stream_owner or 'unknown'}"
+                    )
+                open_called = True
+                source = self.stream_runner.start(command)
+                if not callable(getattr(source, "read_frame", None)):
+                    raise TypeError(
+                        "PCM stream runner returned an invalid frame source"
+                    )
+                self._active_stream = source
+                self._active_stream_owner = clean_owner
+                open_success = True
+                self.audio_hardware_accessed = True
+
+            failing_method = "read_frame"
+            read_called = True
+            frame = source.read_frame(
+                expected_frame_bytes,
+                float(frame_read_timeout_seconds),
+            )
+            if not isinstance(frame, (bytes, bytearray, memoryview)):
+                failure_reason = "invalid_frame_error"
+                raise TypeError("PCM preflight returned a non-bytes frame")
+            first_frame = bytes(frame[: len(frame)])
+            if len(first_frame) != expected_frame_bytes:
+                failure_reason = "invalid_frame_error"
+                raise ValueError(
+                    "PCM preflight returned an incomplete frame:"
+                    f"{len(first_frame)}:expected:{expected_frame_bytes}"
+                )
+            if len(first_frame) % CANONICAL_SAMPLE_WIDTH_BYTES:
+                failure_reason = "invalid_frame_error"
+                raise ValueError("PCM preflight returned an odd-byte frame")
+            read_success = True
+        except (EOFError, FileNotFoundError, OSError, RuntimeError, TypeError, ValueError) as error:
+            caught_error = error
+            if bool(diagnostic_traceback):
+                exception_traceback = traceback.format_exc()
+            if not failure_reason:
+                failure_reason = (
+                    "microphone_open_error"
+                    if not open_success
+                    else "pcm_read_error"
+                )
+        finally:
+            if source is not None:
+                source_before_close = _safe_pcm_source_snapshot(source)
+                close_called = True
+                for _ in range(2):
+                    close_attempts += 1
+                    try:
+                        close_source = getattr(source, "close", None)
+                        if not callable(close_source):
+                            raise TypeError(
+                                "PCM stream source does not support close"
+                            )
+                        close_source()
+                        close_success = True
+                        break
+                    except Exception as close_error:
+                        close_success = False
+                        last_close_error = close_error
+                        if bool(diagnostic_traceback):
+                            last_close_traceback = traceback.format_exc()
+                source_after_close = _safe_pcm_source_snapshot(source)
+                if close_success:
+                    with self._stream_lock:
+                        if self._active_stream is source:
+                            self._active_stream = None
+                            self._active_stream_owner = ""
+                elif caught_error is None and last_close_error is not None:
+                    caught_error = last_close_error
+                    failing_method = "close"
+                    failure_reason = "microphone_cleanup_error"
+                    if bool(diagnostic_traceback):
+                        exception_traceback = last_close_traceback
+
+        with self._stream_lock:
+            ownership_after = self._active_stream_owner
+        source_snapshot = {
+            **source_before_close,
+            **source_after_close,
+        }
+        if (
+            caught_error is not None
+            and open_success
+            and not read_success
+            and (
+                source_snapshot.get("process_exit_status") is not None
+                or "open error" in str(
+                    source_snapshot.get("stderr_preview", "")
+                    or source_snapshot.get("stderr", "")
+                    or ""
+                ).casefold()
+            )
+        ):
+            failure_reason = "microphone_open_error"
+        samples = (
+            decode_s16_le_samples(first_frame)
+            if len(first_frame) == expected_frame_bytes
+            else []
+        )
+        process_pid = int(source_snapshot.get("process_pid", 0) or 0)
+        stderr_text = str(
+            getattr(source, "stderr", "") if source is not None else ""
+        ) or str(
+            source_snapshot.get("stderr_preview", "")
+            or source_snapshot.get("stderr", "")
+            or ""
+        )
+        cleanup_result = (
+            "completed"
+            if source is not None and close_success and not ownership_after
+            else "not_required"
+            if source is None
+            else "incomplete"
+        )
+        data: Dict[str, Any] = {
+            "adapter_class": (
+                f"{self.__class__.__module__}.{self.__class__.__qualname__}"
+            ),
+            "failing_method": failing_method if caught_error is not None else "",
+            "microphone_device": requested_device or "",
+            "requested_device": requested_device or "",
+            "resolved_capture_device": resolved_device or "",
+            "requested_pcm_format": {
+                "sample_rate_hz": CANONICAL_SAMPLE_RATE_HZ,
+                "channels": CANONICAL_CHANNELS,
+                "sample_width_bytes": CANONICAL_SAMPLE_WIDTH_BYTES,
+                "sample_format": CANONICAL_PCM_SAMPLE_FORMAT,
+                "frame_duration_ms": int(frame_duration_ms),
+                "samples_per_frame": expected_samples,
+                "expected_frame_bytes": expected_frame_bytes,
+            },
+            "stream_lifecycle_state": (
+                "closed"
+                if close_success and source is not None
+                else "open"
+                if source is not None
+                else "not_opened"
+            ),
+            "adapter_started": self.started,
+            "start_called": self.start_count > 0,
+            "open_called": open_called,
+            "open_success": open_success,
+            "read_called": read_called,
+            "first_pcm_read_success": read_success,
+            "first_frame_byte_count": len(first_frame),
+            "expected_frame_byte_count": expected_frame_bytes,
+            "first_frame_nonzero": any(first_frame),
+            "first_frame_sample_count": len(samples),
+            "first_frame_minimum_sample": min(samples, default=0),
+            "first_frame_maximum_sample": max(samples, default=0),
+            "first_frame_rms": (
+                calculate_s16_le_rms(first_frame)
+                if len(first_frame) == expected_frame_bytes
+                else 0.0
+            ),
+            "process_id": os.getpid(),
+            "alsa_child_process_id": process_pid,
+            "alsa_process_exit_status": source_snapshot.get(
+                "process_exit_status"
+            ),
+            "alsa_stderr": stderr_text,
+            "exact_capture_command": list(command),
+            "stdout_transport_mode": str(
+                source_snapshot.get("stdout_transport_mode", "raw_pcm_pipe")
+                or "raw_pcm_pipe"
+            ),
+            "microphone_ownership_before": ownership_before,
+            "microphone_ownership_acquired": bool(
+                open_success and clean_owner
+            ),
+            "microphone_ownership_owner": clean_owner,
+            "microphone_ownership_after": ownership_after,
+            "microphone_ownership_released": not bool(ownership_after),
+            "close_called": close_called,
+            "close_attempts": close_attempts,
+            "close_success": close_success,
+            "cleanup_result": cleanup_result,
+            "failure_reason": failure_reason,
+            "source_snapshot": source_snapshot,
+            "processing_time_seconds": round(time.monotonic() - started_at, 6),
+        }
+        if caught_error is not None:
+            data["exception_class"] = caught_error.__class__.__name__
+            data["exception_message"] = str(caught_error)
+            if bool(diagnostic_traceback):
+                data["traceback"] = exception_traceback
+            return self._failure(
+                status=failure_reason or "pcm_preflight_error",
+                text="Linux ALSA PCM preflight failed.",
+                error_message=(
+                    f"{caught_error.__class__.__name__}:{str(caught_error)}"
+                ),
+                data=data,
+            )
+        if not close_success:
+            return self._failure(
+                status="microphone_cleanup_error",
+                text="Linux ALSA PCM preflight cleanup was incomplete.",
+                error_message="microphone_preflight_cleanup_incomplete",
+                data=data,
+            )
+        return self._success(
+            status="pcm_preflight_passed",
+            text="Linux ALSA PCM preflight received one complete canonical frame.",
+            data=data,
+        )
+
     def stop(self) -> MicrophoneResult:
         self.stop_count += 1
         try:
@@ -2173,6 +2467,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         minimum_speech_duration_seconds: float = 0.0,
         diagnostic_rms_interval_frames: int = 5,
         diagnostic_audio: bool = False,
+        diagnostic_exception_traceback: bool = False,
         cancel_requested: Optional[CancelCheck | Any] = None,
         capture_ready_callback: Optional[
             Callable[[Dict[str, Any]], None]
@@ -2187,10 +2482,20 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         started_at = time.monotonic()
         requested_device = self.device
         resolved_device = self.device
+        command: List[str] = []
         stage_paths: Optional[CaptureStagePaths] = None
+        source: Optional[Any] = None
         stream: Optional[Any] = None
         owns_stream = False
+        stream_cleanup: Dict[str, Any] = {
+            "called": False,
+            "attempts": 0,
+            "completed": False,
+            "status": "not_started",
+        }
+        failing_method = "record_until_silence"
         try:
+            failing_method = "resolve_alsa_capture_device"
             requested_device = (
                 _normalize_optional_device(device) if device is not None else self.device
             )
@@ -2202,6 +2507,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 raise RuntimeError("microphone_not_started")
             if self.sample_format.upper() != DEFAULT_ALSA_SAMPLE_FORMAT:
                 raise ValueError("voice_activity_capture_requires_s16_le")
+            failing_method = "find_arecord"
             arecord_path = self._find_arecord()
             if not arecord_path:
                 raise FileNotFoundError("arecord_missing")
@@ -2251,6 +2557,9 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     "diagnostic_rms_interval_frames": int(
                         diagnostic_rms_interval_frames
                     ),
+                    "diagnostic_exception_traceback": bool(
+                        diagnostic_exception_traceback
+                    ),
                 },
             )
             validate_voice_activity_request(request)
@@ -2263,6 +2572,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 resolved_device = persistent_stream.resolved_device
                 command = list(persistent_stream.command)
             else:
+                failing_method = "SafePcmStreamRunner.start"
                 command = self._stream_command(
                     arecord_path=arecord_path,
                     device=resolved_device,
@@ -2297,6 +2607,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             else:
                 stream = source
             self.audio_hardware_accessed = True
+            failing_method = "RmsVoiceActivityCapture.execute"
             result = self.voice_activity_capture.execute(
                 request,
                 stream,
@@ -2304,11 +2615,36 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 capture_ready_callback=capture_ready_callback,
             )
             if owns_stream:
-                stream.close()
-                with self._stream_lock:
-                    if self._active_stream is source:
-                        self._active_stream = None
-                        self._active_stream_owner = ""
+                failing_method = "close"
+                stream_cleanup = _bounded_pcm_source_cleanup(
+                    stream,
+                    diagnostic_traceback=bool(diagnostic_exception_traceback),
+                )
+                if stream_cleanup["completed"]:
+                    with self._stream_lock:
+                        if self._active_stream is source:
+                            self._active_stream = None
+                            self._active_stream_owner = ""
+                else:
+                    result = replace(
+                        result,
+                        success=False,
+                        status=VAD_STATUS_DEVICE_ERROR,
+                        stop_reason=VAD_STATUS_DEVICE_ERROR,
+                        error_message=(
+                            "pcm_stream_cleanup_error:"
+                            + str(
+                                stream_cleanup.get("exception_class")
+                                or "RuntimeError"
+                            )
+                            + ":"
+                            + str(
+                                stream_cleanup.get("exception_message")
+                                or "cleanup_incomplete"
+                            )
+                        ),
+                    )
+            failing_method = "capture_audio_finalization"
             raw_wav_path = ""
             raw_wav: Dict[str, Any] = {}
             if diagnostic_audio and isinstance(stream, DiagnosticPcmFrameSource):
@@ -2422,6 +2758,40 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             )
             normalized_duration = float(normalized_wav.get("duration_seconds", 0.0))
             final_path = final_whisper_input_path or result.wav_path
+            result_data = dict(result.data)
+            pcm_exception = dict(result_data.get("pcm_exception") or {})
+            source_after_close = dict(
+                stream_cleanup.get("source_snapshot_after_close") or {}
+            )
+            process_stderr = str(
+                getattr(stream, "stderr", "") if stream is not None else ""
+            ) or str(
+                source_after_close.get("stderr_preview", "")
+                or source_after_close.get("stderr", "")
+                or ""
+            )
+            if pcm_exception:
+                pcm_exception.update(
+                    {
+                        "cleanup_result": str(
+                            stream_cleanup.get("status") or "not_required"
+                        ),
+                        "source_snapshot_after_close": source_after_close,
+                        "alsa_stderr": process_stderr
+                        or str(pcm_exception.get("alsa_stderr") or ""),
+                        "alsa_process_exit_status": source_after_close.get(
+                            "process_exit_status",
+                            pcm_exception.get("alsa_process_exit_status"),
+                        ),
+                        "alsa_child_process_id": int(
+                            source_after_close.get(
+                                "process_pid",
+                                pcm_exception.get("alsa_child_process_id", 0),
+                            )
+                            or 0
+                        ),
+                    }
+                )
             return replace(
                 result,
                 wav_path=final_path,
@@ -2449,7 +2819,8 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 duration_invariant_status=str(duration_invariant.get("status", "not_checked")),
                 final_whisper_input_path=final_whisper_input_path,
                 data={
-                    **dict(result.data),
+                    **result_data,
+                    **({"pcm_exception": pcm_exception} if pcm_exception else {}),
                     "requested_device": requested_device or "",
                     "resolved_capture_device": resolved_device or "",
                     "requested_sample_rate_hz": CANONICAL_SAMPLE_RATE_HZ,
@@ -2487,9 +2858,19 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     "process": {
                         "args": command,
                         "shell": False,
-                        "stderr": _bounded_text(getattr(stream, "stderr", "")),
-                        "returncode": getattr(getattr(stream, "process", None), "returncode", None),
+                        "pid": int(source_after_close.get("process_pid", 0) or 0),
+                        "stderr": _bounded_text(process_stderr, 8192),
+                        "returncode": source_after_close.get(
+                            "process_exit_status",
+                            getattr(
+                                getattr(stream, "process", None),
+                                "returncode",
+                                None,
+                            ),
+                        ),
                     },
+                    "pcm_stream_cleanup": stream_cleanup,
+                    "pcm_source_snapshot_after_close": source_after_close,
                 },
                 metadata={
                     **dict(result.metadata),
@@ -2500,7 +2881,84 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     "diagnostic_audio": bool(diagnostic_audio),
                 },
             )
-        except (FileNotFoundError, OSError, RuntimeError, ValueError) as error:
+        except (
+            FileNotFoundError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ) as error:
+            exception_traceback = (
+                traceback.format_exc()
+                if bool(diagnostic_exception_traceback)
+                else ""
+            )
+            target_source = stream or source
+            if (
+                owns_stream
+                and target_source is not None
+                and not bool(stream_cleanup.get("completed", False))
+            ):
+                stream_cleanup = _bounded_pcm_source_cleanup(
+                    target_source,
+                    diagnostic_traceback=bool(diagnostic_exception_traceback),
+                )
+                if stream_cleanup["completed"]:
+                    with self._stream_lock:
+                        if self._active_stream is source:
+                            self._active_stream = None
+                            self._active_stream_owner = ""
+            source_after_close = dict(
+                stream_cleanup.get("source_snapshot_after_close") or {}
+            )
+            process_stderr = str(
+                getattr(target_source, "stderr", "")
+                if target_source is not None
+                else ""
+            ) or str(
+                source_after_close.get("stderr_preview", "")
+                or source_after_close.get("stderr", "")
+                or ""
+            )
+            exception_data: Dict[str, Any] = {
+                "exception_class": error.__class__.__name__,
+                "exception_message": str(error),
+                "failing_adapter_class": (
+                    f"{self.__class__.__module__}.{self.__class__.__qualname__}"
+                ),
+                "failing_method": failing_method,
+                "microphone_device": requested_device or "",
+                "requested_pcm_format": canonical_pcm_contract(),
+                "stream_lifecycle_state": (
+                    "closed"
+                    if bool(source_after_close.get("closed", False))
+                    else "ended"
+                    if bool(source_after_close.get("stream_ended", False))
+                    else "open"
+                    if target_source is not None
+                    else "not_opened"
+                ),
+                "start_called": bool(self.started),
+                "open_called": bool(source is not None),
+                "read_called": bool(
+                    source_after_close.get("total_low_level_reads", 0)
+                    or source_after_close.get("read_sequence", 0)
+                ),
+                "process_id": os.getpid(),
+                "alsa_child_process_id": int(
+                    source_after_close.get("process_pid", 0) or 0
+                ),
+                "alsa_process_exit_status": source_after_close.get(
+                    "process_exit_status"
+                ),
+                "alsa_stderr": process_stderr,
+                "cleanup_result": str(
+                    stream_cleanup.get("status") or "not_required"
+                ),
+                "source_snapshot_after_close": source_after_close,
+            }
+            if bool(diagnostic_exception_traceback):
+                exception_data["traceback"] = exception_traceback
             if stage_paths is not None and not diagnostic_audio:
                 for stage_path in (
                     stage_paths.raw,
@@ -2520,7 +2978,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 normalized_sample_width_bytes=CANONICAL_SAMPLE_WIDTH_BYTES,
                 stop_reason=VAD_STATUS_DEVICE_ERROR,
                 processing_time_seconds=round(time.monotonic() - started_at, 6),
-                error_message=str(error)[:200],
+                error_message=str(error),
                 correlation_id=correlation_id,
                 session_id=session_id,
                 metadata={
@@ -2531,15 +2989,32 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     "requested_device": requested_device or "",
                     "resolved_capture_device": resolved_device or "",
                 },
+                data={
+                    "pcm_exception": exception_data,
+                    "pcm_stream_cleanup": stream_cleanup,
+                    "pcm_source_snapshot_after_close": source_after_close,
+                    "process": {
+                        "args": command,
+                        "shell": False,
+                        "pid": int(
+                            source_after_close.get("process_pid", 0) or 0
+                        ),
+                        "stderr": _bounded_text(process_stderr, 8192),
+                        "returncode": source_after_close.get(
+                            "process_exit_status"
+                        ),
+                    },
+                },
             )
         finally:
             if owns_stream:
                 with self._stream_lock:
                     active = self._active_stream
-                    if active is not None:
-                        self._active_stream = None
-                        self._active_stream_owner = ""
-                stream_to_close = active or stream
+                stream_to_close = (
+                    active or stream
+                    if not bool(stream_cleanup.get("completed", False))
+                    else None
+                )
             else:
                 stream_to_close = (
                     stream if isinstance(stream, DiagnosticPcmFrameSource) else None
@@ -2549,6 +3024,12 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     stream_to_close.close()
                 except (OSError, RuntimeError):
                     pass
+                else:
+                    if owns_stream:
+                        with self._stream_lock:
+                            if self._active_stream is source:
+                                self._active_stream = None
+                                self._active_stream_owner = ""
 
     def _validated_persistent_stream(
         self,
@@ -2716,6 +3197,61 @@ def _safe_process_data(result: SafeProcessResult) -> Dict[str, Any]:
         "timed_out": result.timed_out,
         "error_message": result.error_message,
     }
+
+
+def _safe_pcm_source_snapshot(source: Any) -> Dict[str, Any]:
+    snapshot = getattr(source, "snapshot", None)
+    if not callable(snapshot):
+        return {}
+    try:
+        value = snapshot()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return {}
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _bounded_pcm_source_cleanup(
+    source: Any,
+    *,
+    diagnostic_traceback: bool = False,
+    maximum_attempts: int = 2,
+) -> Dict[str, Any]:
+    """Close one PCM source with a small retry bound and truthful diagnostics."""
+
+    before = _safe_pcm_source_snapshot(source)
+    attempts = 0
+    completed = False
+    last_error: Optional[BaseException] = None
+    last_traceback = ""
+    for _ in range(max(1, min(int(maximum_attempts), 3))):
+        attempts += 1
+        try:
+            source.close()
+            completed = True
+            break
+        except (OSError, RuntimeError) as error:
+            last_error = error
+            if bool(diagnostic_traceback):
+                last_traceback = traceback.format_exc()
+    after = _safe_pcm_source_snapshot(source)
+    result: Dict[str, Any] = {
+        "called": True,
+        "attempts": attempts,
+        "completed": completed,
+        "status": "completed" if completed else "incomplete",
+        "source_snapshot_before_close": before,
+        "source_snapshot_after_close": after,
+    }
+    if last_error is not None:
+        result.update(
+            {
+                "exception_class": last_error.__class__.__name__,
+                "exception_message": str(last_error),
+            }
+        )
+        if bool(diagnostic_traceback):
+            result["traceback"] = last_traceback
+    return result
 
 
 def _bounded_text(text: str, limit: int = 500) -> str:

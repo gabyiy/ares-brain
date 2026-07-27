@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 import os
 from pathlib import Path
 import tempfile
 import time
+import traceback
 from typing import Any, Callable, Deque, Dict, Optional, Protocol, Tuple
 import wave
 
@@ -82,6 +83,7 @@ class VoiceActivityStreamCalibration:
     diagnostics: Optional["VoiceActivityCalibrationDiagnostics"] = None
     error_code: str = ""
     error_message: str = ""
+    data: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -254,7 +256,14 @@ class RmsVoiceActivityCapture:
                         frame_bytes,
                         request.frame_read_timeout_seconds,
                     )
-                except TimeoutError:
+                except TimeoutError as error:
+                    exception_data = _pcm_exception_diagnostics(
+                        error,
+                        frame_source,
+                        request=request,
+                        failing_method="read_frame",
+                        diagnostic_traceback=_diagnostic_traceback_enabled(request),
+                    )
                     return VoiceActivityStreamCalibration(
                         False,
                         VAD_STATUS_TIMEOUT,
@@ -262,15 +271,24 @@ class RmsVoiceActivityCapture:
                         duration_seconds=round(len(levels) * frame_seconds, 6),
                         error_code=VAD_STATUS_TIMEOUT,
                         error_message="pcm frame read timeout during calibration",
+                        data={"pcm_exception": exception_data},
                     )
                 except (EOFError, OSError, RuntimeError) as error:
+                    exception_data = _pcm_exception_diagnostics(
+                        error,
+                        frame_source,
+                        request=request,
+                        failing_method="read_frame",
+                        diagnostic_traceback=_diagnostic_traceback_enabled(request),
+                    )
                     return VoiceActivityStreamCalibration(
                         False,
                         VAD_STATUS_DEVICE_ERROR,
                         frame_count=len(levels),
                         duration_seconds=round(len(levels) * frame_seconds, 6),
                         error_code=VAD_STATUS_DEVICE_ERROR,
-                        error_message=f"pcm_stream_error:{error.__class__.__name__}",
+                        error_message=_pcm_stream_error_message(error),
+                        data={"pcm_exception": exception_data},
                     )
                 if not isinstance(frame, (bytes, bytearray)) or len(frame) != frame_bytes:
                     return VoiceActivityStreamCalibration(
@@ -757,8 +775,15 @@ class RmsVoiceActivityCapture:
                     frame_bytes,
                     request.frame_read_timeout_seconds,
                 )
-            except TimeoutError:
+            except TimeoutError as error:
                 timeout_observability = observability_data()
+                exception_data = _pcm_exception_diagnostics(
+                    error,
+                    frame_source,
+                    request=request,
+                    failing_method="read_frame",
+                    diagnostic_traceback=_diagnostic_traceback_enabled(request),
+                )
                 return self._failure(
                     request,
                     VAD_STATUS_TIMEOUT,
@@ -772,6 +797,7 @@ class RmsVoiceActivityCapture:
                     thresholds=thresholds,
                     data={
                         **timeout_observability,
+                        "pcm_exception": exception_data,
                         "transitions": transitions,
                         "capture_failure_stage": (
                             "post_calibration_input_absent"
@@ -782,10 +808,17 @@ class RmsVoiceActivityCapture:
                 )
             except (EOFError, OSError, RuntimeError) as error:
                 device_observability = observability_data()
+                exception_data = _pcm_exception_diagnostics(
+                    error,
+                    frame_source,
+                    request=request,
+                    failing_method="read_frame",
+                    diagnostic_traceback=_diagnostic_traceback_enabled(request),
+                )
                 return self._failure(
                     request,
                     VAD_STATUS_DEVICE_ERROR,
-                    f"pcm_stream_error:{error.__class__.__name__}",
+                    _pcm_stream_error_message(error),
                     started_at,
                     speech_detected=speech_detected,
                     frame_count=total_frames,
@@ -795,6 +828,7 @@ class RmsVoiceActivityCapture:
                     thresholds=thresholds,
                     data={
                         **device_observability,
+                        "pcm_exception": exception_data,
                         "transitions": transitions,
                         "capture_failure_stage": (
                             "post_calibration_input_absent"
@@ -805,10 +839,20 @@ class RmsVoiceActivityCapture:
                 )
             except (TypeError, ValueError) as error:
                 invalid_observability = observability_data()
+                exception_data = _pcm_exception_diagnostics(
+                    error,
+                    frame_source,
+                    request=request,
+                    failing_method="read_frame",
+                    diagnostic_traceback=_diagnostic_traceback_enabled(request),
+                )
                 return self._failure(
                     request,
                     VAD_STATUS_INVALID_AUDIO,
-                    f"invalid_pcm_stream:{str(error)[:120]}",
+                    (
+                        f"invalid_pcm_stream:{error.__class__.__name__}:"
+                        f"{str(error)}"
+                    ),
                     started_at,
                     speech_detected=speech_detected,
                     frame_count=total_frames,
@@ -818,6 +862,7 @@ class RmsVoiceActivityCapture:
                     thresholds=thresholds,
                     data={
                         **invalid_observability,
+                        "pcm_exception": exception_data,
                         "transitions": transitions,
                         "capture_failure_stage": "invalid_pcm_frame",
                     },
@@ -1623,6 +1668,101 @@ def _pcm_source_snapshot(frame_source: Any) -> Dict[str, Any]:
     except (OSError, RuntimeError, TypeError, ValueError):
         return {}
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _pcm_stream_error_message(error: BaseException) -> str:
+    """Preserve the concrete PCM failure without reducing it to a class name."""
+
+    message = str(error)
+    return (
+        f"pcm_stream_error:{error.__class__.__name__}:{message}"
+        if message
+        else f"pcm_stream_error:{error.__class__.__name__}"
+    )
+
+
+def _diagnostic_traceback_enabled(request: VoiceActivityCaptureRequestV1) -> bool:
+    """Require an explicit diagnostic-only opt-in before retaining tracebacks."""
+
+    metadata = dict(getattr(request, "metadata", {}) or {})
+    return metadata.get("diagnostic_exception_traceback") is True
+
+
+def _pcm_exception_diagnostics(
+    error: BaseException,
+    frame_source: Any,
+    *,
+    request: VoiceActivityCaptureRequestV1,
+    failing_method: str,
+    diagnostic_traceback: bool,
+) -> Dict[str, Any]:
+    """Build bounded, structured context for one failed PCM boundary call.
+
+    ALSA transport adapters commonly move a subprocess error from a producer
+    thread to the foreground ``read_frame`` call.  Keeping the saved message and
+    source snapshot is therefore essential: the exception class alone cannot
+    distinguish a busy device, child exit, closed pipe, or integrity guard.
+    """
+
+    source_snapshot = _pcm_source_snapshot(frame_source)
+    source_chain: list[str] = []
+    current = frame_source
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited and len(source_chain) < 8:
+        visited.add(id(current))
+        source_chain.append(
+            f"{current.__class__.__module__}.{current.__class__.__qualname__}"
+        )
+        nested = getattr(current, "source", None)
+        current = nested if nested is not current else None
+
+    process_id = int(source_snapshot.get("process_pid", 0) or 0)
+    details: Dict[str, Any] = {
+        "exception_class": error.__class__.__name__,
+        "exception_message": str(error),
+        "failing_adapter_class": source_chain[0] if source_chain else "",
+        "adapter_chain": source_chain,
+        "failing_method": str(failing_method),
+        "microphone_device": str(request.microphone_device or ""),
+        "requested_pcm_format": {
+            "sample_rate_hz": int(request.sample_rate_hz),
+            "channels": int(request.channels),
+            "sample_width_bytes": int(request.sample_width_bytes),
+            "sample_format": "S16_LE" if request.sample_width_bytes == 2 else "",
+            "frame_duration_ms": int(request.frame_duration_ms),
+            "expected_frame_bytes": int(
+                pcm_frame_sample_count(
+                    request.sample_rate_hz,
+                    request.frame_duration_ms,
+                )
+                * request.channels
+                * request.sample_width_bytes
+            ),
+        },
+        "stream_lifecycle_state": (
+            "closed"
+            if bool(source_snapshot.get("closed", False))
+            else "ended"
+            if bool(source_snapshot.get("stream_ended", False))
+            else "open"
+        ),
+        "start_called": True,
+        "open_called": True,
+        "read_called": True,
+        "process_id": os.getpid(),
+        "alsa_child_process_id": process_id,
+        "alsa_process_exit_status": source_snapshot.get("process_exit_status"),
+        "alsa_stderr": str(
+            source_snapshot.get("stderr_preview", "")
+            or source_snapshot.get("stderr", "")
+            or ""
+        ),
+        "cleanup_result": "pending_owner_cleanup",
+        "source_snapshot": source_snapshot,
+    }
+    if diagnostic_traceback:
+        details["traceback"] = traceback.format_exc()
+    return details
 
 
 def _enrich_frame_trace(
