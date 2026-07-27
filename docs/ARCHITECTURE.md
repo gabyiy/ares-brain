@@ -181,6 +181,8 @@ Lifecycle events are `brain_boot_started`, `brain_initialization_started`, `brai
 
 `BrainSessionManager` remains the sole lifecycle authority for the persistent foreground runtime. Future City activation may be requested by Capital/Core only after CoreService validates capability, health, contract, and capacity; Cities remain lifecycle-managed resources and will neither own nor mutate the central manager. The manager itself contains no microphone or wake logic. `BrainRuntime` may invoke the bounded wake adapter described below, but daemon/systemd startup and City activation remain unimplemented.
 
+The bounded hardware probe `scripts/manual_diagnose_active_lifecycle_audio.py` uses the launcher's argument mapping, production ACTIVE request wrapper, real ALSA recorder, bounded Whisper process helper, and central normalizer. It captures the four fixed phrases but deliberately constructs no Brain runtime, CoreService, SkillManager, lifecycle transition, event store, or owner-memory service. It deletes audio unless retention is explicitly requested. Passing Windows tests proves composition and contracts, not Raspberry Pi audibility or recognition.
+
 Hardware-free verification:
 
 ```bash
@@ -191,6 +193,12 @@ python scripts/manual_verify_brain_session_manager.py
 ```
 
 # Persistent Foreground Brain Runtime
+
+ACTIVE lifecycle matching remains deterministic and whole-phrase based. Standby roots are `goodbye`, `bye`, `standby`, `go to standby`, `go to sleep`, and `sleep`; shutdown roots are `shutdown`, `turn off`, `power down`, and `stop runtime`. One validated assistant address may appear at either outer edge. Compound segmentation is normalized before matching, and negated, descriptive, scheduled, embedded, or otherwise longer phrases do not execute lifecycle actions.
+
+The diagnostic-only production composition banner identifies the resolved runtime, lifecycle authority, standby listener, active input adapter, pipeline, ALSA recorder, Whisper adapter, central normalizer, shared gate, and routing revision. Each `ACTIVE COMMAND DIAGNOSTIC` reports the raw/cleaned transcript, capture-ready reason, first/last speech frames, retained/expected pre-roll, clipping status, raw/candidate duration, leading/trailing trimming, assistant alias and position, command after address removal, lifecycle action, routing bypass, pre-route state/session, whether the activation handler was called, post-route state/session, Whisper cleanup, and terminal reason. These values remain terminal-only under diagnostic flags and are not written to events, memory, or operational logs.
+
+`BrainSessionManager` is the lifecycle authority, including activation authority. `activate_session()` accepts only `STANDBY`; every other state returns `activation_not_allowed` while preserving state, session ID, transition history, and acknowledgement count. `BrainRuntime` also rejects any activation-category input that reaches its handler outside `STANDBY`. The ordinary ACTIVE parser is still responsible for returning typed, silent `attention_only` for `Ares`, `Aris`, `RS`, `Hey Ares`, and `Hello Ares`, but parser correctness is no longer the only guard against reactivation.
 
 `core.BrainRuntime` belongs to Capital/Core and composes the existing `BrainSessionManager`, `CoreService`, one injected input adapter, one injected output adapter, and an injected production text-command handler. It does not implement skills, persistent memory, STT, TTS, hardware access, or City lifecycle. Runtime execution is serialized; no worker, daemon, or background timer thread is created.
 
@@ -229,6 +237,10 @@ python scripts/run_ares_brain_runtime_text.py
 The second command is the stable developer text interface. It is not a microphone path, service, or boot hook. The separately injected foreground wake adapter below does not alter this text mode; systemd/boot startup remains later and unimplemented.
 
 # Foreground Standby Wake Runtime
+
+Standby and ACTIVE audio have separate readiness semantics. The standby listener retains its established continuously pumped stream and wake profile. ACTIVE uses a fresh one-shot ALSA stream after TTS completion and the 0.35-second playback-settling gate. Pipeline startup then performs the existing 0.75-second ambient calibration. A synchronous VAD -> ALSA adapter -> single-turn pipeline -> runtime-input callback fires only when calibration transitions to `WAITING`; the owner prompt is printed from that callback, never before it. The next PCM frame therefore belongs to a real owner-speech window. The `active_command_v1` request wrapper preserves the configured thresholds, maximum duration, device, and canonical 16 kHz mono `S16_LE` format while enforcing at least 0.5 seconds of rolling pre-roll and 0.9 seconds of continuous terminal quiet. All retained frames are immutable, the first qualifying/start-evidence frame is appended once, speech beginning inside a 640-byte frame is preserved, and no leading candidate audio is trimmed before Whisper.
+
+The old production ordering printed readiness immediately before `SingleTurnVoicePipeline.run_once()`. Its subsequent calibration correctly consumed and excluded the first 0.75 seconds; owner speech begun at the prompt could therefore lose an initial `goodbye`, `shutdown`, `calculate`, or `remember` and leave only later words. This was an ordering defect, not evidence for changing thresholds or mixer gain. The corrected callback also provides a production-composition test seam: `run_ares_standby_voice.py` is tested with the actual state-aware input adapter, central active normalizer, lifecycle authority, shared playback gate, active profile, and ready-after-calibration ordering.
 
 `core.StandbyWakeListener` defines the bounded adapter contract used by Capital/Core while the lifecycle state is `STANDBY`. `core.LinuxStandbyWakeListener` is the Raspberry Pi/Linux implementation. It owns no lifecycle, skill, memory, or routing state. `BrainRuntime` starts, calls, cancels, and stops it; every activation still goes through `BrainSessionManager.activate_session()`.
 

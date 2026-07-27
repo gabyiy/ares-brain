@@ -10,11 +10,13 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v2.13 - Lifecycle-Only Acoustic Name Canonicalization
+ARES v2.14 - Frame-Safe Active Lifecycle Capture
 
 ---
 
 Current Architecture
+
+The production ACTIVE path enforces activation safety at two independent boundaries. `normalize_active_lifecycle_command()` maps name-only input to silent `attention_only`, while `BrainSessionManager.activate_session()` rejects every activation request outside `STANDBY` without changing state, session ID, or acknowledgement count. Active capture keeps the existing ALSA device, calibrated RMS thresholds, and canonical 16 kHz mono `S16_LE` format. Its synchronous ready signal is emitted only after the one-shot stream is open and the 0.75-second calibration has entered `WAITING`; only then is `ARES is waiting for your command...` printed. The production active profile retains 0.5 seconds of rolling pre-roll, includes the first start-evidence frame without leading trimming, and requires 0.9 seconds of continuous terminal quiet. This fixes the code-level path where speaking on the former pre-calibration prompt could discard the leading `goodbye` or `shutdown` frames and leave only trailing `Ares` for Whisper. It does not retune microphone gain, wake thresholds, Vosk, Whisper confidence, or the persistent standby stream.
 
 The active runtime includes `core.IntentParser` for structured local intents, `core.Planner` and `core.MultiStepPlan` for ordered local multi-step execution plans, context-aware planning through safe `UserProfileStore`, `GoalsStore`, `NotesStore`, and `TasksStore` interfaces, `core.Confirmation` for explicit user confirmation before destructive or important actions, `core.ToolChain` for bounded local tool chaining, `core.ExecutionPipeline` for sequential plan execution and partial-result reporting, `core.ToolAdapter` for offline adapter-backed tools, `core.DeviceAction`, `DeviceActionRegistry`, `AppLaunchConfig`, `AppAllowlistLoader`, `core.PCService`, `PCServiceResult`, `PCStatus`, `PCCapabilities`, `WindowsPCService`, and `LocalDeviceActionAdapter` for local device action foundations with `safe`, `confirmation_required`, and `forbidden` classifications, confirmed Windows-only `lock_pc` and `sleep_pc`, a config-backed allowlist-only Windows app launcher with only `calculator` enabled in `config/apps.json`, disabled `notepad` and `browser` entries, `list_apps`, confirmation-gated `open_app`, no arbitrary user paths, no shell commands, all PC operations routed through PCService as the dedicated entry point, structured local `get_status()` responses for safe PC information, and dynamic local `get_capabilities()` responses for supported actions, apps, status providers, and services, `skills.builtin.DeviceActionSkill` for safe live routing of `echo`, `list device actions`, `list apps`, and `system status` plus confirmation-gated `lock_pc`/`sleep_pc`/`open_app` and stable forbidden responses for dangerous placeholders, `core.AdapterConfig` and `core.SecretsGuard` for future adapter configuration safety, `core.RealWeatherAdapter` as an opt-in HTTP-capable weather adapter gated by real-mode config and environment keys, `core.RealMarketAdapter` as an opt-in HTTP-capable market adapter gated by real-mode config and environment keys, `skills.builtin.WeatherSkill` for mock/local weather answers, `skills.builtin.MarketSkill` for mock/local market quotes, `skills.builtin.CalendarSkill` for mock/local schedule answers, `memory.GoalsStore` for persistent long-term goals, `memory.NotesStore` for persistent local notes, `memory.TasksStore` for offline tasks, `memory.ReminderScheduler` for passive due-time queries, and `core.ConversationContextManager` for short-term in-memory skill context.
 
@@ -729,6 +731,18 @@ python scripts/manual_diagnose_active_transcription.py \
 
 The probe captures one active-command WAV through `LinuxAlsaMicrophoneAdapter`, releases capture, validates the real 16 kHz mono 16-bit header, and invokes the same `LinuxWhisperSpeechToTextAdapter` and process-group helper as production. It prints the exact Whisper command, PID, process-group ID, elapsed time, exit status, transcript, signals, reap state, handle cleanup, and audio cleanup. It does not route a command, change Brain lifecycle state, or write owner memory.
 
+The focused ACTIVE lifecycle-audio probe uses the same launcher argument mapping, production capture profile, Linux ALSA recorder, bounded Whisper helper, and central lifecycle normalizer without constructing `BrainRuntime`, invoking CoreService, changing lifecycle state, or writing owner memory. It prompts only after post-calibration readiness for `goodbye Ares`, `shutdown Ares`, `calculate two plus two`, and `remember that I like video games`. For each phrase it prints the raw transcript, address removal, normalized command, lifecycle decision, first-frame clipping status, retained/configured pre-roll, candidate duration, and WAV path. Audio is deleted unless `--retain-audio` is explicitly supplied:
+
+```bash
+python scripts/manual_diagnose_active_lifecycle_audio.py \
+  --microphone-device plughw:2,0 \
+  --speaker-device plughw:CARD=Device,DEV=0 \
+  --diagnostic-active-lifecycle-audio \
+  --retain-audio
+```
+
+The exact ACTIVE standby roots remain `goodbye`, `bye`, `standby`, `go to standby`, `go to sleep`, and `sleep`. Exact shutdown roots are `shutdown`, `turn off`, `power down`, and `stop runtime`. Each may be bare or carry one validated whole-token assistant address at one outer edge. `good bye`, `stand by`, and `shut down` are canonicalized; negated, descriptive, scheduled, embedded, or otherwise longer phrases do not execute lifecycle actions.
+
 The exact production command remains:
 
 ```bash
@@ -1006,6 +1020,8 @@ Verified Raspberry Pi 5 baseline: the local Piper runtime and profile registry w
 The corrected verifier treats health as valid only when the V1 TTS result has `success=true` and `status=healthy`, its nested speaker health is also successful and healthy, the Piper/model/config/output checks pass, and the selected ALSA device is present. It prints the resolved paths, selected device, exact Piper command, exact `aplay` command when playback is requested, process exit codes, raw failure output, and WAV duration/sample rate/channels/sample width/file size. Generated WAV samples are written under `data/manual_tts_samples/` by default and are ignored by git. This checkpoint does not add GPT, wake-word detection, background listening, automatic microphone activation, a conversation loop, or cloud fallback.
 
 Voice Activity Detection Calibration
+
+The reusable single-turn request retains its generic 0.25-second pre-roll default. The persistent foreground runtime wraps that request in the `active_command_v1` profile, which raises only ACTIVE pre-roll to at least 0.5 seconds and fixes terminal quiet at 0.9 seconds. Thresholds, three-frame start confirmation, maximum utterance, device, and PCM format are inherited unchanged. A frame-safe callback separates calibration from owner waiting, so calibration frames remain outside the candidate and every post-ready onset/start-evidence frame remains byte-exact in the Whisper WAV.
 
 Automatic end-of-speech capture uses 16 kHz mono 16-bit PCM in 20 ms frames. Adaptive calibration defaults to `0.75` seconds. Quiet-room lower bounds are start RMS `200`, continue RMS `140`, and silence RMS `80`; configured upper bounds are `1200`, `900`, and `600`. Three consecutive start frames and three consecutive continue frames suppress isolated noise, five low frames confirm silence, the hangover is `0.9` seconds, the speech wait is `10` seconds, maximum utterance is `15` seconds, and pre-roll is `0.25` seconds. These are bounded starting values, not Raspberry Pi hardware measurements.
 
@@ -2611,6 +2627,14 @@ Phase 112
 - Owner activity is now explicit: only successfully received ordinary owner commands refresh the 30-second deadline. ARES playback, attention-only input, empty/no-usable speech, and diagnostics do not. The shared playback gate still prevents self-capture, and the command-wait prompt is emitted only after playback settling and real capture ownership, once per waiting phase.
 - Deterministic tests cover state isolation, acknowledgement/session stability, lifecycle variants and negation, CoreService bypass, calculator and owner-memory regressions, inactivity, playback gating, prompt pacing, Whisper timeout, event-lock degradation, and cleanup. They do not replace the owner-run Raspberry Pi sequence for physical transcription, playback settling, standby return, reactivation, and shutdown.
 - All 2447 collected tests pass locally; compileall, Phase 2 event/memory verification, configuration JSON validation, and `git diff --check` also pass.
+
+Phase 113
+
+- Traced the exact foreground launcher and found that its ACTIVE prompt preceded pipeline startup and 0.75 seconds of calibration. The VAD correctly excludes calibration frames, so owner speech begun at that premature prompt could lose its leading lifecycle verb and leave only a trailing assistant name.
+- Added a synchronous post-calibration owner-ready boundary, the production-only 0.5-second pre-roll/0.9-second terminal-quiet profile, exact first-frame retention diagnostics, an explicit non-`STANDBY` activation invariant in `BrainSessionManager`, and the bounded `stop runtime` shutdown root.
+- Added an exact production-composition test and privacy-safe diagnostic revision banner. The supplied Raspberry Pi log did not contain its raw active transcript or routing state, so the historical repeated acknowledgement cannot honestly be assigned an exact transcript; the next diagnostic run prints both while deterministic tests prove the corrected code path.
+- Added `manual_diagnose_active_lifecycle_audio.py` to capture and classify four bounded phrases without executing lifecycle, CoreService, skills, or owner memory. Windows tests prove composition, ordering, PCM assembly, routing, session invariants, and cleanup; real Raspberry Pi audibility and phrase preservation remain owner-run acceptance.
+- All 2487 collected tests pass with no skips or xfails. Focused capture/lifecycle/launcher tests, calculator/owner-memory/event/Whisper regressions, compileall, Phase 2 verification, all configuration JSON parsing, and `git diff --check` are green.
 
 Future phases retain camera understanding, face/object recognition, ROS2, Jetson Orin migration, and autonomous navigation as unimplemented plans.
 
