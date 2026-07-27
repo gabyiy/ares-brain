@@ -39,6 +39,8 @@ class FakePipeline:
         self.output_success = True
         self.stage_observers = []
         self.on_transcribing = None
+        self.raw_decisions = []
+        self.pre_brain_decisions = []
 
     def add_stage_observer(self, observer):
         self.stage_observers.append(observer)
@@ -70,12 +72,14 @@ class FakePipeline:
         raw_decision = None
         if raw_transcript_hook is not None and self.input_text:
             raw_decision = raw_transcript_hook(self.input_text)
+            self.raw_decisions.append(raw_decision)
         if (
             self.input_text
             and (raw_decision is None or not raw_decision.handled)
             and pre_brain_hook is not None
         ):
             decision = pre_brain_hook(self.input_text)
+            self.pre_brain_decisions.append(decision)
             assert decision.handled is True
             assert decision.continue_to_output is False
         elif raw_decision is not None:
@@ -213,6 +217,39 @@ def test_active_voice_input_reports_visible_bounded_progress_in_order(tmp_path):
         "Processing command",
     ]
     assert pipeline.stage_observers == []
+
+
+@pytest.mark.parametrize(
+    ("transcript", "action"),
+    [
+        ("Ares", "attention_only"),
+        ("Goodbye", "standby"),
+        ("Bye Ares", "standby"),
+        ("Ares shut down", "shutdown"),
+        ("Shutdown RS", "shutdown"),
+    ],
+)
+def test_active_voice_transport_uses_authoritative_active_lifecycle_normalizer(
+    transcript,
+    action,
+    tmp_path,
+):
+    pipeline = FakePipeline()
+    pipeline.input_text = transcript
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: "session-1",
+    )
+
+    result = adapter.wait_for_input(1.0)
+
+    assert result.status == "input"
+    assert result.text == transcript
+    assert len(pipeline.raw_decisions) == 1
+    assert pipeline.raw_decisions[0].handled is True
+    assert pipeline.raw_decisions[0].data["lifecycle_action"] == action
+    assert pipeline.pre_brain_decisions == []
 
 
 def test_active_microphone_gate_is_released_before_whisper_inference(tmp_path):
@@ -398,13 +435,16 @@ def test_active_command_diagnostics_use_current_command_capture_and_runtime_resu
             data={
                 "core_service_bypassed": True,
                 "lifecycle_command": {
-                    "normalized_transcript": "goodbye aris",
-                    "canonicalized_transcript": "goodbye ares",
+                    "cleaned_transcript": "goodbye aris",
+                    "normalized_transcript": "goodbye",
+                    "canonicalized_transcript": "goodbye",
                     "canonical_name": "ares",
                     "matched_alias": "aris",
                     "alias_type": "pronunciation_alias",
+                    "assistant_alias_removed": "aris",
+                    "alias_position": "suffix",
                     "action": "standby",
-                    "matched_phrase": "goodbye ares",
+                    "matched_phrase": "goodbye",
                     "negation_detected": False,
                     "rejection_reason": "",
                 },
@@ -418,14 +458,17 @@ def test_active_command_diagnostics_use_current_command_capture_and_runtime_resu
     assert len(emitted) == 1
     diagnostics = emitted[0]
     assert diagnostics.raw_transcript == "goodbye aris"
-    assert diagnostics.alias_canonicalized_transcript == "goodbye ares"
-    assert diagnostics.lifecycle_normalized_transcript == "goodbye aris"
+    assert diagnostics.cleaned_transcript == "goodbye aris"
+    assert diagnostics.alias_canonicalized_transcript == "goodbye"
+    assert diagnostics.lifecycle_normalized_transcript == "goodbye"
     assert diagnostics.matched_assistant_alias == "aris"
     assert diagnostics.assistant_alias_type == "pronunciation_alias"
+    assert diagnostics.assistant_alias_removed == "aris"
+    assert diagnostics.alias_position == "suffix"
     assert diagnostics.canonical_name == "ares"
     assert diagnostics.negation_detected is False
     assert diagnostics.selected_lifecycle_action == "standby"
-    assert diagnostics.matched_lifecycle_phrase == "goodbye ares"
+    assert diagnostics.matched_lifecycle_phrase == "goodbye"
     assert diagnostics.core_service_bypassed is True
     assert diagnostics.lifecycle_state_before == "ACTIVE"
     assert diagnostics.lifecycle_state_after == "STANDBY"
@@ -482,13 +525,16 @@ def test_active_rs_shutdown_uses_central_lifecycle_parser_and_diagnostics(tmp_pa
             data={
                 "core_service_bypassed": True,
                 "lifecycle_command": {
-                    "normalized_transcript": "shutdown rs",
-                    "canonicalized_transcript": "shutdown ares",
+                    "cleaned_transcript": "shutdown rs",
+                    "normalized_transcript": "shutdown",
+                    "canonicalized_transcript": "shutdown",
                     "canonical_name": "ares",
                     "matched_alias": "rs",
                     "alias_type": "acoustic_alias",
+                    "assistant_alias_removed": "rs",
+                    "alias_position": "suffix",
                     "action": "shutdown",
-                    "matched_phrase": "shutdown ares",
+                    "matched_phrase": "shutdown",
                     "negation_detected": False,
                     "rejection_reason": "",
                 },
@@ -503,13 +549,16 @@ def test_active_rs_shutdown_uses_central_lifecycle_parser_and_diagnostics(tmp_pa
     assert len(emitted) == 1
     diagnostics = emitted[0]
     assert diagnostics.raw_transcript == "Shut down RS"
-    assert diagnostics.lifecycle_normalized_transcript == "shutdown rs"
-    assert diagnostics.alias_canonicalized_transcript == "shutdown ares"
+    assert diagnostics.cleaned_transcript == "shutdown rs"
+    assert diagnostics.lifecycle_normalized_transcript == "shutdown"
+    assert diagnostics.alias_canonicalized_transcript == "shutdown"
     assert diagnostics.matched_assistant_alias == "rs"
     assert diagnostics.assistant_alias_type == "acoustic_alias"
+    assert diagnostics.assistant_alias_removed == "rs"
+    assert diagnostics.alias_position == "suffix"
     assert diagnostics.canonical_name == "ares"
     assert diagnostics.selected_lifecycle_action == "shutdown"
-    assert diagnostics.matched_lifecycle_phrase == "shutdown ares"
+    assert diagnostics.matched_lifecycle_phrase == "shutdown"
     assert diagnostics.core_service_bypassed is True
     assert diagnostics.runtime_terminal is True
     assert diagnostics.runtime_terminal_reason == "explicit_shutdown_command"
@@ -632,6 +681,7 @@ def test_voice_gate_prevents_acknowledgement_self_capture_until_settled(tmp_path
     clock = FakeClock()
     gate = VoiceRuntimeGate(settle_delay_seconds=0.5, clock=clock, sleeper=clock.sleep)
     pipeline = FakePipeline()
+    statuses = []
     output = SingleTurnPipelineRuntimeOutputAdapter(
         pipeline=pipeline,
         base_request=_request(tmp_path),
@@ -643,14 +693,58 @@ def test_voice_gate_prevents_acknowledgement_self_capture_until_settled(tmp_path
         base_request=_request(tmp_path),
         session_id_provider=lambda: "session-1",
         voice_io_gate=gate,
+        status_callback=statuses.append,
     )
     assert output.write(RuntimeOutputMessage(category="acknowledgement", text="Yes Gabi.")).success
     first = active_input.wait_for_input(0.25)
     assert first.status == "timeout"
     assert pipeline.requests == []
+    assert "ARES is waiting for your command..." not in statuses
+    assert "Active microphone capture started" not in statuses
     second = active_input.wait_for_input(0.25)
     assert second.status == "input"
     assert len(pipeline.requests) == 1
+    assert statuses.count("ARES is waiting for your command...") == 1
+    assert statuses.index("ARES is waiting for your command...") < statuses.index(
+        "Active microphone capture started"
+    )
+
+
+def test_each_real_active_capture_has_exactly_one_waiting_message(tmp_path):
+    clock = FakeClock()
+    gate = VoiceRuntimeGate(
+        settle_delay_seconds=0.35,
+        clock=clock,
+        sleeper=clock.sleep,
+    )
+    pipeline = FakePipeline()
+    statuses = []
+    output = SingleTurnPipelineRuntimeOutputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        voice_io_gate=gate,
+        output_func=None,
+    )
+    active_input = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: "session-1",
+        voice_io_gate=gate,
+        status_callback=statuses.append,
+    )
+
+    assert output.write(
+        RuntimeOutputMessage(category="brain_response", text="Result: 4")
+    ).success
+    assert active_input.wait_for_input(0.25).status == "timeout"
+    assert active_input.wait_for_input(0.25).status == "input"
+
+    assert statuses.count("ARES is waiting for your command...") == 1
+    assert statuses.count("Active microphone capture started") == 1
+    assert pipeline.requests[0].playback_enabled is False
+    assert pipeline.local_outputs[0][0].metadata["captured_audio_playback"] is False
+    assert gate.snapshot()["playback_active"] is False
+    assert gate.snapshot()["capture_active"] is False
 
 
 def test_release_and_close_are_idempotent_and_leave_gate_idle(tmp_path):

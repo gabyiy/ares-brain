@@ -607,19 +607,22 @@ def render_active_command_diagnostics(
         "Lifecycle diagnostic:",
         f"  Raw Whisper transcript: {diagnostics.raw_transcript or '<empty>'}",
         f"  Cleaned transcript: {diagnostics.cleaned_transcript or '<empty>'}",
-        "  Normalized transcript: "
+        "  Lifecycle-normalized transcript: "
         f"{diagnostics.lifecycle_normalized_transcript or '<empty>'}",
         "  Canonicalized transcript: "
         f"{diagnostics.alias_canonicalized_transcript or '<empty>'}",
         "  Matched assistant alias: "
         f"{diagnostics.matched_assistant_alias or '<none>'}",
         f"  Alias type: {diagnostics.assistant_alias_type or '<none>'}",
+        "  Assistant alias removed: "
+        f"{diagnostics.assistant_alias_removed or '<none>'}",
+        f"  Alias position: {diagnostics.alias_position}",
         "  Canonical assistant name: "
         f"{diagnostics.canonical_name or '<none>'}",
         "  Negation detected: "
         f"{'yes' if diagnostics.negation_detected else 'no'}",
         f"  Lifecycle classification: {diagnostics.lifecycle_classification}",
-        f"  Lifecycle action: {diagnostics.selected_lifecycle_action}",
+        f"  Selected lifecycle action: {diagnostics.selected_lifecycle_action}",
         "  Matched complete phrase: "
         f"{diagnostics.matched_lifecycle_phrase or '<none>'}",
         "  Lifecycle rejection reason: "

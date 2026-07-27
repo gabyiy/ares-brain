@@ -291,6 +291,52 @@ def test_record_activity_updates_time_deadline_and_correlation():
     assert result.metadata["activity_reason"] == "owner_interaction"
 
 
+def test_processing_response_and_playback_transitions_do_not_extend_inactivity():
+    clock = FakeClock()
+    manager = _manager(
+        clock=clock,
+        config=BrainSessionConfig(inactivity_timeout_seconds=30),
+    )
+    _boot_to_active(manager)
+    activated = manager.snapshot()
+
+    clock.advance(5)
+    processing = manager.begin_processing(reason="owner_command_processing")
+    clock.advance(8)
+    responding = manager.begin_responding(reason="ares_playback_started")
+    clock.advance(7)
+    active = manager.finish_response(reason="ares_playback_completed")
+
+    assert processing.last_activity_at == activated.last_activity_at
+    assert responding.last_activity_at == activated.last_activity_at
+    assert active.last_activity_at == activated.last_activity_at
+    assert processing.inactivity_deadline_at == activated.inactivity_deadline_at
+    assert responding.inactivity_deadline_at == activated.inactivity_deadline_at
+    assert active.inactivity_deadline_at == activated.inactivity_deadline_at
+    clock.advance(10)
+    assert manager.inactivity_expired() is True
+
+
+def test_explicit_owner_activity_resets_inactivity_before_processing():
+    clock = FakeClock()
+    manager = _manager(
+        clock=clock,
+        config=BrainSessionConfig(inactivity_timeout_seconds=30),
+    )
+    _boot_to_active(manager)
+    activated = manager.snapshot()
+    clock.advance(20)
+
+    activity = manager.record_activity(reason="owner_command_received")
+    manager.begin_processing(reason="owner_command_processing")
+    clock.advance(29)
+
+    assert activity.last_activity_at != activated.last_activity_at
+    assert manager.inactivity_expired() is False
+    clock.advance(1)
+    assert manager.inactivity_expired() is True
+
+
 def test_inactivity_expiry_is_false_before_and_true_at_boundary():
     clock = FakeClock()
     manager = _manager(

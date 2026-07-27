@@ -51,6 +51,7 @@ from core import (
     CoreService,
     QueuedRuntimeInputAdapter,
     RUNTIME_COMMAND_ACTIVATION,
+    RUNTIME_COMMAND_ATTENTION_ONLY,
     RUNTIME_COMMAND_ORDINARY,
     RUNTIME_COMMAND_SHUTDOWN,
     RUNTIME_COMMAND_STANDBY,
@@ -219,14 +220,27 @@ def test_runtime_configuration_defaults_are_bounded_and_explicit():
     assert config.standby_phrases == (
         "goodbye ares",
         "ares goodbye",
+        "bye ares",
+        "ares bye",
         "go to standby ares",
+        "ares go to standby",
         "go to sleep ares",
+        "ares go to sleep",
         "standby ares",
         "ares standby",
         "sleep ares",
+        "ares sleep",
     )
-    assert config.shutdown_phrases == ("shutdown ares", "ares shutdown")
+    assert config.shutdown_phrases == (
+        "shutdown ares",
+        "ares shutdown",
+        "turn off ares",
+        "ares turn off",
+        "power down ares",
+        "ares power down",
+    )
     assert config.active_acknowledgement == "Yes Gabi."
+    assert config.already_active_acknowledgement == ""
     assert config.inactivity_timeout_seconds == 30.0
     assert config.maximum_consecutive_failures == 3
 
@@ -257,6 +271,8 @@ def test_runtime_configuration_defaults_are_bounded_and_explicit():
         {"command_timeout_seconds": 0},
         {"command_timeout_seconds": 601},
         {"shutdown_phrases": ["Ares"]},
+        {"standby_phrases": ["please ares standby"]},
+        {"shutdown_phrases": ["please ares shutdown"]},
         {"standby_phrases": ["shutdown ares"], "shutdown_phrases": ["shutdown ares"]},
         {"standby_phrases": ["shut down ares"], "shutdown_phrases": ["shutdown ares"]},
     ],
@@ -392,19 +408,40 @@ def test_activation_creates_session_and_acknowledges_exactly_once():
     assert output.texts == ["Yes Gabi."]
 
 
-def test_repeated_activation_records_activity_without_replacing_session():
+@pytest.mark.parametrize("phrase", ["Ares", "Aris", "RS", "Hey Ares", "Hello Ares"])
+def test_active_name_only_is_attention_without_activity_or_session_replacement(phrase):
     output = CollectingRuntimeOutputAdapter()
     runtime, clock = _runtime(output=output)
     session_id = _start_active(runtime)
     first_activity = runtime.session_manager.snapshot().last_activity_at
     clock.advance(10)
 
+    result = runtime.handle_text(phrase)
+
+    assert result.status == "attention_only"
+    assert result.command_category == RUNTIME_COMMAND_ATTENTION_ONLY
+    assert runtime.session_manager.session_id == session_id
+    assert runtime.session_manager.snapshot().last_activity_at == first_activity
+    assert result.data["core_service_bypassed"] is True
+    assert output.texts == ["Yes Gabi."]
+
+
+def test_attention_only_spoken_response_requires_explicit_configuration():
+    output = CollectingRuntimeOutputAdapter()
+    runtime, _ = _runtime(
+        output=output,
+        config=BrainRuntimeConfig(
+            already_active_acknowledgement="ARES is already active.",
+        ),
+    )
+    session_id = _start_active(runtime)
+
     result = runtime.handle_text("Ares")
 
-    assert result.status == "already_active"
+    assert result.status == "attention_only"
+    assert result.response_text == "ARES is already active."
     assert runtime.session_manager.session_id == session_id
-    assert runtime.session_manager.snapshot().last_activity_at != first_activity
-    assert output.texts == ["Yes Gabi.", "Yes Gabi, I am listening."]
+    assert output.texts == ["Yes Gabi.", "ARES is already active."]
 
 
 def test_multiple_commands_use_same_session_and_required_state_flow():
@@ -436,6 +473,19 @@ def test_calculator_uses_real_production_skill_route(tmp_path):
     assert skill_manager.last_plan is not None
     assert skill_manager.last_execution is not None
     assert output.texts[-1] == "Result: 4"
+
+
+def test_active_address_removal_preserves_calculator_operators(tmp_path):
+    runtime, output, _, _ = _real_runtime(tmp_path)
+    session_id = _start_active(runtime)
+
+    result = runtime.handle_text("Ares calculate 2 + 2")
+
+    assert result.success
+    assert result.response_text == "Result: 4"
+    assert result.data["selected_skill"] == "calculator"
+    assert runtime.session_manager.session_id == session_id
+    assert output.texts == ["Yes Gabi.", "Result: 4"]
 
 
 def test_owner_memory_add_recall_remove_confirmation_uses_real_core_route(tmp_path):
@@ -472,6 +522,7 @@ def test_unsupported_active_command_returns_safe_response_and_runtime_survives(t
 @pytest.mark.parametrize(
     "phrase",
     [
+        "goodbye",
         "goodbye Ares",
         "goodbye, Aris",
         "goodbye Aries",
@@ -479,10 +530,15 @@ def test_unsupported_active_command_returns_safe_response_and_runtime_survives(t
         "Ares goodbye",
         "RS goodbye",
         "good bye Ares",
+        "bye Ares",
+        "standby",
+        "go to standby",
         "go to standby Ares",
         "go to standby Aris",
         "go to standby RS",
         "go to sleep Ares",
+        "Ares go to sleep",
+        "stand by Ares",
         "standby Ares",
         "standby Aris",
         "standby Aries",
@@ -517,6 +573,7 @@ def test_standby_phrase_while_standby_is_noop_and_creates_no_session():
 @pytest.mark.parametrize(
     "phrase",
     [
+        "shutdown",
         "shutdown Ares",
         "shutdown Aris",
         "shutdown Aries",
@@ -535,6 +592,8 @@ def test_standby_phrase_while_standby_is_noop_and_creates_no_session():
         "Ares shut down",
         "Aris shutdown",
         "Aries shut down",
+        "turn off Ares",
+        "power down Ares",
     ],
 )
 def test_shutdown_phrases_stop_runtime_and_clear_session(phrase):
@@ -594,10 +653,12 @@ def test_standby_alias_bypasses_core_route_and_clears_session_once():
     result = runtime.handle_text("Goodbye, Aris.")
 
     assert result.status == "standby_entered"
-    assert result.normalized_input == "goodbye ares"
+    assert result.normalized_input == "goodbye"
     assert result.response_text != "I cannot handle that request yet."
     assert result.data["core_service_bypassed"] is True
     assert result.data["session_id_before"] == session_id
+    assert result.data["lifecycle_command"]["assistant_alias_removed"] == "aris"
+    assert result.data["lifecycle_command"]["alias_position"] == "suffix"
     assert calls == []
     transitions = [
         (item.source_state, item.target_state)
@@ -615,7 +676,7 @@ def test_shutdown_alias_bypasses_core_route_and_releases_runtime():
     result = runtime.handle_text("Shut down, Aries.")
 
     assert result.status == "stopped"
-    assert result.normalized_input == "shutdown ares"
+    assert result.normalized_input == "shutdown"
     assert result.data["core_service_bypassed"] is True
     assert calls == []
     assert runtime.session_manager.state == BRAIN_STOPPED
@@ -631,9 +692,9 @@ def test_rs_shutdown_bypasses_core_route_and_exposes_lifecycle_match():
 
     lifecycle = result.data["lifecycle_command"]
     assert result.status == "stopped"
-    assert result.normalized_input == "shutdown ares"
-    assert lifecycle["normalized_transcript"] == "shutdown rs"
-    assert lifecycle["canonicalized_transcript"] == "shutdown ares"
+    assert result.normalized_input == "shutdown"
+    assert lifecycle["normalized_transcript"] == "shutdown"
+    assert lifecycle["canonicalized_transcript"] == "shutdown"
     assert lifecycle["matched_alias"] == "rs"
     assert lifecycle["alias_type"] == "acoustic_alias"
     assert lifecycle["action"] == "shutdown"
@@ -643,15 +704,20 @@ def test_rs_shutdown_bypasses_core_route_and_exposes_lifecycle_match():
 
 
 @pytest.mark.parametrize(
-    "phrase",
+    ("phrase", "routed_phrase"),
     [
-        "Do not shut down Ares",
-        "Don't shutdown Ares",
-        "Ares should not shut down",
-        "Never goodbye Ares",
+        ("Do not shut down Ares", "Do not shut down"),
+        ("Don't shutdown Ares", "Don't shutdown"),
+        ("Ares should not shut down", "should not shut down"),
+        ("Never goodbye Ares", "Never goodbye"),
+        ("Don't go to sleep", "Don't go to sleep"),
+        ("Do not go to standby Ares", "Do not go to standby"),
     ],
 )
-def test_negated_lifecycle_phrase_stays_active_and_reaches_ordinary_route(phrase):
+def test_negated_lifecycle_phrase_stays_active_and_reaches_ordinary_route(
+    phrase,
+    routed_phrase,
+):
     calls = []
     runtime, _ = _runtime(handler=lambda text: calls.append(text) or "ordinary")
     session_id = _start_active(runtime)
@@ -664,7 +730,7 @@ def test_negated_lifecycle_phrase_stays_active_and_reaches_ordinary_route(phrase
     assert result.data["lifecycle_command"]["action"] == "none"
     assert runtime.session_manager.state == BRAIN_ACTIVE
     assert runtime.session_manager.session_id == session_id
-    assert calls == [phrase]
+    assert calls == [routed_phrase]
 
 
 def test_inactivity_before_exact_and_after_boundary_is_deterministic():
@@ -683,6 +749,43 @@ def test_inactivity_before_exact_and_after_boundary_is_deterministic():
     assert exact.status == "standby_entered"
     assert runtime.session_manager.state == BRAIN_STANDBY
     assert runtime.session_manager.session_id == ""
+
+
+def test_attention_only_does_not_reset_active_inactivity_deadline():
+    inputs = QueuedRuntimeInputAdapter()
+    runtime, clock = _runtime(inputs=inputs)
+    _start_active(runtime)
+    clock.advance(30)
+
+    attention = runtime.handle_text("Aris")
+    inputs.push(RuntimeInputResult.timeout())
+    expired = runtime.poll_once()
+
+    assert attention.status == "attention_only"
+    assert expired.status == "standby_entered"
+    assert runtime.session_manager.state == BRAIN_STANDBY
+
+
+def test_command_processing_and_response_time_do_not_reset_owner_inactivity():
+    inputs = QueuedRuntimeInputAdapter()
+    clock = FakeClock()
+
+    def handler(_text):
+        clock.advance(10)
+        return "response"
+
+    runtime, _ = _runtime(inputs=inputs, clock=clock, handler=handler)
+    _start_active(runtime)
+    clock.advance(5)
+
+    completed = runtime.handle_text("owner command")
+    clock.advance(20)
+    inputs.push(RuntimeInputResult.timeout())
+    expired = runtime.poll_once()
+
+    assert completed.status == "command_completed"
+    assert expired.status == "standby_entered"
+    assert runtime.session_manager.state == BRAIN_STANDBY
 
 
 def test_active_transcription_timeout_is_nonterminal_and_preserves_retryable_session():
@@ -758,7 +861,7 @@ def test_clock_rollback_does_not_expire_or_extend_from_a_false_past():
     runtime, clock = _runtime(inputs=inputs)
     _start_active(runtime)
     clock.advance(10)
-    runtime.handle_text("Ares")
+    runtime.handle_text("owner command")
     clock.rollback(100)
     inputs.push(RuntimeInputResult.timeout())
 
@@ -1186,7 +1289,7 @@ def test_runtime_emits_required_events_without_private_input_or_memory_values(tm
     assert all(event.metadata["contains_private_content"] is False for event in runtime.events())
 
 
-def test_activation_rejection_and_inactivity_events_are_emitted():
+def test_active_attention_is_not_an_activation_event_and_inactivity_is_emitted():
     inputs = QueuedRuntimeInputAdapter()
     runtime, clock = _runtime(inputs=inputs)
     _start_active(runtime)
@@ -1196,7 +1299,8 @@ def test_activation_rejection_and_inactivity_events_are_emitted():
     runtime.poll_once()
 
     event_types = [event.type for event in runtime.events()]
-    assert EVENT_ACTIVATION_REJECTED in event_types
+    assert event_types.count(EVENT_ACTIVATION_ACCEPTED) == 1
+    assert EVENT_ACTIVATION_REJECTED not in event_types
     assert EVENT_RUNTIME_INACTIVITY_EXPIRED in event_types
 
 

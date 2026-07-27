@@ -235,6 +235,7 @@ def test_persistent_runtime_end_to_end_lifecycle_sequence(tmp_path):
     ) = manual_wake._build_voice_runtime(tmp_path, manual_wake.FakeClock())
     wake.push("Ares")
     wake.push("Ares")
+    whisper.push("Ares")
     whisper.push("calculate two plus two")
     whisper.push("RS goodbye")
     whisper.push("Ares shut down")
@@ -244,7 +245,7 @@ def test_persistent_runtime_end_to_end_lifecycle_sequence(tmp_path):
     assert loop.success is True
     assert loop.status == "stopped"
     assert loop.stop_reason == "explicit_shutdown_command"
-    assert loop.iteration_count == 5
+    assert loop.iteration_count == 6
     assert runtime.session_manager.state == BRAIN_STOPPED
     assert runtime.session_manager.session_id == ""
     assert runtime.snapshot().activation_count == 2
@@ -287,11 +288,13 @@ def test_runtime_exposes_one_privacy_safe_wake_request_builder(tmp_path):
     assert request.lifecycle_state == BRAIN_STANDBY
     assert request.correlation_id == "wake-probe-correlation"
     assert request.wake_phrase_aliases == ["ares", "aris", "aries"]
+    assert request.standby_phrases == []
+    assert request.shutdown_phrases == []
     assert request.metadata["contains_transcript"] is False
     assert wake.snapshot().stream_open_count == 1
 
 
-def test_active_repeated_activation_keeps_session_and_uses_active_acknowledgement(tmp_path):
+def test_active_name_only_keeps_session_without_reactivation_acknowledgement(tmp_path):
     runtime, active, output, wake = _runtime(tmp_path)
     runtime.start()
     wake.push("Ares")
@@ -299,9 +302,9 @@ def test_active_repeated_activation_keeps_session_and_uses_active_acknowledgemen
     session_id = runtime.session_manager.session_id
     active.push("Ares")
     result = runtime.poll_once()
-    assert result.status == "already_active"
+    assert result.status == "attention_only"
     assert runtime.session_manager.session_id == session_id
-    assert output.texts == ["Yes Gabi.", "Yes Gabi, I am listening."]
+    assert output.texts == ["Yes Gabi."]
     assert runtime.snapshot().activation_count == 1
 
 
@@ -353,15 +356,17 @@ def test_goodbye_controls_return_to_standby_without_stopping_listener(phrase, tm
     assert wake.snapshot().listener_state == "ready"
 
 
-def test_shutdown_control_is_recognized_during_standby_and_stops_all_resources(tmp_path):
+def test_shutdown_control_is_ignored_during_standby_until_owner_activates(tmp_path):
     runtime, active, output, wake = _runtime(tmp_path)
     runtime.start()
     wake.push("shutdown Ares")
     result = runtime.poll_once()
     assert result.success
-    assert runtime.session_manager.state == BRAIN_STOPPED
-    assert wake.snapshot().listener_state == "stopped"
-    assert active.closed and output.closed
+    assert result.status == "standby_listening"
+    assert runtime.session_manager.state == BRAIN_STANDBY
+    assert wake.snapshot().listener_state == "ready"
+    assert not active.closed and not output.closed
+    assert output.texts == []
 
 
 def test_shutdown_control_during_active_uses_active_voice_input(tmp_path):

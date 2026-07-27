@@ -1672,6 +1672,8 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
         lifecycle_normalized_transcript="shutdown rs",
         matched_assistant_alias="rs",
         assistant_alias_type="acoustic_alias",
+        assistant_alias_removed="rs",
+        alias_position="suffix",
         canonical_name="ares",
         negation_detected=False,
         lifecycle_classification="shutdown",
@@ -1724,14 +1726,16 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
 
     assert "Lifecycle diagnostic:" in rendered
     assert "Raw Whisper transcript: Shut down RS" in rendered
-    assert "Normalized transcript: shutdown rs" in rendered
+    assert "Lifecycle-normalized transcript: shutdown rs" in rendered
     assert "Canonicalized transcript: shutdown ares" in rendered
     assert "Matched assistant alias: rs" in rendered
     assert "Alias type: acoustic_alias" in rendered
+    assert "Assistant alias removed: rs" in rendered
+    assert "Alias position: suffix" in rendered
     assert "Canonical assistant name: ares" in rendered
     assert "Negation detected: no" in rendered
     assert "Lifecycle classification: shutdown" in rendered
-    assert "Lifecycle action: shutdown" in rendered
+    assert "Selected lifecycle action: shutdown" in rendered
     assert "Matched complete phrase: shutdown ares" in rendered
     assert "CoreService routing bypassed: yes" in rendered
     assert "Lifecycle state: ACTIVE -> STOPPED" in rendered

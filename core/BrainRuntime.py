@@ -57,15 +57,15 @@ from core.LifecycleControl import (
     DEFAULT_LIFECYCLE_SHUTDOWN_PHRASES,
     DEFAULT_LIFECYCLE_STANDBY_PHRASES,
     LIFECYCLE_ACTION_ACTIVATE,
+    LIFECYCLE_ACTION_ATTENTION_ONLY,
     LIFECYCLE_ACTION_NONE,
     LIFECYCLE_ACTION_SHUTDOWN,
     LIFECYCLE_ACTION_STANDBY,
+    normalize_active_lifecycle_command,
     normalize_lifecycle_command,
 )
 from core.StandbyWakeListener import (
     WAKE_CATEGORY_ACTIVATION,
-    WAKE_CATEGORY_SHUTDOWN,
-    WAKE_CATEGORY_STANDBY,
     WAKE_STATUS_CANCELLED,
     StandbyWakeListener,
     WakeAttemptResult,
@@ -74,6 +74,7 @@ from core.StandbyWakeListener import (
 
 
 RUNTIME_COMMAND_ACTIVATION = "activation"
+RUNTIME_COMMAND_ATTENTION_ONLY = "attention_only"
 RUNTIME_COMMAND_STANDBY = "standby"
 RUNTIME_COMMAND_SHUTDOWN = "shutdown"
 RUNTIME_COMMAND_ORDINARY = "ordinary"
@@ -102,7 +103,7 @@ DEFAULT_ACTIVATION_PHRASES = DEFAULT_LIFECYCLE_ACTIVATION_PHRASES
 DEFAULT_STANDBY_PHRASES = DEFAULT_LIFECYCLE_STANDBY_PHRASES
 DEFAULT_SHUTDOWN_PHRASES = DEFAULT_LIFECYCLE_SHUTDOWN_PHRASES
 DEFAULT_ACTIVE_ACKNOWLEDGEMENT = "Yes Gabi."
-DEFAULT_ALREADY_ACTIVE_ACKNOWLEDGEMENT = "Yes Gabi, I am listening."
+DEFAULT_ALREADY_ACTIVE_ACKNOWLEDGEMENT = ""
 DEFAULT_UNKNOWN_RESPONSE = "I cannot handle that request yet."
 DEFAULT_COMMAND_FAILURE_RESPONSE = "I could not process that request."
 
@@ -161,6 +162,16 @@ class BrainRuntimeConfig:
             shutdown_phrases=shutdown,
             ares_name_aliases=aliases,
         )
+        # ACTIVE matching removes at most one assistant address from an outer
+        # edge. Validate that stricter grammar at startup so an internal name
+        # slot cannot survive configuration and fail during a live command.
+        normalize_active_lifecycle_command(
+            "__ares_active_lifecycle_configuration_validation__",
+            activation_phrases=activation,
+            standby_phrases=standby,
+            shutdown_phrases=shutdown,
+            ares_name_aliases=aliases,
+        )
         object.__setattr__(self, "ares_name_aliases", aliases)
         object.__setattr__(self, "activation_phrases", activation)
         object.__setattr__(self, "standby_phrases", standby)
@@ -176,7 +187,7 @@ class BrainRuntimeConfig:
             _validated_response(
                 self.already_active_acknowledgement,
                 "already_active_acknowledgement",
-                required=True,
+                required=False,
             ),
         )
         object.__setattr__(
@@ -433,7 +444,20 @@ class BrainRuntime:
         *,
         correlation_id: str = "",
     ) -> BrainRuntimeCommandClassificationV1:
-        control = normalize_lifecycle_command(
+        state = self.session_manager.state
+        normalizer = (
+            normalize_active_lifecycle_command
+            if state
+            in {
+                BRAIN_ACTIVE,
+                BRAIN_PROCESSING,
+                BRAIN_RESPONDING,
+                BRAIN_RETURNING_TO_STANDBY,
+                BRAIN_SHUTTING_DOWN,
+            }
+            else normalize_lifecycle_command
+        )
+        control = normalizer(
             text,
             activation_phrases=self.config.activation_phrases,
             standby_phrases=self.config.standby_phrases,
@@ -445,20 +469,22 @@ class BrainRuntime:
             if control.matched
             else control.normalized_transcript
         )
-        state = self.session_manager.state
         category = RUNTIME_COMMAND_ORDINARY
         matched = ""
-        if not normalized:
-            category = RUNTIME_COMMAND_EMPTY
-        elif control.action == LIFECYCLE_ACTION_SHUTDOWN:
+        if control.action == LIFECYCLE_ACTION_SHUTDOWN:
             category = RUNTIME_COMMAND_SHUTDOWN
             matched = control.matched_phrase
         elif control.action == LIFECYCLE_ACTION_STANDBY:
             category = RUNTIME_COMMAND_STANDBY
             matched = control.matched_phrase
+        elif control.action == LIFECYCLE_ACTION_ATTENTION_ONLY:
+            category = RUNTIME_COMMAND_ATTENTION_ONLY
+            matched = control.matched_phrase
         elif control.action == LIFECYCLE_ACTION_ACTIVATE:
             category = RUNTIME_COMMAND_ACTIVATION
             matched = control.matched_phrase
+        elif not normalized:
+            category = RUNTIME_COMMAND_EMPTY
         return BrainRuntimeCommandClassificationV1(
             success=True,
             status="classified",
@@ -482,12 +508,18 @@ class BrainRuntime:
                 "lifecycle_canonical_name": control.canonical_name,
                 "lifecycle_matched_alias": control.matched_alias,
                 "lifecycle_alias_type": control.alias_type,
+                "lifecycle_assistant_alias_removed": (
+                    control.assistant_alias_removed
+                ),
+                "lifecycle_alias_position": control.alias_position,
+                "lifecycle_routed_transcript": control.routed_transcript,
                 "lifecycle_matched_phrase": control.matched_phrase,
                 "lifecycle_negation_detected": control.negation_detected,
                 "lifecycle_rejection_reason": control.rejection_reason,
                 "core_service_bypassed": category
                 in {
                     RUNTIME_COMMAND_ACTIVATION,
+                    RUNTIME_COMMAND_ATTENTION_ONLY,
                     RUNTIME_COMMAND_STANDBY,
                     RUNTIME_COMMAND_SHUTDOWN,
                 },
@@ -585,6 +617,11 @@ class BrainRuntime:
             if classification.command_category == RUNTIME_COMMAND_STANDBY:
                 return self._with_lifecycle_command(
                     self._handle_standby(classification),
+                    classification,
+                )
+            if classification.command_category == RUNTIME_COMMAND_ATTENTION_ONLY:
+                return self._with_lifecycle_command(
+                    self._handle_attention_only(classification),
                     classification,
                 )
             if classification.command_category == RUNTIME_COMMAND_ACTIVATION:
@@ -915,35 +952,11 @@ class BrainRuntime:
                 },
             )
         if state == BRAIN_ACTIVE:
-            activity = self.session_manager.record_activity(
-                correlation_id=correlation,
-                reason="repeated_activation_phrase",
-            )
-            if not activity.success:
-                return self._lifecycle_failure(activity, correlation, "activity_record_failed")
-            self._publish(
-                EVENT_ACTIVATION_REJECTED,
-                correlation,
-                {"state": state, "reason": "already_active"},
-            )
-            output = self._write_output(
-                "acknowledgement",
-                self.config.already_active_acknowledgement,
-                correlation,
-            )
-            if not output.success:
-                return self._recover_output_failure(output, correlation, "active_output_failed")
-            return self._result(
-                True,
-                "already_active",
-                correlation_id=correlation,
-                command_category=RUNTIME_COMMAND_ACTIVATION,
-                normalized_input=classification.normalized_input,
-                response_text=self.config.already_active_acknowledgement,
-                data={
-                    "core_service_bypassed": True,
-                    "lifecycle_action": LIFECYCLE_ACTION_ACTIVATE,
-                },
+            return self._handle_attention_only(
+                replace(
+                    classification,
+                    command_category=RUNTIME_COMMAND_ATTENTION_ONLY,
+                )
             )
         self._publish(
             EVENT_ACTIVATION_REJECTED,
@@ -958,6 +971,59 @@ class BrainRuntime:
             normalized_input=classification.normalized_input,
             error_code="activation_not_allowed",
             error_message=f"activation is not allowed while state is {state}",
+        )
+
+    def _handle_attention_only(
+        self,
+        classification: BrainRuntimeCommandClassificationV1,
+    ) -> BrainRuntimeResultV1:
+        """Acknowledge addressing in ACTIVE without activating or refreshing it."""
+
+        correlation = classification.correlation_id
+        state = self.session_manager.state
+        session_before = self.session_manager.session_id
+        if state != BRAIN_ACTIVE:
+            return self._result(
+                False,
+                "attention_rejected",
+                correlation_id=correlation,
+                command_category=RUNTIME_COMMAND_ATTENTION_ONLY,
+                normalized_input=classification.normalized_input,
+                error_code="attention_not_allowed",
+                error_message=f"attention-only input is not allowed while state is {state}",
+                data={
+                    "core_service_bypassed": True,
+                    "lifecycle_action": LIFECYCLE_ACTION_ATTENTION_ONLY,
+                    "lifecycle_state_before": state,
+                    "session_id_before": session_before,
+                },
+            )
+        response_text = self.config.already_active_acknowledgement
+        if response_text:
+            output = self._write_output(
+                "attention_only",
+                response_text,
+                correlation,
+            )
+            if not output.success:
+                return self._recover_output_failure(
+                    output,
+                    correlation,
+                    "attention_output_failed",
+                )
+        return self._result(
+            True,
+            "attention_only",
+            correlation_id=correlation,
+            command_category=RUNTIME_COMMAND_ATTENTION_ONLY,
+            normalized_input=classification.normalized_input,
+            response_text=response_text,
+            data={
+                "core_service_bypassed": True,
+                "lifecycle_action": LIFECYCLE_ACTION_ATTENTION_ONLY,
+                "lifecycle_state_before": state,
+                "session_id_before": session_before,
+            },
         )
 
     def _handle_standby(
@@ -1012,6 +1078,16 @@ class BrainRuntime:
         classification: BrainRuntimeCommandClassificationV1,
     ) -> BrainRuntimeResultV1:
         correlation = request.correlation_id
+        activity = self.session_manager.record_activity(
+            correlation_id=correlation,
+            reason="owner_command_received",
+        )
+        if not activity.success:
+            return self._lifecycle_failure(
+                activity,
+                correlation,
+                "activity_record_failed",
+            )
         processing = self.session_manager.begin_processing(
             correlation_id=correlation,
             reason="runtime_command_started",
@@ -1025,7 +1101,16 @@ class BrainRuntime:
         )
         started_at = self._now()
         try:
-            response = self.command_handler(request.input_text)
+            # The ACTIVE normalizer removes only validated assistant addressing
+            # tokens at an outer edge. Route that authoritative command body so
+            # "Ares calculate ..." behaves exactly like "calculate ..." while
+            # embedded ordinary words and unsupported aliases remain untouched.
+            response = self.command_handler(
+                str(
+                    classification.metadata.get("lifecycle_routed_transcript")
+                    or classification.normalized_input
+                )
+            )
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
             return self._recover_command_failure(
                 correlation,
@@ -1469,8 +1554,10 @@ class BrainRuntime:
             wake_phrases=list(wake_config.wake_phrases),
             wake_phrase_aliases=list(wake_config.wake_phrase_aliases),
             wake_phrase_prefixes=list(wake_config.wake_phrase_prefixes),
-            standby_phrases=list(self.config.standby_phrases),
-            shutdown_phrases=list(self.config.shutdown_phrases),
+            # STANDBY recognizes activation vocabulary only. Lifecycle controls
+            # are ACTIVE commands and are never advertised to constrained Vosk.
+            standby_phrases=[],
+            shutdown_phrases=[],
             diagnostic_wake=wake_config.diagnostic_wake,
             retain_diagnostic_audio=wake_config.retain_diagnostic_audio,
             correlation_id=correlation,
@@ -1597,10 +1684,6 @@ class BrainRuntime:
                 {"status": "verified", "matched_phrase": phrase},
             )
             return completed(self.handle_text(phrase, correlation_id=correlation))
-        if listened.command_category in {WAKE_CATEGORY_SHUTDOWN, WAKE_CATEGORY_STANDBY}:
-            return completed(
-                self.handle_text(listened.matched_phrase, correlation_id=correlation)
-            )
         if listened.speech_detected:
             self._publish(
                 EVENT_WAKE_REJECTED,
@@ -1860,6 +1943,12 @@ def _lifecycle_command_data(
             metadata.get("lifecycle_matched_alias") or ""
         ),
         "alias_type": str(metadata.get("lifecycle_alias_type") or ""),
+        "assistant_alias_removed": str(
+            metadata.get("lifecycle_assistant_alias_removed") or ""
+        ),
+        "alias_position": str(
+            metadata.get("lifecycle_alias_position") or "none"
+        ),
         "action": str(metadata.get("lifecycle_action") or LIFECYCLE_ACTION_NONE),
         "matched_phrase": str(
             metadata.get("lifecycle_matched_phrase")

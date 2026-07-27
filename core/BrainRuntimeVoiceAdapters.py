@@ -19,7 +19,7 @@ from core.Contracts import (
 )
 from core.LifecycleControl import (
     LIFECYCLE_ACTION_NONE,
-    normalize_lifecycle_command,
+    normalize_active_lifecycle_command,
 )
 from core.ResourceBudget import CancellationToken
 from core.SingleTurnVoiceSupport import SingleTurnPreBrainDecision
@@ -46,6 +46,8 @@ class ActiveCommandLocalDiagnostics:
     lifecycle_normalized_transcript: str = ""
     matched_assistant_alias: str = ""
     assistant_alias_type: str = ""
+    assistant_alias_removed: str = ""
+    alias_position: str = "none"
     canonical_name: str = ""
     negation_detected: bool = False
     lifecycle_classification: str = "ordinary"
@@ -249,7 +251,6 @@ class SingleTurnPipelineRuntimeInputAdapter:
             emitted_statuses.add(message)
             self._emit_status(message)
 
-        emit_once("ARES is waiting for your command...")
         if not self.voice_io_gate.wait_for_capture(timeout_seconds=max(0.0, float(timeout_seconds))):
             return RuntimeInputResult.timeout()
         correlation = new_correlation_id("runtime-voice-command")
@@ -280,7 +281,11 @@ class SingleTurnPipelineRuntimeInputAdapter:
             )
 
         def lifecycle_intercept(raw_text: str) -> SingleTurnPreBrainDecision:
-            lifecycle = normalize_lifecycle_command(raw_text)
+            # Active capture is intentionally classified with ACTIVE semantics.
+            # Wake activation is a STANDBY concern; here a name-only phrase is
+            # attention-only and optional edge addressing is removed before
+            # exact lifecycle matching.
+            lifecycle = normalize_active_lifecycle_command(raw_text)
             if lifecycle.action == LIFECYCLE_ACTION_NONE:
                 return SingleTurnPreBrainDecision(
                     handled=False,
@@ -330,6 +335,11 @@ class SingleTurnPipelineRuntimeInputAdapter:
         try:
             self.voice_io_gate.begin_capture("active_command")
             capture_gate_owned = True
+            # Announce a real waiting phase only after playback and its settling
+            # window have completed and capture ownership is secured. The runtime
+            # polling interval can be shorter than that window; announcing before
+            # the gate produced duplicate prompts even though no capture began.
+            emit_once("ARES is waiting for your command...")
             emit_once("Active microphone capture started")
             result = self.pipeline.run_once(
                 request,
@@ -533,21 +543,33 @@ class SingleTurnPipelineRuntimeInputAdapter:
         action = str(
             lifecycle_data.get("action")
             or data.get("lifecycle_action")
-            or (category if category in {"activation", "standby", "shutdown"} else "none")
+            or (
+                category
+                if category
+                in {"activation", "attention_only", "standby", "shutdown"}
+                else "none"
+            )
         )
         lifecycle_normalized = str(
-            lifecycle_data.get("normalized_transcript")
-            or diagnostics.cleaned_transcript
+            lifecycle_data["normalized_transcript"]
+            if "normalized_transcript" in lifecycle_data
+            else diagnostics.cleaned_transcript
         )
         lifecycle_canonicalized = str(
-            lifecycle_data.get("canonicalized_transcript")
-            or getattr(runtime_result, "normalized_input", "")
+            lifecycle_data["canonicalized_transcript"]
+            if "canonicalized_transcript" in lifecycle_data
+            else getattr(runtime_result, "normalized_input", "")
             or lifecycle_normalized
+        )
+        lifecycle_cleaned = str(
+            lifecycle_data["cleaned_transcript"]
+            if "cleaned_transcript" in lifecycle_data
+            else diagnostics.cleaned_transcript
         )
         canonical_name = str(lifecycle_data.get("canonical_name") or "")
         if (
             not canonical_name
-            and action in {"activation", "standby", "shutdown"}
+            and action in {"activation", "attention_only", "standby", "shutdown"}
             and "ares" in lifecycle_canonicalized.split()
         ):
             canonical_name = "ares"
@@ -561,6 +583,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
         )
         completed = replace(
             diagnostics,
+            cleaned_transcript=lifecycle_cleaned,
             alias_canonicalized_transcript=lifecycle_canonicalized,
             lifecycle_normalized_transcript=lifecycle_normalized,
             matched_assistant_alias=str(
@@ -568,6 +591,12 @@ class SingleTurnPipelineRuntimeInputAdapter:
             ),
             assistant_alias_type=str(
                 lifecycle_data.get("alias_type") or ""
+            ),
+            assistant_alias_removed=str(
+                lifecycle_data.get("assistant_alias_removed") or ""
+            ),
+            alias_position=str(
+                lifecycle_data.get("alias_position") or "none"
             ),
             canonical_name=canonical_name,
             negation_detected=bool(
@@ -583,7 +612,8 @@ class SingleTurnPipelineRuntimeInputAdapter:
             ),
             core_service_bypassed=bool(
                 data.get("core_service_bypassed")
-                or category in {"activation", "standby", "shutdown"}
+                or category
+                in {"activation", "attention_only", "standby", "shutdown"}
             ),
             lifecycle_state_before=str(lifecycle_state_before or ""),
             lifecycle_state_after=current_state,

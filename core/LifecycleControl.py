@@ -15,6 +15,7 @@ from core.AresIdentity import (
 
 LIFECYCLE_ACTION_NONE = "none"
 LIFECYCLE_ACTION_ACTIVATE = "activate"
+LIFECYCLE_ACTION_ATTENTION_ONLY = "attention_only"
 LIFECYCLE_ACTION_STANDBY = "standby"
 LIFECYCLE_ACTION_SHUTDOWN = "shutdown"
 
@@ -27,15 +28,24 @@ DEFAULT_LIFECYCLE_ACTIVATION_PHRASES = (
 DEFAULT_LIFECYCLE_STANDBY_PHRASES = (
     "goodbye ares",
     "ares goodbye",
+    "bye ares",
+    "ares bye",
     "go to standby ares",
+    "ares go to standby",
     "go to sleep ares",
+    "ares go to sleep",
     "standby ares",
     "ares standby",
     "sleep ares",
+    "ares sleep",
 )
 DEFAULT_LIFECYCLE_SHUTDOWN_PHRASES = (
     "shutdown ares",
     "ares shutdown",
+    "turn off ares",
+    "ares turn off",
+    "power down ares",
+    "ares power down",
 )
 
 LIFECYCLE_ALIAS_TYPE_CANONICAL = "canonical"
@@ -43,7 +53,10 @@ LIFECYCLE_ALIAS_TYPE_PRONUNCIATION = "pronunciation_alias"
 LIFECYCLE_ALIAS_TYPE_ACOUSTIC = "acoustic_alias"
 
 _OUTER_TERMINAL_PUNCTUATION = " \t\r\n.!?,;:"
+_ADDRESS_SEPARATOR_PUNCTUATION = " \t\r\n.!?,;:"
+_ROUTED_WORD = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _GOOD_BYE = re.compile(r"\bgood\s+bye\b")
+_STAND_BY = re.compile(r"\bstand\s+by\b")
 _SHUT_DOWN = re.compile(r"\bshut\s+down\b")
 _LIFECYCLE_ACOUSTIC_NAME_FORMS = (
     (("rs",), "rs"),
@@ -69,23 +82,35 @@ class _LifecycleAliasMatch:
 
 
 @dataclass(frozen=True)
+class _ActiveAddressMatch:
+    matched_alias: str
+    alias_type: str
+    position: str
+    token_count: int
+
+
+@dataclass(frozen=True)
 class LifecycleCommandResult:
     """Deterministic, whole-phrase lifecycle classification.
 
-    ``normalized_transcript`` is punctuation/compound-word normalized but keeps
-    the recognized name token. ``canonicalized_transcript`` replaces the name
-    only after a complete lifecycle phrase matches. Ordinary input therefore
-    remains suitable for normal skill routing (for example, ``what does RS
-    mean`` is never rewritten to use ARES's name).
+    For the standby/wake normalizer, ``normalized_transcript`` keeps the
+    recognized name token and ``canonicalized_transcript`` replaces it only
+    after a complete lifecycle phrase matches. For the ACTIVE normalizer,
+    ``normalized_transcript`` is the routed command body after at most one
+    complete edge-address alias is removed. Ordinary internal tokens therefore
+    remain intact (for example, ``what does RS mean`` is never rewritten).
     """
 
     raw_transcript: str
     cleaned_transcript: str
     normalized_transcript: str
     canonicalized_transcript: str = ""
+    routed_transcript: str = ""
     canonical_name: str = ""
     matched_alias: str = ""
     alias_type: str = ""
+    assistant_alias_removed: str = ""
+    alias_position: str = "none"
     action: str = LIFECYCLE_ACTION_NONE
     matched_phrase: str = ""
     negation_detected: bool = False
@@ -94,6 +119,10 @@ class LifecycleCommandResult:
     @property
     def matched(self) -> bool:
         return self.action != LIFECYCLE_ACTION_NONE
+
+    @property
+    def alias_removed(self) -> str:
+        return self.assistant_alias_removed
 
     # Compatibility properties for callers of the former classifier contract.
     @property
@@ -108,6 +137,8 @@ class LifecycleCommandResult:
     def routing_reason(self) -> str:
         if self.action == LIFECYCLE_ACTION_ACTIVATE:
             return "exact_activation_phrase_after_alias_canonicalization"
+        if self.action == LIFECYCLE_ACTION_ATTENTION_ONLY:
+            return "active_attention_only_after_alias_canonicalization"
         if self.action == LIFECYCLE_ACTION_STANDBY:
             return "exact_standby_phrase_after_alias_canonicalization"
         if self.action == LIFECYCLE_ACTION_SHUTDOWN:
@@ -218,6 +249,130 @@ def normalize_lifecycle_command(
     )
 
 
+def normalize_active_lifecycle_command(
+    raw_transcript: str,
+    *,
+    activation_phrases: Sequence[str] = DEFAULT_LIFECYCLE_ACTIVATION_PHRASES,
+    standby_phrases: Sequence[str] = DEFAULT_LIFECYCLE_STANDBY_PHRASES,
+    shutdown_phrases: Sequence[str] = DEFAULT_LIFECYCLE_SHUTDOWN_PHRASES,
+    ares_name_aliases: Sequence[str] = DEFAULT_ARES_NAME_ALIASES,
+) -> LifecycleCommandResult:
+    """Normalize one transcript using ACTIVE-state command semantics.
+
+    Wake activation is deliberately absent from this path. Exact activation or
+    name-only input becomes ``attention_only``; it can never create a session.
+    For every other ACTIVE command, one complete ARES alias may be removed from
+    the beginning or end as optional addressing. The resulting command body is
+    the authoritative transcript for lifecycle matching and ordinary routing.
+
+    All matching is token-boundary and whole-phrase based. No substring, fuzzy,
+    edit-distance, or semantic matching is performed.
+    """
+
+    raw = str(raw_transcript or "")
+    route_source = clean_spoken_phrase(raw).strip(_OUTER_TERMINAL_PUNCTUATION)
+    cleaned = normalize_spoken_phrase(route_source)
+    compound_normalized = _normalize_lifecycle_words(cleaned)
+    if not compound_normalized:
+        return LifecycleCommandResult(
+            raw_transcript=raw,
+            cleaned_transcript=cleaned,
+            normalized_transcript="",
+            canonicalized_transcript="",
+            routed_transcript="",
+            rejection_reason="empty_transcript",
+        )
+
+    aliases = validate_ares_name_aliases(ares_name_aliases)
+    activation = _canonical_phrases(
+        activation_phrases,
+        aliases=aliases,
+        field_name="activation_phrases",
+        allow_empty=True,
+        allow_acoustic_aliases=False,
+    )
+    standby = _active_command_bodies(
+        standby_phrases,
+        aliases=aliases,
+        field_name="standby_phrases",
+    )
+    shutdown = _active_command_bodies(
+        shutdown_phrases,
+        aliases=aliases,
+        field_name="shutdown_phrases",
+    )
+    if set(standby) & set(shutdown):
+        raise ValueError("active standby and shutdown commands must not overlap")
+
+    attention = _match_active_attention(
+        compound_normalized,
+        activation_phrases=activation,
+        aliases=aliases,
+    )
+    if attention is not None:
+        return LifecycleCommandResult(
+            raw_transcript=raw,
+            cleaned_transcript=cleaned,
+            normalized_transcript="",
+            canonicalized_transcript="",
+            routed_transcript="",
+            canonical_name=CANONICAL_ARES_NAME,
+            matched_alias=attention.matched_alias,
+            alias_type=attention.alias_type,
+            assistant_alias_removed=attention.matched_alias,
+            alias_position="standalone",
+            action=LIFECYCLE_ACTION_ATTENTION_ONLY,
+            matched_phrase=attention.canonical_phrase,
+            rejection_reason="",
+        )
+
+    command, address = _remove_active_addressing(
+        compound_normalized,
+        aliases=aliases,
+    )
+    routed = _active_routed_transcript(route_source, address=address)
+    negation_detected = _contains_lifecycle_negation(command)
+    common = {
+        "raw_transcript": raw,
+        "cleaned_transcript": cleaned,
+        "normalized_transcript": command,
+        "canonicalized_transcript": command,
+        "routed_transcript": routed,
+        "canonical_name": CANONICAL_ARES_NAME if address is not None else "",
+        "matched_alias": address.matched_alias if address is not None else "",
+        "alias_type": address.alias_type if address is not None else "",
+        "assistant_alias_removed": (
+            address.matched_alias if address is not None else ""
+        ),
+        "alias_position": (
+            address.position if address is not None else "none"
+        ),
+    }
+    if negation_detected:
+        return LifecycleCommandResult(
+            **common,
+            negation_detected=True,
+            rejection_reason="negated_lifecycle_command",
+        )
+
+    for action, commands in (
+        (LIFECYCLE_ACTION_SHUTDOWN, shutdown),
+        (LIFECYCLE_ACTION_STANDBY, standby),
+    ):
+        if command in commands:
+            return LifecycleCommandResult(
+                **common,
+                action=action,
+                matched_phrase=command,
+                rejection_reason="",
+            )
+
+    return LifecycleCommandResult(
+        **common,
+        rejection_reason="exact_active_lifecycle_phrase_not_matched",
+    )
+
+
 def classify_lifecycle_control(
     text: str,
     *,
@@ -239,8 +394,154 @@ def classify_lifecycle_control(
 def _normalize_lifecycle_words(value: str) -> str:
     normalized = normalize_spoken_phrase(value)
     normalized = _GOOD_BYE.sub("goodbye", normalized)
+    normalized = _STAND_BY.sub("standby", normalized)
     normalized = _SHUT_DOWN.sub("shutdown", normalized)
     return " ".join(normalized.split())
+
+
+def _active_command_bodies(
+    values: Sequence[str],
+    *,
+    aliases: Sequence[str],
+    field_name: str,
+) -> tuple[str, ...]:
+    """Return name-free ACTIVE command bodies from configured lifecycle phrases."""
+
+    canonical = _canonical_phrases(
+        values,
+        aliases=aliases,
+        field_name=field_name,
+        allow_acoustic_aliases=True,
+    )
+    bodies: list[str] = []
+    for phrase in canonical:
+        tokens = tuple(phrase.split())
+        if tokens[0] == CANONICAL_ARES_NAME:
+            body = tokens[1:]
+        elif tokens[-1] == CANONICAL_ARES_NAME:
+            body = tokens[:-1]
+        else:
+            raise ValueError(
+                f"{field_name} must place the ARES name at the beginning or end"
+            )
+        normalized = " ".join(body)
+        if not normalized:
+            raise ValueError(f"{field_name} must contain a lifecycle command")
+        if normalized not in bodies:
+            bodies.append(normalized)
+    return tuple(bodies)
+
+
+def _active_alias_forms(
+    aliases: Sequence[str],
+) -> tuple[tuple[tuple[str, ...], str, str], ...]:
+    """Return unique configured and bounded acoustic aliases, longest first."""
+
+    unique: dict[tuple[str, ...], tuple[str, str]] = {}
+    for tokens, matched_alias, alias_type in _lifecycle_alias_forms(
+        aliases,
+        allow_acoustic_aliases=True,
+    ):
+        unique.setdefault(tokens, (matched_alias, alias_type))
+    return tuple(
+        (tokens, *unique[tokens])
+        for tokens in sorted(unique, key=lambda value: (-len(value), value))
+    )
+
+
+def _match_active_attention(
+    normalized: str,
+    *,
+    activation_phrases: Sequence[str],
+    aliases: Sequence[str],
+) -> _LifecycleAliasMatch | None:
+    tokens = tuple(normalized.split())
+    alias_forms = _active_alias_forms(aliases)
+
+    # A name by itself or a bounded greeting plus that name is attention, not
+    # another activation, while a session is already ACTIVE.
+    for alias_tokens, matched_alias, alias_type in alias_forms:
+        if tokens == alias_tokens or tokens in {
+            ("hey",) + alias_tokens,
+            ("hello",) + alias_tokens,
+            ("hi",) + alias_tokens,
+        }:
+            return _LifecycleAliasMatch(
+                canonical_phrase=" ".join(tokens),
+                matched_alias=matched_alias,
+                alias_type=alias_type,
+            )
+
+    # Other explicitly configured wake phrases also become attention-only in
+    # ACTIVE. Acoustic aliases are allowed here because they cannot activate a
+    # new session on this path.
+    return _match_lifecycle_phrase(
+        normalized,
+        activation_phrases,
+        aliases=aliases,
+        allow_acoustic_aliases=True,
+    )
+
+
+def _remove_active_addressing(
+    normalized: str,
+    *,
+    aliases: Sequence[str],
+) -> tuple[str, _ActiveAddressMatch | None]:
+    """Remove at most one complete assistant alias from one command edge."""
+
+    tokens = tuple(normalized.split())
+    prefix_matches: list[tuple[tuple[str, ...], str, str]] = []
+    suffix_matches: list[tuple[tuple[str, ...], str, str]] = []
+    for alias_tokens, matched_alias, alias_type in _active_alias_forms(aliases):
+        width = len(alias_tokens)
+        if len(tokens) > width and tokens[:width] == alias_tokens:
+            prefix_matches.append((alias_tokens, matched_alias, alias_type))
+        if len(tokens) > width and tokens[-width:] == alias_tokens:
+            suffix_matches.append((alias_tokens, matched_alias, alias_type))
+
+    # More than one address is ambiguous and is intentionally left untouched.
+    # This prevents alias stripping from manufacturing a lifecycle phrase.
+    if bool(prefix_matches) == bool(suffix_matches):
+        return normalized, None
+
+    alias_tokens, matched_alias, alias_type = (
+        prefix_matches[0] if prefix_matches else suffix_matches[0]
+    )
+    if prefix_matches:
+        command_tokens = tokens[len(alias_tokens) :]
+        position = "prefix"
+    else:
+        command_tokens = tokens[: -len(alias_tokens)]
+        position = "suffix"
+    return (
+        " ".join(command_tokens),
+        _ActiveAddressMatch(
+            matched_alias=matched_alias,
+            alias_type=alias_type,
+            position=position,
+            token_count=len(alias_tokens),
+        ),
+    )
+
+
+def _active_routed_transcript(
+    source: str,
+    *,
+    address: _ActiveAddressMatch | None,
+) -> str:
+    """Strip a proven edge address without normalizing command content."""
+
+    if address is None:
+        return source
+    spans = tuple(_ROUTED_WORD.finditer(source))
+    if len(spans) < address.token_count:
+        return source
+    if address.position == "prefix":
+        boundary = spans[address.token_count - 1].end()
+        return source[boundary:].lstrip(_ADDRESS_SEPARATOR_PUNCTUATION)
+    boundary = spans[-address.token_count].start()
+    return source[:boundary].rstrip(_ADDRESS_SEPARATOR_PUNCTUATION)
 
 
 def _canonical_phrases(

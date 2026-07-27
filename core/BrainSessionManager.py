@@ -622,7 +622,12 @@ class BrainSessionManager:
                     str(error)[:160],
                 )
             event_session_id = self._session_id
-        if target in _SESSION_ACTIVITY_STATES:
+        # Only a new owner session starts an inactivity window here. Internal
+        # lifecycle progress (PROCESSING -> RESPONDING -> ACTIVE) reflects ARES
+        # work and playback, not new owner activity, so it must not extend that
+        # window. BrainRuntime records genuine command speech explicitly before
+        # beginning command processing.
+        if source == BRAIN_STANDBY and target == BRAIN_ACTIVE:
             self._last_activity_at = now
             self._inactivity_deadline_at = now + timedelta(
                 seconds=self.config.inactivity_timeout_seconds
