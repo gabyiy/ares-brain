@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from core import (
+    AudioChunk,
     ActiveCommandLocalDiagnostics,
     SingleTurnVoiceRequestV1,
     StandbyListenResultV1,
@@ -197,7 +198,7 @@ def test_diagnostic_launcher_prints_privacy_safe_production_composition(tmp_path
     assert code == 0
     rendered = "\n".join(output)
     assert "PRODUCTION VOICE COMPOSITION" in rendered
-    assert "Routing revision: active_state_isolated_capture_ready_v1" in rendered
+    assert "Routing revision: constrained_active_lifecycle_audio_v1" in rendered
     assert "Runtime: test_run_ares_standby_voice.FakeRuntime" in rendered
     assert "Active lifecycle normalizer: " in rendered
     assert "Raw Whisper transcript" not in rendered
@@ -708,6 +709,13 @@ def test_launcher_uses_shared_production_active_audio_factory(
     assert request.metadata["capture_profile"] == "active_command_v1"
     assert runtime.input_adapter.voice_io_gate is composition.voice_io_gate
     assert runtime.output_adapter.voice_io_gate is composition.voice_io_gate
+    assert (
+        runtime.input_adapter.active_lifecycle_audio_controller.recognizer
+        is composition.active_lifecycle_audio_recognizer
+    )
+    assert Path(
+        composition.active_lifecycle_audio_recognizer.backend.model_path
+    ).as_posix().endswith("models/vosk/vosk-model-small-en-us-0.15")
 
 
 def test_production_composition_routes_active_transcripts_through_state_aware_adapter(
@@ -731,6 +739,7 @@ def test_production_composition_routes_active_transcripts_through_state_aware_ad
             self.capture_requests = []
             self.capture_ready_observers = []
             self.trace = []
+            self.current_transcript = ""
 
         def add_capture_ready_observer(self, observer):
             self.capture_ready_observers.append(observer)
@@ -746,6 +755,7 @@ def test_production_composition_routes_active_transcripts_through_state_aware_ad
             cancellation_token=None,
             pre_brain_hook=None,
             raw_transcript_hook=None,
+            finalized_audio_hook=None,
         ):
             self.capture_requests.append(request)
             self.trace.append("calibration_completed")
@@ -760,12 +770,37 @@ def test_production_composition_routes_active_transcripts_through_state_aware_ad
                 )
             self.trace.append("owner_speech_window_open")
             transcript = self.transcripts.pop(0)
-            decision = raw_transcript_hook(transcript)
-            if decision.handled:
-                self.raw_hook_actions.append(decision.data.get("lifecycle_action"))
+            self.current_transcript = transcript
+            audio_decision = finalized_audio_hook(
+                AudioChunk(
+                    data=b"\x01\x00" * 320,
+                    metadata={
+                        "wav_path": request.recording_output_path,
+                        "final_whisper_input_path": request.recording_output_path,
+                    },
+                )
+            )
+            if audio_decision.handled:
+                decision = audio_decision
+                transcript = audio_decision.canonical_text
+                audio_payload = dict(
+                    audio_decision.data.get("active_lifecycle_audio") or {}
+                )
+                self.raw_hook_actions.append(
+                    "audio:"
+                    + str(
+                        audio_payload.get("selected_lifecycle_action") or "none"
+                    )
+                )
             else:
-                decision = pre_brain_hook(transcript)
-                self.raw_hook_actions.append("ordinary")
+                decision = raw_transcript_hook(transcript)
+                if decision.handled:
+                    self.raw_hook_actions.append(
+                        decision.data.get("lifecycle_action")
+                    )
+                else:
+                    decision = pre_brain_hook(transcript)
+                    self.raw_hook_actions.append("ordinary")
             return SimpleNamespace(
                 success=True,
                 status=decision.status,
@@ -774,7 +809,15 @@ def test_production_composition_routes_active_transcripts_through_state_aware_ad
                 cleaned_transcript=transcript,
                 recording_duration_seconds=1.0,
                 transcription_processing_time_seconds=0.1,
-                data={},
+                data={
+                    "finalized_audio_decision": {
+                        "handled": audio_decision.handled,
+                        "continue_to_whisper": audio_decision.continue_to_whisper,
+                        "status": audio_decision.status,
+                        "canonical_text": audio_decision.canonical_text,
+                        "data": audio_decision.data,
+                    }
+                },
             )
 
         def run_local_output(self, request, text, cancellation_token=None):
@@ -785,6 +828,54 @@ def test_production_composition_routes_active_transcripts_through_state_aware_ad
             return SimpleNamespace(success=True, status="stopped")
 
     pipeline = ProductionPathPipeline()
+
+    class ProductionPathLifecycleRecognizer:
+        def recognize_wav(self, _wav_path):
+            transcript = pipeline.current_transcript.casefold()
+            classification = (
+                "standby"
+                if transcript == "goodbye ares"
+                else "shutdown"
+                if transcript == "shutdown ares"
+                else "ordinary"
+            )
+            canonical = (
+                "goodbye ares"
+                if classification == "standby"
+                else "shutdown ares"
+                if classification == "shutdown"
+                else ""
+            )
+            return SimpleNamespace(
+                classification=classification,
+                canonical_phrase=canonical,
+                recognized_text=(canonical or "ares"),
+                recognized_tokens=tuple((canonical or "ares").split()),
+                confidence=0.93,
+                confidence_available=True,
+                confidence_tier=(
+                    "high" if classification != "ordinary" else "rejected"
+                ),
+                recognition_backend="injected_constrained_vosk",
+                rejection_reason=(
+                    ""
+                    if classification != "ordinary"
+                    else "bounded_distractor_phrase"
+                ),
+                confirmation_required=False,
+                proposed_classification="",
+                selected_lifecycle_action=(
+                    classification
+                    if classification in {"standby", "shutdown"}
+                    else "none"
+                ),
+            )
+
+        def recognize_confirmation_wav(self, *_args, **_kwargs):
+            raise AssertionError("confirmation is not expected in this test")
+
+        def close(self):
+            return None
 
     class ProductionPathWakeListener:
         def __init__(self, *, config, **kwargs):
@@ -815,6 +906,9 @@ def test_production_composition_routes_active_transcripts_through_state_aware_ad
         pipeline_factory=lambda _args, **_kwargs: pipeline,
         wake_listener_factory=ProductionPathWakeListener,
         event_history_store=history,
+        active_lifecycle_recognizer_factory=(
+            lambda **_kwargs: ProductionPathLifecycleRecognizer()
+        ),
     )
 
     assert isinstance(
@@ -835,7 +929,7 @@ def test_production_composition_routes_active_transcripts_through_state_aware_ad
         )
     )
     assert "PRODUCTION VOICE COMPOSITION" in composition
-    assert "Routing revision: active_state_isolated_capture_ready_v1" in composition
+    assert "Routing revision: constrained_active_lifecycle_audio_v1" in composition
     assert "Runtime: core.BrainRuntime.BrainRuntime" in composition
     assert "Lifecycle authority: core.BrainSessionManager.BrainSessionManager" in composition
     assert (
@@ -846,6 +940,12 @@ def test_production_composition_routes_active_transcripts_through_state_aware_ad
         "Active lifecycle normalizer: "
         "core.LifecycleControl.normalize_active_lifecycle_command"
     ) in composition
+    assert (
+        "Constrained lifecycle audio controller: "
+        "core.BrainRuntimeVoiceAdapters.ActiveLifecycleAudioTurnController"
+    ) in composition
+    assert "Constrained lifecycle audio recognizer: " in composition
+    assert "ProductionPathLifecycleRecognizer" in composition
     assert "Input/output gate shared: yes" in composition
     # Keep this deterministic while retaining the same gate and adapters.
     runtime.input_adapter.voice_io_gate.settle_delay_seconds = 0.0
@@ -900,7 +1000,11 @@ def test_production_composition_routes_active_transcripts_through_state_aware_ad
     shutdown = runtime.poll_once()
     assert shutdown.status == "stopped"
     assert runtime.snapshot().current_lifecycle_state == "STOPPED"
-    assert pipeline.raw_hook_actions == ["attention_only", "standby", "shutdown"]
+    assert pipeline.raw_hook_actions == [
+        "attention_only",
+        "audio:standby",
+        "audio:shutdown",
+    ]
     assert pipeline.local_outputs.count("Yes Gabi.") == 2
 
 

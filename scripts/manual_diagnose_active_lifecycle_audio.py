@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from core import (  # noqa: E402
+    SingleTurnFinalizedAudioDecision,
     SingleTurnPreBrainDecision,
     normalize_active_lifecycle_command,
 )
@@ -53,6 +54,13 @@ DIAGNOSTIC_PHRASES = (
     "remember that I like video games",
 )
 
+_EXPECTED_CONSTRAINED_OUTCOMES = {
+    "goodbye Ares": ("standby", "goodbye ares", False),
+    "shutdown Ares": ("shutdown", "shutdown ares", False),
+    "calculate two plus two": ("ordinary", "", True),
+    "remember that I like video games": ("ordinary", "", True),
+}
+
 
 @dataclass(frozen=True)
 class DiagnosticAttempt:
@@ -72,6 +80,7 @@ class DiagnosticAttempt:
     stream: Any = None
     exception_context: Any = None
     lifecycle_result: Any = None
+    constrained_recognition: Any = None
     cleanup_result: str = "unknown"
 
 
@@ -245,6 +254,15 @@ def _run_locked_diagnostic(
     pipeline = composition.pipeline
     base_request = composition.base_request
     gate = composition.voice_io_gate
+    lifecycle_audio_recognizer = getattr(
+        composition,
+        "active_lifecycle_audio_recognizer",
+        None,
+    )
+    if not callable(getattr(lifecycle_audio_recognizer, "recognize_wav", None)):
+        raise RuntimeError(
+            "production_active_lifecycle_audio_recognizer_unavailable"
+        )
     microphone = getattr(pipeline, "microphone_adapter", None)
 
     output_func("ARES ACTIVE lifecycle-audio diagnostic")
@@ -284,6 +302,9 @@ def _run_locked_diagnostic(
     )
     if not preflight_ok:
         _stop_pipeline_safely(pipeline, base_request)
+        close_recognizer = getattr(lifecycle_audio_recognizer, "close", None)
+        if callable(close_recognizer):
+            close_recognizer()
         gate.reset()
         return 3
 
@@ -298,6 +319,7 @@ def _run_locked_diagnostic(
                 total=len(DIAGNOSTIC_PHRASES),
                 request=request,
                 pipeline=pipeline,
+                lifecycle_audio_recognizer=lifecycle_audio_recognizer,
                 gate=gate,
                 output_func=output_func,
             )
@@ -311,19 +333,79 @@ def _run_locked_diagnostic(
             }:
                 cleanup = attempt.cleanup_result
             attempt = replace(attempt, cleanup_result=cleanup)
+            attempt = _validate_expected_constrained_outcome(attempt)
             _print_attempt(attempt, request=request, output_func=output_func)
             if not attempt.success:
                 failed_attempts += 1
     finally:
         _stop_pipeline_safely(pipeline, base_request)
+        close_recognizer = getattr(lifecycle_audio_recognizer, "close", None)
+        if callable(close_recognizer):
+            close_recognizer()
         gate.reset()
 
     output_func(
         "Diagnostic result: "
-        + ("all four phrases captured and classified" if not failed_attempts else f"{failed_attempts} phrase(s) failed")
+        + (
+            "all four phrases passed the constrained lifecycle policy"
+            if not failed_attempts
+            else f"{failed_attempts} phrase(s) failed"
+        )
     )
     output_func("No lifecycle transition, skill, or memory operation was executed.")
     return 0 if not failed_attempts else 3
+
+
+def _validate_expected_constrained_outcome(
+    attempt: DiagnosticAttempt,
+) -> DiagnosticAttempt:
+    if not attempt.success:
+        return attempt
+    expected = _EXPECTED_CONSTRAINED_OUTCOMES.get(attempt.expected_phrase)
+    if expected is None:
+        return replace(
+            attempt,
+            success=False,
+            failure_kind="lifecycle_recognition_mismatch",
+            error_message="diagnostic phrase has no constrained-policy expectation",
+        )
+    expected_classification, expected_canonical, expected_fallback = expected
+    evidence = dict(attempt.constrained_recognition or {})
+    classification = str(evidence.get("classification") or "")
+    canonical = str(evidence.get("canonical_phrase") or "")
+    fallback = bool(evidence.get("whisper_fallback_required", True))
+    confidence_tier = str(evidence.get("confidence_tier") or "")
+    selected_action = str(evidence.get("selected_lifecycle_action") or "none")
+    action_expected = expected_classification in {"standby", "shutdown"}
+    matches = (
+        classification == expected_classification
+        and canonical == expected_canonical
+        and fallback is expected_fallback
+        and (
+            confidence_tier == "high" and selected_action == expected_classification
+            if action_expected
+            else selected_action == "none"
+        )
+    )
+    if matches:
+        return attempt
+    return replace(
+        attempt,
+        success=False,
+        failure_kind="lifecycle_recognition_mismatch",
+        error_message=(
+            "expected constrained outcome "
+            f"classification={expected_classification}, "
+            f"canonical={expected_canonical or '<none>'}, "
+            f"whisper_fallback={'yes' if expected_fallback else 'no'}; "
+            "observed "
+            f"classification={classification or '<empty>'}, "
+            f"canonical={canonical or '<none>'}, "
+            f"confidence_tier={confidence_tier or '<none>'}, "
+            f"action={selected_action or 'none'}, "
+            f"whisper_fallback={'yes' if fallback else 'no'}"
+        )[:500],
+    )
 
 
 def _capture_and_transcribe(
@@ -333,10 +415,12 @@ def _capture_and_transcribe(
     total: int,
     request: Any,
     pipeline: Any,
+    lifecycle_audio_recognizer: Any,
     gate: Any,
     output_func: Callable[[str], None],
 ) -> DiagnosticAttempt:
     ready_announced = False
+    constrained_evidence: dict[str, Any] = {}
 
     def announce_ready(details: dict[str, Any]) -> None:
         nonlocal ready_announced
@@ -366,6 +450,45 @@ def _capture_and_transcribe(
             },
         )
 
+    def inspect_finalized_audio(audio_chunk: Any) -> SingleTurnFinalizedAudioDecision:
+        metadata = dict(getattr(audio_chunk, "metadata", {}) or {})
+        wav_path = str(
+            metadata.get("final_whisper_input_path")
+            or metadata.get("wav_path")
+            or ""
+        )
+        try:
+            recognition = lifecycle_audio_recognizer.recognize_wav(wav_path)
+            payload = _constrained_recognition_payload(recognition)
+        except Exception as error:
+            payload = {
+                "classification": "uncertain",
+                "canonical_phrase": "",
+                "recognized_text": "",
+                "recognized_tokens": [],
+                "confidence": None,
+                "confidence_available": False,
+                "recognition_backend": lifecycle_audio_recognizer.__class__.__name__,
+                "rejection_reason": (
+                    f"diagnostic_lifecycle_recognizer_error:"
+                    f"{error.__class__.__name__}:{str(error)[:200]}"
+                ),
+                "confirmation_required": False,
+                "proposed_classification": "",
+                "selected_lifecycle_action": "none",
+                "whisper_fallback_required": True,
+            }
+        constrained_evidence.update(payload)
+        # Diagnostic mode deliberately continues to Whisper for a side-by-side
+        # comparison. Production uses the same recognition result to bypass
+        # Whisper only when the bounded policy authorizes a lifecycle action.
+        return SingleTurnFinalizedAudioDecision(
+            handled=False,
+            continue_to_whisper=True,
+            status="diagnostic_lifecycle_audio_observed",
+            data={"active_lifecycle_audio": dict(payload)},
+        )
+
     owner = "diagnostic_active_capture"
     result = None
     try:
@@ -384,6 +507,7 @@ def _capture_and_transcribe(
         result = pipeline.run_once(
             request,
             raw_transcript_hook=intercept_raw_transcript,
+            finalized_audio_hook=inspect_finalized_audio,
         )
     except KeyboardInterrupt:
         raise
@@ -418,6 +542,7 @@ def _capture_and_transcribe(
         phrase,
         result,
         request=request,
+        constrained_recognition=constrained_evidence,
     )
 
 
@@ -646,6 +771,7 @@ def _attempt_from_pipeline_result(
     result: Any,
     *,
     request: Any,
+    constrained_recognition: Optional[dict[str, Any]] = None,
 ) -> DiagnosticAttempt:
     recording = _recording_contract(result)
     recording_data = dict(recording.get("data", {}) or {})
@@ -775,6 +901,7 @@ def _attempt_from_pipeline_result(
         stream=stream,
         exception_context=pcm_exception,
         lifecycle_result=lifecycle_result,
+        constrained_recognition=dict(constrained_recognition or {}),
         cleanup_result=str(
             pcm_cleanup.get("status")
             if pcm_cleanup.get("status") not in {None, "", "completed"}
@@ -935,9 +1062,27 @@ def _print_attempt(
     process = dict(attempt.process or capture_data.get("process", {}) or {})
     stream = dict(attempt.stream or {})
     exception_context = dict(attempt.exception_context or {})
+    constrained = dict(attempt.constrained_recognition or {})
+    constrained_classification = str(
+        constrained.get("classification") or "not_evaluated"
+    )
+    constrained_action = str(
+        constrained.get("selected_lifecycle_action") or "none"
+    )
+    constrained_confidence = constrained.get("confidence")
+    confidence_text = (
+        f"{float(constrained_confidence):.3f}"
+        if isinstance(constrained_confidence, (int, float))
+        and not isinstance(constrained_confidence, bool)
+        else "unavailable"
+    )
+    token_text = " ".join(
+        str(token) for token in list(constrained.get("recognized_tokens") or [])
+    )
 
     output_func("")
     output_func(f"ACTIVE LIFECYCLE AUDIO RESULT {attempt.expected_phrase!r}")
+    output_func(f"Raw Whisper transcript: {raw or '<empty>'}")
     output_func(f"Raw transcript: {raw or '<empty>'}")
     output_func(
         "Normalized transcript: "
@@ -953,6 +1098,48 @@ def _print_attempt(
     )
     output_func(f"Lifecycle classification: {classification}")
     output_func(f"Lifecycle action that would be selected: {action}")
+    output_func(
+        "Constrained lifecycle recognizer transcript: "
+        f"{constrained.get('recognized_text') or '<empty>'}"
+    )
+    output_func(
+        "Constrained lifecycle recognizer tokens: "
+        f"{token_text or '<empty>'}"
+    )
+    output_func(f"Constrained lifecycle confidence: {confidence_text}")
+    output_func(
+        "Constrained lifecycle confidence tier: "
+        f"{constrained.get('confidence_tier') or '<none>'}"
+    )
+    output_func(
+        "Constrained lifecycle recognition backend: "
+        f"{constrained.get('recognition_backend') or '<unknown>'}"
+    )
+    output_func(
+        "Constrained lifecycle classification: "
+        f"{constrained_classification}"
+    )
+    output_func(
+        "Canonical lifecycle phrase: "
+        f"{constrained.get('canonical_phrase') or '<none>'}"
+    )
+    output_func(f"Selected lifecycle action: {constrained_action}")
+    output_func(
+        "Whisper fallback would run in production: "
+        f"{'yes' if constrained.get('whisper_fallback_required', True) else 'no'}"
+    )
+    output_func(
+        "Constrained recognition decision: "
+        + (
+            "accepted"
+            if constrained_action in {"standby", "shutdown"}
+            else "confirmation required"
+            if constrained.get("confirmation_required")
+            else "rejected"
+        )
+        + "; reason="
+        + str(constrained.get("rejection_reason") or "high_confidence_exact_phrase")
+    )
     output_func(f"Beginning clipped: {beginning_clipped}")
     output_func(
         "Pre-roll retained: "
@@ -1033,6 +1220,50 @@ def _print_attempt(
             output_func("Diagnostic traceback:")
             for line in attempt.exception_traceback.rstrip().splitlines():
                 output_func(line)
+
+
+def _constrained_recognition_payload(recognition: Any) -> dict[str, Any]:
+    classification = str(getattr(recognition, "classification", "") or "")
+    selected_action = str(
+        getattr(recognition, "selected_lifecycle_action", "") or "none"
+    )
+    fallback = bool(
+        getattr(recognition, "whisper_fallback_required", True)
+    )
+    return {
+        "classification": classification,
+        "canonical_phrase": str(
+            getattr(recognition, "canonical_phrase", "") or ""
+        ),
+        "recognized_text": str(
+            getattr(recognition, "recognized_text", "") or ""
+        ),
+        "recognized_tokens": [
+            str(token or "")
+            for token in tuple(getattr(recognition, "recognized_tokens", ()) or ())
+        ],
+        "confidence": getattr(recognition, "confidence", None),
+        "confidence_available": bool(
+            getattr(recognition, "confidence_available", False)
+        ),
+        "confidence_tier": str(
+            getattr(recognition, "confidence_tier", "") or ""
+        ),
+        "recognition_backend": str(
+            getattr(recognition, "recognition_backend", "") or ""
+        ),
+        "rejection_reason": str(
+            getattr(recognition, "rejection_reason", "") or ""
+        ),
+        "confirmation_required": bool(
+            getattr(recognition, "confirmation_required", False)
+        ),
+        "proposed_classification": str(
+            getattr(recognition, "proposed_classification", "") or ""
+        ),
+        "selected_lifecycle_action": selected_action,
+        "whisper_fallback_required": fallback,
+    }
 
 
 def _configuration_issue(args: argparse.Namespace) -> str:

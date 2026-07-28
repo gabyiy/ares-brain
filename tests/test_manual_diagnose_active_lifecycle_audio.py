@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from core import SingleTurnVoiceRequestV1, SingleTurnVoiceResultV1, VoiceRuntimeGate
+from core import (
+    AudioChunk,
+    SingleTurnVoiceRequestV1,
+    SingleTurnVoiceResultV1,
+    VoiceRuntimeGate,
+)
 from scripts import manual_diagnose_active_lifecycle_audio as manual
 
 
@@ -253,7 +258,13 @@ class FakePipeline:
 
         return unsubscribe
 
-    def run_once(self, request, cancellation_token=None, raw_transcript_hook=None):
+    def run_once(
+        self,
+        request,
+        cancellation_token=None,
+        raw_transcript_hook=None,
+        finalized_audio_hook=None,
+    ):
         assert all(stream.closed for stream in self.streams)
         assert request.metadata["diagnostic_only"] is True
         assert request.metadata["lifecycle_execution_enabled"] is False
@@ -296,6 +307,17 @@ class FakePipeline:
                     "pre_roll_seconds": request.pre_roll_seconds,
                 }
             )
+        finalized_decision = finalized_audio_hook(
+            AudioChunk(
+                data=frame,
+                metadata={
+                    "wav_path": request.recording_output_path,
+                    "final_whisper_input_path": request.recording_output_path,
+                },
+            )
+        )
+        assert finalized_decision.handled is False
+        assert finalized_decision.continue_to_whisper is True
         decision = raw_transcript_hook(transcript)
         self.raw_hook_decisions.append(decision)
         assert decision.handled is True
@@ -314,6 +336,13 @@ class FakePipeline:
             cleaned_transcript=transcript,
             data={
                 "recording": recording,
+                "finalized_audio_decision": {
+                    "handled": finalized_decision.handled,
+                    "continue_to_whisper": finalized_decision.continue_to_whisper,
+                    "status": finalized_decision.status,
+                    "canonical_text": finalized_decision.canonical_text,
+                    "data": finalized_decision.data,
+                },
                 "cleanup": {"status": "pipeline_cleanup_completed"},
             },
         )
@@ -345,6 +374,51 @@ class FakeLockFactory:
         return Lock()
 
 
+class FakeLifecycleAudioRecognizer:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.closed = 0
+
+    def recognize_wav(self, wav_path):
+        self.calls.append(str(wav_path))
+        slug = Path(str(wav_path)).name.casefold()
+        if "goodbye-ares" in slug:
+            classification = "standby"
+            canonical = "goodbye ares"
+            recognized = "goodbye ares"
+            fallback = False
+        elif "shutdown-ares" in slug:
+            classification = "shutdown"
+            canonical = "shutdown ares"
+            recognized = "shutdown ares"
+            fallback = False
+        else:
+            classification = "ordinary"
+            canonical = ""
+            recognized = ""
+            fallback = True
+        return SimpleNamespace(
+            classification=classification,
+            canonical_phrase=canonical,
+            recognized_text=recognized,
+            recognized_tokens=tuple(recognized.split()),
+            confidence=0.91 if recognized else None,
+            confidence_available=bool(recognized),
+            confidence_tier="high" if recognized else "missing",
+            recognition_backend="fake_constrained_vosk",
+            rejection_reason="" if recognized else "unknown_token_detected",
+            confirmation_required=False,
+            proposed_classification="",
+            selected_lifecycle_action=(
+                classification if classification in {"standby", "shutdown"} else "none"
+            ),
+            whisper_fallback_required=fallback,
+        )
+
+    def close(self):
+        self.closed += 1
+
+
 class DiagnosticHarness:
     def __init__(
         self,
@@ -358,6 +432,7 @@ class DiagnosticHarness:
             fail_first_phrase=fail_first_phrase,
         )
         self.gate = VoiceRuntimeGate(settle_delay_seconds=0.0)
+        self.lifecycle_recognizer = FakeLifecycleAudioRecognizer()
         self.factory_calls: list = []
 
     def production_factory(self, args, *, output_func):
@@ -387,6 +462,7 @@ class DiagnosticHarness:
             base_request=request,
             pipeline=self.pipeline,
             voice_io_gate=self.gate,
+            active_lifecycle_audio_recognizer=self.lifecycle_recognizer,
         )
 
 
@@ -468,6 +544,52 @@ def test_preflight_and_four_phrase_cycles_have_strict_stream_lifecycles(tmp_path
     assert preflight["diagnostic_traceback"] is True
     assert preflight["owner"] == "diagnostic_active_capture"
     assert len(harness.pipeline.requests) == len(manual.DIAGNOSTIC_PHRASES) == 4
+    assert harness.lifecycle_recognizer.calls == [
+        request.recording_output_path for request in harness.pipeline.requests
+    ]
+    assert harness.lifecycle_recognizer.closed == 1
+    rendered = "\n".join(output)
+    assert "Constrained lifecycle classification: standby" in rendered
+    assert "Canonical lifecycle phrase: goodbye ares" in rendered
+    assert "Constrained lifecycle classification: shutdown" in rendered
+    assert "Canonical lifecycle phrase: shutdown ares" in rendered
+    assert "Whisper fallback would run in production: no" in rendered
+    assert "Whisper fallback would run in production: yes" in rendered
+
+
+def test_diagnostic_fails_when_constrained_lifecycle_policy_misses_phrase(tmp_path):
+    harness = DiagnosticHarness()
+    original = harness.lifecycle_recognizer.recognize_wav
+
+    def miss_goodbye(wav_path):
+        if "goodbye-ares" not in Path(str(wav_path)).name.casefold():
+            return original(wav_path)
+        harness.lifecycle_recognizer.calls.append(str(wav_path))
+        return SimpleNamespace(
+            classification="ordinary",
+            canonical_phrase="",
+            recognized_text="clears throat",
+            recognized_tokens=("clears", "throat"),
+            confidence=0.95,
+            confidence_available=True,
+            confidence_tier="rejected",
+            recognition_backend="fake_constrained_vosk",
+            rejection_reason="bounded_distractor_phrase",
+            confirmation_required=False,
+            proposed_classification="",
+            selected_lifecycle_action="none",
+            whisper_fallback_required=True,
+        )
+
+    harness.lifecycle_recognizer.recognize_wav = miss_goodbye
+
+    code, output, _ = _run(tmp_path, harness)
+
+    assert code == 3
+    rendered = "\n".join(output)
+    assert "Failure category: lifecycle_recognition_mismatch" in rendered
+    assert "expected constrained outcome classification=standby" in rendered
+    assert "Diagnostic result: 1 phrase(s) failed" in rendered
     assert len({id(stream) for stream in harness.pipeline.streams}) == 4
     assert all(stream.events == ["open", "read", "close"] for stream in harness.pipeline.streams)
     assert all(stream.closed and stream.frame_bytes == 640 for stream in harness.pipeline.streams)

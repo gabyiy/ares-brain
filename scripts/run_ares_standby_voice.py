@@ -39,6 +39,12 @@ from core import (  # noqa: E402
     active_command_capture_request,
     normalize_active_lifecycle_command,
 )
+from core.ActiveLifecycleAudioRecognizer import (  # noqa: E402
+    ActiveLifecycleAudioRecognizer,
+)
+from core.BrainRuntimeVoiceAdapters import (  # noqa: E402
+    ActiveLifecycleAudioTurnController,
+)
 from events import EventHistoryStore  # noqa: E402
 from memory.schema_migrations import MigrationError, StoreWriteLock  # noqa: E402
 from scripts import manual_verify_single_turn_voice as single_turn  # noqa: E402
@@ -61,7 +67,7 @@ DEFAULT_WHISPER_TERMINATION_GRACE_SECONDS = 1.0
 DEFAULT_WHISPER_HARD_CLEANUP_DEADLINE_SECONDS = 3.0
 DEFAULT_RUNTIME_LOCK_PATH = REPO_ROOT / "data" / "runtime" / "ares_standby_voice.runtime"
 DEFAULT_RUNTIME_LOCK_STALE_SECONDS = 30.0
-ACTIVE_VOICE_COMPOSITION_REVISION = "active_state_isolated_capture_ready_v1"
+ACTIVE_VOICE_COMPOSITION_REVISION = "constrained_active_lifecycle_audio_v1"
 
 
 class RuntimeTerminationRequested(BaseException):
@@ -83,6 +89,7 @@ class ProductionActiveAudioPipeline:
     base_request: SingleTurnVoiceRequestV1
     pipeline: Any
     voice_io_gate: VoiceRuntimeGate
+    active_lifecycle_audio_recognizer: ActiveLifecycleAudioRecognizer
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -165,6 +172,7 @@ def build_production_active_audio_pipeline(
     skill_manager: Any = None,
     event_history_store: Optional[EventHistoryStore] = None,
     pipeline_factory: Optional[Callable[..., Any]] = None,
+    active_lifecycle_recognizer_factory: Optional[Callable[..., Any]] = None,
 ) -> ProductionActiveAudioPipeline:
     """Build the exact ACTIVE microphone/VAD/Whisper production boundary.
 
@@ -206,11 +214,18 @@ def build_production_active_audio_pipeline(
             args.whisper_hard_cleanup_deadline
         ),
     )
+    lifecycle_recognizer_factory = (
+        active_lifecycle_recognizer_factory or ActiveLifecycleAudioRecognizer
+    )
+    active_lifecycle_audio_recognizer = lifecycle_recognizer_factory(
+        model_path=_repo_path(args.vosk_model)
+    )
     return ProductionActiveAudioPipeline(
         pipeline_args=pipeline_args,
         base_request=base_request,
         pipeline=pipeline,
         voice_io_gate=VoiceRuntimeGate(settle_delay_seconds=0.35),
+        active_lifecycle_audio_recognizer=active_lifecycle_audio_recognizer,
     )
 
 
@@ -221,6 +236,7 @@ def create_runtime(
     pipeline_factory: Optional[Callable[..., Any]] = None,
     wake_listener_factory: Optional[Callable[..., Any]] = None,
     event_history_store: Optional[EventHistoryStore] = None,
+    active_lifecycle_recognizer_factory: Optional[Callable[..., Any]] = None,
 ) -> tuple[BrainRuntime, Any, Any]:
     history = event_history_store or EventHistoryStore(warning_callback=output_func)
     name_policy = AresNamePolicy()
@@ -250,16 +266,25 @@ def create_runtime(
         skill_manager=skill_manager,
         event_history_store=history,
         pipeline_factory=pipeline_factory,
+        active_lifecycle_recognizer_factory=(
+            active_lifecycle_recognizer_factory
+        ),
     )
     base_request = active_audio.base_request
     pipeline = active_audio.pipeline
     gate = active_audio.voice_io_gate
+    lifecycle_audio_controller = ActiveLifecycleAudioTurnController(
+        recognizer=active_audio.active_lifecycle_audio_recognizer,
+        session_id_provider=lambda: session_manager.session_id,
+        lifecycle_state_provider=lambda: session_manager.state,
+    )
     active_input = SingleTurnPipelineRuntimeInputAdapter(
         pipeline=pipeline,
         base_request=base_request,
         session_id_provider=lambda: session_manager.session_id,
         lifecycle_state_provider=lambda: session_manager.state,
         voice_io_gate=gate,
+        active_lifecycle_audio_controller=lifecycle_audio_controller,
         diagnostic_callback=(
             _active_command_diagnostic_callback(output_func)
             if args.diagnostic_wake or args.diagnostic_routing
@@ -554,6 +579,11 @@ def render_production_composition_diagnostics(
 
     input_adapter = getattr(runtime, "input_adapter", None)
     output_adapter = getattr(runtime, "output_adapter", None)
+    lifecycle_audio_controller = getattr(
+        input_adapter,
+        "active_lifecycle_audio_controller",
+        None,
+    )
     input_gate = getattr(input_adapter, "voice_io_gate", None)
     output_gate = getattr(output_adapter, "voice_io_gate", None)
     return [
@@ -572,6 +602,10 @@ def render_production_composition_diagnostics(
         f"{_qualified_implementation(getattr(pipeline, 'speech_to_text_adapter', None))}",
         "  Active lifecycle normalizer: "
         f"{_qualified_implementation(normalize_active_lifecycle_command)}",
+        "  Constrained lifecycle audio controller: "
+        f"{_qualified_implementation(lifecycle_audio_controller)}",
+        "  Constrained lifecycle audio recognizer: "
+        f"{_qualified_implementation(getattr(lifecycle_audio_controller, 'recognizer', None))}",
         "  Input/output gate shared: "
         f"{'yes' if input_gate is not None and input_gate is output_gate else 'no'}",
     ]

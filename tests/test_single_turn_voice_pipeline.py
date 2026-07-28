@@ -28,6 +28,7 @@ from core import (
     HealthPolicyConfig,
     ResourceManager,
     SingleTurnVoicePipeline,
+    SingleTurnFinalizedAudioDecision,
     SingleTurnPreBrainDecision,
     SingleTurnVoiceRequestV1,
     SpeakerPlaybackResult,
@@ -525,6 +526,156 @@ def test_whisper_receives_finalized_canonical_wav_path(tmp_path):
 
     assert result.success is True
     assert stt.calls == 1
+
+
+def test_finalized_audio_hook_runs_on_closed_canonical_wav_before_whisper(tmp_path):
+    pipeline, order, microphone, stt, _, _, handled, _ = _pipeline(tmp_path)
+    observed = {}
+
+    def inspect_finalized_audio(audio_chunk):
+        order.append("finalized_audio.inspect")
+        wav_path = Path(audio_chunk.metadata["final_whisper_input_path"])
+        with wave.open(str(wav_path), "rb") as wav_file:
+            observed.update(
+                {
+                    "path": str(wav_path),
+                    "rate": wav_file.getframerate(),
+                    "channels": wav_file.getnchannels(),
+                    "width": wav_file.getsampwidth(),
+                    "frames": wav_file.getnframes(),
+                    "bytes": audio_chunk.data,
+                }
+            )
+        return SingleTurnFinalizedAudioDecision(
+            handled=False,
+            continue_to_whisper=True,
+            status="ordinary_audio",
+            data={"classification": "ordinary"},
+        )
+
+    result = pipeline.run_once(
+        _request(tmp_path),
+        finalized_audio_hook=inspect_finalized_audio,
+    )
+
+    assert result.success is True
+    assert microphone.record_count == 1
+    assert stt.calls == 1
+    assert order.index("microphone.stop") < order.index("finalized_audio.inspect")
+    assert order.index("finalized_audio.inspect") < order.index("whisper.transcribe")
+    assert observed == {
+        "path": str(tmp_path / "input.wav"),
+        "rate": 16000,
+        "channels": 1,
+        "width": 2,
+        "frames": 1600,
+        "bytes": stt.audio_chunks[0].data,
+    }
+    assert stt.audio_chunks[0].metadata["final_whisper_input_path"] == observed["path"]
+    assert handled == ["calculate 2 + 2"]
+    assert result.data["finalized_audio_decision"] == {
+        "handled": False,
+        "continue_to_whisper": True,
+        "status": "ordinary_audio",
+        "canonical_text": "",
+        "data": {"classification": "ordinary"},
+    }
+
+
+def test_handled_finalized_audio_bypasses_whisper_and_preserves_canonical_text(tmp_path):
+    pipeline, order, microphone, stt, tts, speaker, handled, _ = _pipeline(tmp_path)
+
+    def recognize_lifecycle(audio_chunk):
+        order.append("finalized_audio.lifecycle")
+        assert audio_chunk.metadata["wav_path"] == str(tmp_path / "input.wav")
+        return SingleTurnFinalizedAudioDecision(
+            handled=True,
+            continue_to_whisper=False,
+            status="lifecycle_audio_recognized",
+            canonical_text="shutdown ares",
+            data={
+                "classification": "shutdown",
+                "confidence": 0.91,
+                "recognition_backend": "vosk_constrained_grammar",
+            },
+        )
+
+    result = pipeline.run_once(
+        _request(tmp_path),
+        finalized_audio_hook=recognize_lifecycle,
+    )
+
+    assert result.success is True
+    assert result.status == "lifecycle_audio_recognized"
+    assert result.raw_transcript == "shutdown ares"
+    assert result.recognized_text == "shutdown ares"
+    assert result.cleaned_transcript == "shutdown ares"
+    assert result.normalized_command == "shutdown ares"
+    assert result.transcription_status == "bypassed_by_finalized_audio_decision"
+    assert result.data["finalized_audio_decision"]["data"] == {
+        "classification": "shutdown",
+        "confidence": 0.91,
+        "recognition_backend": "vosk_constrained_grammar",
+    }
+    assert microphone.record_count == 1
+    assert stt.calls == 0
+    assert handled == []
+    assert tts.requests == []
+    assert speaker.play_count == 0
+    assert "whisper.transcribe" not in order
+
+
+def test_medium_finalized_audio_decision_is_typed_and_non_executable(tmp_path):
+    pipeline, _, microphone, stt, tts, speaker, handled, _ = _pipeline(tmp_path)
+
+    result = pipeline.run_once(
+        _request(tmp_path),
+        finalized_audio_hook=lambda _chunk: SingleTurnFinalizedAudioDecision(
+            handled=True,
+            continue_to_whisper=False,
+            status="lifecycle_audio_confirmation_required",
+            canonical_text="",
+            data={
+                "classification": "uncertain",
+                "proposed_classification": "shutdown",
+                "confirmation_required": True,
+            },
+        ),
+    )
+
+    assert result.success is True
+    assert result.status == "lifecycle_audio_confirmation_required"
+    assert result.raw_transcript == ""
+    assert result.recognized_text == ""
+    assert result.data["finalized_audio_decision"]["canonical_text"] == ""
+    assert result.data["finalized_audio_decision"]["data"]["confirmation_required"] is True
+    assert microphone.record_count == 1
+    assert stt.calls == 0
+    assert handled == []
+    assert tts.requests == []
+    assert speaker.play_count == 0
+
+
+def test_finalized_audio_hook_failure_is_bounded_before_whisper(tmp_path):
+    pipeline, _, microphone, stt, tts, speaker, handled, _ = _pipeline(tmp_path)
+
+    def fail_hook(_audio_chunk):
+        raise RuntimeError("constrained_recognizer_failed")
+
+    result = pipeline.run_once(
+        _request(tmp_path),
+        finalized_audio_hook=fail_hook,
+    )
+
+    assert result.success is False
+    assert result.status == "finalized_audio_hook_failed"
+    assert result.error_stage == "finalized_audio_hook"
+    assert "RuntimeError" in result.error_reason
+    assert microphone.record_count == 1
+    assert stt.calls == 0
+    assert handled == []
+    assert tts.requests == []
+    assert speaker.play_count == 0
 
 
 def test_speaker_never_runs_during_recording_and_heavy_stages_do_not_overlap(tmp_path):

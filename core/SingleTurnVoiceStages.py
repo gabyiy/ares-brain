@@ -15,8 +15,10 @@ from core.Health import RETRY_SAFE
 from core.Microphone import AudioChunk, MicrophoneResult
 from core.ResourceBudget import CancellationToken
 from core.SingleTurnVoiceSupport import (
+    FinalizedAudioHook,
     PreBrainHook,
     RawTranscriptHook,
+    SingleTurnFinalizedAudioDecision,
     SingleTurnPreBrainDecision,
     SingleTurnRunState,
     VoiceStageConflict,
@@ -52,6 +54,7 @@ class SingleTurnVoiceStageMixin:
         cancellation_token: Optional[CancellationToken],
         pre_brain_hook: Optional[PreBrainHook] = None,
         raw_transcript_hook: Optional[RawTranscriptHook] = None,
+        finalized_audio_hook: Optional[FinalizedAudioHook] = None,
     ) -> SingleTurnVoiceResultV1:
         cancelled = self._cancelled(state, cancellation_token, "before_recording")
         if cancelled:
@@ -77,6 +80,22 @@ class SingleTurnVoiceStageMixin:
                     "audio_below_rms_threshold",
                     "silent_audio",
                     data={"wav": wav, "minimum_rms": request.minimum_rms},
+                )
+
+            finalized_audio_decision = self._apply_finalized_audio_hook(
+                state,
+                finalized_audio_hook,
+                audio_chunk,
+            )
+            if isinstance(finalized_audio_decision, SingleTurnVoiceResultV1):
+                return finalized_audio_decision
+            if (
+                finalized_audio_decision is not None
+                and finalized_audio_decision.handled
+            ):
+                return self._complete_finalized_audio_turn(
+                    state,
+                    finalized_audio_decision,
                 )
 
             cancelled = self._cancelled(state, cancellation_token, "before_transcription")
@@ -163,6 +182,88 @@ class SingleTurnVoiceStageMixin:
             {"brain_fallback_used": state.brain_fallback_used},
         )
         return replace(result, events=[dict(event) for event in state.events])
+
+    def _apply_finalized_audio_hook(
+        self,
+        state: SingleTurnRunState,
+        finalized_audio_hook: Optional[FinalizedAudioHook],
+        audio_chunk: AudioChunk,
+    ) -> Optional[SingleTurnFinalizedAudioDecision | SingleTurnVoiceResultV1]:
+        if finalized_audio_hook is None:
+            return None
+        try:
+            decision = finalized_audio_hook(audio_chunk)
+        except Exception as error:
+            return self._failure(
+                state,
+                "finalized_audio_hook",
+                safe_exception(error),
+                "finalized_audio_hook_failed",
+            )
+        if decision is None:
+            return None
+        if not isinstance(decision, SingleTurnFinalizedAudioDecision):
+            return self._failure(
+                state,
+                "finalized_audio_hook",
+                "invalid_finalized_audio_decision",
+                "finalized_audio_hook_failed",
+            )
+        state.data["finalized_audio_decision"] = {
+            "handled": decision.handled,
+            "continue_to_whisper": decision.continue_to_whisper,
+            "status": decision.status,
+            "canonical_text": decision.canonical_text,
+            "data": dict(decision.data),
+        }
+        return decision
+
+    def _complete_finalized_audio_turn(
+        self,
+        state: SingleTurnRunState,
+        decision: SingleTurnFinalizedAudioDecision,
+    ) -> SingleTurnVoiceResultV1:
+        canonical_text = decision.canonical_text
+        state.raw_transcript = canonical_text
+        state.recognized_text = canonical_text
+        state.cleaned_transcript = canonical_text
+        state.normalized_command = canonical_text
+        state.transcription_status = "bypassed_by_finalized_audio_decision"
+        state.brain_execution_status = decision.status
+        self._stage(3, "Transcribing", "skipped: finalized audio handled")
+        self._emit(
+            state,
+            self.EVENT_TRANSCRIPTION_COMPLETED,
+            "transcription",
+            state.transcription_status,
+            True,
+            {
+                "bypassed": True,
+                "canonical_text_available": bool(canonical_text),
+                "decision_status": decision.status,
+            },
+        )
+        self._emit(
+            state,
+            self.EVENT_BRAIN_EXECUTION_COMPLETED,
+            "brain_execution",
+            decision.status,
+            True,
+            {
+                "bypassed": True,
+                "finalized_audio_handled": True,
+                "response_length": 0,
+            },
+        )
+        return self._complete_intercepted_turn(
+            state,
+            SingleTurnPreBrainDecision(
+                handled=True,
+                status=decision.status,
+                continue_to_output=False,
+                data=dict(decision.data),
+            ),
+        )
 
     def _apply_raw_transcript_hook(
         self,

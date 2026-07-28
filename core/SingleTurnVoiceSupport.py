@@ -46,8 +46,53 @@ class SingleTurnPreBrainDecision:
     data: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SingleTurnFinalizedAudioDecision:
+    """Typed decision at the closed, canonical WAV boundary before Whisper.
+
+    An observer that does not own the turn leaves ``handled`` false and
+    ``continue_to_whisper`` true.  A constrained recognizer that owns the turn
+    does the inverse.  The latter may intentionally omit ``canonical_text`` for
+    a typed non-executable result such as a confirmation request.
+    """
+
+    handled: bool = False
+    continue_to_whisper: bool = True
+    status: str = "not_handled"
+    canonical_text: str = ""
+    data: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.handled, bool):
+            raise ValueError("finalized audio decision handled must be boolean")
+        if not isinstance(self.continue_to_whisper, bool):
+            raise ValueError(
+                "finalized audio decision continue_to_whisper must be boolean"
+            )
+        if self.handled == self.continue_to_whisper:
+            raise ValueError(
+                "finalized audio decision must either handle the turn or continue to Whisper"
+            )
+        status = str(self.status or "").strip()
+        if not status or len(status) > 80:
+            raise ValueError(
+                "finalized audio decision status must be between 1 and 80 characters"
+            )
+        canonical_text = " ".join(str(self.canonical_text or "").split())
+        if len(canonical_text) > 4096:
+            raise ValueError("finalized audio decision canonical_text is too long")
+        if not isinstance(self.data, dict):
+            raise ValueError("finalized audio decision data must be a dictionary")
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "canonical_text", canonical_text)
+        object.__setattr__(self, "data", dict(self.data))
+
+
 PreBrainHook = Callable[[str], Optional[SingleTurnPreBrainDecision]]
 RawTranscriptHook = Callable[[str], Optional[SingleTurnPreBrainDecision]]
+FinalizedAudioHook = Callable[
+    [AudioChunk], Optional[SingleTurnFinalizedAudioDecision]
+]
 
 
 @dataclass

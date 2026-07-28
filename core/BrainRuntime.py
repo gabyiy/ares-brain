@@ -531,6 +531,7 @@ class BrainRuntime:
         text: str,
         *,
         correlation_id: str = "",
+        metadata: Optional[Mapping[str, Any]] = None,
     ) -> BrainRuntimeResultV1:
         return self.handle_request(
             BrainRuntimeRequestV1(
@@ -539,7 +540,11 @@ class BrainRuntime:
                 timeout_seconds=self.config.command_timeout_seconds,
                 correlation_id=correlation_id or new_correlation_id("runtime-input"),
                 session_id=self.session_manager.session_id,
-                metadata={"safe": True, "source": "runtime_input_adapter"},
+                metadata={
+                    **dict(metadata or {}),
+                    "safe": True,
+                    "source": "runtime_input_adapter",
+                },
             )
         )
 
@@ -594,6 +599,11 @@ class BrainRuntime:
             classification = self.classify_command(
                 text,
                 correlation_id=normalized_request.correlation_id,
+            )
+            classification = self._enforce_active_audio_lifecycle_authority(
+                classification,
+                request_metadata=normalized_request.metadata,
+                original_text=text,
             )
             self._publish(
                 EVENT_RUNTIME_INPUT_RECEIVED,
@@ -660,6 +670,199 @@ class BrainRuntime:
                 )
             return self._process_active_command(normalized_request, classification)
 
+    def _enforce_active_audio_lifecycle_authority(
+        self,
+        classification: BrainRuntimeCommandClassificationV1,
+        *,
+        request_metadata: Mapping[str, Any],
+        original_text: str,
+    ) -> BrainRuntimeCommandClassificationV1:
+        """Require constrained-audio authorization for production voice actions.
+
+        Direct text callers retain the deterministic transcript lifecycle API.
+        Once the production ACTIVE audio path marks a turn as checked, however,
+        a fallback open-ended transcript cannot independently authorize standby or
+        shutdown.  This is the safety boundary that keeps ``shutdown aries`` or
+        ``shutdown artist`` ordinary after constrained recognition rejected the
+        same finalized WAV.
+        """
+
+        metadata = dict(request_metadata or {})
+        checked = bool(metadata.get("active_lifecycle_audio_checked", False))
+        if not checked or self.session_manager.state != BRAIN_ACTIVE:
+            return classification
+        if classification.command_category not in {
+            RUNTIME_COMMAND_STANDBY,
+            RUNTIME_COMMAND_SHUTDOWN,
+        }:
+            return classification
+        authorized = bool(
+            metadata.get("active_lifecycle_audio_authorized", False)
+        )
+        authorized_action = str(
+            metadata.get("active_lifecycle_audio_authorized_action") or ""
+        ).strip().casefold()
+        if authorized and authorized_action == classification.command_category:
+            return replace(
+                classification,
+                metadata={
+                    **dict(classification.metadata or {}),
+                    "active_lifecycle_audio_checked": True,
+                    "active_lifecycle_audio_authorized": True,
+                    "active_lifecycle_audio_authorized_action": authorized_action,
+                    "active_lifecycle_audio": _active_lifecycle_audio_data(metadata),
+                },
+            )
+
+        safe_text = normalize_spoken_phrase(original_text)
+        classification_metadata = dict(classification.metadata or {})
+        classification_metadata.update(
+            {
+                "lifecycle_action": LIFECYCLE_ACTION_NONE,
+                "routing_reason": "active_audio_lifecycle_not_authorized",
+                "lifecycle_canonicalized_transcript": safe_text,
+                "lifecycle_routed_transcript": safe_text,
+                "lifecycle_matched_phrase": "",
+                "lifecycle_rejection_reason": (
+                    "constrained_audio_lifecycle_not_authorized"
+                ),
+                "core_service_bypassed": False,
+                "active_lifecycle_audio_checked": True,
+                "active_lifecycle_audio_authorized": False,
+                "active_lifecycle_audio_authorized_action": "",
+                "active_lifecycle_audio": _active_lifecycle_audio_data(metadata),
+            }
+        )
+        return replace(
+            classification,
+            command_category=RUNTIME_COMMAND_ORDINARY,
+            normalized_input=safe_text,
+            matched_phrase="",
+            metadata=classification_metadata,
+        )
+
+    def _handle_active_lifecycle_audio_control(
+        self,
+        control: str,
+        metadata: Mapping[str, Any],
+    ) -> BrainRuntimeResultV1:
+        """Handle a typed recognizer control turn without CoreService routing."""
+
+        with self._command_lock:
+            correlation = new_correlation_id("runtime-lifecycle-audio-control")
+            state = self.session_manager.state
+            if state != BRAIN_ACTIVE:
+                cancel = getattr(
+                    self.input_adapter,
+                    "cancel_pending_lifecycle_confirmation",
+                    None,
+                )
+                if callable(cancel):
+                    cancel("runtime_not_active")
+                return self._result(
+                    False,
+                    "lifecycle_audio_control_rejected",
+                    correlation_id=correlation,
+                    error_code="runtime_not_active",
+                    error_message=(
+                        f"active lifecycle confirmation is not allowed while state is {state}"
+                    ),
+                    data={"core_service_bypassed": True},
+                )
+
+            if bool(metadata.get("active_lifecycle_owner_activity", True)):
+                activity = self.session_manager.record_activity(
+                    correlation_id=correlation,
+                    reason="owner_lifecycle_confirmation_activity",
+                )
+                if not activity.success:
+                    return self._lifecycle_failure(
+                        activity,
+                        correlation,
+                        "activity_record_failed",
+                    )
+
+            if control == "confirmation_required":
+                proposed = str(
+                    metadata.get("active_lifecycle_proposed_action")
+                    or metadata.get("active_lifecycle_proposed_classification")
+                    or ""
+                ).strip().casefold()
+                prompt = str(
+                    metadata.get("active_lifecycle_confirmation_prompt") or ""
+                ).strip()
+                if proposed not in {
+                    RUNTIME_COMMAND_STANDBY,
+                    RUNTIME_COMMAND_SHUTDOWN,
+                }:
+                    return self._result(
+                        False,
+                        "lifecycle_confirmation_rejected",
+                        correlation_id=correlation,
+                        error_code="invalid_lifecycle_confirmation_action",
+                        error_message="confirmation proposal must be standby or shutdown",
+                        data={"core_service_bypassed": True},
+                    )
+                if not prompt:
+                    prompt = (
+                        "Did you say goodbye Ares?"
+                        if proposed == RUNTIME_COMMAND_STANDBY
+                        else "Did you say shutdown Ares?"
+                    )
+                output = self._write_output(
+                    "lifecycle_confirmation",
+                    prompt,
+                    correlation,
+                )
+                if not output.success:
+                    cancel = getattr(
+                        self.input_adapter,
+                        "cancel_pending_lifecycle_confirmation",
+                        None,
+                    )
+                    if callable(cancel):
+                        cancel("confirmation_prompt_failed")
+                    return self._recover_output_failure(
+                        output,
+                        correlation,
+                        "lifecycle_confirmation_output_failed",
+                    )
+                return self._result(
+                    True,
+                    "lifecycle_confirmation_requested",
+                    correlation_id=correlation,
+                    response_text=prompt,
+                    data={
+                        "core_service_bypassed": True,
+                        "lifecycle_action": "confirmation_required",
+                        "proposed_lifecycle_action": proposed,
+                        "active_lifecycle_audio": _active_lifecycle_audio_data(
+                            metadata
+                        ),
+                    },
+                )
+
+            if control == "confirmation_cancelled":
+                return self._result(
+                    True,
+                    "lifecycle_confirmation_cancelled",
+                    correlation_id=correlation,
+                    data={
+                        "core_service_bypassed": True,
+                        "lifecycle_action": "none",
+                        "active_lifecycle_audio": _active_lifecycle_audio_data(metadata),
+                    },
+                )
+
+            return self._result(
+                False,
+                "lifecycle_audio_control_rejected",
+                correlation_id=correlation,
+                error_code="unsupported_lifecycle_audio_control",
+                error_message=f"unsupported lifecycle audio control: {control}",
+                data={"core_service_bypassed": True},
+            )
+
     def poll_once(self) -> BrainRuntimeResultV1:
         if not self._poll_lock.acquire(blocking=False):
             return self._result(
@@ -703,7 +906,19 @@ class BrainRuntime:
                         error_message="runtime stopped while waiting for input",
                     )
                 before = self.session_manager.snapshot()
-                handled = self.handle_text(input_result.text)
+                control = str(
+                    input_result.metadata.get("active_lifecycle_control") or ""
+                ).strip()
+                if control:
+                    handled = self._handle_active_lifecycle_audio_control(
+                        control,
+                        input_result.metadata,
+                    )
+                else:
+                    handled = self.handle_text(
+                        input_result.text,
+                        metadata=input_result.metadata,
+                    )
                 self._record_local_input_diagnostics(
                     handled,
                     lifecycle_state_before=before.current_state,
@@ -1965,6 +2180,40 @@ def _lifecycle_command_data(
             metadata.get("lifecycle_rejection_reason") or ""
         ),
     }
+
+
+def _active_lifecycle_audio_data(metadata: Mapping[str, Any]) -> Dict[str, Any]:
+    """Reconstruct bounded recognizer diagnostics from internal input metadata."""
+
+    values = dict(metadata or {})
+    nested = values.get("active_lifecycle_audio")
+    result: Dict[str, Any] = dict(nested) if isinstance(nested, Mapping) else {}
+    field_map = {
+        "active_lifecycle_recognized_text": "recognized_text",
+        "active_lifecycle_recognized_tokens": "recognized_tokens",
+        "active_lifecycle_confidence": "confidence",
+        "active_lifecycle_confidence_tier": "confidence_tier",
+        "active_lifecycle_recognition_backend": "recognition_backend",
+        "active_lifecycle_classification": "classification",
+        "active_lifecycle_canonical_phrase": "canonical_phrase",
+        "active_lifecycle_rejection_reason": "rejection_reason",
+        "active_lifecycle_proposed_action": "proposed_classification",
+        "active_lifecycle_confirmation_disposition": "confirmation_disposition",
+    }
+    for source, destination in field_map.items():
+        value = values.get(source)
+        if value is not None and value != "":
+            result[destination] = value
+    result["checked"] = bool(
+        values.get("active_lifecycle_audio_checked", False)
+    )
+    result["authorized"] = bool(
+        values.get("active_lifecycle_audio_authorized", False)
+    )
+    result["authorized_action"] = str(
+        values.get("active_lifecycle_audio_authorized_action") or ""
+    )
+    return result
 
 
 def _canonical_runtime_terminal_reason(result: BrainRuntimeResultV1) -> str:

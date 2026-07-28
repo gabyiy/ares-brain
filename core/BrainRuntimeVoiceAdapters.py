@@ -1,12 +1,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from math import isfinite
 from pathlib import Path
 from threading import RLock
 import time
 from typing import Any, Callable, Optional
 from uuid import uuid4
 
+from core.ActiveLifecycleAudioRecognizer import (
+    ACTIVE_LIFECYCLE_CLASSIFICATION_ORDINARY,
+    ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
+    ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
+    ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN,
+    ACTIVE_LIFECYCLE_CONFIRMATION_CANCELLED,
+    ACTIVE_LIFECYCLE_CONFIRMATION_CONFIRMED,
+    CANONICAL_SHUTDOWN_PHRASE,
+    CANONICAL_STANDBY_PHRASE,
+    DEFAULT_CANCELLATION_MINIMUM_CONFIDENCE,
+    DEFAULT_CONFIRMATION_MINIMUM_CONFIDENCE,
+    DEFAULT_SHUTDOWN_HIGH_CONFIDENCE,
+    DEFAULT_SHUTDOWN_MEDIUM_CONFIDENCE,
+    DEFAULT_STANDBY_HIGH_CONFIDENCE,
+    DEFAULT_STANDBY_MEDIUM_CONFIDENCE,
+    ActiveLifecycleAudioRecognizer,
+)
 from core.BrainRuntimeAdapters import (
     RuntimeInputResult,
     RuntimeOutputMessage,
@@ -21,8 +39,13 @@ from core.LifecycleControl import (
     LIFECYCLE_ACTION_NONE,
     normalize_active_lifecycle_command,
 )
+from core.Microphone import AudioChunk
 from core.ResourceBudget import CancellationToken
-from core.SingleTurnVoiceSupport import SingleTurnPreBrainDecision
+from core.SingleTurnVoiceSupport import (
+    FinalizedAudioHook,
+    SingleTurnFinalizedAudioDecision,
+    SingleTurnPreBrainDecision,
+)
 
 
 _INPUT_TIMEOUT_STATUSES = {
@@ -38,6 +61,577 @@ _INPUT_TIMEOUT_STATUSES = {
 ACTIVE_COMMAND_CAPTURE_PROFILE = "active_command_v1"
 ACTIVE_COMMAND_MINIMUM_PRE_ROLL_SECONDS = 0.5
 ACTIVE_COMMAND_TERMINAL_SILENCE_SECONDS = 0.9
+DEFAULT_ACTIVE_LIFECYCLE_CONFIRMATION_TIMEOUT_SECONDS = 10.0
+
+
+@dataclass(frozen=True)
+class ActiveLifecyclePendingConfirmation:
+    classification: str
+    canonical_phrase: str
+    session_id: str
+    expires_at: float
+
+
+class ActiveLifecycleAudioTurnController:
+    """Stateful policy boundary around finalized-audio lifecycle evidence.
+
+    It never captures audio, executes a transition, calls CoreService, or owns
+    output.  It only decides whether the already-finalized active-turn WAV may
+    bypass Whisper, requires a bounded next-turn confirmation, or must continue
+    through the ordinary Whisper route.
+    """
+
+    def __init__(
+        self,
+        *,
+        recognizer: ActiveLifecycleAudioRecognizer,
+        session_id_provider: Callable[[], str],
+        lifecycle_state_provider: Callable[[], str],
+        clock: Callable[[], float] = time.monotonic,
+        confirmation_timeout_seconds: float = (
+            DEFAULT_ACTIVE_LIFECYCLE_CONFIRMATION_TIMEOUT_SECONDS
+        ),
+    ) -> None:
+        if not callable(getattr(recognizer, "recognize_wav", None)):
+            raise ValueError("recognizer must support recognize_wav")
+        if not callable(getattr(recognizer, "recognize_confirmation_wav", None)):
+            raise ValueError("recognizer must support recognize_confirmation_wav")
+        if not callable(session_id_provider):
+            raise ValueError("session_id_provider must be callable")
+        if not callable(lifecycle_state_provider):
+            raise ValueError("lifecycle_state_provider must be callable")
+        if not callable(clock):
+            raise ValueError("clock must be callable")
+        if isinstance(confirmation_timeout_seconds, bool) or not isinstance(
+            confirmation_timeout_seconds, (int, float)
+        ):
+            raise ValueError("confirmation_timeout_seconds must be numeric")
+        timeout = float(confirmation_timeout_seconds)
+        if not 1.0 <= timeout <= 60.0:
+            raise ValueError(
+                "confirmation_timeout_seconds must be between 1 and 60"
+            )
+        self.recognizer = recognizer
+        self.session_id_provider = session_id_provider
+        self.lifecycle_state_provider = lifecycle_state_provider
+        self.clock = clock
+        self.confirmation_timeout_seconds = timeout
+        self._lock = RLock()
+        self._pending: Optional[ActiveLifecyclePendingConfirmation] = None
+        self._closed = False
+
+    def __call__(self, audio_chunk: AudioChunk) -> SingleTurnFinalizedAudioDecision:
+        if not isinstance(audio_chunk, AudioChunk):
+            raise TypeError("finalized active audio must be an AudioChunk")
+        audio_path = str(
+            dict(audio_chunk.metadata or {}).get("final_whisper_input_path")
+            or dict(audio_chunk.metadata or {}).get("wav_path")
+            or ""
+        )
+        state = str(self.lifecycle_state_provider() or "").strip().upper()
+        session_id = str(self.session_id_provider() or "").strip()
+        now = float(self.clock())
+        with self._lock:
+            if self._closed:
+                return self._fallback_decision(
+                    rejection_reason="active_lifecycle_controller_closed",
+                )
+            pending = self._pending
+
+        if state != "ACTIVE" or not session_id:
+            self.reset("active_state_or_session_unavailable")
+            return self._fallback_decision(
+                rejection_reason="active_state_and_session_required",
+                pending_clear_reason=(
+                    "state_changed" if state != "ACTIVE" else "session_missing"
+                ),
+            )
+
+        if pending is not None:
+            if pending.session_id != session_id:
+                self.reset("pending_session_changed")
+                return self._fallback_decision(
+                    rejection_reason="pending_confirmation_session_changed",
+                    pending_clear_reason="session_changed",
+                )
+            if now >= pending.expires_at:
+                self.reset("pending_confirmation_expired")
+                return self._fallback_decision(
+                    rejection_reason="pending_confirmation_expired",
+                    pending_clear_reason="expired",
+                )
+            return self._recognize_confirmation(audio_path, pending)
+
+        try:
+            recognition = self.recognizer.recognize_wav(audio_path)
+        except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
+            return self._fallback_decision(
+                rejection_reason=(
+                    f"active_lifecycle_recognizer_error:{error.__class__.__name__}:"
+                    f"{str(error)[:160]}"
+                ),
+            )
+        payload = _active_lifecycle_recognition_payload(recognition)
+        classification = str(getattr(recognition, "classification", "") or "")
+        canonical_phrase = str(
+            getattr(recognition, "canonical_phrase", "") or ""
+        )
+        confirmation_required = bool(
+            getattr(recognition, "confirmation_required", False)
+        )
+        proposed = str(
+            getattr(recognition, "proposed_classification", "") or ""
+        )
+        confidence = _finite_lifecycle_confidence(
+            getattr(recognition, "confidence", None)
+        )
+        confidence_available = bool(
+            getattr(recognition, "confidence_available", False)
+        )
+        confidence_tier = str(
+            getattr(recognition, "confidence_tier", "") or ""
+        ).strip().lower()
+        selected_action = str(
+            getattr(recognition, "selected_lifecycle_action", "") or ""
+        )
+        expected_canonical = _canonical_lifecycle_phrase(classification)
+        high_threshold = _lifecycle_action_confidence_threshold(
+            self.recognizer,
+            classification,
+            tier="high",
+        )
+        high_confidence_authorized = (
+            bool(expected_canonical)
+            and canonical_phrase == expected_canonical
+            and selected_action == classification
+            and not confirmation_required
+            and confidence_available
+            and confidence is not None
+            and confidence >= high_threshold
+            and confidence_tier == "high"
+        )
+        if (
+            classification
+            in {
+                ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
+                ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
+            }
+            and high_confidence_authorized
+        ):
+            payload.update(
+                {
+                    "audio_checked": True,
+                    "lifecycle_authorized": True,
+                    "selected_lifecycle_action": classification,
+                    "whisper_fallback_required": False,
+                }
+            )
+            return _active_lifecycle_decision(
+                handled=True,
+                status="active_lifecycle_audio_authorized",
+                canonical_text=canonical_phrase,
+                payload=payload,
+            )
+        proposed_canonical = _canonical_lifecycle_phrase(proposed)
+        medium_threshold = _lifecycle_action_confidence_threshold(
+            self.recognizer,
+            proposed,
+            tier="medium",
+        )
+        medium_confidence_confirmation = (
+            confirmation_required
+            and classification == ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN
+            and proposed in {
+                ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
+                ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
+            }
+            and bool(proposed_canonical)
+            and canonical_phrase == proposed_canonical
+            and confidence_available
+            and confidence is not None
+            and confidence >= medium_threshold
+            and confidence_tier == "medium"
+        )
+        if medium_confidence_confirmation:
+            pending = ActiveLifecyclePendingConfirmation(
+                classification=proposed,
+                canonical_phrase=canonical_phrase,
+                session_id=session_id,
+                expires_at=now + self.confirmation_timeout_seconds,
+            )
+            with self._lock:
+                self._pending = pending
+            payload.update(
+                {
+                    "audio_checked": True,
+                    "lifecycle_authorized": False,
+                    "selected_lifecycle_action": "none",
+                    "whisper_fallback_required": False,
+                    "pending_confirmation": True,
+                    "pending_expires_at": pending.expires_at,
+                }
+            )
+            return _active_lifecycle_decision(
+                handled=True,
+                status="active_lifecycle_audio_confirmation_required",
+                canonical_text="",
+                payload=payload,
+            )
+        if classification in {
+            ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
+            ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
+        }:
+            payload["rejection_reason"] = (
+                "controller_high_confidence_authorization_invariant_failed"
+            )
+        elif confirmation_required:
+            payload["rejection_reason"] = (
+                "controller_medium_confidence_confirmation_invariant_failed"
+            )
+        payload.update(
+            {
+                "audio_checked": True,
+                "lifecycle_authorized": False,
+                "selected_lifecycle_action": "none",
+                "whisper_fallback_required": True,
+            }
+        )
+        return _active_lifecycle_decision(
+            handled=False,
+            status="active_lifecycle_audio_whisper_fallback",
+            canonical_text="",
+            payload=payload,
+        )
+
+    def pending_confirmation(self) -> Optional[ActiveLifecyclePendingConfirmation]:
+        with self._lock:
+            return self._pending
+
+    def reset(self, reason: str = "reset") -> None:
+        del reason
+        with self._lock:
+            self._pending = None
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._pending = None
+        close = getattr(self.recognizer, "close", None)
+        if not callable(close):
+            close = getattr(getattr(self.recognizer, "backend", None), "close", None)
+        if callable(close):
+            try:
+                close()
+            except (OSError, RuntimeError, TypeError, ValueError):
+                pass
+
+    def _recognize_confirmation(
+        self,
+        audio_path: str,
+        pending: ActiveLifecyclePendingConfirmation,
+    ) -> SingleTurnFinalizedAudioDecision:
+        try:
+            confirmation = self.recognizer.recognize_confirmation_wav(
+                audio_path,
+                expected_classification=pending.classification,
+            )
+        except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
+            self.reset("confirmation_recognizer_error")
+            return self._fallback_decision(
+                rejection_reason=(
+                    f"active_lifecycle_confirmation_error:{error.__class__.__name__}:"
+                    f"{str(error)[:160]}"
+                ),
+                pending_clear_reason="confirmation_error",
+            )
+        self.reset("confirmation_turn_consumed")
+        payload = _active_lifecycle_confirmation_payload(confirmation)
+        disposition = str(getattr(confirmation, "disposition", "") or "")
+        confidence = _finite_lifecycle_confidence(
+            getattr(confirmation, "confidence", None)
+        )
+        confidence_available = bool(
+            getattr(confirmation, "confidence_available", False)
+        )
+        expected_classification = str(
+            getattr(confirmation, "expected_classification", "") or ""
+        )
+        pending_canonical_is_valid = (
+            pending.canonical_phrase
+            == _canonical_lifecycle_phrase(pending.classification)
+        )
+        confirmation_threshold = _recognizer_confidence_threshold(
+            self.recognizer,
+            "confirmation_minimum_confidence",
+            DEFAULT_CONFIRMATION_MINIMUM_CONFIDENCE,
+            prevent_weakening=True,
+        )
+        cancellation_threshold = _recognizer_confidence_threshold(
+            self.recognizer,
+            "cancellation_minimum_confidence",
+            DEFAULT_CANCELLATION_MINIMUM_CONFIDENCE,
+        )
+        confirmation_evidence_is_valid = (
+            confidence_available
+            and confidence is not None
+            and expected_classification == pending.classification
+            and pending_canonical_is_valid
+        )
+        if (
+            disposition == ACTIVE_LIFECYCLE_CONFIRMATION_CONFIRMED
+            and confirmation_evidence_is_valid
+            and confidence >= confirmation_threshold
+        ):
+            payload.update(
+                {
+                    "audio_checked": True,
+                    "classification": pending.classification,
+                    "canonical_phrase": pending.canonical_phrase,
+                    "lifecycle_authorized": True,
+                    "selected_lifecycle_action": pending.classification,
+                    "confirmation_required": False,
+                    "confirmation_disposition": disposition,
+                    "whisper_fallback_required": False,
+                }
+            )
+            return _active_lifecycle_decision(
+                handled=True,
+                status="active_lifecycle_audio_confirmation_confirmed",
+                canonical_text=pending.canonical_phrase,
+                payload=payload,
+            )
+        if (
+            disposition == ACTIVE_LIFECYCLE_CONFIRMATION_CANCELLED
+            and confirmation_evidence_is_valid
+            and confidence >= cancellation_threshold
+        ):
+            payload.update(
+                {
+                    "audio_checked": True,
+                    "classification": "uncertain",
+                    "canonical_phrase": pending.canonical_phrase,
+                    "lifecycle_authorized": False,
+                    "selected_lifecycle_action": "none",
+                    "confirmation_required": False,
+                    "confirmation_disposition": disposition,
+                    "whisper_fallback_required": False,
+                    "pending_clear_reason": "owner_cancelled",
+                }
+            )
+            return _active_lifecycle_decision(
+                handled=True,
+                status="active_lifecycle_audio_confirmation_cancelled",
+                canonical_text="",
+                payload=payload,
+            )
+        if disposition in {
+            ACTIVE_LIFECYCLE_CONFIRMATION_CONFIRMED,
+            ACTIVE_LIFECYCLE_CONFIRMATION_CANCELLED,
+        }:
+            payload["rejection_reason"] = (
+                "controller_confirmation_authorization_invariant_failed"
+            )
+        payload.update(
+            {
+                "audio_checked": True,
+                "classification": "ordinary",
+                "canonical_phrase": "",
+                "lifecycle_authorized": False,
+                "selected_lifecycle_action": "none",
+                "confirmation_required": False,
+                "confirmation_disposition": disposition or "unmatched",
+                "whisper_fallback_required": True,
+                "pending_clear_reason": "confirmation_unmatched",
+            }
+        )
+        return _active_lifecycle_decision(
+            handled=False,
+            status="active_lifecycle_audio_confirmation_unmatched",
+            canonical_text="",
+            payload=payload,
+        )
+
+    def _fallback_decision(
+        self,
+        *,
+        rejection_reason: str,
+        pending_clear_reason: str = "",
+    ) -> SingleTurnFinalizedAudioDecision:
+        payload = {
+            "audio_checked": True,
+            "classification": ACTIVE_LIFECYCLE_CLASSIFICATION_ORDINARY,
+            "canonical_phrase": "",
+            "recognized_text": "",
+            "recognized_tokens": [],
+            "confidence": None,
+            "confidence_available": False,
+            "recognition_backend": "active_lifecycle_controller",
+            "rejection_reason": str(rejection_reason or "")[:240],
+            "confidence_tier": "missing",
+            "confirmation_required": False,
+            "proposed_classification": "",
+            "lifecycle_authorized": False,
+            "selected_lifecycle_action": "none",
+            "whisper_fallback_required": True,
+            "pending_clear_reason": pending_clear_reason,
+        }
+        return _active_lifecycle_decision(
+            handled=False,
+            status="active_lifecycle_audio_whisper_fallback",
+            canonical_text="",
+            payload=payload,
+        )
+
+
+def _active_lifecycle_decision(
+    *,
+    handled: bool,
+    status: str,
+    canonical_text: str,
+    payload: dict[str, Any],
+) -> SingleTurnFinalizedAudioDecision:
+    return SingleTurnFinalizedAudioDecision(
+        handled=handled,
+        continue_to_whisper=not handled,
+        status=status,
+        canonical_text=canonical_text,
+        data={"active_lifecycle_audio": dict(payload)},
+    )
+
+
+def _canonical_lifecycle_phrase(classification: str) -> str:
+    return {
+        ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY: CANONICAL_STANDBY_PHRASE,
+        ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN: CANONICAL_SHUTDOWN_PHRASE,
+    }.get(str(classification or ""), "")
+
+
+def _finite_lifecycle_confidence(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    confidence = float(value)
+    return confidence if isfinite(confidence) else None
+
+
+def _recognizer_confidence_threshold(
+    recognizer: Any,
+    attribute: str,
+    default: float,
+    *,
+    prevent_weakening: bool = False,
+) -> float:
+    threshold = _finite_lifecycle_confidence(getattr(recognizer, attribute, None))
+    if threshold is None or not 0.0 <= threshold <= 1.0:
+        return float(default)
+    return max(float(default), threshold) if prevent_weakening else threshold
+
+
+def _lifecycle_action_confidence_threshold(
+    recognizer: Any,
+    classification: str,
+    *,
+    tier: str,
+) -> float:
+    policy = {
+        (ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY, "high"): (
+            "standby_high_confidence",
+            DEFAULT_STANDBY_HIGH_CONFIDENCE,
+        ),
+        (ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY, "medium"): (
+            "standby_medium_confidence",
+            DEFAULT_STANDBY_MEDIUM_CONFIDENCE,
+        ),
+        (ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN, "high"): (
+            "shutdown_high_confidence",
+            DEFAULT_SHUTDOWN_HIGH_CONFIDENCE,
+        ),
+        (ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN, "medium"): (
+            "shutdown_medium_confidence",
+            DEFAULT_SHUTDOWN_MEDIUM_CONFIDENCE,
+        ),
+    }
+    attribute, default = policy.get(
+        (str(classification or ""), str(tier or "")),
+        ("", 1.0),
+    )
+    if not attribute:
+        return 1.0
+    return _recognizer_confidence_threshold(
+        recognizer,
+        attribute,
+        default,
+        prevent_weakening=True,
+    )
+
+
+def _active_lifecycle_recognition_payload(recognition: Any) -> dict[str, Any]:
+    return {
+        "classification": str(getattr(recognition, "classification", "") or ""),
+        "canonical_phrase": str(
+            getattr(recognition, "canonical_phrase", "") or ""
+        ),
+        "recognized_text": str(getattr(recognition, "recognized_text", "") or ""),
+        "recognized_tokens": [
+            str(token or "")
+            for token in tuple(getattr(recognition, "recognized_tokens", ()) or ())
+        ],
+        "confidence": getattr(recognition, "confidence", None),
+        "confidence_available": bool(
+            getattr(recognition, "confidence_available", False)
+        ),
+        "recognition_backend": str(
+            getattr(recognition, "recognition_backend", "") or ""
+        ),
+        "rejection_reason": str(
+            getattr(recognition, "rejection_reason", "") or ""
+        ),
+        "confidence_tier": str(
+            getattr(recognition, "confidence_tier", "") or ""
+        ),
+        "confirmation_required": bool(
+            getattr(recognition, "confirmation_required", False)
+        ),
+        "proposed_classification": str(
+            getattr(recognition, "proposed_classification", "") or ""
+        ),
+    }
+
+
+def _active_lifecycle_confirmation_payload(confirmation: Any) -> dict[str, Any]:
+    return {
+        "classification": "uncertain",
+        "canonical_phrase": "",
+        "recognized_text": str(
+            getattr(confirmation, "recognized_text", "") or ""
+        ),
+        "recognized_tokens": [
+            str(token or "")
+            for token in tuple(getattr(confirmation, "recognized_tokens", ()) or ())
+        ],
+        "confidence": getattr(confirmation, "confidence", None),
+        "confidence_available": bool(
+            getattr(confirmation, "confidence_available", False)
+        ),
+        "recognition_backend": str(
+            getattr(confirmation, "recognition_backend", "") or ""
+        ),
+        "rejection_reason": str(
+            getattr(confirmation, "rejection_reason", "") or ""
+        ),
+        "confidence_tier": "confirmation",
+        "confirmation_required": False,
+        "proposed_classification": str(
+            getattr(confirmation, "expected_classification", "") or ""
+        ),
+        "expected_classification": str(
+            getattr(confirmation, "expected_classification", "") or ""
+        ),
+        "confirmation_disposition": str(
+            getattr(confirmation, "disposition", "") or ""
+        ),
+    }
 
 
 def active_command_capture_request(
@@ -242,6 +836,10 @@ class SingleTurnPipelineRuntimeInputAdapter:
         session_id_provider: Callable[[], str],
         lifecycle_state_provider: Optional[Callable[[], str]] = None,
         voice_io_gate: Optional[VoiceRuntimeGate] = None,
+        active_lifecycle_audio_controller: Optional[
+            ActiveLifecycleAudioTurnController
+        ] = None,
+        finalized_audio_hook: Optional[FinalizedAudioHook] = None,
         diagnostic_callback: Optional[
             Callable[[ActiveCommandLocalDiagnostics], None]
         ] = None,
@@ -253,11 +851,25 @@ class SingleTurnPipelineRuntimeInputAdapter:
             raise ValueError("session_id_provider must be callable")
         if lifecycle_state_provider is not None and not callable(lifecycle_state_provider):
             raise ValueError("lifecycle_state_provider must be callable")
+        if (
+            active_lifecycle_audio_controller is not None
+            and finalized_audio_hook is not None
+        ):
+            raise ValueError(
+                "provide either active_lifecycle_audio_controller or finalized_audio_hook"
+            )
+        selected_audio_hook = (
+            active_lifecycle_audio_controller or finalized_audio_hook
+        )
+        if selected_audio_hook is not None and not callable(selected_audio_hook):
+            raise ValueError("finalized_audio_hook must be callable")
         self.pipeline = pipeline
         self.base_request = base_request
         self.session_id_provider = session_id_provider
         self.lifecycle_state_provider = lifecycle_state_provider or (lambda: "")
         self.voice_io_gate = voice_io_gate or VoiceRuntimeGate(settle_delay_seconds=0.0)
+        self.active_lifecycle_audio_controller = active_lifecycle_audio_controller
+        self.finalized_audio_hook = selected_audio_hook
         self.diagnostic_callback = diagnostic_callback
         self.status_callback = status_callback
         self._lock = RLock()
@@ -404,12 +1016,14 @@ class SingleTurnPipelineRuntimeInputAdapter:
         try:
             self.voice_io_gate.begin_capture("active_command")
             capture_gate_owned = True
-            result = self.pipeline.run_once(
-                request,
-                cancellation_token=token,
-                pre_brain_hook=transport_intercept,
-                raw_transcript_hook=lifecycle_intercept,
-            )
+            run_arguments: dict[str, Any] = {
+                "cancellation_token": token,
+                "pre_brain_hook": transport_intercept,
+                "raw_transcript_hook": lifecycle_intercept,
+            }
+            if self.finalized_audio_hook is not None:
+                run_arguments["finalized_audio_hook"] = self.finalized_audio_hook
+            result = self.pipeline.run_once(request, **run_arguments)
             self.last_result = result
         except KeyboardInterrupt:
             token.cancel("keyboard_interrupt")
@@ -449,6 +1063,8 @@ class SingleTurnPipelineRuntimeInputAdapter:
             with self._lock:
                 self._current_token = None
         status = str(getattr(result, "status", "") or "")
+        lifecycle_audio_metadata = _active_lifecycle_runtime_metadata(result)
+        finalized_audio_decision = _finalized_audio_decision_contract(result)
         capture_diagnostics = _active_command_diagnostics(result)
         self.last_diagnostics = replace(
             capture_diagnostics,
@@ -465,6 +1081,33 @@ class SingleTurnPipelineRuntimeInputAdapter:
             self._emit_local_diagnostics()
             return RuntimeInputResult.cancelled()
         text = captured.get("text") or str(getattr(result, "recognized_text", "") or "").strip()
+        if finalized_audio_decision.get("handled") and bool(
+            getattr(result, "success", False)
+        ):
+            emit_once("Speech detected")
+            emit_once("Command captured")
+            if text:
+                emit_once("Processing command")
+                self._routing_started_at = utc_contract_timestamp()
+                self.last_diagnostics = replace(
+                    self.last_diagnostics,
+                    routing_started_at=self._routing_started_at,
+                )
+            else:
+                self._emit_local_diagnostics()
+            return RuntimeInputResult(
+                status="input",
+                text=text,
+                metadata={
+                    "safe": True,
+                    "source": "single_turn_voice_pipeline",
+                    "recognized_length": len(text),
+                    "capture_stop_reason": _capture_stop_reason(result),
+                    "runtime_terminal": False,
+                    "contains_audio": False,
+                    **lifecycle_audio_metadata,
+                },
+            )
         if text and bool(getattr(result, "success", False)):
             emit_once("Speech detected")
             emit_once("Command captured")
@@ -493,6 +1136,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
                         self.last_diagnostics.whisper_processing_duration_seconds
                     ),
                     "contains_audio": False,
+                    **lifecycle_audio_metadata,
                 },
             )
         if not text and bool(getattr(result, "success", False)):
@@ -506,6 +1150,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
                     "capture_status": status or "empty_transcript",
                     "runtime_terminal": False,
                     "contains_audio": False,
+                    **lifecycle_audio_metadata,
                 },
             )
         if status in _INPUT_TIMEOUT_STATUSES or str(getattr(result, "error_stage", "")) in {
@@ -566,12 +1211,19 @@ class SingleTurnPipelineRuntimeInputAdapter:
                     ),
                     "runtime_terminal": False,
                     "contains_audio": False,
+                    **lifecycle_audio_metadata,
                 },
             )
         self._emit_local_diagnostics()
-        return RuntimeInputResult.failed(
-            "active_voice_pipeline_failed",
-            str(getattr(result, "error_reason", "") or status or "voice input failed")[:160],
+        return RuntimeInputResult(
+            status="failed",
+            error_code="active_voice_pipeline_failed",
+            error_message=str(
+                getattr(result, "error_reason", "")
+                or status
+                or "voice input failed"
+            )[:160],
+            metadata=lifecycle_audio_metadata,
         )
 
     def _emit_status(self, message: str) -> None:
@@ -713,6 +1365,18 @@ class SingleTurnPipelineRuntimeInputAdapter:
             except (OSError, RuntimeError, TypeError, ValueError):
                 pass
         self.voice_io_gate.end_capture()
+        if self.active_lifecycle_audio_controller is not None:
+            self.active_lifecycle_audio_controller.reset(
+                "active_transport_resources_released"
+            )
+
+    def cancel_pending_lifecycle_confirmation(
+        self,
+        reason: str = "runtime_cancelled_confirmation",
+    ) -> None:
+        controller = self.active_lifecycle_audio_controller
+        if controller is not None:
+            controller.reset(reason)
 
     def close(self) -> None:
         with self._lock:
@@ -720,6 +1384,8 @@ class SingleTurnPipelineRuntimeInputAdapter:
                 return
             self._closed = True
         self.release_active_resources()
+        if self.active_lifecycle_audio_controller is not None:
+            self.active_lifecycle_audio_controller.close()
 
 
 class SingleTurnPipelineRuntimeOutputAdapter:
@@ -836,6 +1502,91 @@ def _capture_stop_reason(result: Any) -> str:
         or getattr(result, "recording_status", "")
         or ""
     )[:80]
+
+
+def _finalized_audio_decision_contract(result: Any) -> dict[str, Any]:
+    data = dict(getattr(result, "data", {}) or {})
+    value = data.get("finalized_audio_decision")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _active_lifecycle_runtime_metadata(result: Any) -> dict[str, Any]:
+    """Flatten private recognition evidence through RuntimeInputResult's safe boundary."""
+
+    decision = _finalized_audio_decision_contract(result)
+    decision_data = decision.get("data")
+    if not isinstance(decision_data, dict):
+        return {}
+    payload = decision_data.get("active_lifecycle_audio")
+    if not isinstance(payload, dict):
+        return {}
+    status = str(decision.get("status") or "")
+    authorized = bool(payload.get("lifecycle_authorized", False))
+    action = str(
+        payload.get("selected_lifecycle_action") if authorized else ""
+    )
+    classification = str(payload.get("classification") or "")
+    proposed = str(payload.get("proposed_classification") or "")
+    control = ""
+    prompt = ""
+    if status == "active_lifecycle_audio_confirmation_required":
+        control = "confirmation_required"
+        proposed_action = proposed or classification
+        prompt = (
+            "Did you say shutdown Ares?"
+            if proposed_action == ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN
+            else "Did you say goodbye Ares?"
+        )
+    elif status == "active_lifecycle_audio_confirmation_cancelled":
+        control = "confirmation_cancelled"
+    recognized_text = str(payload.get("recognized_text") or "")[:160]
+    token_values = payload.get("recognized_tokens") or []
+    if not isinstance(token_values, (list, tuple)):
+        token_values = []
+    recognized_tokens = " ".join(
+        str(token or "").strip() for token in token_values if str(token or "").strip()
+    )[:160]
+    metadata: dict[str, Any] = {
+        "active_lifecycle_audio_checked": bool(payload.get("audio_checked", True)),
+        "active_lifecycle_audio_authorized": authorized,
+        "active_lifecycle_audio_authorized_action": action,
+        "active_lifecycle_classification": classification,
+        "active_lifecycle_canonical_phrase": str(
+            payload.get("canonical_phrase") or ""
+        )[:160],
+        "active_lifecycle_recognized_text": recognized_text,
+        "active_lifecycle_recognized_tokens": recognized_tokens,
+        "active_lifecycle_recognition_backend": str(
+            payload.get("recognition_backend") or ""
+        )[:160],
+        "active_lifecycle_rejection_reason": str(
+            payload.get("rejection_reason") or ""
+        )[:160],
+        "active_lifecycle_confidence_tier": str(
+            payload.get("confidence_tier") or ""
+        )[:160],
+        "active_lifecycle_proposed_action": proposed,
+        "active_lifecycle_proposed_classification": proposed,
+        "active_lifecycle_control": control,
+        "active_lifecycle_confirmation_prompt": prompt,
+        "active_lifecycle_owner_activity": bool(
+            recognized_text or recognized_tokens
+        ),
+        "active_lifecycle_whisper_fallback": bool(
+            payload.get("whisper_fallback_required", False)
+        ),
+        "active_lifecycle_decision_status": status,
+        "active_lifecycle_confirmation_disposition": str(
+            payload.get("confirmation_disposition") or ""
+        )[:160],
+        "active_lifecycle_pending_clear_reason": str(
+            payload.get("pending_clear_reason") or ""
+        )[:160],
+    }
+    confidence = _finite_lifecycle_confidence(payload.get("confidence"))
+    if confidence is not None:
+        metadata["active_lifecycle_confidence"] = confidence
+    return metadata
 
 
 def _active_command_diagnostics(result: Any) -> ActiveCommandLocalDiagnostics:

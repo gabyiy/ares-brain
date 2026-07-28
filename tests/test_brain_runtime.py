@@ -785,6 +785,132 @@ def test_inactivity_before_exact_and_after_boundary_is_deterministic():
     assert runtime.session_manager.session_id == ""
 
 
+def test_active_audio_rejection_prevents_whisper_lifecycle_override():
+    routed = []
+    runtime, _ = _runtime(handler=lambda text: routed.append(text) or "ordinary")
+    runtime.start()
+    runtime.handle_text("Ares")
+    session_id = runtime.session_manager.session_id
+
+    result = runtime.handle_request(
+        BrainRuntimeRequestV1(
+            runtime_id=runtime.runtime_id,
+            input_text="shutdown aries",
+            timeout_seconds=30.0,
+            correlation_id="audio-rejected-shutdown",
+            session_id=session_id,
+            metadata={
+                "active_lifecycle_audio_checked": True,
+                "active_lifecycle_audio_authorized": False,
+                "active_lifecycle_classification": "ordinary",
+                "active_lifecycle_rejection_reason": "bounded_distractor_phrase",
+            },
+        )
+    )
+
+    assert result.status == "command_completed"
+    assert result.command_category == RUNTIME_COMMAND_ORDINARY
+    assert runtime.session_manager.state == BRAIN_ACTIVE
+    assert runtime.session_manager.session_id == session_id
+    assert routed == ["shutdown aries"]
+
+
+def test_active_audio_authorized_shutdown_reaches_lifecycle_authority():
+    routed = []
+    runtime, _ = _runtime(handler=lambda text: routed.append(text) or "ordinary")
+    runtime.start()
+    runtime.handle_text("Ares")
+
+    result = runtime.handle_request(
+        BrainRuntimeRequestV1(
+            runtime_id=runtime.runtime_id,
+            input_text="shutdown ares",
+            timeout_seconds=30.0,
+            correlation_id="audio-authorized-shutdown",
+            session_id=runtime.session_manager.session_id,
+            metadata={
+                "active_lifecycle_audio_checked": True,
+                "active_lifecycle_audio_authorized": True,
+                "active_lifecycle_audio_authorized_action": "shutdown",
+                "active_lifecycle_classification": "shutdown",
+            },
+        )
+    )
+
+    assert result.status == "stopped"
+    assert result.command_category == RUNTIME_COMMAND_SHUTDOWN
+    assert runtime.session_manager.state == BRAIN_STOPPED
+    assert routed == []
+
+
+def test_medium_active_audio_requests_gated_confirmation_without_core_route():
+    routed = []
+    output = CollectingRuntimeOutputAdapter()
+    inputs = QueuedRuntimeInputAdapter(
+        [
+            RuntimeInputResult(
+                status="input",
+                text="",
+                metadata={
+                    "active_lifecycle_control": "confirmation_required",
+                    "active_lifecycle_proposed_action": "shutdown",
+                    "active_lifecycle_confirmation_prompt": (
+                        "Did you say shutdown Ares?"
+                    ),
+                    "active_lifecycle_owner_activity": True,
+                },
+            )
+        ]
+    )
+    runtime, _ = _runtime(
+        handler=lambda text: routed.append(text) or "ordinary",
+        inputs=inputs,
+        output=output,
+    )
+    runtime.start()
+    runtime.handle_text("Ares")
+    session_id = runtime.session_manager.session_id
+
+    result = runtime.poll_once()
+
+    assert result.status == "lifecycle_confirmation_requested"
+    assert result.response_text == "Did you say shutdown Ares?"
+    assert output.texts.count("Did you say shutdown Ares?") == 1
+    assert runtime.session_manager.state == BRAIN_ACTIVE
+    assert runtime.session_manager.session_id == session_id
+    assert routed == []
+
+
+def test_negative_active_audio_confirmation_stays_active_without_core_route():
+    routed = []
+    inputs = QueuedRuntimeInputAdapter(
+        [
+            RuntimeInputResult(
+                status="input",
+                text="",
+                metadata={
+                    "active_lifecycle_control": "confirmation_cancelled",
+                    "active_lifecycle_owner_activity": True,
+                },
+            )
+        ]
+    )
+    runtime, _ = _runtime(
+        handler=lambda text: routed.append(text) or "ordinary",
+        inputs=inputs,
+    )
+    runtime.start()
+    runtime.handle_text("Ares")
+    session_id = runtime.session_manager.session_id
+
+    result = runtime.poll_once()
+
+    assert result.status == "lifecycle_confirmation_cancelled"
+    assert runtime.session_manager.state == BRAIN_ACTIVE
+    assert runtime.session_manager.session_id == session_id
+    assert routed == []
+
+
 def test_attention_only_does_not_reset_active_inactivity_deadline():
     inputs = QueuedRuntimeInputAdapter()
     runtime, clock = _runtime(inputs=inputs)
