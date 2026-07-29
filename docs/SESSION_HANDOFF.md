@@ -1,10 +1,10 @@
 ARES Session Handoff
 
-Last Updated: 2026-07-28
+Last Updated: 2026-07-29
 
 Current Version
 
-ARES v2.16 - Constrained ACTIVE Lifecycle Audio Recognition
+ARES v2.17 - Bounded Constrained ACTIVE Lifecycle Audio Recognition
 
 ---
 
@@ -12,17 +12,17 @@ Current Status
 
 The repaired production-composed ACTIVE diagnostic has passed its Raspberry Pi PCM and candidate gate. Preflight opened `plughw:2,0` as 16 kHz mono `S16_LE`, read a nonzero complete 640-byte frame, reported healthy bounded one-shot ownership, and all four phrases produced nonempty candidates. Whisper correctly returned `Calculate 2 plus 2.` from a 2.640-second candidate and `Remember that I like video games!` from a 3.200-second candidate. Spoken `goodbye Ares` instead returned `*clears throat*` from 1.080 seconds, and spoken `shutdown Ares` returned `Shut down, artist.` from 1.800 seconds. The capture layer is no longer the open defect.
 
-Phase 115 adds `ActiveLifecycleAudioRecognizer` at the already-closed canonical WAV boundary before Whisper. Its local `VoskLifecycleGrammarBackend` receives 21 bounded owner-validated action phrases, 84 non-action acoustic/negative/descriptive competitors, and `[unk]`, then reports structured evidence; the 84 rejection slots comprise 36 explicit phrases and a 48-phrase bounded negation expansion and are never aliases. It cannot open the microphone, capture again, route a skill, mutate memory, or execute a transition. High-confidence exact lifecycle audio bypasses Whisper. Medium confidence is non-executable and creates one session-bound confirmation request. Low, unmatched, competitor, unknown-token, missing-confidence, or backend-error results continue through the existing Whisper adapter on the same `AudioChunk` and WAV.
+Phase 115 adds `ActiveLifecycleAudioRecognizer` at the already-closed canonical WAV boundary before Whisper. Its local `VoskLifecycleGrammarBackend` receives 21 bounded owner-validated action phrases, 84 non-action acoustic/negative/descriptive competitors, and `[unk]`, then reports structured evidence; the 84 rejection slots comprise 36 explicit phrases and a 48-phrase bounded negation expansion and are never aliases. Production inference runs in one reusable spawned process. The request deadline covers child readiness, first-use model loading, recognizer/native calls, decoding, and result waiting; parent `Process.start()` and pipe `send()` are synchronous setup calls and are not independently preempted. An expired bounded wait terminates, kills if necessary, and requires the worker to be reaped before a later turn may restart it; unproven cleanup fails closed. The recognizer cannot open the microphone, capture again, route a skill, mutate memory, or execute a transition. High-confidence exact lifecycle audio bypasses Whisper. Medium confidence is non-executable and creates one session-bound confirmation request. Low, unmatched, competitor, unknown-token, missing-confidence, timeout, or backend-error results continue through the existing Whisper adapter on the same `AudioChunk` and WAV.
 
-Each constrained inference is bounded to 5 seconds. Standby confidence is `0.70` high and `0.50` medium; shutdown is stricter at `0.78` and `0.60`. Constructors reject values below standby safety floors `0.60`/`0.40`, shutdown floors `0.70`/`0.50`, and positive-confirmation floor `0.75`. Positive confirmation requires `0.80`; cancellation requires `0.50`. Pending confirmation is bound to the active session and expires after its next owner turn or 10 seconds; cancellation, mismatch, expiry, session replacement, or lifecycle-state change clears it. A weak shutdown guess and a fallback Whisper alias cannot enter `SHUTTING_DOWN`. `BrainSessionManager` remains the only lifecycle authority.
+Each constrained child-work deadline is 5 seconds, followed only on timeout by bounded terminate/kill/reap grace; it is not an absolute preemption claim for synchronous parent process setup. Standby confidence is `0.70` high and `0.50` medium; shutdown is stricter at `0.78` and `0.60`. Constructors reject values below standby safety floors `0.60`/`0.40`, shutdown floors `0.70`/`0.50`, and positive-confirmation floor `0.75`. Positive confirmation requires `0.80`; cancellation requires `0.50`. Pending confirmation is bound to the active session and expires after its next owner turn or 10 seconds; cancellation, mismatch, expiry, session replacement, or lifecycle-state change clears it. A weak shutdown guess and a fallback Whisper alias cannot enter `SHUTTING_DOWN`. `BrainSessionManager` remains the only lifecycle authority.
 
 The exact ACTIVE audio standby grammar is `goodbye ares|aris`, `good bye ares|aris`, `bye ares|aris`, `go standby ares`, `standby ares`, and `sleep ares`. The exact shutdown grammar is `shutdown ares|aris`, `shut down ares|aris`, `ares|aris shutdown`, `ares|aris shut down`, `turn off ares|aris`, and `power off ares|aris`. `artist`, `paris`, `harris`, `aries`, `rs`, assistant-name-only input, missing-name commands, and extra unrelated words are not lifecycle-audio aliases. There is no fuzzy, substring, edit-distance, semantic, or learned-alias matching.
 
-The diagnostic uses the same production factory and recognizer in compare-only mode. One finalized WAV is reused: constrained recognition runs first, then diagnostic Whisper runs for side-by-side reporting even if production would bypass it. Output includes both transcripts, constrained tokens/confidence/tier/backend/classification/canonical/rejection, selected action, and whether production fallback would run. It exits nonzero unless goodbye and shutdown are high-confidence exact canonical actions without fallback and calculator/memory are ordinary with fallback; the only passing summary is `all four phrases passed the constrained lifecycle policy`. The diagnostic still constructs no Brain runtime and executes no lifecycle, CoreService, skill, event, or owner-memory action.
+The diagnostic uses the same production factory and recognizer in compare-only mode. One finalized WAV is reused: constrained recognition runs first, then diagnostic Whisper runs for side-by-side reporting even if production would bypass it. Output includes both transcripts, comparison Whisper status/reason, constrained tokens/confidence/tier/backend/classification/canonical/rejection, selected action, and whether production fallback would run. Blank, timed-out, or failed comparison Whisper cannot invalidate independently valid high-confidence lifecycle evidence because production would not invoke Whisper for that turn; ordinary calculator and memory phrases still require successful Whisper fallback. It exits nonzero unless goodbye and shutdown are high-confidence exact canonical actions without fallback and calculator/memory are ordinary with fallback; the only passing summary is `all four phrases passed the constrained lifecycle policy`. The diagnostic still constructs no Brain runtime and executes no lifecycle, CoreService, skill, event, or owner-memory action.
 
 Deterministic verification can prove composition, exact grammar, confidence boundaries, same-WAV reuse, Whisper bypass/fallback, confirmation safety, lifecycle authority, and regressions. It cannot prove the owner's real Vosk text/confidence. The next Raspberry Pi gate is constrained `standby` for `goodbye Ares`, constrained `shutdown` for `shutdown Ares`, and ordinary fallback for calculator/memory; the complete production sequence follows only after that diagnostic passes.
 
-Current deterministic verification is green: all 2,640 collected tests pass with no skips or xfails, including a focused 1,042-test lifecycle-audio/Vosk/Whisper/pipeline/runtime/session/calculator/memory/event/production-composition sweep. Compileall, Phase 2 event/memory verification, five nonempty configuration JSON parses, and `git diff --check` also pass. Four intentionally empty configuration placeholders are not JSON documents.
+Current deterministic verification is green: all 2,662 collected tests pass with no skips or xfails, including a focused 1,082-test lifecycle-audio/Vosk/Whisper/pipeline/runtime/session/calculator/memory/event/production-composition sweep. Compileall, Phase 2 event/memory verification, five nonempty configuration JSON parses, and `git diff --check` also pass. Four intentionally empty configuration placeholders are not JSON documents.
 
 Checkpoint root causes and fixes:
 
@@ -93,6 +93,16 @@ python scripts/run_ares_standby_voice.py \
   --microphone-device plughw:2,0 \
   --speaker-device plughw:CARD=Device,DEV=0
 ```
+
+Use this complete owner sequence after the diagnostic passes:
+
+1. Say `Ares`; confirm one active session and one `Yes Gabi.`
+2. Say `calculate two plus two`; require `Result: 4.` and remain ACTIVE.
+3. Say `goodbye Ares`; require STANDBY without process exit and a cleared session.
+4. Say `Ares`; require a new session and one new acknowledgement.
+5. Say `remember that I like video games`; require successful owner-memory creation.
+6. Say `what do I like`; require recall mentioning video games.
+7. Say `shutdown Ares`; require exactly one transition to STOPPED and clean process exit.
 
 - End-of-speech could reach `maximum_duration_reached` because the previous detector cleared all trailing-silence evidence for any frame above one static silence threshold. Adaptive calibration now derives three bounded thresholds, and `POSSIBLE_SILENCE` resumes only after consecutive frames above the continue threshold.
 - Voice arithmetic reached IntentParser as number words and Whisper formatting, so digit/operator intent rules returned `unknown`. The versioned transcript normalizer now preserves raw text and converts only strict supported arithmetic into the unchanged safe calculator route.
@@ -2279,7 +2289,7 @@ Pull Phase 115 and run `manual_diagnose_active_lifecycle_audio.py`. The owner ha
 
 Next technical choices:
 
-- Pull latest `main` and run the focused four-phrase lifecycle-audio diagnostic with explicit retention. Capture the constrained text/tokens, confidence/tier/backend, classification, canonical phrase, rejection, selected action, and production Whisper-fallback decision beside the comparison Whisper transcript. Stop if goodbye/shutdown are not high-confidence exact results or safely confirmed; never infer success from headers or Windows tests.
+- Pull latest `main` and run the focused four-phrase lifecycle-audio diagnostic with explicit retention. Capture the constrained text/tokens, confidence/tier/backend, classification, canonical phrase, rejection, selected action, production Whisper-fallback decision, and comparison Whisper status/reason. This execution-disabled probe passes lifecycle phrases only as high-confidence exact results; medium evidence may be confirmed only later through the production session-bound flow. Never infer success from headers or Windows tests.
 - Inspect owner state only through `python scripts/inspect_owner_memory.py --summary --pending` or its focused flags; malformed durable or transient data must fail closed rather than be reset and executed.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
 - An exact `ares`, `aris`, or exact-slot `aries` result resolves to canonical `ares`. Confidence `>= 0.55` accepts; `0.40` through less than `0.55` requires two identical exact results within eight seconds; below `0.40`, `[unk]`, unrelated words, and partial words reject. Missing confidence is permitted only for one exact activation backed by validated VAD/canonical audio. Do not add output-driven aliases, substring matching, or fuzzy matching.

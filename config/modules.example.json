@@ -108,6 +108,12 @@
       "sample_width_bytes": 2
     },
     "recognition_timeout_seconds": 5,
+    "execution_isolation": "reusable_spawned_worker_process",
+    "timeout_scope": "child_readiness_model_load_recognizer_setup_pcm_decode_native_call_and_result_wait",
+    "parent_setup_boundary": "process_start_and_pipe_send_are_synchronous_not_independently_preempted",
+    "timeout_cleanup": "terminate_then_kill_and_require_reap_or_fail_closed",
+    "worker_model_load_policy": "once_per_worker_lifetime_recreate_after_timeout_or_failure",
+    "composition_policy": "foreground_launcher_constructs_explicitly_generic_module_loader_remains_disabled",
     "standby_high_confidence": 0.7,
     "standby_medium_confidence": 0.5,
     "shutdown_high_confidence": 0.78,
@@ -218,7 +224,8 @@
     "medium_confidence_policy": "one_session_bound_next_turn_confirmation",
     "low_or_unmatched_policy": "ordinary_whisper_fallback_same_wav",
     "fallback_lifecycle_authorization": false,
-    "diagnostic_compare_whisper_on_same_wav": true
+    "diagnostic_compare_whisper_on_same_wav": true,
+    "diagnostic_comparison_failure_reporting": "always_print_status_and_reason"
   },
   "voice_activity_capture": {
     "mode": "fixed_duration",
