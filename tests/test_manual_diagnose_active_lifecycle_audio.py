@@ -107,6 +107,23 @@ class FakeMicrophone:
         self.trace: list[str] = []
         self.preflight_kwargs: list[dict] = []
         self.started = False
+        self._active_stream = None
+        self._active_stream_owner = ""
+        self.last_controlled_stop_result: dict = {}
+
+    def health_check(self):
+        return SimpleNamespace(
+            success=True,
+            status="healthy",
+            error_message="",
+            data={
+                "device_count": 1,
+                "selected_device": "plughw:9,7",
+                "previous_controlled_stop_result": dict(
+                    self.last_controlled_stop_result
+                ),
+            },
+        )
 
     def start(self):
         assert not self.started
@@ -189,7 +206,29 @@ class FakeMicrophone:
                 error_message=f"RuntimeError:{message}",
                 data=common,
             )
-        common["alsa_stderr"] = ""
+        controlled_stop = {
+            "stop_requested": True,
+            "valid_pcm_received": True,
+            "valid_full_pcm_frames": 1,
+            "child_exit_code": 1,
+            "child_signal": None,
+            "stderr": (
+                "arecord: pcm_read:2272: read error: Interrupted system call"
+            ),
+            "process_reaped": True,
+            "cleanup_completed": True,
+            "unexpected_failure": False,
+            "status": "controlled_stop",
+            "final_health_effect": "none",
+        }
+        self.last_controlled_stop_result = dict(controlled_stop)
+        common.update(
+            {
+                "alsa_process_exit_status": 1,
+                "alsa_stderr": controlled_stop["stderr"],
+                "controlled_stop": controlled_stop,
+            }
+        )
         return SimpleNamespace(
             success=True,
             status="pcm_preflight_passed",
@@ -201,6 +240,48 @@ class FakeMicrophone:
         self.trace.append("stop")
         self.started = False
         return SimpleNamespace(success=True, status="stopped")
+
+
+class FakeSpeechToText:
+    def __init__(self, *, healthy: bool = True, reason: str = "") -> None:
+        self.healthy = healthy
+        self.reason = reason
+        self.whisper_command = "/usr/local/bin/whisper-cli"
+        self.model_path = Path("/models/ggml-base.en.bin")
+        self.runner = SimpleNamespace(
+            active_pid=0,
+            active_pgid=0,
+            health_snapshot=lambda: {
+                "active_pid": 0,
+                "active_pgid": 0,
+                "existing_child_process": False,
+                "previous_child_reaped": True,
+                "cancellation_state": "clear",
+            },
+        )
+
+    def health_check(self):
+        reason = self.reason or (
+            "healthy" if self.healthy else "whisper_health_failed"
+        )
+        return SimpleNamespace(
+            success=self.healthy,
+            status="healthy" if self.healthy else "speech_to_text_unhealthy",
+            error_message="" if self.healthy else reason,
+            data={
+                "whisper_binary_path": self.whisper_command,
+                "whisper_executable": self.healthy,
+                "model_path": str(self.model_path),
+                "model_readable": self.healthy,
+                "temporary_output_directory": str(Path.cwd()),
+                "output_directory_writable": True,
+                "command_constructible": self.healthy,
+                "active_pid": 0,
+                "previous_child_reaped": True,
+                "cancellation_state": "clear",
+                "health_reason": reason,
+            },
+        )
 
 
 class FakeTurnStream:
@@ -238,9 +319,10 @@ class FakePipeline:
         *,
         fail_first_phrase: bool = False,
         fail_comparison_whisper_indices: tuple[int, ...] = (),
+        speech_to_text: FakeSpeechToText | None = None,
     ) -> None:
         self.microphone_adapter = microphone
-        self.speech_to_text_adapter = SimpleNamespace()
+        self.speech_to_text_adapter = speech_to_text or FakeSpeechToText()
         self.fail_first_phrase = fail_first_phrase
         self.fail_comparison_whisper_indices = set(
             fail_comparison_whisper_indices
@@ -297,11 +379,6 @@ class FakePipeline:
                 },
             )
 
-        frame = stream.read()
-        assert len(frame) == 640
-        stream.close()
-
-        transcript = TRANSCRIPTS[index - 1]
         for observer in list(self.capture_ready_observers):
             observer(
                 {
@@ -309,6 +386,14 @@ class FakePipeline:
                     "pre_roll_seconds": request.pre_roll_seconds,
                 }
             )
+        frame = stream.read()
+        assert len(frame) == 640
+        stream.close()
+
+        transcript = TRANSCRIPTS[index - 1]
+        candidate_path = Path(request.recording_output_path)
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_path.write_bytes(b"RIFF-diagnostic-candidate")
         finalized_decision = finalized_audio_hook(
             AudioChunk(
                 data=frame,
@@ -469,12 +554,19 @@ class DiagnosticHarness:
         fail_preflight: bool = False,
         fail_first_phrase: bool = False,
         fail_comparison_whisper_indices: tuple[int, ...] = (),
+        speech_to_text_healthy: bool = True,
+        speech_to_text_reason: str = "",
     ) -> None:
         self.microphone = FakeMicrophone(preflight_failure=fail_preflight)
+        self.speech_to_text = FakeSpeechToText(
+            healthy=speech_to_text_healthy,
+            reason=speech_to_text_reason,
+        )
         self.pipeline = FakePipeline(
             self.microphone,
             fail_first_phrase=fail_first_phrase,
             fail_comparison_whisper_indices=fail_comparison_whisper_indices,
+            speech_to_text=self.speech_to_text,
         )
         self.gate = VoiceRuntimeGate(settle_delay_seconds=0.0)
         self.lifecycle_recognizer = FakeLifecycleAudioRecognizer()
@@ -680,6 +772,102 @@ def test_preflight_and_two_phrase_cycles_have_strict_stream_lifecycles(tmp_path)
     assert "Alias-canonicalized constrained transcript: goodbye ares" in rendered
     assert "Alias-canonicalized constrained transcript: shutdown ares" in rendered
     assert "Constrained lifecycle rejection reason: <none>" in rendered
+    assert "Microphone preflight started" in rendered
+    assert "Valid PCM frame received" in rendered
+    assert "Controlled preflight stream stop completed" in rendered
+    assert "Microphone preflight passed" in rendered
+    assert "ALSA exit status: 1" in rendered
+    assert "read error: Interrupted system call" in rendered
+    assert "final health effect: none" in rendered
+    assert rendered.count("Microphone health:") == 2
+    assert rendered.count("Speech-to-text health:") == 2
+    assert rendered.count("Active capture started") == 2
+    assert rendered.count("Active capture/transcription completed") == 2
+    assert rendered.index("Speech-to-text health:") < rendered.index("Ready 1/2")
+
+
+def test_stt_preflight_only_checks_configuration_without_microphone_or_inference(
+    tmp_path,
+):
+    harness = DiagnosticHarness()
+    argv = [
+        value
+        for value in _argv(tmp_path)
+        if value != "--diagnostic-active-lifecycle-audio"
+    ]
+    argv.append("--stt-preflight-only")
+    output: list[str] = []
+
+    code = manual.run_active_lifecycle_audio_diagnostic(
+        argv,
+        output_func=output.append,
+        production_factory=harness.production_factory,
+        lock_factory=FakeLockFactory(),
+    )
+
+    assert code == 0
+    assert harness.microphone.trace == []
+    assert harness.pipeline.requests == []
+    assert harness.pipeline.stop_count == 1
+    rendered = "\n".join(output)
+    assert "ARES ACTIVE speech-to-text configuration preflight" in rendered
+    assert "Microphone opened: no" in rendered
+    assert "Speech inference requested: no" in rendered
+    assert "Speech-to-text health:" in rendered
+    assert "final decision: healthy" in rendered
+    assert "STT configuration preflight result: passed" in rendered
+    assert "Microphone preflight:" not in rendered
+    assert "Ready 1/2" not in rendered
+
+
+def test_stt_preflight_only_returns_typed_configuration_failure(tmp_path):
+    harness = DiagnosticHarness(
+        speech_to_text_healthy=False,
+        speech_to_text_reason="whisper_model_unreadable",
+    )
+    argv = [
+        value
+        for value in _argv(tmp_path)
+        if value != "--diagnostic-active-lifecycle-audio"
+    ]
+    argv.append("--stt-preflight-only")
+    output: list[str] = []
+
+    code = manual.run_active_lifecycle_audio_diagnostic(
+        argv,
+        output_func=output.append,
+        production_factory=harness.production_factory,
+        lock_factory=FakeLockFactory(),
+    )
+
+    assert code == 3
+    assert harness.microphone.trace == []
+    assert harness.pipeline.requests == []
+    rendered = "\n".join(output)
+    assert (
+        "STT preflight failure category: whisper_configuration_error"
+        in rendered
+    )
+    assert "exact reason: whisper_model_unreadable" in rendered
+    assert "STT configuration preflight result: failed" in rendered
+
+
+def test_unhealthy_stt_is_typed_and_never_claims_capture_completion(tmp_path):
+    harness = DiagnosticHarness(
+        speech_to_text_healthy=False,
+        speech_to_text_reason="whisper_binary_missing",
+    )
+
+    code, output, _ = _run(tmp_path, harness)
+
+    assert code == 3
+    assert harness.pipeline.requests == []
+    rendered = "\n".join(output)
+    assert rendered.count("Failure category: whisper_configuration_error") == 2
+    assert "exact reason: whisper_binary_missing" in rendered
+    assert "Ready 1/2" not in rendered
+    assert "Active capture started" not in rendered
+    assert "Active capture/transcription completed" not in rendered
 
 
 def test_rejected_constrained_lifecycle_phrase_uses_valid_whisper_fallback(tmp_path):
@@ -842,6 +1030,42 @@ def test_preflight_attributes_microphone_start_exception_exactly():
     assert gate.snapshot()["capture_active"] is False
 
 
+def test_preflight_does_not_pass_structured_unreaped_controlled_stop():
+    class UnreapedMicrophone(FakeMicrophone):
+        def preflight_pcm_stream(self, **kwargs):
+            result = super().preflight_pcm_stream(**kwargs)
+            controlled = dict(result.data["controlled_stop"])
+            controlled.update(
+                {
+                    "process_reaped": False,
+                    "cleanup_completed": False,
+                    "unexpected_failure": True,
+                    "status": "cleanup_incomplete",
+                    "final_health_effect": "unhealthy",
+                }
+            )
+            result.data["controlled_stop"] = controlled
+            return result
+
+    microphone = UnreapedMicrophone()
+    gate = VoiceRuntimeGate(settle_delay_seconds=0.0)
+    output: list[str] = []
+
+    success = manual._run_microphone_preflight(
+        microphone,
+        gate=gate,
+        device="plughw:2,0",
+        frame_duration_ms=20,
+        output_func=output.append,
+    )
+
+    assert success is False
+    rendered = "\n".join(output)
+    assert "process reaped: no" in rendered
+    assert "final health effect: unhealthy" in rendered
+    assert "Microphone preflight passed" not in rendered
+
+
 def test_preflight_attributes_gate_ownership_exception_without_opening_microphone():
     class GateFailure:
         def begin_capture(self, owner):
@@ -959,6 +1183,163 @@ def test_typed_failure_categories(result, recording, expected):
     )
 
     assert actual == expected
+
+
+@pytest.mark.parametrize(
+    ("component", "component_status", "component_error", "expected"),
+    [
+        (
+            "speech_to_text",
+            "operation_failed",
+            "AttributeError:WhisperSubprocessRunner has no _runner",
+            "speech_to_text_health_error",
+        ),
+        (
+            "speech_to_text",
+            "whisper_model_missing",
+            "whisper_model_missing",
+            "whisper_configuration_error",
+        ),
+        (
+            "speech_to_text",
+            "whisper_process_unreaped",
+            "whisper_process_unreaped",
+            "whisper_process_error",
+        ),
+        (
+            "microphone",
+            "alsa_device_not_found",
+            "alsa_device_not_found",
+            "microphone_health_error",
+        ),
+        (
+            "microphone",
+            "vad_device_error",
+            "VAD health failed",
+            "VAD_error",
+        ),
+    ],
+)
+def test_pipeline_health_failure_category_preserves_component_ownership(
+    component,
+    component_status,
+    component_error,
+    expected,
+):
+    result = SingleTurnVoiceResultV1(
+        success=False,
+        status="health_check_failed",
+        error_stage="health_check",
+        error_reason=f"unhealthy:{component}",
+        data={
+            "health": {
+                "success": False,
+                "components": {
+                    component: {
+                        "success": False,
+                        "status": component_status,
+                        "error_message": component_error,
+                    }
+                },
+            }
+        },
+    )
+
+    actual = manual._pipeline_failure_kind(
+        result,
+        recording={},
+        pcm_exception={},
+        candidate_duration=0.0,
+        raw_transcript="",
+    )
+
+    assert actual == expected
+
+
+def test_health_failure_result_is_not_a_completed_capture(tmp_path):
+    result = SingleTurnVoiceResultV1(
+        success=False,
+        status="health_check_failed",
+        error_stage="health_check",
+        error_reason="unhealthy:speech_to_text",
+    )
+
+    assert manual._capture_transcription_completed(result) is False
+
+
+def test_completion_requires_observed_finalized_wav_and_attempted_transcription(tmp_path):
+    missing = tmp_path / "missing.wav"
+    recording = _successful_recording(str(missing), transcript="Goodbye, Ares.")
+    base = SingleTurnVoiceResultV1(
+        success=True,
+        status="diagnostic_transcript_captured",
+        raw_transcript="Goodbye, Ares.",
+        data={"recording": recording},
+    )
+
+    assert manual._capture_transcription_completed(base) is False
+    assert manual._capture_transcription_completed(
+        base,
+        finalized_wav_observed=True,
+    ) is True
+
+    not_attempted = SingleTurnVoiceResultV1(
+        success=True,
+        status="recording_completed",
+        data={
+            "recording": recording,
+            "transcription_status": "not_started",
+        },
+    )
+    assert manual._capture_transcription_completed(
+        not_attempted,
+        finalized_wav_observed=True,
+    ) is False
+
+
+def test_dual_health_failure_honors_explicit_microphone_owner():
+    result = SingleTurnVoiceResultV1(
+        success=False,
+        status="health_check_failed",
+        error_stage="health_check",
+        error_reason="unhealthy:microphone",
+        data={
+            "health": {
+                "components": {
+                    "microphone": {
+                        "success": False,
+                        "status": "alsa_device_not_found",
+                    },
+                    "speech_to_text": {
+                        "success": False,
+                        "status": "operation_failed",
+                    },
+                }
+            }
+        },
+    )
+
+    assert manual._pipeline_failure_kind(
+        result,
+        recording={},
+        pcm_exception={},
+        candidate_duration=0.0,
+        raw_transcript="",
+    ) == "microphone_health_error"
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("whisper child failed", "whisper_process_error"),
+        ("arecord pcm read failed", "pcm_read_error"),
+        ("wav finalization failed", "wav_write_error"),
+        ("VAD detector failed", "VAD_error"),
+        ("unexpected pipeline failure", "pipeline_error"),
+    ],
+)
+def test_uncaught_pipeline_exception_is_not_assumed_to_be_vad(message, expected):
+    assert manual._uncaught_pipeline_failure_kind(RuntimeError(message)) == expected
 
 
 def test_lifecycle_parse_failure_is_typed_without_executing_action(tmp_path, monkeypatch):

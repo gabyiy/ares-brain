@@ -155,6 +155,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="required owner acknowledgement for this bounded hardware probe",
     )
+    parser.add_argument(
+        "--stt-preflight-only",
+        action="store_true",
+        help=(
+            "validate the production Whisper configuration and process state "
+            "without opening the microphone or running inference"
+        ),
+    )
     return parser
 
 
@@ -294,10 +302,6 @@ def _run_locked_diagnostic(
         "active_lifecycle_audio_recognizer",
         None,
     )
-    if not callable(getattr(lifecycle_audio_recognizer, "recognize_wav", None)):
-        raise RuntimeError(
-            "production_active_lifecycle_audio_recognizer_unavailable"
-        )
     microphone = getattr(pipeline, "microphone_adapter", None)
     coordinator = signal_coordinator or ForegroundSignalCoordinator()
     coordinator.register(
@@ -310,6 +314,41 @@ def _run_locked_diagnostic(
     )
     deadline = time.monotonic() + float(args.total_diagnostic_timeout)
     diagnostic_run_id = new_correlation_id("active-lifecycle-audio")
+
+    if bool(args.stt_preflight_only):
+        output_func("ARES ACTIVE speech-to-text configuration preflight")
+        output_func(
+            "Production active-audio factory: "
+            f"{production_factory.__module__}.{production_factory.__name__}"
+        )
+        output_func("Microphone opened: no")
+        output_func("Speech inference requested: no")
+        try:
+            stt_health = _speech_to_text_health_snapshot(
+                getattr(pipeline, "speech_to_text_adapter", None),
+            )
+            _print_speech_to_text_health(stt_health, output_func=output_func)
+            if not stt_health["healthy"]:
+                output_func(
+                    "STT preflight failure category: "
+                    f"{_speech_to_text_health_failure_kind(stt_health)}"
+                )
+            output_func(
+                "STT configuration preflight result: "
+                + ("passed" if stt_health["healthy"] else "failed")
+            )
+            return 0 if stt_health["healthy"] else 3
+        finally:
+            _stop_pipeline_safely(pipeline, base_request)
+            close_recognizer = getattr(lifecycle_audio_recognizer, "close", None)
+            if callable(close_recognizer):
+                close_recognizer()
+            gate.reset()
+
+    if not callable(getattr(lifecycle_audio_recognizer, "recognize_wav", None)):
+        raise RuntimeError(
+            "production_active_lifecycle_audio_recognizer_unavailable"
+        )
 
     output_func("ARES ACTIVE lifecycle-audio diagnostic")
     output_func(
@@ -381,6 +420,27 @@ def _run_locked_diagnostic(
                 failed_attempts += 1
                 break
             request = _diagnostic_request(base_request, output_path)
+            component_health = _print_phrase_component_health(
+                pipeline,
+                gate,
+                device=str(args.microphone_device),
+                output_func=output_func,
+            )
+            if not component_health["healthy"]:
+                attempt = DiagnosticAttempt(
+                    expected_phrase=phrase,
+                    success=False,
+                    failure_kind=str(component_health["failure_kind"]),
+                    error_message=str(component_health["reason"]),
+                    failing_adapter_class=str(
+                        component_health.get("failing_adapter_class") or ""
+                    ),
+                    failing_method="health_check",
+                    cleanup_result="not_applicable",
+                )
+                _print_attempt(attempt, request=request, output_func=output_func)
+                failed_attempts += 1
+                continue
             remaining = max(1.0, deadline - time.monotonic())
             request = replace(
                 request,
@@ -518,6 +578,7 @@ def _capture_and_transcribe(
     output_func: Callable[[str], None],
 ) -> DiagnosticAttempt:
     ready_announced = False
+    finalized_wav_observed = False
     constrained_evidence: dict[str, Any] = {}
 
     def announce_ready(details: dict[str, Any]) -> None:
@@ -530,6 +591,7 @@ def _capture_and_transcribe(
             f"Ready {index}/{total}. Say '{phrase}' now. "
             f"(capture_start_reason={reason})"
         )
+        output_func(f"[{_progress_timestamp()}] Active capture started")
 
     unsubscribe = None
     add_ready_observer = getattr(pipeline, "add_capture_ready_observer", None)
@@ -549,12 +611,14 @@ def _capture_and_transcribe(
         )
 
     def inspect_finalized_audio(audio_chunk: Any) -> SingleTurnFinalizedAudioDecision:
+        nonlocal finalized_wav_observed
         metadata = dict(getattr(audio_chunk, "metadata", {}) or {})
         wav_path = str(
             metadata.get("final_whisper_input_path")
             or metadata.get("wav_path")
             or ""
         )
+        finalized_wav_observed = bool(wav_path and Path(wav_path).is_file())
         try:
             recognition = lifecycle_audio_recognizer.recognize_wav(wav_path)
             payload = _constrained_recognition_payload(recognition)
@@ -584,7 +648,10 @@ def _capture_and_transcribe(
             handled=False,
             continue_to_whisper=True,
             status="diagnostic_lifecycle_audio_observed",
-            data={"active_lifecycle_audio": dict(payload)},
+            data={
+                "active_lifecycle_audio": dict(payload),
+                "diagnostic_finalized_wav_observed": finalized_wav_observed,
+            },
         )
 
     owner = "diagnostic_active_capture"
@@ -602,13 +669,18 @@ def _capture_and_transcribe(
                 failing_method="wait_for_capture",
             )
         gate.begin_capture(owner)
-        output_func(f"[{_progress_timestamp()}] Active capture started")
         result = pipeline.run_once(
             request,
             raw_transcript_hook=intercept_raw_transcript,
             finalized_audio_hook=inspect_finalized_audio,
         )
-        output_func(f"[{_progress_timestamp()}] Active capture/transcription completed")
+        if _capture_transcription_completed(
+            result,
+            finalized_wav_observed=finalized_wav_observed,
+        ):
+            output_func(
+                f"[{_progress_timestamp()}] Active capture/transcription completed"
+            )
     except KeyboardInterrupt:
         raise
     except Exception as error:
@@ -616,7 +688,7 @@ def _capture_and_transcribe(
             expected_phrase=phrase,
             success=False,
             capture=result,
-            failure_kind="VAD_error",
+            failure_kind=_uncaught_pipeline_failure_kind(error),
             error_message=f"{error.__class__.__name__}:{str(error)}",
             exception_class=error.__class__.__name__,
             exception_message=str(error),
@@ -657,6 +729,7 @@ def _run_microphone_preflight(
 ) -> bool:
     """Cross the real production ALSA boundary before prompting the owner."""
 
+    output_func(f"[{_progress_timestamp()}] Microphone preflight started")
     owner = "diagnostic_active_capture"
     started = None
     preflight = None
@@ -721,11 +794,74 @@ def _run_microphone_preflight(
         not bool(gate_snapshot.get("capture_active"))
         and bool(data.get("microphone_ownership_released", True))
     )
-    success = start_success and preflight_success and stop_success and ownership_released
+    base_success = (
+        start_success and preflight_success and stop_success and ownership_released
+    )
     device_exists = bool(
         health_data.get("device_count", 0)
         or data.get("open_success", False)
     )
+    controlled_stop = _controlled_stop_payload(data, microphone)
+    stop_requested = bool(
+        controlled_stop.get("stop_requested", data.get("close_called", False))
+    )
+    valid_pcm_received = bool(
+        controlled_stop.get(
+            "valid_pcm_received",
+            data.get("first_pcm_read_success", False),
+        )
+    )
+    child_exit_code = controlled_stop.get(
+        "child_exit_code",
+        data.get("alsa_process_exit_status"),
+    )
+    child_signal = controlled_stop.get("child_signal")
+    if child_signal is None and isinstance(child_exit_code, int) and child_exit_code < 0:
+        child_signal = abs(child_exit_code)
+    process_reaped = controlled_stop.get(
+        "process_reaped",
+        bool(data.get("close_success", False)),
+    )
+    cleanup_completed = bool(
+        controlled_stop.get(
+            "cleanup_completed",
+            data.get("cleanup_result") == "completed",
+        )
+    )
+    unexpected_failure = bool(controlled_stop.get("unexpected_failure", False))
+    final_health_effect = str(
+        controlled_stop.get("final_health_effect")
+        or ("none" if base_success else "unhealthy")
+    )
+    acceptable_health_effect = final_health_effect.casefold() in {
+        "none",
+        "degraded_reusable",
+        "not_applicable",
+    }
+    success = bool(
+        base_success
+        and valid_pcm_received
+        and process_reaped is not False
+        and cleanup_completed
+        and not unexpected_failure
+        and acceptable_health_effect
+    )
+
+    if data.get("first_pcm_read_success"):
+        output_func(f"[{_progress_timestamp()}] Valid PCM frame received")
+    controlled_status = str(controlled_stop.get("status") or "")
+    if (
+        stop_requested
+        and cleanup_completed
+        and not unexpected_failure
+        and acceptable_health_effect
+        and controlled_status in {"controlled_stop", "controlled_stop_degraded"}
+    ):
+        output_func(
+            f"[{_progress_timestamp()}] Controlled preflight stream stop completed"
+        )
+    if success:
+        output_func(f"[{_progress_timestamp()}] Microphone preflight passed")
 
     output_func("")
     output_func("Microphone preflight:")
@@ -798,6 +934,21 @@ def _run_microphone_preflight(
         f"{' '.join(str(part) for part in data.get('exact_capture_command', []) or []) or '<unavailable>'}"
     )
     output_func(f"  ALSA stderr: {data.get('alsa_stderr') or '<empty>'}")
+    output_func("  controlled-stop result:")
+    output_func(f"    stop requested: {_yes_no(stop_requested)}")
+    output_func(f"    valid PCM received: {_yes_no(valid_pcm_received)}")
+    output_func(
+        "    child exit code: "
+        f"{child_exit_code if child_exit_code is not None else '<none>'}"
+    )
+    output_func(
+        "    child signal: "
+        f"{child_signal if child_signal is not None else '<none>'}"
+    )
+    output_func(f"    process reaped: {_yes_no(process_reaped)}")
+    output_func(f"    cleanup completed: {_yes_no(cleanup_completed)}")
+    output_func(f"    unexpected failure: {_yes_no(unexpected_failure)}")
+    output_func(f"    final health effect: {final_health_effect}")
     stderr_lower = str(data.get("alsa_stderr") or "").casefold()
     ownership_conflict = (
         "yes"
@@ -865,6 +1016,74 @@ def _exception_result(
         }
 
     return ExceptionResult()
+
+
+def _capture_transcription_completed(
+    result: Any,
+    *,
+    finalized_wav_observed: Optional[bool] = None,
+) -> bool:
+    """Return true only when a finalized candidate reached an STT decision."""
+
+    if result is None:
+        return False
+    recording = _recording_contract(result)
+    if not bool(recording.get("success", False)):
+        return False
+    if _candidate_duration(recording, result) <= 0.0:
+        return False
+    final_path = str(
+        recording.get("final_whisper_input_path")
+        or recording.get("normalized_wav_path")
+        or recording.get("wav_path")
+        or getattr(result, "recorded_wav_path", "")
+        or ""
+    ).strip()
+    if not final_path:
+        return False
+    finalized = dict(
+        dict(getattr(result, "data", {}) or {}).get(
+            "finalized_audio_decision",
+            {},
+        )
+        or {}
+    )
+    finalized_data = dict(finalized.get("data") or {})
+    observed = (
+        finalized_data.get("diagnostic_finalized_wav_observed")
+        if finalized_wav_observed is None
+        else finalized_wav_observed
+    )
+    if observed is not True:
+        return False
+    raw = str(
+        getattr(result, "raw_transcript", "")
+        or getattr(result, "recognized_text", "")
+        or ""
+    ).strip()
+    status = str(getattr(result, "status", "") or "").casefold()
+    transcription_status = str(
+        getattr(result, "transcription_status", "") or ""
+    ).casefold()
+    error_stage = str(getattr(result, "error_stage", "") or "").casefold()
+    transcription_attempted = transcription_status not in {
+        "",
+        "not_started",
+        "not_attempted",
+        "skipped",
+    }
+    if (
+        raw
+        or transcription_attempted
+        or "transcri" in status
+        or "transcri" in error_stage
+    ):
+        return True
+    return bool(
+        finalized.get("handled")
+        and not finalized.get("continue_to_whisper", True)
+        and str(finalized.get("status") or "").strip()
+    )
 
 
 def _attempt_from_pipeline_result(
@@ -1058,6 +1277,40 @@ def _pipeline_failure_kind(
         or recording.get("frame_count", 0)
         or 0
     )
+    if status == "health_check_failed" or stage == "health_check":
+        components = _pipeline_health_components(result)
+        speech_health = dict(components.get("speech_to_text") or {})
+        microphone_health = dict(components.get("microphone") or {})
+        speech_failed = bool(
+            speech_health and not bool(speech_health.get("success"))
+        )
+        microphone_failed = bool(
+            microphone_health and not bool(microphone_health.get("success"))
+        )
+        if microphone_failed and (
+            "microphone" in message or not speech_failed
+        ):
+            details = " ".join(
+                str(microphone_health.get(key) or "")
+                for key in ("status", "error_message")
+            ).casefold()
+            return "VAD_error" if "vad" in details else "microphone_health_error"
+        if speech_failed and (
+            "speech_to_text" in message or not microphone_failed
+        ):
+            return _speech_to_text_health_failure_kind(
+                {
+                    "status": speech_health.get("status"),
+                    "reason": speech_health.get("error_message"),
+                }
+            )
+        if speech_failed and microphone_failed:
+            return "component_health_error"
+        if "speech_to_text" in message:
+            return "speech_to_text_health_error"
+        if "microphone" in message:
+            return "microphone_health_error"
+        return "component_health_error"
     if status in {"silent_audio", "no_speech_timeout"} or "no_speech" in message:
         return "no_speech_timeout"
     if status in {
@@ -1084,9 +1337,40 @@ def _pipeline_failure_kind(
         return "invalid_frame_error"
     if "wav" in stage or "wav" in message or "audio_duration_invariant" in message:
         return "wav_write_error"
+    if any(marker in message for marker in ("alsa", "arecord", "pcm_stream", "pcm_read")):
+        return "pcm_read_error"
     if "record" in stage or "vad" in message or status in {"recording_failed", "invalid_recording"}:
         return "VAD_error"
-    return "whisper_error" if "transcript" in stage else "VAD_error"
+    return "whisper_error" if "transcript" in stage else "pipeline_error"
+
+
+def _uncaught_pipeline_failure_kind(error: BaseException) -> str:
+    """Classify only from concrete subsystem evidence; never default to VAD."""
+
+    details = f"{error.__class__.__name__}:{str(error)}".casefold()
+    if any(marker in details for marker in ("whisper", "speech_to_text", "transcri")):
+        return "whisper_process_error"
+    if any(marker in details for marker in ("alsa", "arecord", "pcm", "microphone")):
+        return "pcm_read_error"
+    if "wav" in details or "wave" in details:
+        return "wav_write_error"
+    if "vad" in details or "voice_activity" in details:
+        return "VAD_error"
+    return "pipeline_error"
+
+
+def _pipeline_health_components(result: Any) -> dict[str, Any]:
+    data = dict(getattr(result, "data", {}) or {})
+    direct = dict(data.get("health") or {})
+    components = direct.get("components")
+    if isinstance(components, dict):
+        return dict(components)
+    lifecycle = dict(data.get("lifecycle") or {})
+    health_check = dict(lifecycle.get("health_check") or {})
+    health_data = dict(health_check.get("data") or {})
+    external = dict(health_data.get("external_result") or {})
+    components = external.get("components")
+    return dict(components) if isinstance(components, dict) else {}
 
 
 def _high_confidence_constrained_action(value: Any) -> bool:
@@ -1184,6 +1468,469 @@ def _cancel_diagnostic_resources(
     end_capture = getattr(gate, "end_capture", None)
     if callable(end_capture):
         end_capture("diagnostic_active_capture")
+
+
+def _print_phrase_component_health(
+    pipeline: Any,
+    gate: Any,
+    *,
+    device: str,
+    output_func: Callable[[str], None],
+) -> dict[str, Any]:
+    """Report microphone and STT health without combining their ownership."""
+
+    microphone = getattr(pipeline, "microphone_adapter", None)
+    microphone_health = _microphone_health_snapshot(
+        microphone,
+        gate=gate,
+        device=device,
+    )
+    stt = getattr(pipeline, "speech_to_text_adapter", None)
+    stt_health = _speech_to_text_health_snapshot(
+        stt,
+    )
+    _print_microphone_health(microphone_health, output_func=output_func)
+    _print_speech_to_text_health(stt_health, output_func=output_func)
+    if not microphone_health["healthy"]:
+        return {
+            "healthy": False,
+            "failure_kind": "microphone_health_error",
+            "reason": microphone_health["reason"],
+            "failing_adapter_class": microphone_health["adapter_class"],
+        }
+    if not stt_health["healthy"]:
+        return {
+            "healthy": False,
+            "failure_kind": _speech_to_text_health_failure_kind(stt_health),
+            "reason": str(stt_health.get("reason") or ""),
+            "failing_adapter_class": stt_health["adapter_class"],
+        }
+    return {
+        "healthy": True,
+        "failure_kind": "",
+        "reason": "",
+        "failing_adapter_class": "",
+    }
+
+
+def _speech_to_text_health_failure_kind(health: dict[str, Any]) -> str:
+    details = " ".join(
+        (
+            str(health.get("status") or ""),
+            str(health.get("reason") or ""),
+        )
+    ).casefold()
+    process_failure = any(
+        marker in details
+        for marker in (
+            "process_active",
+            "process_unreaped",
+            "child_already_active",
+            "child_not_reaped",
+            "cancellation_in_progress",
+            "stale_whisper_cancellation",
+        )
+    )
+    if process_failure:
+        return "whisper_process_error"
+    configuration_failure = any(
+        marker in details
+        for marker in (
+            "binary_missing",
+            "model_missing",
+            "model_unreadable",
+            "not_executable",
+            "not_readable",
+            "not_writable",
+            "output_directory_unwritable",
+            "output_directory_missing",
+            "command_invalid",
+            "configuration_error",
+        )
+    )
+    return (
+        "whisper_configuration_error"
+        if configuration_failure
+        else "speech_to_text_health_error"
+    )
+
+
+def _microphone_health_snapshot(
+    microphone: Any,
+    *,
+    gate: Any,
+    device: str,
+) -> dict[str, Any]:
+    health = _call_health_check(microphone)
+    data = dict(health.get("data") or {})
+    controlled = _controlled_stop_payload(data, microphone)
+    gate_snapshot = dict(getattr(gate, "snapshot", lambda: {})() or {})
+    stream = getattr(microphone, "_active_stream", None)
+    stream_owner = str(getattr(microphone, "_active_stream_owner", "") or "")
+    configured = bool(microphone is not None and str(device or "").strip())
+    device_available = bool(
+        health.get("success")
+        and (
+            data.get("device_available", True)
+            or data.get("device_count", 0)
+            or data.get("selected_device")
+        )
+    )
+    process_reaped = controlled.get("process_reaped")
+    unexpected = bool(controlled.get("unexpected_failure", False))
+    final_effect = str(controlled.get("final_health_effect") or "not_applicable")
+    controlled_failure = unexpected or final_effect in {
+        "unhealthy",
+        "failure",
+        "failed",
+        "unusable",
+    }
+    ownership_idle = bool(
+        not gate_snapshot.get("capture_active")
+        and not gate_snapshot.get("playback_active")
+        and stream is None
+        and not stream_owner
+    )
+    if stream_owner:
+        ownership_state = stream_owner
+    elif gate_snapshot.get("capture_active"):
+        ownership_state = "capture_active"
+    elif gate_snapshot.get("playback_active"):
+        ownership_state = "playback_active"
+    else:
+        ownership_state = "idle"
+    healthy = bool(
+        health.get("success")
+        and configured
+        and device_available
+        and ownership_idle
+        and process_reaped is not False
+        and not controlled_failure
+    )
+    reason = str(health.get("error_message") or health.get("status") or "")
+    if healthy:
+        reason = ""
+    elif not ownership_idle:
+        reason = "microphone_ownership_not_idle"
+    elif process_reaped is False:
+        reason = "previous_arecord_process_not_reaped"
+    elif controlled_failure:
+        reason = str(controlled.get("unexpected_failure_reason") or final_effect)
+    return {
+        "healthy": healthy,
+        "status": str(health.get("status") or "unknown"),
+        "reason": reason or "microphone_health_check_failed",
+        "configured": configured,
+        "device_available": device_available,
+        "stream_state": (
+            str(data.get("stream_state") or "")
+            or ("active" if stream is not None else "idle")
+        ),
+        "ownership_state": ownership_state,
+        "previous_process_reaped": process_reaped,
+        "previous_controlled_stop_result": (
+            str(controlled.get("status") or final_effect or "not_applicable")
+        ),
+        "adapter_class": _adapter_class_name(microphone),
+    }
+
+
+def _speech_to_text_health_snapshot(
+    speech_to_text: Any,
+) -> dict[str, Any]:
+    health = _call_health_check(speech_to_text)
+    data = dict(health.get("data") or {})
+    runner = getattr(speech_to_text, "runner", None)
+    runner_data = _runner_health_snapshot(runner)
+    command_path = str(
+        data.get("whisper_binary_path")
+        or data.get("whisper_executable_path")
+        or data.get("whisper_command_path")
+        or getattr(speech_to_text, "whisper_command", "")
+        or ""
+    )
+    executable_value = data.get("whisper_executable")
+    executable = bool(
+        data.get("whisper_binary_executable")
+        if "whisper_binary_executable" in data
+        else executable_value
+        if executable_value is not None
+        else data.get("whisper_binary_available", bool(command_path))
+    )
+    model_path = Path(
+        str(data.get("model_path") or getattr(speech_to_text, "model_path", "") or "")
+    ).expanduser()
+    model_readable = bool(
+        data.get("model_readable")
+        if "model_readable" in data
+        else model_path.is_file() and os.access(model_path, os.R_OK)
+    )
+    temporary_output_directory = Path(
+        str(data.get("temporary_output_directory") or tempfile.gettempdir())
+    ).expanduser()
+    output_writable_value = (
+        data.get("output_directory_writable")
+        if "output_directory_writable" in data
+        else data.get("temporary_output_directory_writable")
+        if "temporary_output_directory_writable" in data
+        else None
+    )
+    output_writable = (
+        bool(output_writable_value)
+        if output_writable_value is not None
+        else None
+    )
+    active_pid = int(
+        runner_data.get("active_pid", getattr(runner, "active_pid", 0)) or 0
+    )
+    existing_child = bool(
+        data.get(
+            "existing_child_process",
+            runner_data.get("existing_child_process", active_pid > 0),
+        )
+    )
+    previous_reaped = data.get(
+        "previous_child_reaped",
+        runner_data.get("previous_child_reaped"),
+    )
+    cancellation_state = str(
+        data.get("cancellation_state")
+        or runner_data.get("cancellation_state")
+        or ("requested" if runner_data.get("cancelled") else "clear")
+    )
+    cancellation_clear = cancellation_state in {
+        "",
+        "clear",
+        "cleared",
+        "idle",
+        "not_applicable",
+    }
+    command_constructible = bool(
+        data.get("command_constructible", executable and model_readable)
+    )
+    healthy = bool(
+        health.get("success")
+        and executable
+        and model_readable
+        and output_writable is True
+        and command_constructible
+        and not existing_child
+        and active_pid <= 0
+        and previous_reaped is not False
+        and cancellation_clear
+    )
+    reason = str(health.get("error_message") or health.get("status") or "")
+    if healthy:
+        reason = ""
+    elif existing_child:
+        reason = "whisper_child_already_active"
+    elif previous_reaped is False:
+        reason = "previous_whisper_child_not_reaped"
+    elif not cancellation_clear:
+        reason = "stale_whisper_cancellation_state"
+    elif not executable:
+        reason = reason or "whisper_binary_not_executable"
+    elif not model_readable:
+        reason = reason or "whisper_model_not_readable"
+    elif not output_writable:
+        reason = "whisper_output_directory_not_writable"
+    elif not command_constructible:
+        reason = "whisper_command_invalid"
+    return {
+        "healthy": healthy,
+        "status": str(health.get("status") or "unknown"),
+        "reason": reason or "speech_to_text_health_check_failed",
+        "command_path": command_path,
+        "executable": executable,
+        "model_path": str(model_path) if str(model_path) != "." else "",
+        "model_readable": model_readable,
+        "output_directory": str(temporary_output_directory),
+        "output_directory_writable": output_writable,
+        "command_constructible": command_constructible,
+        "existing_child_process": existing_child,
+        "active_child_pid": active_pid,
+        "previous_child_reaped": previous_reaped,
+        "cancellation_state": cancellation_state,
+        "adapter_class": _adapter_class_name(speech_to_text),
+    }
+
+
+def _call_health_check(adapter: Any) -> dict[str, Any]:
+    if adapter is None:
+        return {
+            "success": False,
+            "status": "adapter_missing",
+            "error_message": "adapter_missing",
+            "data": {},
+        }
+    health_check = getattr(adapter, "health_check", None)
+    if not callable(health_check):
+        return {
+            "success": False,
+            "status": "health_check_unsupported",
+            "error_message": "health_check_unsupported",
+            "data": {},
+        }
+    try:
+        result = health_check()
+    except Exception as error:
+        return {
+            "success": False,
+            "status": "health_check_exception",
+            "error_message": f"{error.__class__.__name__}:{str(error)}",
+            "data": {},
+        }
+    return _result_payload(result)
+
+
+def _result_payload(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            payload = to_dict()
+            if isinstance(payload, dict):
+                return dict(payload)
+        except (TypeError, ValueError):
+            pass
+    return {
+        "success": bool(getattr(value, "success", False)),
+        "status": str(getattr(value, "status", "") or ""),
+        "error_message": str(getattr(value, "error_message", "") or ""),
+        "data": dict(getattr(value, "data", {}) or {}),
+    }
+
+
+def _controlled_stop_payload(data: dict[str, Any], microphone: Any) -> dict[str, Any]:
+    source_snapshot = dict(data.get("source_snapshot") or {})
+    candidates = (
+        data.get("previous_controlled_stop"),
+        data.get("previous_controlled_stop_result"),
+        data.get("controlled_stop"),
+        data.get("controlled_stop_result"),
+        source_snapshot.get("controlled_stop"),
+        source_snapshot.get("controlled_stop_result"),
+        getattr(microphone, "last_controlled_stop_result", None),
+        getattr(microphone, "controlled_stop_result", None),
+    )
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if isinstance(candidate, dict):
+            payload = dict(candidate)
+        else:
+            to_dict = getattr(candidate, "to_dict", None)
+            if callable(to_dict):
+                payload = dict(to_dict() or {})
+            else:
+                payload = dict(getattr(candidate, "__dict__", {}) or {})
+        if payload:
+            nested = dict(payload.get("data") or {})
+            return {**payload, **nested}
+    return {}
+
+
+def _runner_health_snapshot(runner: Any) -> dict[str, Any]:
+    if runner is None:
+        return {}
+    for name in ("health_snapshot", "process_health_snapshot"):
+        method = getattr(runner, name, None)
+        if callable(method):
+            try:
+                value = method()
+            except (OSError, RuntimeError, TypeError, ValueError):
+                continue
+            if isinstance(value, dict):
+                return dict(value)
+    return {
+        "active_pid": int(getattr(runner, "active_pid", 0) or 0),
+        "active_pgid": int(getattr(runner, "active_pgid", 0) or 0),
+        "cancellation_state": (
+            "requested"
+            if bool(getattr(runner, "_active_cancelled", False))
+            else "clear"
+        ),
+    }
+
+
+def _print_microphone_health(
+    health: dict[str, Any],
+    *,
+    output_func: Callable[[str], None],
+) -> None:
+    output_func("")
+    output_func("Microphone health:")
+    output_func(f"  configured: {_yes_no(bool(health.get('configured')))}")
+    output_func(
+        f"  device available: {_yes_no(bool(health.get('device_available')))}"
+    )
+    output_func(f"  stream state: {health.get('stream_state') or 'unknown'}")
+    output_func(f"  ownership state: {health.get('ownership_state') or 'unknown'}")
+    output_func(
+        "  previous process reaped: "
+        f"{_yes_no_not_available(health.get('previous_process_reaped'))}"
+    )
+    output_func(
+        "  previous controlled-stop result: "
+        f"{health.get('previous_controlled_stop_result') or 'not_applicable'}"
+    )
+    output_func(
+        "  final decision: "
+        f"{'healthy' if health.get('healthy') else 'unhealthy'}"
+    )
+    output_func(f"  exact reason: {health.get('reason') or '<none>'}")
+
+
+def _print_speech_to_text_health(
+    health: dict[str, Any],
+    *,
+    output_func: Callable[[str], None],
+) -> None:
+    output_func("")
+    output_func("Speech-to-text health:")
+    output_func(f"  command path: {health.get('command_path') or '<none>'}")
+    output_func(f"  executable: {_yes_no(bool(health.get('executable')))}")
+    output_func(f"  model path: {health.get('model_path') or '<none>'}")
+    output_func(
+        f"  model readable: {_yes_no(bool(health.get('model_readable')))}"
+    )
+    output_func(
+        "  output directory writable: "
+        f"{_yes_no_not_available(health.get('output_directory_writable'))}"
+    )
+    output_func(
+        "  command constructible: "
+        f"{_yes_no(bool(health.get('command_constructible')))}"
+    )
+    output_func(
+        "  existing child process: "
+        + (
+            f"pid={int(health.get('active_child_pid', 0) or 0)}"
+            if int(health.get("active_child_pid", 0) or 0) > 0
+            else "present"
+            if health.get("existing_child_process")
+            else "none"
+        )
+    )
+    output_func(
+        "  previous child reaped: "
+        f"{_yes_no_not_available(health.get('previous_child_reaped'))}"
+    )
+    output_func(
+        f"  cancellation state: {health.get('cancellation_state') or 'unknown'}"
+    )
+    output_func(
+        "  final decision: "
+        f"{'healthy' if health.get('healthy') else 'unhealthy'}"
+    )
+    output_func(f"  exact reason: {health.get('reason') or '<none>'}")
+
+
+def _adapter_class_name(adapter: Any) -> str:
+    if adapter is None:
+        return "<missing>"
+    return f"{adapter.__class__.__module__}.{adapter.__class__.__qualname__}"
 
 
 def _inter_command_readiness(
@@ -1396,7 +2143,7 @@ def _print_attempt(
     )
     output_func(f"Audio cleanup: {attempt.cleanup_result}")
     if not attempt.success:
-        output_func(f"Failure category: {attempt.failure_kind or 'VAD_error'}")
+        output_func(f"Failure category: {attempt.failure_kind or 'pipeline_error'}")
         output_func(f"Failure reason: {attempt.error_message or '<empty>'}")
         output_func(
             "Exception class: "
@@ -1534,8 +2281,14 @@ def _diagnostic_lifecycle_grammar(recognizer: Any) -> tuple[str, ...]:
 
 
 def _configuration_issue(args: argparse.Namespace) -> str:
-    if not bool(args.diagnostic_active_lifecycle_audio):
-        return "--diagnostic-active-lifecycle-audio is required"
+    if not (
+        bool(args.diagnostic_active_lifecycle_audio)
+        or bool(args.stt_preflight_only)
+    ):
+        return (
+            "--diagnostic-active-lifecycle-audio or --stt-preflight-only "
+            "is required"
+        )
     for label, value in (
         ("microphone device", args.microphone_device),
         ("speaker device", args.speaker_device),
@@ -1650,6 +2403,16 @@ def _yes_no_unknown(value: Any) -> str:
     if isinstance(value, bool):
         return "yes" if value else "no"
     return "unknown"
+
+
+def _yes_no(value: Any) -> str:
+    return "yes" if bool(value) else "no"
+
+
+def _yes_no_not_available(value: Any) -> str:
+    if value is None:
+        return "not_available"
+    return _yes_no(value)
 
 
 def _phrase_slug(value: str) -> str:

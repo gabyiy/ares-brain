@@ -936,6 +936,68 @@ def test_lifecycle_requires_health_and_stops_cleanly(tmp_path):
     assert pipeline.resource_manager.current_usage()["active_task_count"] == 0
 
 
+def test_controlled_alsa_stop_history_does_not_poison_independent_stt_health(tmp_path):
+    order = []
+
+    class ControlledStopMicrophone(FakeMicrophone):
+        def health_check(self):
+            return MicrophoneResult(
+                True,
+                "healthy",
+                "microphone healthy",
+                data={
+                    "previous_controlled_stop_result": {
+                        "stop_requested": True,
+                        "valid_pcm_received": True,
+                        "child_exit_code": 1,
+                        "stderr": (
+                            "arecord: pcm_read:2272: read error: "
+                            "Interrupted system call"
+                        ),
+                        "process_reaped": True,
+                        "cleanup_completed": True,
+                        "unexpected_failure": False,
+                        "final_health_effect": "none",
+                    }
+                },
+            )
+
+    microphone = ControlledStopMicrophone(order)
+    stt = FakeSpeechToText(order)
+    pipeline, *_ = _pipeline(tmp_path, microphone=microphone, stt=stt)
+
+    health = pipeline._health_components(_request(tmp_path))
+
+    assert health["success"] is True
+    assert health["components"]["microphone"]["success"] is True
+    assert health["components"]["speech_to_text"]["success"] is True
+    assert health["error_message"] == ""
+
+
+def test_microphone_health_failure_is_not_relabelled_as_stt_failure(tmp_path):
+    order = []
+
+    class FailedMicrophone(FakeMicrophone):
+        def health_check(self):
+            return MicrophoneResult(
+                False,
+                "device_error",
+                "microphone failed",
+                error_message="alsa_device_unavailable",
+            )
+
+    microphone = FailedMicrophone(order)
+    stt = FakeSpeechToText(order)
+    pipeline, *_ = _pipeline(tmp_path, microphone=microphone, stt=stt)
+
+    health = pipeline._health_components(_request(tmp_path))
+
+    assert health["success"] is False
+    assert health["components"]["microphone"]["success"] is False
+    assert health["components"]["speech_to_text"]["success"] is True
+    assert health["error_message"] == "unhealthy:microphone"
+
+
 def test_pre_cancelled_request_releases_resource_lock(tmp_path):
     pipeline, *_ = _pipeline(tmp_path)
     token = CancellationToken(task_id="cancel-before")

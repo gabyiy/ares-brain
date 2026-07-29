@@ -148,6 +148,45 @@ class PreflightStreamRunner:
         return self.source
 
 
+class StructuredStopFrameSource(FrameSource):
+    """Frame source exposing the production controlled-stop result contract."""
+
+    def __init__(self, frames, *, unexpected_failure=False):
+        super().__init__(frames)
+        self.unexpected_failure = bool(unexpected_failure)
+
+    def snapshot(self):
+        status = "unexpected_failure" if self.unexpected_failure else "controlled_stop"
+        return {
+            "process_pid": 2468,
+            "process_exit_status": 1 if self.closed else None,
+            "closed": self.closed,
+            "controlled_stop": (
+                {
+                    "stop_requested": True,
+                    "valid_pcm_received": self.read_count > 0,
+                    "valid_full_pcm_frames": self.read_count,
+                    "child_exit_code": 1,
+                    "child_signal": None,
+                    "stderr": (
+                        "arecord: pcm_read:2272: read error: Input/output error"
+                        if self.unexpected_failure
+                        else "arecord: pcm_read:2272: read error: Interrupted system call"
+                    ),
+                    "process_reaped": True,
+                    "cleanup_completed": True,
+                    "unexpected_failure": self.unexpected_failure,
+                    "status": status,
+                    "final_health_effect": (
+                        "unhealthy" if self.unexpected_failure else "none"
+                    ),
+                }
+                if self.closed
+                else {}
+            ),
+        }
+
+
 def test_persistent_stream_opens_once_across_rejected_and_accepted_candidates(tmp_path):
     source = FrameSource(
         [
@@ -234,6 +273,33 @@ def test_failed_persistent_close_retains_ownership_for_cleanup_retry():
     assert source.close_attempts == 2
     assert source.closed is True
     assert handle.closed is True
+    assert adapter.persistent_stream_snapshot()["active"] is False
+    assert adapter.persistent_stream_snapshot()["close_count"] == 1
+
+
+def test_persistent_close_reports_structured_unhealthy_stop_after_releasing_owner():
+    source = StructuredStopFrameSource(
+        [frame(400)],
+        unexpected_failure=True,
+    )
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(source),
+    )
+    assert adapter.start().success is True
+    handle = adapter.open_persistent_stream(owner="standby_wake_listener")
+    assert handle.frame_source.read_frame(640, 1.0) == frame(400)
+
+    result = adapter.close_persistent_stream(
+        handle,
+        owner="standby_wake_listener",
+    )
+
+    assert result.success is False
+    assert result.status == "stream_close_unhealthy"
+    assert result.data["controlled_stop"]["unexpected_failure"] is True
+    assert result.data["microphone_ownership_released"] is True
     assert adapter.persistent_stream_snapshot()["active"] is False
     assert adapter.persistent_stream_snapshot()["close_count"] == 1
 
@@ -537,6 +603,64 @@ def test_linux_alsa_auto_stop_streams_raw_pcm_with_argument_list(tmp_path):
     assert result.metadata["subprocess_shell"] is False
 
 
+def test_auto_stop_accepts_structured_controlled_interrupted_read_cleanup(tmp_path):
+    source = StructuredStopFrameSource(
+        [frame(400), frame(450), *([frame(20)] * 5)]
+    )
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(source),
+    )
+    assert adapter.start().success is True
+
+    result = adapter.record_until_silence(
+        tmp_path / "controlled-stop.wav",
+        calibration_enabled=False,
+        required_speech_frames=2,
+        silence_seconds=0.1,
+        speech_wait_timeout_seconds=0.1,
+        maximum_utterance_seconds=0.2,
+        pre_roll_seconds=0.0,
+    )
+
+    assert result.success is True
+    assert result.data["pcm_stream_cleanup"]["controlled_stop"]["status"] == (
+        "controlled_stop"
+    )
+    assert adapter.health_check().success is True
+
+
+def test_auto_stop_rejects_unrelated_exit_one_even_after_valid_candidate(tmp_path):
+    source = StructuredStopFrameSource(
+        [frame(400), frame(450), *([frame(20)] * 5)],
+        unexpected_failure=True,
+    )
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="hw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=StreamRunner(source),
+    )
+    assert adapter.start().success is True
+
+    result = adapter.record_until_silence(
+        tmp_path / "unexpected-stop.wav",
+        calibration_enabled=False,
+        required_speech_frames=2,
+        silence_seconds=0.1,
+        speech_wait_timeout_seconds=0.1,
+        maximum_utterance_seconds=0.2,
+        pre_roll_seconds=0.0,
+    )
+
+    assert result.success is False
+    assert result.status == VAD_STATUS_DEVICE_ERROR
+    assert result.error_message == "pcm_stream_stop_unhealthy:unexpected_failure"
+    controlled = result.data["pcm_stream_cleanup"]["controlled_stop"]
+    assert controlled["unexpected_failure"] is True
+    assert controlled["final_health_effect"] == "unhealthy"
+
+
 def test_linux_alsa_ready_boundary_waits_for_live_stream_and_calibration(tmp_path):
     source = FrameSource([frame(40)] * 5)
     stream_runner = StreamRunner(source)
@@ -821,6 +945,127 @@ def test_pcm_preflight_uses_production_command_and_opens_before_bounded_read():
     assert result.data["alsa_child_process_id"] == 2468
     assert result.data["cleanup_result"] == "completed"
     assert result.data["microphone_ownership_released"] is True
+    assert adapter._active_stream is None
+    assert adapter._active_stream_owner == ""
+
+
+def test_pcm_preflight_accepts_controlled_arecord_exit_one_after_valid_frame():
+    class ControlledInterruptedSource(PreflightFrameSource):
+        def snapshot(self):
+            value = super().snapshot()
+            if not self.closed:
+                value["process_exit_status"] = None
+            else:
+                value.update(
+                    {
+                        "process_exit_status": 1,
+                        "stderr_preview": (
+                            "arecord: pcm_read:2272: read error: "
+                            "Interrupted system call"
+                        ),
+                        "controlled_stop": {
+                            "stop_requested": True,
+                            "valid_pcm_received": True,
+                            "valid_full_pcm_frames": 1,
+                            "child_exit_code": 1,
+                            "child_signal": None,
+                            "termination_signal_requested": "SIGTERM",
+                            "termination_escalated": False,
+                            "stderr": (
+                                "arecord: pcm_read:2272: read error: "
+                                "Interrupted system call"
+                            ),
+                            "process_reaped": True,
+                            "cleanup_completed": True,
+                            "active_failure_before_stop": False,
+                            "unexpected_ownership_loss": False,
+                            "unexpected_failure": False,
+                            "status": "controlled_stop",
+                            "final_health_effect": "none",
+                            "cleanup_errors": [],
+                        },
+                    }
+                )
+            return value
+
+    events = []
+    source = ControlledInterruptedSource(events, payload=frame(175))
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="plughw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=PreflightStreamRunner(source, events),
+    )
+    assert adapter.start().success is True
+
+    result = adapter.preflight_pcm_stream(owner="diagnostic_active_capture")
+
+    assert result.success is True
+    assert result.status == "pcm_preflight_passed"
+    assert result.data["alsa_process_exit_status"] == 1
+    assert "Interrupted system call" in result.data["alsa_stderr"]
+    controlled = result.data["controlled_stop"]
+    assert controlled["status"] == "controlled_stop"
+    assert controlled["final_health_effect"] == "none"
+    assert controlled["unexpected_failure"] is False
+    assert result.data["microphone_ownership_released"] is True
+    health = adapter.health_check()
+    assert health.success is True
+    assert health.data["previous_controlled_stop_result"] == controlled
+
+
+def test_pcm_preflight_is_reusable_after_controlled_stop():
+    class FreshControlledSource(PreflightFrameSource):
+        def snapshot(self):
+            value = super().snapshot()
+            value["process_exit_status"] = -15 if self.closed else None
+            if self.closed:
+                value["controlled_stop"] = {
+                    "stop_requested": True,
+                    "valid_pcm_received": True,
+                    "valid_full_pcm_frames": 1,
+                    "child_exit_code": -15,
+                    "child_signal": 15,
+                    "termination_signal_requested": "SIGTERM",
+                    "termination_escalated": False,
+                    "stderr": "",
+                    "process_reaped": True,
+                    "cleanup_completed": True,
+                    "active_failure_before_stop": False,
+                    "unexpected_ownership_loss": False,
+                    "unexpected_failure": False,
+                    "status": "controlled_stop",
+                    "final_health_effect": "none",
+                    "cleanup_errors": [],
+                }
+            return value
+
+    class FreshStreamRunner:
+        def __init__(self):
+            self.events = []
+            self.sources = []
+
+        def start(self, args):
+            self.events.append(("open", list(args)))
+            source = FreshControlledSource(self.events, payload=frame(225))
+            self.sources.append(source)
+            return source
+
+    stream_runner = FreshStreamRunner()
+    adapter = LinuxAlsaMicrophoneAdapter(
+        device="plughw:2,0",
+        runner=DeviceRunner(),
+        stream_runner=stream_runner,
+    )
+    assert adapter.start().success is True
+
+    first = adapter.preflight_pcm_stream(owner="diagnostic_active_capture")
+    second = adapter.preflight_pcm_stream(owner="diagnostic_active_capture")
+
+    assert first.success is True
+    assert second.success is True
+    assert len(stream_runner.sources) == 2
+    assert stream_runner.sources[0] is not stream_runner.sources[1]
+    assert all(source.closed for source in stream_runner.sources)
     assert adapter._active_stream is None
     assert adapter._active_stream_owner == ""
 

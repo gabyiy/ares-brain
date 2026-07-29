@@ -38,7 +38,13 @@ WHISPER_TERMINATE_SIGNAL = int(getattr(signal, "SIGTERM", 15))
 WHISPER_KILL_SIGNAL = int(getattr(signal, "SIGKILL", 9))
 
 WHISPER_STATUS_BINARY_MISSING = "whisper_binary_missing"
+WHISPER_STATUS_BINARY_NOT_EXECUTABLE = "whisper_binary_not_executable"
 WHISPER_STATUS_MODEL_MISSING = "whisper_model_missing"
+WHISPER_STATUS_MODEL_UNREADABLE = "whisper_model_unreadable"
+WHISPER_STATUS_OUTPUT_UNWRITABLE = "whisper_output_directory_unwritable"
+WHISPER_STATUS_PROCESS_ACTIVE = "whisper_process_active"
+WHISPER_STATUS_PROCESS_UNREAPED = "whisper_process_unreaped"
+WHISPER_STATUS_CONFIGURATION_ERROR = "whisper_configuration_error"
 WHISPER_STATUS_INVALID_AUDIO = "invalid_audio"
 WHISPER_STATUS_TRANSCRIPTION_TIMEOUT = "transcription_timeout"
 WHISPER_STATUS_TRANSCRIPTION_FAILED = "transcription_failed"
@@ -83,6 +89,12 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
         process_group_getter: Optional[ProcessGroupGetter] = None,
         process_group_signaler: Optional[ProcessGroupSignaler] = None,
     ) -> None:
+        # ``SafeSubprocessRunner.which`` owns the executable resolver used by
+        # the STT health check.  This runner replaces the parent's process
+        # execution implementation, but it must still initialize that resolver.
+        # Without this call, health_check() raises AttributeError before a
+        # Whisper process can be launched.
+        super().__init__()
         grace = float(termination_grace_seconds)
         if not 0.1 <= grace <= 10.0:
             raise ValueError("termination_grace_seconds must be between 0.1 and 10")
@@ -123,6 +135,9 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
         self._active_pgid = 0
         self._active_cancelled = False
         self._active_cancel_reason = ""
+        self._last_process: Any = None
+        self._last_process_pgid = 0
+        self._last_process_metadata: Dict[str, Any] = {}
 
     @property
     def active_pid(self) -> int:
@@ -154,6 +169,73 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
             cleanup_reason=self._active_cancel_reason,
         )
         return True
+
+    def health_snapshot(self) -> Dict[str, Any]:
+        """Return current process/reap state without starting Whisper.
+
+        A completed cancellation is historical metadata, not a sticky health
+        failure.  An active child or a child that could not be reaped remains a
+        current health failure until observation proves that it has exited.
+        """
+
+        with self._active_lock:
+            active_process = self._active_process
+            active_pid = self._active_pid
+            active_pgid = self._active_pgid
+            active_cancelled = self._active_cancelled
+            last_process = self._last_process
+            last_pgid = self._last_process_pgid
+            last_metadata = dict(self._last_process_metadata)
+
+        active_alive = bool(
+            active_process is not None
+            and (
+                self._process_alive(active_process)
+                or self._group_alive(active_process, active_pgid)
+            )
+        )
+        previous_child_present = last_process is not None
+        previous_reaped = True
+        previous_group_alive = False
+        if previous_child_present:
+            previous_reaped = self._process_reaped(last_process)
+            previous_group_alive = self._group_alive(last_process, last_pgid)
+
+        previous_handles_closed = bool(
+            last_metadata.get("output_handles_closed", not previous_child_present)
+        )
+        previous_cleanup_completed = bool(
+            previous_reaped
+            and not previous_group_alive
+            and previous_handles_closed
+        )
+        previous_cancelled = bool(last_metadata.get("cancelled", False))
+        existing_child = bool(
+            active_alive
+            or (
+                previous_child_present
+                and (not previous_reaped or previous_group_alive)
+            )
+        )
+        return {
+            "existing_child_process": existing_child,
+            "active_pid": int(active_pid or 0),
+            "active_pgid": int(active_pgid or 0),
+            "previous_child_present": previous_child_present,
+            "previous_child_pid": int(last_metadata.get("pid", 0) or 0),
+            "previous_child_exit_code": last_metadata.get("returncode"),
+            "previous_child_reaped": previous_reaped,
+            "previous_process_group_alive": previous_group_alive,
+            "previous_cleanup_completed": previous_cleanup_completed,
+            "previous_output_handles_closed": previous_handles_closed,
+            "previous_request_cancelled": previous_cancelled,
+            "previous_cancel_reason": str(
+                last_metadata.get("cancel_reason", "") or ""
+            ),
+            "cancellation_state": (
+                "requested" if active_cancelled and active_alive else "clear"
+            ),
+        }
 
     def _run_serialized(
         self,
@@ -315,6 +397,14 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
                 )
             self._emit(f"Whisper completed: exit={returncode}, elapsed={elapsed:g} seconds")
             self._emit_progress("process_completed")
+        self._record_last_process(
+            process,
+            pgid,
+            {
+                **metadata,
+                "returncode": returncode,
+            },
+        )
         return SafeProcessResult(
             args=safe_args,
             returncode=returncode,
@@ -324,6 +414,17 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
             error_message=process_error,
             metadata=metadata,
         )
+
+    def _record_last_process(
+        self,
+        process: Any,
+        pgid: int,
+        metadata: Dict[str, Any],
+    ) -> None:
+        with self._active_lock:
+            self._last_process = process
+            self._last_process_pgid = int(pgid or 0)
+            self._last_process_metadata = dict(metadata or {})
 
     def _cleanup_process(
         self,
@@ -661,6 +762,7 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
         clock: Clock = time.perf_counter,
         source: str = "linux_whisper_speech_to_text_adapter",
         status_callback: Optional[StatusCallback] = None,
+        temporary_output_directory: Optional[str | Path] = None,
     ):
         self.model_path = Path(
             model_path
@@ -680,6 +782,9 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
         )
         self.clock = clock
         self.source = source
+        self.temporary_output_directory = Path(
+            temporary_output_directory or tempfile.gettempdir()
+        ).expanduser()
         self.transcription_count = 0
         self.speech_engine_accessed = False
         self.audio_hardware_accessed = False
@@ -717,7 +822,10 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                 timeout_seconds=request_timeout,
             )
 
-        with tempfile.TemporaryDirectory(prefix="ares_whisper_audio_") as temp_dir:
+        with tempfile.TemporaryDirectory(
+            prefix="ares_whisper_audio_",
+            dir=str(self.temporary_output_directory),
+        ) as temp_dir:
             temp_wav = Path(temp_dir) / "audio_chunk.wav"
             try:
                 _write_audio_chunk_wav(audio_chunk, temp_wav)
@@ -808,7 +916,10 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
         requested_language = str(language or self.language or DEFAULT_WHISPER_LANGUAGE).strip()
         effective_language = _resolve_whisper_language(requested_language, self.model_path)
         model_english_only = _is_english_only_whisper_model(self.model_path)
-        with tempfile.TemporaryDirectory(prefix="ares_whisper_output_") as temp_dir:
+        with tempfile.TemporaryDirectory(
+            prefix="ares_whisper_output_",
+            dir=str(self.temporary_output_directory),
+        ) as temp_dir:
             output_base = Path(temp_dir) / "transcript"
             command = self._transcribe_command(
                 binary_path=binary_path,
@@ -960,21 +1071,91 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
         )
 
     def health_check(self) -> TranscriptionResult:
-        binary_path = self._find_whisper_binary()
-        if not binary_path:
-            return self._failure(
-                status=WHISPER_STATUS_BINARY_MISSING,
-                error_message="whisper_binary_missing",
-                audio_path="",
-                processing_time_seconds=0.0,
+        try:
+            binary_path = self._find_whisper_binary()
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as error:
+            return self._health_failure(
+                status=WHISPER_STATUS_CONFIGURATION_ERROR,
+                reason=f"whisper_executable_resolution_failed:{error.__class__.__name__}",
+                binary_path="",
             )
-        if not self.model_path.exists():
-            return self._failure(
+        if not binary_path:
+            return self._health_failure(
+                status=WHISPER_STATUS_BINARY_MISSING,
+                reason="whisper_binary_missing",
+                binary_path="",
+            )
+        executable_path = Path(binary_path).expanduser()
+        if not executable_path.is_file() or not os.access(executable_path, os.X_OK):
+            return self._health_failure(
+                status=WHISPER_STATUS_BINARY_NOT_EXECUTABLE,
+                reason="whisper_binary_not_executable",
+                binary_path=binary_path,
+            )
+        if not self.model_path.is_file():
+            return self._health_failure(
                 status=WHISPER_STATUS_MODEL_MISSING,
-                error_message="whisper_model_missing",
-                audio_path="",
-                processing_time_seconds=0.0,
-                extra_data={"whisper_binary_path": binary_path},
+                reason="whisper_model_missing",
+                binary_path=binary_path,
+            )
+        if not os.access(self.model_path, os.R_OK):
+            return self._health_failure(
+                status=WHISPER_STATUS_MODEL_UNREADABLE,
+                reason="whisper_model_unreadable",
+                binary_path=binary_path,
+            )
+
+        output_writable, output_reason = self._probe_output_directory()
+        if not output_writable:
+            return self._health_failure(
+                status=WHISPER_STATUS_OUTPUT_UNWRITABLE,
+                reason=output_reason,
+                binary_path=binary_path,
+                output_directory_writable=False,
+            )
+
+        try:
+            command = self._health_check_command(binary_path)
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            return self._health_failure(
+                status=WHISPER_STATUS_CONFIGURATION_ERROR,
+                reason=f"whisper_command_construction_failed:{error.__class__.__name__}",
+                binary_path=binary_path,
+                output_directory_writable=True,
+            )
+
+        runner_health = self._runner_health_snapshot()
+        if bool(runner_health.get("existing_child_process")):
+            status = (
+                WHISPER_STATUS_PROCESS_ACTIVE
+                if int(runner_health.get("active_pid", 0) or 0) > 0
+                else WHISPER_STATUS_PROCESS_UNREAPED
+            )
+            return self._health_failure(
+                status=status,
+                reason=status,
+                binary_path=binary_path,
+                output_directory_writable=True,
+                runner_health=runner_health,
+                command_constructible=True,
+            )
+        if not bool(runner_health.get("previous_child_reaped", True)):
+            return self._health_failure(
+                status=WHISPER_STATUS_PROCESS_UNREAPED,
+                reason="whisper_process_unreaped",
+                binary_path=binary_path,
+                output_directory_writable=True,
+                runner_health=runner_health,
+                command_constructible=True,
+            )
+        if str(runner_health.get("cancellation_state") or "clear") != "clear":
+            return self._health_failure(
+                status=WHISPER_STATUS_PROCESS_ACTIVE,
+                reason="whisper_cancellation_in_progress",
+                binary_path=binary_path,
+                output_directory_writable=True,
+                runner_health=runner_health,
+                command_constructible=True,
             )
         return TranscriptionResult(
             success=True,
@@ -985,14 +1166,117 @@ class LinuxWhisperSpeechToTextAdapter(SpeechToTextAdapter):
                 **self._base_data(),
                 "whisper_binary_available": True,
                 "whisper_binary_path": binary_path,
+                "whisper_command_path": binary_path,
+                "whisper_executable": True,
                 "model_available": True,
                 "model_path": str(self.model_path),
+                "model_readable": True,
+                "temporary_output_directory": str(self.temporary_output_directory),
+                "output_directory_writable": True,
+                "command_constructible": True,
+                "configured_command": list(command),
+                **runner_health,
+                "final_health_decision": "healthy",
+                "health_reason": "healthy",
                 "language": self.language,
                 "language_effective": _resolve_whisper_language(self.language, self.model_path),
                 "minimum_rms": self.minimum_rms,
             },
             metadata=self._metadata(),
         )
+
+    def _health_failure(
+        self,
+        *,
+        status: str,
+        reason: str,
+        binary_path: str,
+        output_directory_writable: Optional[bool] = None,
+        runner_health: Optional[Dict[str, Any]] = None,
+        command_constructible: bool = False,
+    ) -> TranscriptionResult:
+        executable_path = Path(binary_path).expanduser() if binary_path else None
+        process_health = dict(runner_health or self._runner_health_snapshot())
+        return self._failure(
+            status=status,
+            error_message=reason,
+            audio_path="",
+            processing_time_seconds=0.0,
+            extra_data={
+                "whisper_binary_available": bool(binary_path),
+                "whisper_binary_path": binary_path,
+                "whisper_command_path": binary_path,
+                "whisper_executable": bool(
+                    executable_path is not None
+                    and executable_path.is_file()
+                    and os.access(executable_path, os.X_OK)
+                ),
+                "model_available": self.model_path.is_file(),
+                "model_path": str(self.model_path),
+                "model_readable": bool(
+                    self.model_path.is_file()
+                    and os.access(self.model_path, os.R_OK)
+                ),
+                "temporary_output_directory": str(self.temporary_output_directory),
+                "output_directory_writable": output_directory_writable,
+                "command_constructible": bool(command_constructible),
+                **process_health,
+                "final_health_decision": "unhealthy",
+                "health_reason": reason,
+            },
+        )
+
+    def _runner_health_snapshot(self) -> Dict[str, Any]:
+        snapshot = getattr(self.runner, "health_snapshot", None)
+        if callable(snapshot):
+            try:
+                value = snapshot()
+                if isinstance(value, dict):
+                    return dict(value)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                pass
+        active_pid = int(getattr(self.runner, "active_pid", 0) or 0)
+        return {
+            "existing_child_process": active_pid > 0,
+            "active_pid": active_pid,
+            "active_pgid": int(getattr(self.runner, "active_pgid", 0) or 0),
+            "previous_child_present": False,
+            "previous_child_pid": 0,
+            "previous_child_exit_code": None,
+            "previous_child_reaped": True,
+            "previous_process_group_alive": False,
+            "previous_cleanup_completed": True,
+            "previous_output_handles_closed": True,
+            "previous_request_cancelled": False,
+            "previous_cancel_reason": "",
+            "cancellation_state": "clear",
+        }
+
+    def _probe_output_directory(self) -> tuple[bool, str]:
+        directory = self.temporary_output_directory
+        if not directory.is_dir():
+            return False, "whisper_output_directory_missing"
+        try:
+            with tempfile.TemporaryFile(mode="w+b", dir=str(directory)) as probe:
+                probe.write(b"ares-whisper-health")
+                probe.flush()
+        except (OSError, PermissionError, ValueError) as error:
+            return (
+                False,
+                f"whisper_output_directory_unwritable:{error.__class__.__name__}",
+            )
+        return True, "healthy"
+
+    def _health_check_command(self, binary_path: str) -> List[str]:
+        command = self._transcribe_command(
+            binary_path=binary_path,
+            audio_path=self.temporary_output_directory / "ares-health-input.wav",
+            output_base=self.temporary_output_directory / "ares-health-output",
+            language=_resolve_whisper_language(self.language, self.model_path),
+        )
+        if not command or command[0] != binary_path or "-m" not in command or "-f" not in command:
+            raise ValueError("invalid_whisper_command")
+        return command
 
     def _find_whisper_binary(self) -> str:
         found = self.runner.which(self.whisper_command)

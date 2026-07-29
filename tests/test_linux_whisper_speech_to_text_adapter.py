@@ -55,7 +55,8 @@ class FakeWhisperRunner:
         self.calls = []
 
     def which(self, executable):
-        return "/usr/local/bin/whisper-cli" if self.available else None
+        del executable
+        return sys.executable if self.available else None
 
     def run(self, args, timeout_seconds):
         safe_args = list(args)
@@ -133,7 +134,239 @@ def test_linux_whisper_health_check_passes_with_binary_and_model(tmp_path):
     assert result.status == "healthy"
     assert result.data["model_available"] is True
     assert result.data["whisper_binary_available"] is True
+    assert result.data["whisper_executable"] is True
+    assert result.data["model_readable"] is True
+    assert result.data["output_directory_writable"] is True
+    assert result.data["command_constructible"] is True
+    assert result.data["existing_child_process"] is False
+    assert result.data["previous_child_reaped"] is True
+    assert result.data["cancellation_state"] == "clear"
+    assert result.data["final_health_decision"] == "healthy"
+    assert result.data["health_reason"] == "healthy"
     assert result.data["internet"] == "disabled"
+
+
+def test_whisper_uses_the_output_directory_validated_by_health_check(tmp_path):
+    output_directory = tmp_path / "whisper-output"
+    output_directory.mkdir()
+    runner = FakeWhisperRunner()
+    adapter = LinuxWhisperSpeechToTextAdapter(
+        model_path=create_model(tmp_path),
+        runner=runner,
+        temporary_output_directory=output_directory,
+    )
+    wav_path = tmp_path / "command.wav"
+    write_valid_wav(wav_path, pcm16_frames(500))
+
+    assert adapter.health_check().success is True
+    result = adapter.transcribe_wav(wav_path)
+
+    assert result.success is True
+    output_base = Path(runner.calls[0]["args"][runner.calls[0]["args"].index("-of") + 1])
+    assert output_directory in output_base.parents
+
+
+def test_real_whisper_runner_initializes_inherited_executable_resolver():
+    runner = WhisperSubprocessRunner()
+
+    assert runner.which(sys.executable)
+
+
+def test_real_whisper_runner_supports_healthy_finalized_wav_configuration(tmp_path):
+    adapter = LinuxWhisperSpeechToTextAdapter(
+        model_path=create_model(tmp_path),
+        whisper_command=sys.executable,
+        runner=WhisperSubprocessRunner(),
+        temporary_output_directory=tmp_path,
+    )
+
+    result = adapter.health_check()
+
+    assert result.success is True
+    assert result.data["existing_child_process"] is False
+    assert result.data["previous_child_reaped"] is True
+    assert result.data["cancellation_state"] == "clear"
+    assert result.data["command_constructible"] is True
+
+
+def test_linux_whisper_non_executable_binary_is_unhealthy(tmp_path, monkeypatch):
+    binary = tmp_path / "whisper-cli"
+    binary.write_text("not executable", encoding="utf-8")
+    runner = FakeWhisperRunner()
+    runner.which = lambda _command: str(binary)
+    adapter = LinuxWhisperSpeechToTextAdapter(
+        model_path=create_model(tmp_path),
+        runner=runner,
+    )
+    real_access = os.access
+    monkeypatch.setattr(
+        os,
+        "access",
+        lambda path, mode: (
+            False
+            if Path(path) == binary and mode == os.X_OK
+            else real_access(path, mode)
+        ),
+    )
+
+    result = adapter.health_check()
+
+    assert result.success is False
+    assert result.status == "whisper_binary_not_executable"
+    assert result.data["whisper_binary_available"] is True
+    assert result.data["whisper_executable"] is False
+    assert result.data["health_reason"] == "whisper_binary_not_executable"
+
+
+def test_linux_whisper_unreadable_model_is_unhealthy(tmp_path, monkeypatch):
+    model = create_model(tmp_path)
+    adapter = LinuxWhisperSpeechToTextAdapter(
+        model_path=model,
+        whisper_command=sys.executable,
+        runner=WhisperSubprocessRunner(),
+    )
+    real_access = os.access
+    monkeypatch.setattr(
+        os,
+        "access",
+        lambda path, mode: (
+            False
+            if Path(path) == model and mode == os.R_OK
+            else real_access(path, mode)
+        ),
+    )
+
+    result = adapter.health_check()
+
+    assert result.success is False
+    assert result.status == "whisper_model_unreadable"
+    assert result.data["model_available"] is True
+    assert result.data["model_readable"] is False
+
+
+def test_linux_whisper_missing_output_directory_is_unhealthy(tmp_path):
+    adapter = LinuxWhisperSpeechToTextAdapter(
+        model_path=create_model(tmp_path),
+        whisper_command=sys.executable,
+        runner=WhisperSubprocessRunner(),
+        temporary_output_directory=tmp_path / "missing-output-directory",
+    )
+
+    result = adapter.health_check()
+
+    assert result.success is False
+    assert result.status == "whisper_output_directory_unwritable"
+    assert result.error_message == "whisper_output_directory_missing"
+    assert result.data["output_directory_writable"] is False
+
+
+def test_linux_whisper_output_probe_error_is_typed_unhealthy(tmp_path, monkeypatch):
+    adapter = LinuxWhisperSpeechToTextAdapter(
+        model_path=create_model(tmp_path),
+        whisper_command=sys.executable,
+        runner=WhisperSubprocessRunner(),
+        temporary_output_directory=tmp_path,
+    )
+
+    def fail_probe(*args, **kwargs):
+        del args, kwargs
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(
+        "core.LinuxWhisperSpeechToText.tempfile.TemporaryFile",
+        fail_probe,
+    )
+
+    result = adapter.health_check()
+
+    assert result.success is False
+    assert result.status == "whisper_output_directory_unwritable"
+    assert result.error_message == "whisper_output_directory_unwritable:OSError"
+    assert result.data["output_directory_writable"] is False
+
+
+def test_cancelled_reaped_whisper_request_does_not_poison_adapter_health(tmp_path):
+    runner = WhisperSubprocessRunner(
+        termination_grace_seconds=0.1,
+        hard_cleanup_deadline_seconds=0.3,
+    )
+    completed = {}
+
+    def execute():
+        completed["result"] = runner.run(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout_seconds=10.0,
+        )
+
+    worker = Thread(target=execute)
+    worker.start()
+    deadline = time.monotonic() + 2.0
+    while runner.active_pid == 0 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert runner.active_pid > 0
+    assert runner.cancel_current("health_check_test") is True
+    worker.join(timeout=2.0)
+    assert worker.is_alive() is False
+    assert completed["result"].metadata["reaped"] is True
+
+    adapter = LinuxWhisperSpeechToTextAdapter(
+        model_path=create_model(tmp_path),
+        whisper_command=sys.executable,
+        runner=runner,
+    )
+    health = adapter.health_check()
+
+    assert health.success is True
+    assert health.data["previous_request_cancelled"] is True
+    assert health.data["previous_child_reaped"] is True
+    assert health.data["previous_cleanup_completed"] is True
+    assert health.data["cancellation_state"] == "clear"
+    assert health.data["existing_child_process"] is False
+
+
+def test_unreaped_whisper_child_is_current_health_failure(tmp_path):
+    class UnreapableProcess:
+        pid = 45001
+        returncode = None
+
+        def poll(self):
+            return None
+
+    class AdvancingClock:
+        def __init__(self):
+            self.value = 10.0
+
+        def __call__(self):
+            self.value += 0.025
+            return self.value
+
+    def group_signaler(_pgid, signal_number):
+        if signal_number == 0:
+            return
+
+    runner = WhisperSubprocessRunner(
+        process_factory=lambda *args, **kwargs: UnreapableProcess(),
+        termination_grace_seconds=0.1,
+        hard_cleanup_deadline_seconds=0.2,
+        clock=AdvancingClock(),
+        process_group_getter=lambda _pid: 45001,
+        process_group_signaler=group_signaler,
+    )
+    process_result = runner.run(["fake-whisper"], timeout_seconds=0.01)
+    assert process_result.metadata["reaped"] is False
+
+    adapter = LinuxWhisperSpeechToTextAdapter(
+        model_path=create_model(tmp_path),
+        whisper_command=sys.executable,
+        runner=runner,
+    )
+    health = adapter.health_check()
+
+    assert health.success is False
+    assert health.status == "whisper_process_unreaped"
+    assert health.data["existing_child_process"] is True
+    assert health.data["previous_child_reaped"] is False
+    assert health.data["previous_cleanup_completed"] is False
 
 
 def test_linux_whisper_missing_binary_fails_safely(tmp_path):
@@ -186,7 +419,7 @@ def test_linux_whisper_transcribes_wav_file_with_metadata(tmp_path):
     assert "-otxt" in command
     assert "-of" in command
     assert runner.calls[0]["timeout_seconds"] == 33
-    assert "whisper-cli" in result.data["process"]["command"]
+    assert str(Path(sys.executable)) in result.data["process"]["command"]
     assert result.data["wav_closed_before_inference"] is True
     assert result.data["transcription_timeout_seconds"] == 33
     assert result.data["transcription_started_at"]

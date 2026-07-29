@@ -44,6 +44,19 @@ class FakePipe:
         self.closed = True
 
 
+class PayloadPipe(FakePipe):
+    def __init__(self, descriptor: int, payload: bytes):
+        super().__init__(descriptor)
+        self.payload = bytes(payload)
+
+    def read(self, maximum_bytes):
+        if self.closed:
+            raise ValueError("read of closed pipe")
+        result = self.payload[:maximum_bytes]
+        self.payload = self.payload[maximum_bytes:]
+        return result
+
+
 class FakeProcess:
     def __init__(self):
         self.stdout = FakePipe(DESCRIPTOR)
@@ -215,6 +228,9 @@ def test_odd_trailing_pcm_is_corruption_and_never_becomes_a_frame():
     assert snapshot["valid_full_pcm_frames"] == 0
     assert snapshot["pending_partial_bytes"] == 1
     assert snapshot["zero_filled_bytes"] == 0
+    source.close()
+    assert source.last_stop_result.active_failure_before_stop is True
+    assert source.last_stop_result.final_health_effect == "unhealthy"
 
 
 def test_zero_length_read_while_process_is_alive_is_not_clean_eof():
@@ -892,9 +908,267 @@ def test_unreaped_process_keeps_source_retryable_and_reports_cleanup_failure():
     assert source.closed is False
     assert process.stdout.closed is True
     assert process.stderr.closed is True
+    failed_stop = source.last_stop_result
+    assert failed_stop.process_reaped is False
+    assert failed_stop.cleanup_completed is False
+    assert failed_stop.unexpected_failure is True
+    assert failed_stop.status == "cleanup_incomplete"
+    assert failed_stop.final_health_effect == "unhealthy"
 
     process.allow_cleanup = True
     source.close()
 
     assert source.closed is True
     assert process.returncode == 0
+
+
+def test_valid_pcm_then_intentional_arecord_interrupted_exit_is_controlled():
+    class InterruptedStopProcess(FakeProcess):
+        def __init__(self):
+            super().__init__()
+            self.stderr = PayloadPipe(
+                DESCRIPTOR + 1,
+                b"arecord: pcm_read:2272: read error: Interrupted system call\n",
+            )
+
+        def terminate(self):
+            self.returncode = 1
+
+    process = InterruptedStopProcess()
+    reader = ScriptedRawReader([pcm_frame(100, -200, 300, -400)])
+    source = SubprocessPcmFrameSource(
+        ["/usr/bin/arecord", "-t", "raw", "-"],
+        process_factory=lambda _args, **_kwargs: process,
+        selector=reader.select,
+        raw_reader=reader,
+    )
+
+    assert source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+    source.close()
+
+    stopped = source.snapshot()["controlled_stop"]
+    assert stopped["stop_requested"] is True
+    assert stopped["valid_pcm_received"] is True
+    assert stopped["child_exit_code"] == 1
+    assert stopped["child_signal"] is None
+    assert stopped["process_reaped"] is True
+    assert stopped["cleanup_completed"] is True
+    assert stopped["unexpected_failure"] is False
+    assert stopped["status"] == "controlled_stop"
+    assert stopped["final_health_effect"] == "none"
+    assert "Interrupted system call" in stopped["stderr"]
+
+
+def test_valid_pcm_then_intentional_sigterm_is_controlled():
+    class SigtermStopProcess(FakeProcess):
+        def terminate(self):
+            self.returncode = -15
+
+    process = SigtermStopProcess()
+    reader = ScriptedRawReader([pcm_frame(10, 20, 30, 40)])
+    source = SubprocessPcmFrameSource(
+        ["/usr/bin/arecord", "-t", "raw", "-"],
+        process_factory=lambda _args, **_kwargs: process,
+        selector=reader.select,
+        raw_reader=reader,
+    )
+
+    source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+    source.close()
+
+    stopped = source.last_stop_result
+    assert stopped.child_exit_code == -15
+    assert stopped.child_signal == 15
+    assert stopped.termination_signal_requested == "SIGTERM"
+    assert stopped.status == "controlled_stop"
+    assert stopped.final_health_effect == "none"
+
+
+def test_valid_pcm_then_intentional_sigint_is_controlled():
+    class SigintStopProcess(FakeProcess):
+        def terminate(self):
+            self.returncode = -2
+
+    process = SigintStopProcess()
+    reader = ScriptedRawReader([pcm_frame(10, 20, 30, 40)])
+    source = SubprocessPcmFrameSource(
+        ["/usr/bin/arecord", "-t", "raw", "-"],
+        process_factory=lambda _args, **_kwargs: process,
+        selector=reader.select,
+        raw_reader=reader,
+    )
+
+    source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+    source.close()
+
+    assert source.last_stop_result.child_signal == 2
+    assert source.last_stop_result.status == "controlled_stop"
+    assert source.last_stop_result.final_health_effect == "none"
+
+
+def test_valid_pcm_sigkill_escalation_is_degraded_but_reusable_when_reaped():
+    class KillEscalationProcess(FakeProcess):
+        def terminate(self):
+            return None
+
+        def wait(self, timeout):
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired("arecord", timeout)
+            return self.returncode
+
+    class SteppingClock:
+        def __init__(self):
+            self.value = 0.0
+
+        def __call__(self):
+            self.value += 1.0
+            return self.value
+
+    process = KillEscalationProcess()
+    reader = ScriptedRawReader([pcm_frame(11, 22, 33, 44)])
+    source = SubprocessPcmFrameSource(
+        ["/usr/bin/arecord", "-t", "raw", "-"],
+        process_factory=lambda _args, **_kwargs: process,
+        selector=reader.select,
+        raw_reader=reader,
+    )
+    source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+    source.clock = SteppingClock()
+
+    source.close()
+
+    stopped = source.last_stop_result
+    assert stopped.child_exit_code == -9
+    assert stopped.child_signal == 9
+    assert stopped.termination_escalated is True
+    assert stopped.process_reaped is True
+    assert stopped.unexpected_failure is False
+    assert stopped.status == "controlled_stop_degraded"
+    assert stopped.final_health_effect == "degraded_reusable"
+
+    next_reader = ScriptedRawReader([pcm_frame(55, 66, 77, 88)])
+    next_source, _ = make_source(next_reader)
+    assert next_source.read_frame(FRAME_BYTES, timeout_seconds=1.0) == pcm_frame(
+        55, 66, 77, 88
+    )
+    next_source.close()
+    assert next_source.last_stop_result.unexpected_failure is False
+
+
+def test_exit_one_before_valid_pcm_remains_an_active_transport_failure():
+    reader = ScriptedRawReader([b""])
+    source, factory = make_source(reader)
+    factory.process.returncode = 1
+
+    with pytest.raises(RuntimeError, match="arecord_process_exited:1"):
+        source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+    source.close()
+
+    stopped = source.last_stop_result
+    assert stopped.valid_pcm_received is False
+    assert stopped.active_failure_before_stop is True
+    assert stopped.unexpected_failure is True
+    assert stopped.status == "unexpected_failure"
+    assert stopped.final_health_effect == "unhealthy"
+
+
+def test_interrupted_system_call_during_active_read_is_not_controlled_cleanup():
+    error = OSError("Interrupted system call")
+    reader = ScriptedRawReader([error])
+    source, _ = make_source(reader)
+
+    with pytest.raises(OSError, match="Interrupted system call"):
+        source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+    source.close()
+
+    stopped = source.last_stop_result
+    assert stopped.valid_pcm_received is False
+    assert stopped.active_failure_before_stop is True
+    assert stopped.unexpected_failure is True
+    assert stopped.final_health_effect == "unhealthy"
+
+
+def test_exit_one_with_unrelated_stderr_is_not_hidden_by_stop_request():
+    class FailedStopProcess(FakeProcess):
+        def __init__(self):
+            super().__init__()
+            self.stderr = PayloadPipe(
+                DESCRIPTOR + 1,
+                b"arecord: pcm_read:2272: read error: Input/output error\n",
+            )
+
+        def terminate(self):
+            self.returncode = 1
+
+    process = FailedStopProcess()
+    reader = ScriptedRawReader([pcm_frame(10, 20, 30, 40)])
+    source = SubprocessPcmFrameSource(
+        ["/usr/bin/arecord", "-t", "raw", "-"],
+        process_factory=lambda _args, **_kwargs: process,
+        selector=reader.select,
+        raw_reader=reader,
+    )
+
+    source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+    source.close()
+
+    stopped = source.last_stop_result
+    assert stopped.child_exit_code == 1
+    assert stopped.valid_pcm_received is True
+    assert stopped.unexpected_failure is True
+    assert stopped.status == "unexpected_failure"
+    assert stopped.final_health_effect == "unhealthy"
+    assert "Input/output error" in stopped.stderr
+
+
+def test_exit_one_with_mixed_interrupted_and_real_error_stderr_is_not_controlled():
+    class MixedErrorProcess(FakeProcess):
+        def __init__(self):
+            super().__init__()
+            self.stderr = PayloadPipe(
+                DESCRIPTOR + 1,
+                (
+                    b"arecord: pcm_read:2272: read error: Interrupted system call\n"
+                    b"arecord: pcm_read:2272: read error: Input/output error\n"
+                ),
+            )
+
+        def terminate(self):
+            self.returncode = 1
+
+    process = MixedErrorProcess()
+    reader = ScriptedRawReader([pcm_frame(10, 20, 30, 40)])
+    source = SubprocessPcmFrameSource(
+        ["/usr/bin/arecord", "-t", "raw", "-"],
+        process_factory=lambda _args, **_kwargs: process,
+        selector=reader.select,
+        raw_reader=reader,
+    )
+
+    source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+    source.close()
+
+    assert source.last_stop_result.unexpected_failure is True
+    assert source.last_stop_result.final_health_effect == "unhealthy"
+
+
+def test_unrelated_negative_signal_is_not_treated_as_controlled_shutdown():
+    class SegfaultProcess(FakeProcess):
+        def terminate(self):
+            self.returncode = -11
+
+    process = SegfaultProcess()
+    reader = ScriptedRawReader([pcm_frame(10, 20, 30, 40)])
+    source = SubprocessPcmFrameSource(
+        ["/usr/bin/arecord", "-t", "raw", "-"],
+        process_factory=lambda _args, **_kwargs: process,
+        selector=reader.select,
+        raw_reader=reader,
+    )
+
+    source.read_frame(FRAME_BYTES, timeout_seconds=1.0)
+    source.close()
+
+    assert source.last_stop_result.child_signal == 11
+    assert source.last_stop_result.unexpected_failure is True
+    assert source.last_stop_result.final_health_effect == "unhealthy"

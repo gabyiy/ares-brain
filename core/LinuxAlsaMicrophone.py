@@ -100,6 +100,55 @@ class SafeProcessResult:
 
 
 @dataclass(frozen=True)
+class PcmStreamStopResult:
+    """Truthful outcome of one explicit raw-PCM transport stop.
+
+    A child exit code is not sufficient to decide whether ALSA failed.  In
+    particular, ``arecord`` may report an interrupted blocking read after ARES
+    deliberately terminates it.  This result keeps the control-plane evidence
+    beside the raw process outcome so callers can distinguish that expected
+    stop from a transport failure which happened while capture was active.
+    """
+
+    stop_requested: bool = False
+    valid_pcm_received: bool = False
+    valid_full_pcm_frames: int = 0
+    child_exit_code: Optional[int] = None
+    child_signal: Optional[int] = None
+    termination_signal_requested: str = ""
+    termination_escalated: bool = False
+    stderr: str = ""
+    process_reaped: bool = False
+    cleanup_completed: bool = False
+    active_failure_before_stop: bool = False
+    unexpected_ownership_loss: bool = False
+    unexpected_failure: bool = False
+    status: str = "not_stopped"
+    final_health_effect: str = "unknown"
+    cleanup_errors: tuple[str, ...] = ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "stop_requested": self.stop_requested,
+            "valid_pcm_received": self.valid_pcm_received,
+            "valid_full_pcm_frames": self.valid_full_pcm_frames,
+            "child_exit_code": self.child_exit_code,
+            "child_signal": self.child_signal,
+            "termination_signal_requested": self.termination_signal_requested,
+            "termination_escalated": self.termination_escalated,
+            "stderr": self.stderr,
+            "process_reaped": self.process_reaped,
+            "cleanup_completed": self.cleanup_completed,
+            "active_failure_before_stop": self.active_failure_before_stop,
+            "unexpected_ownership_loss": self.unexpected_ownership_loss,
+            "unexpected_failure": self.unexpected_failure,
+            "status": self.status,
+            "final_health_effect": self.final_health_effect,
+            "cleanup_errors": list(self.cleanup_errors),
+        }
+
+
+@dataclass(frozen=True)
 class CaptureStagePaths:
     directory: Path
     raw: Path
@@ -215,6 +264,10 @@ class SubprocessPcmFrameSource:
         self.stdout_closed_while_process_alive_count = 0
         self.terminal_reason = ""
         self.last_read_timestamp = 0.0
+        self._stop_requested = False
+        self._active_failure_before_stop = False
+        self._active_failure_reason = ""
+        self.last_stop_result = PcmStreamStopResult()
 
     def read_frame(self, frame_bytes: int, timeout_seconds: float) -> bytes:
         if self.closed or self.process.stdout is None:
@@ -230,8 +283,11 @@ class SubprocessPcmFrameSource:
                 raise TimeoutError("pcm_frame_read_timeout")
             try:
                 readable, _, _ = self.selector([descriptor], [], [], remaining)
-            except OSError:
+            except OSError as error:
                 self.read_errors += 1
+                self._record_active_failure(
+                    f"pcm_select_error:{error.__class__.__name__}"
+                )
                 raise
             if not readable:
                 returncode = self._process_exit_status()
@@ -242,8 +298,11 @@ class SubprocessPcmFrameSource:
             self.total_low_level_reads += 1
             try:
                 chunk = self.raw_reader(descriptor, requested)
-            except OSError:
+            except OSError as error:
                 self.read_errors += 1
+                self._record_active_failure(
+                    f"pcm_read_error:{error.__class__.__name__}"
+                )
                 raise
             if not chunk:
                 self.empty_reads += 1
@@ -256,8 +315,11 @@ class SubprocessPcmFrameSource:
                 )
             try:
                 immutable_chunk = self._copy_source_bytes(chunk)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as error:
                 self.read_errors += 1
+                self._record_active_failure(
+                    f"pcm_payload_error:{error.__class__.__name__}"
+                )
                 raise
             read_size = len(immutable_chunk)
             read_size_key = str(read_size)
@@ -326,8 +388,11 @@ class SubprocessPcmFrameSource:
         while len(buffered) < bounded_maximum:
             try:
                 readable, _, _ = self.selector([descriptor], [], [], 0.0)
-            except OSError:
+            except OSError as error:
                 self.read_errors += 1
+                self._record_active_failure(
+                    f"pcm_select_error:{error.__class__.__name__}"
+                )
                 self._pending.extend(buffered)
                 raise
             if not readable:
@@ -336,8 +401,11 @@ class SubprocessPcmFrameSource:
             self.total_low_level_reads += 1
             try:
                 chunk = self.raw_reader(descriptor, requested)
-            except OSError:
+            except OSError as error:
                 self.read_errors += 1
+                self._record_active_failure(
+                    f"pcm_read_error:{error.__class__.__name__}"
+                )
                 self._pending.extend(buffered)
                 raise
             if not chunk:
@@ -350,8 +418,11 @@ class SubprocessPcmFrameSource:
                 break
             try:
                 immutable_chunk = self._copy_source_bytes(chunk)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as error:
                 self.read_errors += 1
+                self._record_active_failure(
+                    f"pcm_payload_error:{error.__class__.__name__}"
+                )
                 self._pending.extend(buffered)
                 raise
             read_size = len(immutable_chunk)
@@ -430,6 +501,10 @@ class SubprocessPcmFrameSource:
                 self.stdout_closed_while_process_alive_count
             ),
             "terminal_reason": self.terminal_reason,
+            "stop_requested": self._stop_requested,
+            "active_failure_before_stop": self._active_failure_before_stop,
+            "active_failure_reason": self._active_failure_reason,
+            "controlled_stop": self.last_stop_result.to_dict(),
             "closed": self.closed,
             "stream_ended": self.stream_ended,
         }
@@ -448,6 +523,7 @@ class SubprocessPcmFrameSource:
             self.odd_trailing_byte_count += pending_bytes
             self.unexpected_eof_count += 1
             self.terminal_reason = "odd_trailing_pcm_corruption"
+            self._record_active_failure(self.terminal_reason)
             raise ValueError(
                 f"odd_trailing_pcm_corruption:{pending_bytes}"
             )
@@ -455,6 +531,7 @@ class SubprocessPcmFrameSource:
             self.incomplete_trailing_byte_count += pending_bytes
             self.unexpected_eof_count += 1
             self.terminal_reason = "incomplete_trailing_pcm_frame"
+            self._record_active_failure(self.terminal_reason)
             raise EOFError(
                 f"arecord_pcm_stream_ended_with_partial_frame:{pending_bytes}"
             )
@@ -462,14 +539,24 @@ class SubprocessPcmFrameSource:
             self.stdout_closed_while_process_alive_count += 1
             self.unexpected_eof_count += 1
             self.terminal_reason = "stdout_closed_while_process_alive"
+            self._record_active_failure(self.terminal_reason)
             raise RuntimeError("arecord_stdout_closed_while_process_alive")
         if returncode != 0:
             self.dead_process_detected = True
             self.unexpected_eof_count += 1
             self.terminal_reason = "arecord_process_exited"
+            self._record_active_failure(self.terminal_reason)
             raise RuntimeError(f"arecord_process_exited:{returncode}")
         self.terminal_reason = "clean_eof"
+        self._record_active_failure(self.terminal_reason)
         raise EOFError("arecord_pcm_stream_ended")
+
+    def _record_active_failure(self, reason: str) -> None:
+        if self._stop_requested:
+            return
+        self._active_failure_before_stop = True
+        if not self._active_failure_reason:
+            self._active_failure_reason = str(reason or "pcm_active_failure")[:160]
 
     def _set_expected_frame_bytes(self, frame_bytes: int) -> int:
         if isinstance(frame_bytes, bool) or int(frame_bytes) <= 0:
@@ -501,6 +588,9 @@ class SubprocessPcmFrameSource:
         if self.closed:
             return
         cleanup_errors: list[str] = []
+        self._stop_requested = True
+        termination_signal_requested = ""
+        termination_escalated = False
 
         def process_returncode() -> Optional[int]:
             try:
@@ -511,8 +601,10 @@ class SubprocessPcmFrameSource:
             return int(value) if value is not None else None
 
         returncode = process_returncode()
+        process_was_alive_at_stop = returncode is None
         if returncode is None:
             try:
+                termination_signal_requested = "SIGTERM"
                 self._signal_process_group(getattr(signal, "SIGTERM", 15))
             except (OSError, RuntimeError) as error:
                 cleanup_errors.append(f"terminate:{error.__class__.__name__}")
@@ -526,6 +618,8 @@ class SubprocessPcmFrameSource:
                 )
             if returncode is None:
                 try:
+                    termination_signal_requested = "SIGKILL"
+                    termination_escalated = True
                     self._signal_process_group(getattr(signal, "SIGKILL", 9))
                 except (OSError, RuntimeError) as error:
                     cleanup_errors.append(f"kill:{error.__class__.__name__}")
@@ -547,16 +641,20 @@ class SubprocessPcmFrameSource:
                 )
             except (AttributeError, OSError, RuntimeError, ValueError):
                 self.stderr = ""
+        pipes_closed = True
         for stream in (self.process.stdout, self.process.stderr):
             if stream is not None:
                 try:
                     stream.close()
                 except (OSError, RuntimeError) as error:
+                    pipes_closed = False
                     cleanup_errors.append(
                         f"pipe_close:{error.__class__.__name__}"
                     )
         if returncode is None:
             try:
+                termination_signal_requested = "SIGKILL"
+                termination_escalated = True
                 self._signal_process_group(getattr(signal, "SIGKILL", 9))
             except (OSError, RuntimeError) as error:
                 cleanup_errors.append(f"final_kill:{error.__class__.__name__}")
@@ -568,6 +666,17 @@ class SubprocessPcmFrameSource:
                 )
         if returncode is None:
             returncode = process_returncode()
+        reaped = returncode is not None
+        cleanup_completed = bool(reaped and pipes_closed)
+        self.last_stop_result = self._classify_stop_result(
+            process_was_alive_at_stop=process_was_alive_at_stop,
+            returncode=returncode,
+            termination_signal_requested=termination_signal_requested,
+            termination_escalated=termination_escalated,
+            process_reaped=reaped,
+            cleanup_completed=cleanup_completed,
+            cleanup_errors=cleanup_errors,
+        )
         if returncode is None:
             self.closed = False
             raise RuntimeError(
@@ -575,6 +684,92 @@ class SubprocessPcmFrameSource:
                 + ",".join(cleanup_errors[-8:])
             )
         self.closed = True
+
+    def _classify_stop_result(
+        self,
+        *,
+        process_was_alive_at_stop: bool,
+        returncode: Optional[int],
+        termination_signal_requested: str,
+        termination_escalated: bool,
+        process_reaped: bool,
+        cleanup_completed: bool,
+        cleanup_errors: Sequence[str],
+    ) -> PcmStreamStopResult:
+        valid_frames = int(self.valid_full_pcm_frames)
+        valid_pcm_received = valid_frames > 0
+        child_signal = (
+            abs(int(returncode))
+            if returncode is not None and int(returncode) < 0
+            else None
+        )
+        stderr_text = str(self.stderr or "")
+        interrupted_arecord_read = _stderr_is_controlled_arecord_interrupt(
+            stderr_text
+        )
+        expected_signal = bool(
+            child_signal in {
+                int(getattr(signal, "SIGINT", 2)),
+                int(getattr(signal, "SIGTERM", 15)),
+            }
+            or (
+                termination_escalated
+                and child_signal == int(getattr(signal, "SIGKILL", 9))
+            )
+        )
+        expected_exit = bool(
+            returncode == 0
+            or expected_signal
+            or (returncode == 1 and interrupted_arecord_read)
+        )
+        active_failure = bool(
+            self._active_failure_before_stop or not process_was_alive_at_stop
+        )
+        controlled = bool(
+            self._stop_requested
+            and process_was_alive_at_stop
+            and valid_pcm_received
+            and not active_failure
+            and process_reaped
+            and cleanup_completed
+            and expected_exit
+        )
+        degraded = bool(controlled and termination_escalated)
+        unexpected_failure = not controlled
+        status = (
+            "controlled_stop_degraded"
+            if degraded
+            else "controlled_stop"
+            if controlled
+            else "cleanup_incomplete"
+            if not cleanup_completed
+            else "unexpected_failure"
+        )
+        final_health_effect = (
+            "degraded_reusable"
+            if degraded
+            else "none"
+            if controlled
+            else "unhealthy"
+        )
+        return PcmStreamStopResult(
+            stop_requested=self._stop_requested,
+            valid_pcm_received=valid_pcm_received,
+            valid_full_pcm_frames=valid_frames,
+            child_exit_code=returncode,
+            child_signal=child_signal,
+            termination_signal_requested=termination_signal_requested,
+            termination_escalated=termination_escalated,
+            stderr=stderr_text,
+            process_reaped=process_reaped,
+            cleanup_completed=cleanup_completed,
+            active_failure_before_stop=active_failure,
+            unexpected_ownership_loss=False,
+            unexpected_failure=unexpected_failure,
+            status=status,
+            final_health_effect=final_health_effect,
+            cleanup_errors=tuple(str(value) for value in cleanup_errors),
+        )
 
     def _resolve_process_group_id(self) -> int:
         pid = int(getattr(self.process, "pid", 0) or 0)
@@ -1451,6 +1646,7 @@ class RollingPcmFrameSource:
             "reset_boundary_timeouts": int(
                 low_level.get("reset_boundary_timeouts", 0) or 0
             ),
+            "controlled_stop": dict(low_level.get("controlled_stop", {}) or {}),
             "closed": self.closed,
         }
 
@@ -1517,6 +1713,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
         self._active_stream: Optional[Any] = None
         self._active_stream_owner = ""
         self._persistent_stream: Optional[PersistentPcmStreamHandle] = None
+        self._last_pcm_stop_result: Dict[str, Any] = {}
         self.persistent_stream_open_count = 0
         self.persistent_stream_close_count = 0
 
@@ -1706,6 +1903,31 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             **source_before_close,
             **source_after_close,
         }
+        controlled_stop = dict(source_snapshot.get("controlled_stop") or {})
+        if controlled_stop and controlled_stop.get("status") != "not_stopped":
+            controlled_stop["unexpected_ownership_loss"] = bool(
+                ownership_after
+            )
+            if ownership_after:
+                controlled_stop.update(
+                    {
+                        "unexpected_failure": True,
+                        "status": "unexpected_ownership_loss",
+                        "final_health_effect": "unhealthy",
+                    }
+                )
+            self._remember_pcm_stop_result(controlled_stop)
+        if (
+            caught_error is None
+            and controlled_stop
+            and controlled_stop.get("final_health_effect") == "unhealthy"
+        ):
+            caught_error = RuntimeError(
+                "pcm_stream_stop_unhealthy:"
+                + str(controlled_stop.get("status") or "unexpected_failure")
+            )
+            failing_method = "close"
+            failure_reason = "microphone_cleanup_error"
         if (
             caught_error is not None
             and open_success
@@ -1803,6 +2025,7 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             "close_attempts": close_attempts,
             "close_success": close_success,
             "cleanup_result": cleanup_result,
+            "controlled_stop": controlled_stop,
             "failure_reason": failure_reason,
             "source_snapshot": source_snapshot,
             "processing_time_seconds": round(time.monotonic() - started_at, 6),
@@ -1862,6 +2085,9 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 stream.close()
             except (OSError, RuntimeError):
                 raise
+            self._remember_pcm_stop_result(
+                dict(_safe_pcm_source_snapshot(stream).get("controlled_stop") or {})
+            )
         with self._stream_lock:
             if self._active_stream is stream:
                 self._active_stream = None
@@ -1980,6 +2206,14 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 text="Persistent ALSA stream failed to close cleanly.",
                 error_message=f"{error.__class__.__name__}:{str(error)[:120]}",
             )
+        controlled_stop = dict(
+            _safe_pcm_source_snapshot(handle.frame_source).get(
+                "controlled_stop",
+                {},
+            )
+            or {}
+        )
+        self._remember_pcm_stop_result(controlled_stop)
         with self._stream_lock:
             if self._persistent_stream is handle:
                 self._active_stream = None
@@ -1987,10 +2221,35 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 self._persistent_stream = None
         handle.closed = True
         self.persistent_stream_close_count += 1
+        if (
+            controlled_stop
+            and controlled_stop.get("final_health_effect") == "unhealthy"
+        ):
+            return self._failure(
+                status="stream_close_unhealthy",
+                text="Persistent ALSA stream closed after an unexpected transport failure.",
+                error_message=(
+                    "pcm_stream_stop_unhealthy:"
+                    + str(
+                        controlled_stop.get("status")
+                        or "unexpected_failure"
+                    )
+                ),
+                data={
+                    "stream_id": handle.stream_id,
+                    "owner": clean_owner,
+                    "controlled_stop": controlled_stop,
+                    "microphone_ownership_released": True,
+                },
+            )
         return self._success(
             status="closed",
             text="Persistent ALSA stream closed.",
-            data={"stream_id": handle.stream_id, "owner": clean_owner},
+            data={
+                "stream_id": handle.stream_id,
+                "owner": clean_owner,
+                "controlled_stop": controlled_stop,
+            },
         )
 
     def persistent_stream_snapshot(self) -> Dict[str, Any]:
@@ -2235,6 +2494,9 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                 "selected_device": self.device or "",
                 "devices": devices.data.get("devices", []),
                 "voice_activity_capture": vad_health.to_dict(),
+                "previous_controlled_stop_result": dict(
+                    self._last_pcm_stop_result
+                ),
             },
         )
 
@@ -2653,12 +2915,16 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     stream,
                     diagnostic_traceback=bool(diagnostic_exception_traceback),
                 )
+                controlled_stop = dict(
+                    stream_cleanup.get("controlled_stop") or {}
+                )
+                self._remember_pcm_stop_result(controlled_stop)
                 if stream_cleanup["completed"]:
                     with self._stream_lock:
                         if self._active_stream is source:
                             self._active_stream = None
                             self._active_stream_owner = ""
-                else:
+                if not stream_cleanup["completed"]:
                     result = replace(
                         result,
                         success=False,
@@ -2674,6 +2940,29 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                             + str(
                                 stream_cleanup.get("exception_message")
                                 or "cleanup_incomplete"
+                            )
+                        ),
+                    )
+                elif (
+                    controlled_stop
+                    and controlled_stop.get("final_health_effect") == "unhealthy"
+                ):
+                    # A successfully assembled candidate does not erase a real
+                    # transport failure discovered while the owned stream is
+                    # being stopped.  Only the structured controlled-stop
+                    # contract may classify an expected cleanup interruption as
+                    # harmless; unrelated exit-1 stderr, unexpected child death,
+                    # or an unreaped process remains an audio-device failure.
+                    result = replace(
+                        result,
+                        success=False,
+                        status=VAD_STATUS_DEVICE_ERROR,
+                        stop_reason=VAD_STATUS_DEVICE_ERROR,
+                        error_message=(
+                            "pcm_stream_stop_unhealthy:"
+                            + str(
+                                controlled_stop.get("status")
+                                or "unexpected_failure"
                             )
                         ),
                     )
@@ -2936,6 +3225,9 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
                     target_source,
                     diagnostic_traceback=bool(diagnostic_exception_traceback),
                 )
+                self._remember_pcm_stop_result(
+                    dict(stream_cleanup.get("controlled_stop") or {})
+                )
                 if stream_cleanup["completed"]:
                     with self._stream_lock:
                         if self._active_stream is source:
@@ -3084,6 +3376,11 @@ class LinuxAlsaMicrophoneAdapter(MicrophoneAdapter):
             if (resolved or "") != handle.resolved_device:
                 raise RuntimeError("persistent_pcm_stream_device_mismatch")
             return handle.frame_source
+
+    def _remember_pcm_stop_result(self, result: Dict[str, Any]) -> None:
+        clean = dict(result or {})
+        if clean and clean.get("status") != "not_stopped":
+            self._last_pcm_stop_result = clean
 
     def _find_arecord(self) -> str:
         found = self.runner.which(self.arecord_command)
@@ -3274,6 +3571,7 @@ def _bounded_pcm_source_cleanup(
         "status": "completed" if completed else "incomplete",
         "source_snapshot_before_close": before,
         "source_snapshot_after_close": after,
+        "controlled_stop": dict(after.get("controlled_stop") or {}),
     }
     if last_error is not None:
         result.update(
@@ -3290,6 +3588,21 @@ def _bounded_pcm_source_cleanup(
 def _bounded_text(text: str, limit: int = 500) -> str:
     clean = str(text or "")
     return clean[:limit]
+
+
+def _stderr_is_controlled_arecord_interrupt(stderr: str) -> bool:
+    """Match only arecord's cleanup-time interrupted-read diagnostic."""
+
+    lines = [line.strip() for line in str(stderr or "").splitlines() if line.strip()]
+    if len(lines) != 1:
+        return False
+    return bool(
+        re.fullmatch(
+            r"arecord:\s*pcm_read:\d+:\s*read error:\s*Interrupted system call",
+            lines[0],
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _positive_int(value: Any, name: str) -> int:
