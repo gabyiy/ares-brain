@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, replace
+import json
 import math
 import os
 from pathlib import Path
@@ -291,6 +292,12 @@ def _run_locked_diagnostic(
         f"{pipeline.speech_to_text_adapter.__class__.__module__}."
         f"{pipeline.speech_to_text_adapter.__class__.__name__}"
     )
+    grammar = _diagnostic_lifecycle_grammar(lifecycle_audio_recognizer)
+    output_func(
+        "Loaded constrained lifecycle grammar "
+        f"({len(grammar)} phrases; diagnostic-only):"
+    )
+    output_func(f"  {json.dumps(list(grammar), ensure_ascii=True)}")
     output_func("PCM stream architecture: bounded one-shot stream per phrase")
     output_func("Lifecycle execution: disabled")
     output_func("CoreService and owner-memory execution: disabled")
@@ -1133,8 +1140,20 @@ def _print_attempt(
         and not isinstance(constrained_confidence, bool)
         else "unavailable"
     )
-    token_text = " ".join(
+    constrained_tokens = [
         str(token) for token in list(constrained.get("recognized_tokens") or [])
+    ]
+    token_text = (
+        json.dumps(constrained_tokens, ensure_ascii=True)
+        if constrained_tokens
+        else "<empty>"
+    )
+    constrained_alias = str(constrained.get("alias_detected") or "")
+    constrained_alias_position = str(
+        constrained.get("alias_position") or "none"
+    )
+    alias_canonicalized = str(
+        constrained.get("alias_canonicalized_transcript") or ""
     )
 
     output_func("")
@@ -1161,12 +1180,15 @@ def _print_attempt(
     output_func(f"Lifecycle classification: {classification}")
     output_func(f"Lifecycle action that would be selected: {action}")
     output_func(
-        "Constrained lifecycle recognizer transcript: "
+        "Raw constrained transcript: "
         f"{constrained.get('recognized_text') or '<empty>'}"
     )
+    output_func(f"Raw constrained tokens: {token_text}")
+    output_func(f"Constrained alias detected: {constrained_alias or '<none>'}")
+    output_func(f"Constrained alias position: {constrained_alias_position}")
     output_func(
-        "Constrained lifecycle recognizer tokens: "
-        f"{token_text or '<empty>'}"
+        "Alias-canonicalized constrained transcript: "
+        f"{alias_canonicalized or '<empty>'}"
     )
     output_func(f"Constrained lifecycle confidence: {confidence_text}")
     output_func(
@@ -1186,6 +1208,10 @@ def _print_attempt(
         f"{constrained.get('canonical_phrase') or '<none>'}"
     )
     output_func(f"Selected lifecycle action: {constrained_action}")
+    output_func(
+        "Constrained lifecycle rejection reason: "
+        f"{constrained.get('rejection_reason') or '<none>'}"
+    )
     output_func(
         "Whisper fallback would run in production: "
         f"{'yes' if constrained.get('whisper_fallback_required', True) else 'no'}"
@@ -1304,6 +1330,15 @@ def _constrained_recognition_payload(recognition: Any) -> dict[str, Any]:
             str(token or "")
             for token in tuple(getattr(recognition, "recognized_tokens", ()) or ())
         ],
+        "alias_detected": str(
+            getattr(recognition, "alias_detected", "") or ""
+        ),
+        "alias_position": str(
+            getattr(recognition, "alias_position", "") or "none"
+        ),
+        "alias_canonicalized_transcript": str(
+            getattr(recognition, "alias_canonicalized_transcript", "") or ""
+        ),
         "confidence": getattr(recognition, "confidence", None),
         "confidence_available": bool(
             getattr(recognition, "confidence_available", False)
@@ -1326,6 +1361,23 @@ def _constrained_recognition_payload(recognition: Any) -> dict[str, Any]:
         "selected_lifecycle_action": selected_action,
         "whisper_fallback_required": fallback,
     }
+
+
+def _diagnostic_lifecycle_grammar(recognizer: Any) -> tuple[str, ...]:
+    """Return the exact backend-loaded grammar for the explicitly gated probe."""
+
+    value = getattr(recognizer, "grammar", ())
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise RuntimeError("production constrained lifecycle grammar is unavailable")
+    grammar = tuple(str(phrase or "").strip() for phrase in value)
+    if not grammar or any(not phrase for phrase in grammar):
+        raise RuntimeError("production constrained lifecycle grammar is unavailable")
+    # The backend adds Vosk's literal unknown alternative at recognizer setup,
+    # after validating the 127 policy phrases. Include it here so the hardware
+    # diagnostic shows the grammar actually loaded by KaldiRecognizer.
+    if "[unk]" not in grammar:
+        grammar += ("[unk]",)
+    return grammar
 
 
 def _configuration_issue(args: argparse.Namespace) -> str:

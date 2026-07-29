@@ -39,6 +39,12 @@ CONTRACT_BRAIN_RUNTIME_RESULT = "brain.runtime.result"
 CONTRACT_BRAIN_RUNTIME_SNAPSHOT = "brain.runtime.snapshot"
 CONTRACT_BRAIN_RUNTIME_COMMAND_CLASSIFICATION = "brain.runtime.command_classification"
 CONTRACT_BRAIN_RUNTIME_LOOP_RESULT = "brain.runtime.loop_result"
+# Internal transport metadata set only after the bounded open-transcription
+# route successfully returned nonempty text after constrained ACTIVE lifecycle
+# recognition declined a turn.
+ACTIVE_LIFECYCLE_FALLBACK_COMPLETED_METADATA = (
+    "active_lifecycle_whisper_fallback_completed"
+)
 CONTRACT_WAKE_LISTENER_REQUEST = "brain.standby_wake.request"
 CONTRACT_WAKE_LISTENER_RESULT = "brain.standby_wake.listener_result"
 CONTRACT_WAKE_DETECTION_RESULT = "brain.standby_wake.detection_result"

@@ -67,7 +67,7 @@ DEFAULT_WHISPER_TERMINATION_GRACE_SECONDS = 1.0
 DEFAULT_WHISPER_HARD_CLEANUP_DEADLINE_SECONDS = 3.0
 DEFAULT_RUNTIME_LOCK_PATH = REPO_ROOT / "data" / "runtime" / "ares_standby_voice.runtime"
 DEFAULT_RUNTIME_LOCK_STALE_SECONDS = 30.0
-ACTIVE_VOICE_COMPOSITION_REVISION = "constrained_active_lifecycle_audio_v1"
+ACTIVE_VOICE_COMPOSITION_REVISION = "constrained_active_lifecycle_alias_slot_v2"
 
 
 class RuntimeTerminationRequested(BaseException):

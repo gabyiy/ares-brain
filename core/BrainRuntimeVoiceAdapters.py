@@ -31,6 +31,7 @@ from core.BrainRuntimeAdapters import (
     RuntimeOutputResult,
 )
 from core.Contracts import (
+    ACTIVE_LIFECYCLE_FALLBACK_COMPLETED_METADATA,
     SingleTurnVoiceRequestV1,
     new_correlation_id,
     utc_contract_timestamp,
@@ -614,6 +615,18 @@ def _active_lifecycle_recognition_payload(recognition: Any) -> dict[str, Any]:
             str(token or "")
             for token in tuple(getattr(recognition, "recognized_tokens", ()) or ())
         ],
+        # Keep the backend text/tokens above as the raw acoustic evidence.  The
+        # lifecycle-only alias stage reports its bounded, position-aware rewrite
+        # separately so diagnostics never obscure what Vosk actually emitted.
+        "alias_detected": str(
+            getattr(recognition, "alias_detected", "") or ""
+        ),
+        "alias_position": str(
+            getattr(recognition, "alias_position", "") or "none"
+        ),
+        "alias_canonicalized_transcript": str(
+            getattr(recognition, "alias_canonicalized_transcript", "") or ""
+        ),
         "confidence": getattr(recognition, "confidence", None),
         "confidence_available": bool(
             getattr(recognition, "confidence_available", False)
@@ -650,6 +663,9 @@ def _active_lifecycle_confirmation_payload(confirmation: Any) -> dict[str, Any]:
             str(token or "")
             for token in tuple(getattr(confirmation, "recognized_tokens", ()) or ())
         ],
+        "alias_detected": "",
+        "alias_position": "none",
+        "alias_canonicalized_transcript": "",
         "confidence": getattr(confirmation, "confidence", None),
         "confidence_available": bool(
             getattr(confirmation, "confidence_available", False)
@@ -1628,6 +1644,20 @@ def _active_lifecycle_runtime_metadata(result: Any) -> dict[str, Any]:
     recognized_tokens = " ".join(
         str(token or "").strip() for token in token_values if str(token or "").strip()
     )[:160]
+    whisper_fallback_required = bool(
+        payload.get("whisper_fallback_required", False)
+    )
+    whisper_fallback_completed = bool(
+        whisper_fallback_required
+        and decision.get("continue_to_whisper")
+        and not decision.get("handled")
+        and getattr(result, "success", False)
+        and str(
+            getattr(result, "raw_transcript", "")
+            or getattr(result, "recognized_text", "")
+            or ""
+        ).strip()
+    )
     metadata: dict[str, Any] = {
         "active_lifecycle_audio_checked": bool(payload.get("audio_checked", True)),
         "active_lifecycle_audio_authorized": authorized,
@@ -1638,6 +1668,15 @@ def _active_lifecycle_runtime_metadata(result: Any) -> dict[str, Any]:
         )[:160],
         "active_lifecycle_recognized_text": recognized_text,
         "active_lifecycle_recognized_tokens": recognized_tokens,
+        "active_lifecycle_alias_detected": str(
+            payload.get("alias_detected") or ""
+        )[:80],
+        "active_lifecycle_alias_position": str(
+            payload.get("alias_position") or "none"
+        )[:24],
+        "active_lifecycle_alias_canonicalized_transcript": str(
+            payload.get("alias_canonicalized_transcript") or ""
+        )[:160],
         "active_lifecycle_recognition_backend": str(
             payload.get("recognition_backend") or ""
         )[:160],
@@ -1654,8 +1693,9 @@ def _active_lifecycle_runtime_metadata(result: Any) -> dict[str, Any]:
         "active_lifecycle_owner_activity": bool(
             recognized_text or recognized_tokens
         ),
-        "active_lifecycle_whisper_fallback": bool(
-            payload.get("whisper_fallback_required", False)
+        "active_lifecycle_whisper_fallback": whisper_fallback_required,
+        ACTIVE_LIFECYCLE_FALLBACK_COMPLETED_METADATA: (
+            whisper_fallback_completed
         ),
         "active_lifecycle_decision_status": status,
         "active_lifecycle_confirmation_disposition": str(

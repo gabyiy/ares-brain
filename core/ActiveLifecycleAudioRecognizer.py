@@ -45,34 +45,141 @@ MINIMUM_SAFE_CONFIRMATION_CONFIDENCE = 0.75
 CANONICAL_STANDBY_PHRASE = "goodbye ares"
 CANONICAL_SHUTDOWN_PHRASE = "shutdown ares"
 
-# This grammar is deliberately independent of the broader transcript alias
-# policy. Vosk may only select one of these complete, owner-validated phrases
-# (or [unk]); individual words such as ``artist`` and ``aries`` are not aliases.
-DEFAULT_ACTIVE_STANDBY_GRAMMAR = (
-    "goodbye ares",
-    "goodbye aris",
-    "good bye ares",
-    "good bye aris",
-    "bye ares",
-    "bye aris",
-    "go standby ares",
-    "standby ares",
-    "sleep ares",
+_ACTIVE_LIFECYCLE_ASSISTANT_SLOT = "{assistant}"
+
+# These forms belong only to constrained ACTIVE lifecycle recognition.  They
+# do not expand standby wake aliases or the ordinary transcript alias policy.
+# Multi-token ``r s`` remains one bounded assistant-name form.
+DEFAULT_ACTIVE_LIFECYCLE_ASSISTANT_ALIAS_FORMS = (
+    "ares",
+    "aris",
+    "aries",
+    "arris",
+    "rs",
+    "r s",
 )
 
-DEFAULT_ACTIVE_SHUTDOWN_GRAMMAR = (
-    "shutdown ares",
-    "shutdown aris",
-    "shut down ares",
-    "shut down aris",
-    "ares shutdown",
-    "aris shutdown",
-    "ares shut down",
-    "aris shut down",
-    "turn off ares",
-    "turn off aris",
-    "power off ares",
-    "power off aris",
+
+@dataclass(frozen=True)
+class _ActiveLifecycleCommandTemplate:
+    classification: str
+    tokens: tuple[str, ...]
+    canonicalized_tokens: tuple[str, ...]
+
+    @property
+    def alias_position(self) -> str:
+        slot = self.tokens.index(_ACTIVE_LIFECYCLE_ASSISTANT_SLOT)
+        return "prefix" if slot == 0 else "suffix"
+
+
+# This is the single structural authority for both the Vosk action grammar and
+# post-recognition alias canonicalization. Every template is a complete command
+# with exactly one assistant-name slot at an edge. Phrase segmentation variants
+# map to one stable transcript before exact lifecycle classification.
+_ACTIVE_LIFECYCLE_COMMAND_TEMPLATES = (
+    _ActiveLifecycleCommandTemplate(
+        ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
+        ("goodbye", _ACTIVE_LIFECYCLE_ASSISTANT_SLOT),
+        ("goodbye", "ares"),
+    ),
+    _ActiveLifecycleCommandTemplate(
+        ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
+        ("good", "bye", _ACTIVE_LIFECYCLE_ASSISTANT_SLOT),
+        ("goodbye", "ares"),
+    ),
+    _ActiveLifecycleCommandTemplate(
+        ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
+        ("bye", _ACTIVE_LIFECYCLE_ASSISTANT_SLOT),
+        ("bye", "ares"),
+    ),
+    _ActiveLifecycleCommandTemplate(
+        ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
+        ("go", "standby", _ACTIVE_LIFECYCLE_ASSISTANT_SLOT),
+        ("go", "standby", "ares"),
+    ),
+    _ActiveLifecycleCommandTemplate(
+        ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
+        ("go", "to", "standby", _ACTIVE_LIFECYCLE_ASSISTANT_SLOT),
+        ("go", "to", "standby", "ares"),
+    ),
+    _ActiveLifecycleCommandTemplate(
+        ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
+        ("standby", _ACTIVE_LIFECYCLE_ASSISTANT_SLOT),
+        ("standby", "ares"),
+    ),
+    _ActiveLifecycleCommandTemplate(
+        ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
+        ("sleep", _ACTIVE_LIFECYCLE_ASSISTANT_SLOT),
+        ("sleep", "ares"),
+    ),
+    _ActiveLifecycleCommandTemplate(
+        ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
+        ("shutdown", _ACTIVE_LIFECYCLE_ASSISTANT_SLOT),
+        ("shutdown", "ares"),
+    ),
+    _ActiveLifecycleCommandTemplate(
+        ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
+        ("shut", "down", _ACTIVE_LIFECYCLE_ASSISTANT_SLOT),
+        ("shutdown", "ares"),
+    ),
+    _ActiveLifecycleCommandTemplate(
+        ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
+        (_ACTIVE_LIFECYCLE_ASSISTANT_SLOT, "shutdown"),
+        ("ares", "shutdown"),
+    ),
+    _ActiveLifecycleCommandTemplate(
+        ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
+        (_ACTIVE_LIFECYCLE_ASSISTANT_SLOT, "shut", "down"),
+        ("ares", "shutdown"),
+    ),
+    _ActiveLifecycleCommandTemplate(
+        ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
+        ("turn", "off", _ACTIVE_LIFECYCLE_ASSISTANT_SLOT),
+        ("turn", "off", "ares"),
+    ),
+    _ActiveLifecycleCommandTemplate(
+        ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
+        ("power", "off", _ACTIVE_LIFECYCLE_ASSISTANT_SLOT),
+        ("power", "off", "ares"),
+    ),
+)
+
+
+def _active_lifecycle_alias_token_forms() -> tuple[tuple[str, ...], ...]:
+    return tuple(
+        tuple(normalize_spoken_phrase(alias).split())
+        for alias in DEFAULT_ACTIVE_LIFECYCLE_ASSISTANT_ALIAS_FORMS
+    )
+
+
+def _expanded_active_lifecycle_action_grammar(
+    classification: str,
+) -> tuple[str, ...]:
+    phrases: list[str] = []
+    for template in _ACTIVE_LIFECYCLE_COMMAND_TEMPLATES:
+        if template.classification != classification:
+            continue
+        slot = template.tokens.index(_ACTIVE_LIFECYCLE_ASSISTANT_SLOT)
+        for alias_tokens in _active_lifecycle_alias_token_forms():
+            tokens = (
+                template.tokens[:slot]
+                + alias_tokens
+                + template.tokens[slot + 1 :]
+            )
+            phrase = " ".join(tokens)
+            if phrase not in phrases:
+                phrases.append(phrase)
+    return tuple(phrases)
+
+
+# Vosk receives the exact expansions required to emit every accepted assistant
+# form. The complete command is still canonicalized and matched after inference;
+# membership in this grammar alone never authorizes a lifecycle transition.
+DEFAULT_ACTIVE_STANDBY_GRAMMAR = _expanded_active_lifecycle_action_grammar(
+    ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY
+)
+DEFAULT_ACTIVE_SHUTDOWN_GRAMMAR = _expanded_active_lifecycle_action_grammar(
+    ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN
 )
 
 # A closed grammar containing only positive commands can force acoustically
@@ -83,29 +190,31 @@ DEFAULT_ACTIVE_SHUTDOWN_GRAMMAR = (
 DEFAULT_ACTIVE_LIFECYCLE_REJECTION_GRAMMAR = (
     "ares",
     "aris",
-    "rs",
     "aries",
+    "arris",
+    "rs",
+    "r s",
     "artist",
     "paris",
     "harris",
     "clears throat",
     "shutdown artist",
     "shut down artist",
-    "shutdown aries",
-    "shut down aries",
-    "shutdown rs",
     "shutdown paris",
     "shutdown harris",
     "shutdown computer",
+    "shut down computer",
     "goodbye artist",
-    "goodbye aries",
     "goodbye paris",
-    "goodbye harris",
     "goodbye everyone",
     "go to sleep",
     "turn it off",
+    "where is ares",
+    "i spoke to aris yesterday",
+    "the artist is here",
+    "remember that i like ares",
+    "calculate two plus two",
     "do not shut down",
-    "do not shutdown",
     "don't shut down",
     "don't shutdown",
     "do not go to sleep",
@@ -115,22 +224,34 @@ DEFAULT_ACTIVE_LIFECYCLE_REJECTION_GRAMMAR = (
     "never shut down",
     "why did you shut down",
     "explain shutdown",
-    "schedule a shutdown",
     "schedule a shutdown tomorrow",
-) + tuple(
-    f"{negation} {command} {alias}"
-    for negation in ("do not", "don't", "never")
-    for command in (
-        "shutdown",
-        "shut down",
-        "goodbye",
-        "say goodbye",
-        "sleep",
-        "standby",
-        "go standby",
-        "go to sleep",
-    )
-    for alias in ("ares", "aris")
+    # A compact set of named competitors keeps the total grammar within the
+    # backend's 128-phrase bound after the six exact assistant forms expand.
+    "do not shutdown ares",
+    "do not shut down aris",
+    "don't shutdown ares",
+    "don't shut down aris",
+    "never shutdown ares",
+    "never shut down aris",
+    "do not shut down ares",
+    "don't say goodbye aris",
+    "do not sleep aris",
+    "don't standby ares",
+    "do not go standby ares",
+    "never go to sleep ares",
+)
+
+# Classification also recognizes the rest of the previously validated bounded
+# negative matrix if a backend emits it. Those phrases need not occupy scarce
+# Vosk grammar alternatives: `[unk]` remains the closed-grammar rejection slot.
+_ACTIVE_LIFECYCLE_REJECTION_POLICY_EXTRAS = (
+    "do not shutdown",
+    "schedule a shutdown",
+    "goodbye harris",
+    "do not goodbye ares",
+    "never goodbye ares",
+    "don't go standby aris",
+    "never standby aris",
 )
 
 DEFAULT_ACTIVE_CONFIRMATION_GRAMMAR = (
@@ -165,6 +286,50 @@ class LifecycleBackendRecognition:
     recognition_backend: str = VOSK_ACTIVE_LIFECYCLE_BACKEND
 
 
+@dataclass(frozen=True)
+class ActiveLifecycleAssistantAliasCanonicalization:
+    """Whole-command lifecycle alias evidence with no routing side effects."""
+
+    normalized_transcript: str
+    alias_canonicalized_transcript: str
+    alias_detected: str = ""
+    alias_position: str = "none"
+
+
+def canonicalize_active_lifecycle_assistant_alias(
+    value: Any,
+) -> ActiveLifecycleAssistantAliasCanonicalization:
+    """Canonicalize an assistant alias only in one exact lifecycle slot.
+
+    The complete normalized token sequence must equal one supported ACTIVE
+    lifecycle template. Ordinary sentences containing an alias are returned
+    unchanged, and no substring, fuzzy, phonetic, or edit-distance operation is
+    performed.
+    """
+
+    normalized = normalize_spoken_phrase(value)
+    candidate_tokens = tuple(normalized.split())
+    for template in _ACTIVE_LIFECYCLE_COMMAND_TEMPLATES:
+        slot = template.tokens.index(_ACTIVE_LIFECYCLE_ASSISTANT_SLOT)
+        prefix = template.tokens[:slot]
+        suffix = template.tokens[slot + 1 :]
+        for alias_tokens in _active_lifecycle_alias_token_forms():
+            if candidate_tokens != prefix + alias_tokens + suffix:
+                continue
+            return ActiveLifecycleAssistantAliasCanonicalization(
+                normalized_transcript=normalized,
+                alias_canonicalized_transcript=" ".join(
+                    template.canonicalized_tokens
+                ),
+                alias_detected=" ".join(alias_tokens),
+                alias_position=template.alias_position,
+            )
+    return ActiveLifecycleAssistantAliasCanonicalization(
+        normalized_transcript=normalized,
+        alias_canonicalized_transcript=normalized,
+    )
+
+
 class ActiveLifecycleBackendCleanupError(RuntimeError):
     """A lifecycle backend child could not be confirmed stopped and reaped.
 
@@ -196,6 +361,9 @@ class ActiveLifecycleAudioRecognitionResult:
     canonical_phrase: str = ""
     recognized_text: str = ""
     recognized_tokens: tuple[str, ...] = ()
+    alias_detected: str = ""
+    alias_position: str = "none"
+    alias_canonicalized_transcript: str = ""
     confidence: Optional[float] = None
     confidence_available: bool = False
     recognition_backend: str = VOSK_ACTIVE_LIFECYCLE_BACKEND
@@ -418,9 +586,17 @@ class ActiveLifecycleAudioRecognizer:
         normalized = normalize_spoken_phrase(evidence.recognized_text)
         tokens = tuple(normalized.split())
         confidence = _minimum_aligned_confidence(evidence, tokens=tokens)
+        alias = canonicalize_active_lifecycle_assistant_alias(normalized)
         common = {
             "recognized_text": evidence.recognized_text,
-            "recognized_tokens": tokens,
+            # Preserve the backend's raw token evidence. Canonicalization is
+            # reported separately and never rewrites confidence alignment.
+            "recognized_tokens": tuple(evidence.recognized_tokens),
+            "alias_detected": alias.alias_detected,
+            "alias_position": alias.alias_position,
+            "alias_canonicalized_transcript": (
+                alias.alias_canonicalized_transcript
+            ),
             "confidence": confidence,
             "confidence_available": confidence is not None,
             "recognition_backend": evidence.recognition_backend,
@@ -443,7 +619,9 @@ class ActiveLifecycleAudioRecognizer:
                 rejection_reason="bounded_distractor_phrase",
                 **common,
             )
-        phrase_policy = _LIFECYCLE_PHRASE_POLICY.get(normalized)
+        phrase_policy = _LIFECYCLE_PHRASE_POLICY.get(
+            alias.alias_canonicalized_transcript
+        )
         if phrase_policy is None:
             return ActiveLifecycleAudioRecognitionResult(
                 classification=ACTIVE_LIFECYCLE_CLASSIFICATION_ORDINARY,
@@ -1234,26 +1412,40 @@ def _recognize_vosk_lifecycle_wav(
 
 
 _LIFECYCLE_PHRASE_POLICY = {
-    **{
-        phrase: (
-            ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
-            CANONICAL_STANDBY_PHRASE,
-        )
-        for phrase in DEFAULT_ACTIVE_STANDBY_GRAMMAR
-    },
-    **{
-        phrase: (
-            ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
-            CANONICAL_SHUTDOWN_PHRASE,
-        )
-        for phrase in DEFAULT_ACTIVE_SHUTDOWN_GRAMMAR
-    },
+    " ".join(template.canonicalized_tokens): (
+        template.classification,
+        (
+            CANONICAL_STANDBY_PHRASE
+            if template.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY
+            else CANONICAL_SHUTDOWN_PHRASE
+        ),
+    )
+    for template in _ACTIVE_LIFECYCLE_COMMAND_TEMPLATES
 }
 
 _NORMALIZED_LIFECYCLE_REJECTION_POLICY = frozenset(
     normalize_spoken_phrase(phrase)
-    for phrase in DEFAULT_ACTIVE_LIFECYCLE_REJECTION_GRAMMAR
+    for phrase in (
+        DEFAULT_ACTIVE_LIFECYCLE_REJECTION_GRAMMAR
+        + _ACTIVE_LIFECYCLE_REJECTION_POLICY_EXTRAS
+    )
 )
+
+_DEFAULT_ACTIVE_LIFECYCLE_ACTION_GRAMMAR = frozenset(
+    DEFAULT_ACTIVE_STANDBY_GRAMMAR + DEFAULT_ACTIVE_SHUTDOWN_GRAMMAR
+)
+if _DEFAULT_ACTIVE_LIFECYCLE_ACTION_GRAMMAR & frozenset(
+    DEFAULT_ACTIVE_LIFECYCLE_REJECTION_GRAMMAR
+):
+    raise RuntimeError("active lifecycle action and rejection grammar overlap")
+if (
+    len(_DEFAULT_ACTIVE_LIFECYCLE_ACTION_GRAMMAR)
+    + len(DEFAULT_ACTIVE_LIFECYCLE_REJECTION_GRAMMAR)
+    > 127
+):
+    raise RuntimeError(
+        "active lifecycle grammar plus [unk] exceeds 128 bounded phrases"
+    )
 
 
 def _validate_canonical_wav(audio_path: str | Path) -> Path:

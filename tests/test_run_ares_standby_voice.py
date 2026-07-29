@@ -198,7 +198,11 @@ def test_diagnostic_launcher_prints_privacy_safe_production_composition(tmp_path
     assert code == 0
     rendered = "\n".join(output)
     assert "PRODUCTION VOICE COMPOSITION" in rendered
-    assert "Routing revision: constrained_active_lifecycle_audio_v1" in rendered
+    assert (
+        "Routing revision: constrained_active_lifecycle_alias_slot_v2"
+        in rendered
+    )
+    assert "Loaded constrained lifecycle grammar" not in rendered
     assert "Runtime: test_run_ares_standby_voice.FakeRuntime" in rendered
     assert "Active lifecycle normalizer: " in rendered
     assert "Raw Whisper transcript" not in rendered
@@ -929,7 +933,10 @@ def test_production_composition_routes_active_transcripts_through_state_aware_ad
         )
     )
     assert "PRODUCTION VOICE COMPOSITION" in composition
-    assert "Routing revision: constrained_active_lifecycle_audio_v1" in composition
+    assert (
+        "Routing revision: constrained_active_lifecycle_alias_slot_v2"
+        in composition
+    )
     assert "Runtime: core.BrainRuntime.BrainRuntime" in composition
     assert "Lifecycle authority: core.BrainSessionManager.BrainSessionManager" in composition
     assert (

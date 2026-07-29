@@ -402,6 +402,15 @@ class FakeLifecycleAudioRecognizer:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.closed = 0
+        self.grammar = (
+            "goodbye ares",
+            "goodbye rs",
+            "shutdown ares",
+            "shutdown rs",
+            "calculate two plus two",
+            "remember that i like video games",
+            "[unk]",
+        )
 
     def recognize_wav(self, wav_path):
         self.calls.append(str(wav_path))
@@ -409,23 +418,35 @@ class FakeLifecycleAudioRecognizer:
         if "goodbye-ares" in slug:
             classification = "standby"
             canonical = "goodbye ares"
-            recognized = "goodbye ares"
+            recognized = "goodbye rs"
+            alias = "rs"
+            alias_position = "suffix"
+            alias_canonicalized = "goodbye ares"
             fallback = False
         elif "shutdown-ares" in slug:
             classification = "shutdown"
             canonical = "shutdown ares"
-            recognized = "shutdown ares"
+            recognized = "shutdown rs"
+            alias = "rs"
+            alias_position = "suffix"
+            alias_canonicalized = "shutdown ares"
             fallback = False
         else:
             classification = "ordinary"
             canonical = ""
             recognized = ""
+            alias = ""
+            alias_position = "none"
+            alias_canonicalized = ""
             fallback = True
         return SimpleNamespace(
             classification=classification,
             canonical_phrase=canonical,
             recognized_text=recognized,
             recognized_tokens=tuple(recognized.split()),
+            alias_detected=alias,
+            alias_position=alias_position,
+            alias_canonicalized_transcript=alias_canonicalized,
             confidence=0.91 if recognized else None,
             confidence_available=bool(recognized),
             confidence_tier="high" if recognized else "missing",
@@ -581,6 +602,16 @@ def test_preflight_and_four_phrase_cycles_have_strict_stream_lifecycles(tmp_path
     assert "Canonical lifecycle phrase: shutdown ares" in rendered
     assert "Whisper fallback would run in production: no" in rendered
     assert "Whisper fallback would run in production: yes" in rendered
+    assert "Loaded constrained lifecycle grammar (7 phrases; diagnostic-only):" in rendered
+    assert '"goodbye rs"' in rendered
+    assert '"shutdown rs"' in rendered
+    assert "Raw constrained transcript: goodbye rs" in rendered
+    assert 'Raw constrained tokens: ["goodbye", "rs"]' in rendered
+    assert "Constrained alias detected: rs" in rendered
+    assert "Constrained alias position: suffix" in rendered
+    assert "Alias-canonicalized constrained transcript: goodbye ares" in rendered
+    assert "Alias-canonicalized constrained transcript: shutdown ares" in rendered
+    assert "Constrained lifecycle rejection reason: <none>" in rendered
 
 
 def test_diagnostic_fails_when_constrained_lifecycle_policy_misses_phrase(tmp_path):
@@ -965,10 +996,11 @@ def test_factory_exception_prints_exact_message_and_diagnostic_traceback(tmp_pat
 def test_required_acknowledgement_is_checked_before_factory_or_lock(tmp_path):
     factories = []
     locks = FakeLockFactory()
+    output: list[str] = []
 
     code = manual.run_active_lifecycle_audio_diagnostic(
         ["--output-directory", str(tmp_path)],
-        output_func=lambda _line: None,
+        output_func=output.append,
         production_factory=lambda *args, **kwargs: factories.append((args, kwargs)),
         lock_factory=locks,
     )
@@ -976,6 +1008,47 @@ def test_required_acknowledgement_is_checked_before_factory_or_lock(tmp_path):
     assert code == 2
     assert factories == []
     assert locks.calls == []
+    assert "Loaded constrained lifecycle grammar" not in "\n".join(output)
+
+
+def test_constrained_payload_preserves_raw_evidence_and_alias_rewrite():
+    recognition = SimpleNamespace(
+        classification="standby",
+        canonical_phrase="goodbye ares",
+        recognized_text="goodbye r s",
+        recognized_tokens=("goodbye", "r", "s"),
+        alias_detected="r s",
+        alias_position="suffix",
+        alias_canonicalized_transcript="goodbye ares",
+        confidence=0.91,
+        confidence_available=True,
+        confidence_tier="high",
+        recognition_backend="fake_constrained_vosk",
+        rejection_reason="",
+        confirmation_required=False,
+        proposed_classification="",
+        selected_lifecycle_action="standby",
+        whisper_fallback_required=False,
+    )
+
+    payload = manual._constrained_recognition_payload(recognition)
+
+    assert payload["recognized_text"] == "goodbye r s"
+    assert payload["recognized_tokens"] == ["goodbye", "r", "s"]
+    assert payload["alias_detected"] == "r s"
+    assert payload["alias_position"] == "suffix"
+    assert payload["alias_canonicalized_transcript"] == "goodbye ares"
+    assert payload["canonical_phrase"] == "goodbye ares"
+    assert payload["selected_lifecycle_action"] == "standby"
+    assert payload["whisper_fallback_required"] is False
+
+
+def test_diagnostic_grammar_includes_backend_added_unknown_alternative():
+    recognizer = SimpleNamespace(grammar=("goodbye rs", "shutdown rs"))
+
+    grammar = manual._diagnostic_lifecycle_grammar(recognizer)
+
+    assert grammar == ("goodbye rs", "shutdown rs", "[unk]")
 
 
 def test_script_has_no_independent_audio_or_lifecycle_composition():

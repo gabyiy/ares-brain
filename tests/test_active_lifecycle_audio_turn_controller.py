@@ -558,6 +558,8 @@ def test_runtime_adapter_high_lifecycle_skips_whisper_and_exports_authorization(
     assert result.metadata["active_lifecycle_audio_authorized_action"] == "shutdown"
     assert result.metadata["active_lifecycle_classification"] == "shutdown"
     assert result.metadata["active_lifecycle_recognized_tokens"] == "shutdown ares"
+    assert result.metadata["active_lifecycle_whisper_fallback"] is False
+    assert result.metadata["active_lifecycle_whisper_fallback_completed"] is False
     assert pipeline.capture_count == 1
     assert pipeline.whisper_count == 0
     assert recognizer.recognition_paths == [adapter.last_result.recorded_wav_path]
@@ -584,6 +586,7 @@ def test_runtime_adapter_ordinary_reuses_one_capture_for_whisper(tmp_path):
     assert result.text == "calculate 2 plus 2"
     assert result.metadata["active_lifecycle_audio_authorized"] is False
     assert result.metadata["active_lifecycle_whisper_fallback"] is True
+    assert result.metadata["active_lifecycle_whisper_fallback_completed"] is True
     assert pipeline.capture_count == 1
     assert pipeline.whisper_count == 1
     assert recognizer.recognition_paths == [adapter.last_result.recorded_wav_path]

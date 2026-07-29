@@ -106,6 +106,8 @@ from core.BrainRuntimeVoiceAdapters import (
 )
 from core.ActiveLifecycleAudioRecognizer import (
     DEFAULT_ACTIVE_CONFIRMATION_GRAMMAR,
+    DEFAULT_ACTIVE_LIFECYCLE_ASSISTANT_ALIAS_FORMS,
+    DEFAULT_ACTIVE_LIFECYCLE_REJECTION_GRAMMAR,
     DEFAULT_ACTIVE_SHUTDOWN_GRAMMAR,
     DEFAULT_ACTIVE_STANDBY_GRAMMAR,
     DEFAULT_CONFIRMATION_MINIMUM_CONFIDENCE,
@@ -113,11 +115,13 @@ from core.ActiveLifecycleAudioRecognizer import (
     DEFAULT_SHUTDOWN_MEDIUM_CONFIDENCE,
     DEFAULT_STANDBY_HIGH_CONFIDENCE,
     DEFAULT_STANDBY_MEDIUM_CONFIDENCE,
+    ActiveLifecycleAssistantAliasCanonicalization,
     ActiveLifecycleAudioRecognitionResult,
     ActiveLifecycleAudioRecognizer,
     ActiveLifecycleConfirmationResult,
     LifecycleBackendRecognition,
     VoskLifecycleGrammarBackend,
+    canonicalize_active_lifecycle_assistant_alias,
 )
 from core.AresIdentity import (
     CANONICAL_ARES_NAME,
@@ -844,10 +848,14 @@ __all__ = [
     "VoiceRuntimeGate",
     "active_command_capture_request",
     "ActiveLifecycleAudioRecognizer",
+    "ActiveLifecycleAssistantAliasCanonicalization",
     "ActiveLifecycleAudioRecognitionResult",
     "ActiveLifecycleConfirmationResult",
     "LifecycleBackendRecognition",
     "VoskLifecycleGrammarBackend",
+    "canonicalize_active_lifecycle_assistant_alias",
+    "DEFAULT_ACTIVE_LIFECYCLE_ASSISTANT_ALIAS_FORMS",
+    "DEFAULT_ACTIVE_LIFECYCLE_REJECTION_GRAMMAR",
     "DEFAULT_ACTIVE_STANDBY_GRAMMAR",
     "DEFAULT_ACTIVE_SHUTDOWN_GRAMMAR",
     "DEFAULT_ACTIVE_CONFIRMATION_GRAMMAR",

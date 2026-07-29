@@ -16,11 +16,15 @@ from core.ActiveLifecycleAudioRecognizer import (
     ACTIVE_LIFECYCLE_CONFIRMATION_CANCELLED,
     ACTIVE_LIFECYCLE_CONFIRMATION_CONFIRMED,
     ACTIVE_LIFECYCLE_CONFIRMATION_UNMATCHED,
+    DEFAULT_ACTIVE_LIFECYCLE_REJECTION_GRAMMAR,
+    DEFAULT_ACTIVE_SHUTDOWN_GRAMMAR,
+    DEFAULT_ACTIVE_STANDBY_GRAMMAR,
     ActiveLifecycleBackendCleanupError,
     ActiveLifecycleAudioRecognizer,
     LifecycleBackendRecognition,
     VoskLifecycleGrammarBackend,
     _VoskLifecycleProcessWorker,
+    canonicalize_active_lifecycle_assistant_alias,
 )
 
 
@@ -134,6 +138,112 @@ def test_exact_bounded_shutdown_grammar_selects_canonical_shutdown(phrase, tmp_p
 
 
 @pytest.mark.parametrize(
+    ("phrase", "classification", "canonical", "alias", "position"),
+    [
+        ("goodbye rs", "standby", "goodbye ares", "rs", "suffix"),
+        ("goodbye aris", "standby", "goodbye ares", "aris", "suffix"),
+        ("goodbye ares", "standby", "goodbye ares", "ares", "suffix"),
+        ("shutdown rs", "shutdown", "shutdown ares", "rs", "suffix"),
+        ("shut down aris", "shutdown", "shutdown ares", "aris", "suffix"),
+        ("shutdown ares", "shutdown", "shutdown ares", "ares", "suffix"),
+        ("GOODBYE, ARRIS!", "standby", "goodbye ares", "arris", "suffix"),
+        ("Shut down, Aries.", "shutdown", "shutdown ares", "aries", "suffix"),
+        ("Goodbye, R. S.", "standby", "goodbye ares", "r s", "suffix"),
+        ("R S, shut down.", "shutdown", "ares shutdown", "r s", "prefix"),
+        ("Go to standby, Ares.", "standby", "go to standby ares", "ares", "suffix"),
+    ],
+)
+def test_lifecycle_slot_aliases_canonicalize_before_exact_classification(
+    phrase,
+    classification,
+    canonical,
+    alias,
+    position,
+    tmp_path,
+):
+    evidence = _evidence(phrase, 0.99)
+    result = ActiveLifecycleAudioRecognizer(
+        backend=FakeBackend(evidence)
+    ).recognize_wav(_wav(tmp_path))
+
+    assert result.classification == classification
+    assert result.selected_lifecycle_action == classification
+    assert result.alias_canonicalized_transcript == canonical
+    assert result.alias_detected == alias
+    assert result.alias_position == position
+    assert result.recognized_text == phrase
+    assert result.recognized_tokens == evidence.recognized_tokens
+    assert result.whisper_fallback_required is False
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "where is Ares",
+        "I spoke to Aris yesterday",
+        "Paris",
+        "Harris",
+        "the artist is here",
+        "remember that I like Ares",
+        "calculate two plus two",
+        "shut down the computer",
+        "goodbye everyone",
+    ],
+)
+def test_lifecycle_aliases_are_never_stripped_from_non_lifecycle_commands(
+    phrase,
+    tmp_path,
+):
+    evidence = _evidence(phrase, 0.99)
+    result = ActiveLifecycleAudioRecognizer(
+        backend=FakeBackend(evidence)
+    ).recognize_wav(_wav(tmp_path))
+
+    assert result.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_ORDINARY
+    assert result.selected_lifecycle_action == "none"
+    assert result.whisper_fallback_required is True
+    assert result.alias_detected == ""
+    assert result.alias_position == "none"
+    assert result.alias_canonicalized_transcript == " ".join(
+        phrase.casefold().replace("!", "").split()
+    ).strip(".,")
+    assert result.recognized_text == phrase
+    assert result.recognized_tokens == evidence.recognized_tokens
+
+
+def test_authoritative_alias_canonicalizer_requires_one_complete_command_shape():
+    accepted = canonicalize_active_lifecycle_assistant_alias("Shut down, R. S.")
+    ordinary = canonicalize_active_lifecycle_assistant_alias(
+        "remember that I like Ares"
+    )
+
+    assert accepted.normalized_transcript == "shut down r s"
+    assert accepted.alias_detected == "r s"
+    assert accepted.alias_position == "suffix"
+    assert accepted.alias_canonicalized_transcript == "shutdown ares"
+    assert ordinary.normalized_transcript == "remember that i like ares"
+    assert ordinary.alias_detected == ""
+    assert ordinary.alias_position == "none"
+    assert ordinary.alias_canonicalized_transcript == ordinary.normalized_transcript
+
+
+def test_generated_vosk_grammar_covers_alias_forms_without_policy_overlap():
+    action = set(DEFAULT_ACTIVE_STANDBY_GRAMMAR + DEFAULT_ACTIVE_SHUTDOWN_GRAMMAR)
+    rejection = set(DEFAULT_ACTIVE_LIFECYCLE_REJECTION_GRAMMAR)
+
+    for alias in ("ares", "aris", "aries", "arris", "rs", "r s"):
+        assert f"goodbye {alias}" in action
+        assert f"shutdown {alias}" in action
+        assert f"shut down {alias}" in action
+    assert "r s shutdown" in action
+    assert "go to standby rs" in action
+    assert action.isdisjoint(rejection)
+    assert len(action) == 78
+    assert len(rejection) == 49
+    assert len(action | rejection) + 1 <= 128  # plus Vosk's explicit [unk]
+
+
+@pytest.mark.parametrize(
     "phrase",
     [
         "shut down artist",
@@ -142,8 +252,6 @@ def test_exact_bounded_shutdown_grammar_selects_canonical_shutdown(phrase, tmp_p
         "aris",
         "rs",
         "shutdown artist",
-        "shutdown aries",
-        "shutdown rs",
         "shutdown computer",
         "shutdown paris",
         "shutdown harris",
@@ -609,9 +717,11 @@ def test_default_vosk_backend_loads_model_once_and_uses_only_bounded_grammar(tmp
     assert sample_rate == 16000.0
     assert "shutdown ares" in grammar
     assert "goodbye aris" in grammar
-    # Explicit acoustic competitors are constrained rejection phrases, never
-    # aliases or lifecycle actions. They prevent Vosk from being forced to the
-    # nearest positive grammar phrase.
+    assert "goodbye rs" in grammar
+    assert "shutdown r s" in grammar
+    # Alias-shaped complete lifecycle phrases are action candidates. Explicit
+    # unrelated acoustic competitors remain rejection phrases and prevent Vosk
+    # from being forced to the nearest positive grammar phrase.
     assert "shutdown artist" in grammar
     assert "shutdown aries" in grammar
     assert "ares" in grammar

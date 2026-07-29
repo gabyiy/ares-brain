@@ -13,6 +13,35 @@ from core import (
     SingleTurnVoiceRequestV1,
     VoiceRuntimeGate,
 )
+from core.BrainRuntimeVoiceAdapters import _active_lifecycle_recognition_payload
+
+
+def test_constrained_lifecycle_payload_keeps_raw_and_canonical_alias_evidence_separate():
+    recognition = SimpleNamespace(
+        classification="shutdown",
+        canonical_phrase="shutdown ares",
+        recognized_text="shutdown r s",
+        recognized_tokens=("shutdown", "r", "s"),
+        alias_detected="r s",
+        alias_position="suffix",
+        alias_canonicalized_transcript="shutdown ares",
+        confidence=0.91,
+        confidence_available=True,
+        recognition_backend="fake_constrained_vosk",
+        rejection_reason="",
+        confidence_tier="high",
+        confirmation_required=False,
+        proposed_classification="",
+        backend_cleanup_complete=True,
+    )
+
+    payload = _active_lifecycle_recognition_payload(recognition)
+
+    assert payload["recognized_text"] == "shutdown r s"
+    assert payload["recognized_tokens"] == ["shutdown", "r", "s"]
+    assert payload["alias_detected"] == "r s"
+    assert payload["alias_position"] == "suffix"
+    assert payload["alias_canonicalized_transcript"] == "shutdown ares"
 
 
 class FakeClock:

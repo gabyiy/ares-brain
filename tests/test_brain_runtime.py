@@ -785,7 +785,7 @@ def test_inactivity_before_exact_and_after_boundary_is_deterministic():
     assert runtime.session_manager.session_id == ""
 
 
-def test_active_audio_rejection_prevents_whisper_lifecycle_override():
+def test_active_audio_rejection_keeps_invalid_whisper_phrase_ordinary():
     routed = []
     runtime, _ = _runtime(handler=lambda text: routed.append(text) or "ordinary")
     runtime.start()
@@ -795,7 +795,7 @@ def test_active_audio_rejection_prevents_whisper_lifecycle_override():
     result = runtime.handle_request(
         BrainRuntimeRequestV1(
             runtime_id=runtime.runtime_id,
-            input_text="shutdown aries",
+            input_text="shutdown artist",
             timeout_seconds=30.0,
             correlation_id="audio-rejected-shutdown",
             session_id=session_id,
@@ -804,6 +804,8 @@ def test_active_audio_rejection_prevents_whisper_lifecycle_override():
                 "active_lifecycle_audio_authorized": False,
                 "active_lifecycle_classification": "ordinary",
                 "active_lifecycle_rejection_reason": "bounded_distractor_phrase",
+                "active_lifecycle_whisper_fallback": True,
+                "active_lifecycle_whisper_fallback_completed": True,
             },
         )
     )
@@ -812,7 +814,92 @@ def test_active_audio_rejection_prevents_whisper_lifecycle_override():
     assert result.command_category == RUNTIME_COMMAND_ORDINARY
     assert runtime.session_manager.state == BRAIN_ACTIVE
     assert runtime.session_manager.session_id == session_id
-    assert routed == ["shutdown aries"]
+    assert routed == ["shutdown artist"]
+
+
+@pytest.mark.parametrize(
+    ("transcript", "expected_status", "expected_category", "expected_state"),
+    (
+        ("Goodbye, Aris.", "standby_entered", RUNTIME_COMMAND_STANDBY, BRAIN_STANDBY),
+        ("Shut down Aris.", "stopped", RUNTIME_COMMAND_SHUTDOWN, BRAIN_STOPPED),
+    ),
+)
+def test_constrained_rejection_preserves_exact_whisper_lifecycle_fallback(
+    transcript,
+    expected_status,
+    expected_category,
+    expected_state,
+):
+    routed = []
+    runtime, _ = _runtime(handler=lambda text: routed.append(text) or "ordinary")
+    runtime.start()
+    runtime.handle_text("Ares")
+
+    result = runtime.handle_request(
+        BrainRuntimeRequestV1(
+            runtime_id=runtime.runtime_id,
+            input_text=transcript,
+            timeout_seconds=30.0,
+            correlation_id="audio-whisper-lifecycle-fallback",
+            session_id=runtime.session_manager.session_id,
+            metadata={
+                "active_lifecycle_audio_checked": True,
+                "active_lifecycle_audio_authorized": False,
+                "active_lifecycle_classification": "ordinary",
+                "active_lifecycle_recognized_text": (
+                    "clears throat" if expected_category == RUNTIME_COMMAND_STANDBY
+                    else "shutdown artist"
+                ),
+                "active_lifecycle_rejection_reason": "bounded_distractor_phrase",
+                "active_lifecycle_whisper_fallback": True,
+                "active_lifecycle_whisper_fallback_completed": True,
+            },
+        )
+    )
+
+    assert result.status == expected_status
+    assert result.command_category == expected_category
+    assert runtime.session_manager.state == expected_state
+    assert routed == []
+    assert result.data["core_service_bypassed"] is True
+    assert (
+        result.data["lifecycle_command"]["decision_source"]
+        == "exact_transcription_lifecycle_fallback"
+    )
+
+
+def test_checked_audio_without_completed_whisper_fallback_fails_closed():
+    routed = []
+    runtime, _ = _runtime(handler=lambda text: routed.append(text) or "ordinary")
+    runtime.start()
+    runtime.handle_text("Ares")
+    session_id = runtime.session_manager.session_id
+
+    result = runtime.handle_request(
+        BrainRuntimeRequestV1(
+            runtime_id=runtime.runtime_id,
+            input_text="shutdown aris",
+            timeout_seconds=30.0,
+            correlation_id="audio-no-whisper-fallback",
+            session_id=session_id,
+            metadata={
+                "active_lifecycle_audio_checked": True,
+                "active_lifecycle_audio_authorized": False,
+                # A requested fallback is not authority until the production
+                # transport proves that open transcription completed.
+                "active_lifecycle_whisper_fallback": True,
+                "active_lifecycle_rejection_reason": (
+                    "lifecycle_backend_cleanup_incomplete"
+                ),
+            },
+        )
+    )
+
+    assert result.status == "command_completed"
+    assert result.command_category == RUNTIME_COMMAND_ORDINARY
+    assert runtime.session_manager.state == BRAIN_ACTIVE
+    assert runtime.session_manager.session_id == session_id
+    assert routed == ["shutdown aris"]
 
 
 def test_active_audio_authorized_shutdown_reaches_lifecycle_authority():
@@ -841,6 +928,7 @@ def test_active_audio_authorized_shutdown_reaches_lifecycle_authority():
     assert result.command_category == RUNTIME_COMMAND_SHUTDOWN
     assert runtime.session_manager.state == BRAIN_STOPPED
     assert routed == []
+    assert result.data["lifecycle_command"]["decision_source"] == "constrained_audio"
 
 
 def test_medium_active_audio_requests_gated_confirmation_without_core_route():

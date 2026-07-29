@@ -39,6 +39,7 @@ from core.BrainSessionManager import (
     BrainSessionManager,
 )
 from core.Contracts import (
+    ACTIVE_LIFECYCLE_FALLBACK_COMPLETED_METADATA,
     CONTRACT_BRAIN_RUNTIME_REQUEST,
     BrainRuntimeCommandClassificationV1,
     BrainRuntimeLoopResultV1,
@@ -677,24 +678,26 @@ class BrainRuntime:
         request_metadata: Mapping[str, Any],
         original_text: str,
     ) -> BrainRuntimeCommandClassificationV1:
-        """Require constrained-audio authorization for production voice actions.
+        """Resolve constrained-audio and exact transcription lifecycle evidence.
 
-        Direct text callers retain the deterministic transcript lifecycle API.
-        Once the production ACTIVE audio path marks a turn as checked, however,
-        a fallback open-ended transcript cannot independently authorize standby or
-        shutdown.  This is the safety boundary that keeps ``shutdown aries`` or
-        ``shutdown artist`` ordinary after constrained recognition rejected the
-        same finalized WAV.
+        Production ACTIVE audio uses a strict order: an internally authorized
+        constrained result wins first; otherwise an explicitly completed
+        transcription fallback may use the normal whole-phrase ACTIVE lifecycle
+        parser; every other result remains ordinary. A constrained rejection
+        therefore cannot erase an independently valid exact transcription
+        lifecycle command, while inconsistent authorization metadata and turns
+        where fallback transcription never ran continue to fail closed.
         """
 
         metadata = dict(request_metadata or {})
         checked = bool(metadata.get("active_lifecycle_audio_checked", False))
         if not checked or self.session_manager.state != BRAIN_ACTIVE:
             return classification
-        if classification.command_category not in {
+        lifecycle_categories = {
             RUNTIME_COMMAND_STANDBY,
             RUNTIME_COMMAND_SHUTDOWN,
-        }:
+        }
+        if classification.command_category not in lifecycle_categories:
             return classification
         authorized = bool(
             metadata.get("active_lifecycle_audio_authorized", False)
@@ -710,6 +713,31 @@ class BrainRuntime:
                     "active_lifecycle_audio_checked": True,
                     "active_lifecycle_audio_authorized": True,
                     "active_lifecycle_audio_authorized_action": authorized_action,
+                    "active_lifecycle_decision_source": "constrained_audio",
+                    "active_lifecycle_audio": _active_lifecycle_audio_data(metadata),
+                },
+            )
+
+        fallback_transcription_completed = bool(
+            metadata.get(ACTIVE_LIFECYCLE_FALLBACK_COMPLETED_METADATA, False)
+        )
+        if not authorized and fallback_transcription_completed:
+            # ``classification`` was produced above by the authoritative ACTIVE
+            # normalizer. It already requires one complete supported lifecycle
+            # phrase, bounded edge-only assistant addressing, and no negation.
+            # Retain the constrained rejection as diagnostic evidence without
+            # misrepresenting it as constrained authorization.
+            return replace(
+                classification,
+                metadata={
+                    **dict(classification.metadata or {}),
+                    "active_lifecycle_audio_checked": True,
+                    "active_lifecycle_audio_authorized": False,
+                    "active_lifecycle_audio_authorized_action": "",
+                    ACTIVE_LIFECYCLE_FALLBACK_COMPLETED_METADATA: True,
+                    "active_lifecycle_decision_source": (
+                        "exact_transcription_lifecycle_fallback"
+                    ),
                     "active_lifecycle_audio": _active_lifecycle_audio_data(metadata),
                 },
             )
@@ -730,6 +758,10 @@ class BrainRuntime:
                 "active_lifecycle_audio_checked": True,
                 "active_lifecycle_audio_authorized": False,
                 "active_lifecycle_audio_authorized_action": "",
+                ACTIVE_LIFECYCLE_FALLBACK_COMPLETED_METADATA: (
+                    fallback_transcription_completed
+                ),
+                "active_lifecycle_decision_source": "ordinary",
                 "active_lifecycle_audio": _active_lifecycle_audio_data(metadata),
             }
         )
@@ -2179,6 +2211,9 @@ def _lifecycle_command_data(
         "rejection_reason": str(
             metadata.get("lifecycle_rejection_reason") or ""
         ),
+        "decision_source": str(
+            metadata.get("active_lifecycle_decision_source") or "transcript"
+        ),
     }
 
 
@@ -2191,6 +2226,11 @@ def _active_lifecycle_audio_data(metadata: Mapping[str, Any]) -> Dict[str, Any]:
     field_map = {
         "active_lifecycle_recognized_text": "recognized_text",
         "active_lifecycle_recognized_tokens": "recognized_tokens",
+        "active_lifecycle_alias_detected": "alias_detected",
+        "active_lifecycle_alias_position": "alias_position",
+        "active_lifecycle_alias_canonicalized_transcript": (
+            "alias_canonicalized_transcript"
+        ),
         "active_lifecycle_confidence": "confidence",
         "active_lifecycle_confidence_tier": "confidence_tier",
         "active_lifecycle_recognition_backend": "recognition_backend",
