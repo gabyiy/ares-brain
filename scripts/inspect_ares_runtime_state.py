@@ -27,6 +27,8 @@ _ARES_PROCESS_MARKERS = (
     "scripts\\run_ares_standby_voice.py",
     "scripts/manual_verify_standby_wake_hardware.py",
     "scripts\\manual_verify_standby_wake_hardware.py",
+    "scripts/manual_diagnose_active_lifecycle_audio.py",
+    "scripts\\manual_diagnose_active_lifecycle_audio.py",
 )
 
 

@@ -273,27 +273,19 @@ class ActiveLifecycleAudioTurnController:
             and confidence_tier == "medium"
         )
         if medium_confidence_confirmation:
-            pending = ActiveLifecyclePendingConfirmation(
-                classification=proposed,
-                canonical_phrase=canonical_phrase,
-                session_id=session_id,
-                expires_at=now + self.confirmation_timeout_seconds,
-            )
-            with self._lock:
-                self._pending = pending
             payload.update(
                 {
                     "audio_checked": True,
                     "lifecycle_authorized": False,
                     "selected_lifecycle_action": "none",
-                    "whisper_fallback_required": False,
-                    "pending_confirmation": True,
-                    "pending_expires_at": pending.expires_at,
+                    "whisper_fallback_required": True,
+                    "pending_confirmation": False,
+                    "fallback_reason": "medium_constrained_evidence_requires_whisper",
                 }
             )
             return _active_lifecycle_decision(
-                handled=True,
-                status="active_lifecycle_audio_confirmation_required",
+                handled=False,
+                status="active_lifecycle_audio_whisper_fallback",
                 canonical_text="",
                 payload=payload,
             )
@@ -1096,7 +1088,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
                 runtime_terminal_reason="not_terminal",
             )
             self._emit_local_diagnostics()
-            return RuntimeInputResult.cancelled()
+            raise
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
             self.last_diagnostics = ActiveCommandLocalDiagnostics(
                 lifecycle_state_before=lifecycle_state_before,
@@ -1540,7 +1532,7 @@ class SingleTurnPipelineRuntimeOutputAdapter:
             self.playback_count += 1
         except KeyboardInterrupt:
             token.cancel("keyboard_interrupt")
-            return RuntimeOutputResult(False, "cancelled", "output_cancelled", "voice output cancelled")
+            raise
         except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
             return RuntimeOutputResult(
                 False,

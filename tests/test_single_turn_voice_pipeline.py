@@ -1055,10 +1055,9 @@ def test_keyboard_interrupt_during_adapter_call_cleans_children_and_resource_slo
     pipeline, _, _, _, tts, speaker, _, _ = _pipeline(tmp_path, microphone=microphone)
     speaker.microphone = microphone
 
-    result = pipeline.run_once(_request(tmp_path))
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.run_once(_request(tmp_path))
 
-    assert result.status == "cancelled"
-    assert result.error_stage == "cancellation"
     assert microphone.active is False
     assert microphone.cancel_count >= 1
     assert tts.cancel_count >= 1

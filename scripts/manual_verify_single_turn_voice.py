@@ -348,6 +348,7 @@ def create_pipeline(
     text_to_speech_adapter: Any = None,
     speaker_adapter: Any = None,
     whisper_status_callback: Optional[Callable[[str], None]] = None,
+    whisper_diagnostic_progress: bool = False,
     whisper_termination_grace_seconds: float = 1.0,
     whisper_hard_cleanup_deadline_seconds: float = 3.0,
 ) -> SingleTurnVoicePipeline:
@@ -377,6 +378,7 @@ def create_pipeline(
             termination_grace_seconds=whisper_termination_grace_seconds,
             hard_cleanup_deadline_seconds=whisper_hard_cleanup_deadline_seconds,
             status_callback=whisper_status_callback,
+            diagnostic_progress=whisper_diagnostic_progress,
         ),
     )
     text_to_speech = text_to_speech_adapter or LinuxPiperTextToSpeechAdapter(

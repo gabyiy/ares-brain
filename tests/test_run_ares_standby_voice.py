@@ -603,6 +603,7 @@ def test_production_composition_reuses_one_event_history_store(tmp_path):
     assert captured["event_history_store"] is history
     assert captured["skill_manager"].event_history_store is history
     assert captured["whisper_status_callback"] is print
+    assert captured["whisper_diagnostic_progress"] is True
     assert captured["whisper_termination_grace_seconds"] == 1.0
     assert captured["whisper_hard_cleanup_deadline_seconds"] == 3.0
     assert runtime._event_history_store is history

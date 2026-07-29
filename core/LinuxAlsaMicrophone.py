@@ -3,11 +3,13 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+import errno
 import hashlib
 import math
 import os
 import re
 import select
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -15,6 +17,8 @@ from threading import Condition, Event, RLock, Thread
 import time
 import traceback
 import wave
+
+from core.BoundedSubprocess import BoundedProcessRunner
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from core.Contracts import VoiceActivityCaptureRequestV1, VoiceActivityCaptureResultV1
@@ -127,51 +131,29 @@ class PersistentPcmStreamHandle:
 
 
 class SafeSubprocessRunner:
-    """Narrow subprocess boundary for arecord. Shell execution is never used."""
+    """Bounded process-group boundary for ALSA utilities."""
+
+    def __init__(self, runner: Optional[BoundedProcessRunner] = None):
+        self._runner = runner or BoundedProcessRunner()
 
     def which(self, executable: str) -> Optional[str]:
-        return shutil.which(executable)
+        return self._runner.which(executable)
 
     def run(self, args: Sequence[str], timeout_seconds: float) -> SafeProcessResult:
         safe_args = [str(arg) for arg in args]
-        try:
-            completed = subprocess.run(
-                safe_args,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
-                shell=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            return SafeProcessResult(
-                args=safe_args,
-                returncode=-1,
-                stdout=str(error.stdout or ""),
-                stderr=str(error.stderr or ""),
-                timed_out=True,
-                error_message="process_timeout",
-            )
-        except FileNotFoundError:
-            return SafeProcessResult(
-                args=safe_args,
-                returncode=-1,
-                error_message="process_not_found",
-            )
-        except OSError as error:
-            return SafeProcessResult(
-                args=safe_args,
-                returncode=-1,
-                error_message=f"process_os_error:{error.__class__.__name__}",
-                metadata={"errno": getattr(error, "errno", None)},
-            )
-
+        completed = self._runner.run(safe_args, timeout_seconds=timeout_seconds)
         return SafeProcessResult(
             args=safe_args,
             returncode=int(completed.returncode),
             stdout=str(completed.stdout or ""),
             stderr=str(completed.stderr or ""),
+            timed_out=bool(completed.timed_out),
+            error_message=str(completed.error_message or ""),
+            metadata=dict(completed.metadata),
         )
+
+    def cancel_current(self, reason: str = "cancelled") -> bool:
+        return self._runner.cancel_current(reason)
 
 
 class SubprocessPcmFrameSource:
@@ -188,14 +170,20 @@ class SubprocessPcmFrameSource:
     ):
         self.args = [str(arg) for arg in args]
         factory = process_factory or subprocess.Popen
-        self.process = factory(
-            self.args,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            shell=False,
-            bufsize=0,
+        process_kwargs: Dict[str, Any] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "shell": False,
+            "bufsize": 0,
+        }
+        if os.name == "posix":
+            process_kwargs["start_new_session"] = True
+        self.process = factory(self.args, **process_kwargs)
+        self.process_group_owned = bool(
+            os.name == "posix" and process_factory is None
         )
+        self.process_group_id = self._resolve_process_group_id()
         self.selector = selector or select.select
         self.raw_reader = raw_reader or os.read
         self.clock = clock
@@ -525,11 +513,11 @@ class SubprocessPcmFrameSource:
         returncode = process_returncode()
         if returncode is None:
             try:
-                self.process.terminate()
+                self._signal_process_group(getattr(signal, "SIGTERM", 15))
             except (OSError, RuntimeError) as error:
                 cleanup_errors.append(f"terminate:{error.__class__.__name__}")
             try:
-                returncode = int(self.process.wait(timeout=2.0))
+                returncode = self._bounded_wait(timeout_seconds=2.0)
             except subprocess.TimeoutExpired:
                 cleanup_errors.append("terminate_wait:TimeoutExpired")
             except (OSError, RuntimeError) as error:
@@ -538,11 +526,11 @@ class SubprocessPcmFrameSource:
                 )
             if returncode is None:
                 try:
-                    self.process.kill()
+                    self._signal_process_group(getattr(signal, "SIGKILL", 9))
                 except (OSError, RuntimeError) as error:
                     cleanup_errors.append(f"kill:{error.__class__.__name__}")
                 try:
-                    returncode = int(self.process.wait(timeout=2.0))
+                    returncode = self._bounded_wait(timeout_seconds=2.0)
                 except subprocess.TimeoutExpired:
                     cleanup_errors.append("kill_wait:TimeoutExpired")
                 except (OSError, RuntimeError) as error:
@@ -569,11 +557,11 @@ class SubprocessPcmFrameSource:
                     )
         if returncode is None:
             try:
-                self.process.kill()
+                self._signal_process_group(getattr(signal, "SIGKILL", 9))
             except (OSError, RuntimeError) as error:
                 cleanup_errors.append(f"final_kill:{error.__class__.__name__}")
             try:
-                returncode = int(self.process.wait(timeout=2.0))
+                returncode = self._bounded_wait(timeout_seconds=2.0)
             except (subprocess.TimeoutExpired, OSError, RuntimeError) as error:
                 cleanup_errors.append(
                     f"final_wait:{error.__class__.__name__}"
@@ -587,6 +575,51 @@ class SubprocessPcmFrameSource:
                 + ",".join(cleanup_errors[-8:])
             )
         self.closed = True
+
+    def _resolve_process_group_id(self) -> int:
+        pid = int(getattr(self.process, "pid", 0) or 0)
+        if os.name != "posix" or not self.process_group_owned or pid <= 0:
+            return pid
+        try:
+            return int(os.getpgid(pid))
+        except OSError:
+            return pid
+
+    def _signal_process_group(self, signal_number: int) -> None:
+        if os.name == "posix" and self.process_group_owned and self.process_group_id > 0:
+            try:
+                os.killpg(self.process_group_id, int(signal_number))
+                return
+            except ProcessLookupError:
+                return
+            except OSError as error:
+                if getattr(error, "errno", None) == errno.ESRCH:
+                    return
+        method = (
+            getattr(self.process, "terminate", None)
+            if int(signal_number) == int(getattr(signal, "SIGTERM", 15))
+            else getattr(self.process, "kill", None)
+        )
+        if callable(method):
+            method()
+
+    def _bounded_wait(self, *, timeout_seconds: float) -> int:
+        timeout = max(0.01, float(timeout_seconds))
+        deadline = self.clock() + timeout
+        while True:
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            try:
+                value = self.process.wait(timeout=min(0.10, remaining))
+            except subprocess.TimeoutExpired:
+                continue
+            if value is None:
+                polled = self.process.poll()
+                if polled is None:
+                    continue
+                value = polled
+            return int(value)
 
 
 class ContinuousPcmFrameSource:

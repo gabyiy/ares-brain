@@ -488,9 +488,6 @@ def test_whisper_process_is_killed_and_reaped_on_keyboard_interrupt():
             self.calls = 0
 
         def wait(self, timeout=None):
-            self.calls += 1
-            if self.calls == 1:
-                raise KeyboardInterrupt
             return self.returncode
 
         def terminate(self):
@@ -502,6 +499,9 @@ def test_whisper_process_is_killed_and_reaped_on_keyboard_interrupt():
             self.returncode = -9
 
         def poll(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise KeyboardInterrupt
             return self.returncode
 
     process = InterruptedProcess()

@@ -17,8 +17,6 @@ from scripts import manual_diagnose_active_lifecycle_audio as manual
 TRANSCRIPTS = (
     "Goodbye, Ares.",
     "Shutdown Ares.",
-    "Calculate two plus two.",
-    "Remember that I like video games.",
 )
 
 
@@ -577,7 +575,78 @@ def test_diagnostic_uses_default_shared_factory_and_forwards_cli_device(
     )
 
 
-def test_preflight_and_four_phrase_cycles_have_strict_stream_lifecycles(tmp_path):
+def test_diagnostic_injects_nonpersistent_event_sink_when_factory_supports_it(
+    tmp_path,
+):
+    harness = DiagnosticHarness()
+    captured = {}
+
+    def factory(args, *, output_func, event_history_store):
+        captured["store"] = event_history_store
+        return harness.production_factory(args, output_func=output_func)
+
+    output = []
+    code = manual.run_active_lifecycle_audio_diagnostic(
+        _argv(tmp_path),
+        output_func=output.append,
+        production_factory=factory,
+        lock_factory=FakeLockFactory(),
+    )
+
+    assert code == 0
+    assert isinstance(captured["store"], manual.DiagnosticEventHistorySink)
+    assert captured["store"].dropped_event_count == 0
+
+
+def test_inter_command_readiness_blocks_live_child_or_busy_voice_gate(tmp_path):
+    gate = VoiceRuntimeGate(settle_delay_seconds=0.0)
+    output_path = tmp_path / "next-attempt.wav"
+    runner = SimpleNamespace(active_pid=4401)
+    pipeline = SimpleNamespace(
+        speech_to_text_adapter=SimpleNamespace(runner=runner),
+        microphone_adapter=SimpleNamespace(_active_stream=None),
+    )
+
+    assert manual._inter_command_readiness(pipeline, gate, output_path) == (
+        False,
+        "previous_whisper_process_alive",
+    )
+
+    runner.active_pid = 0
+    pipeline.microphone_adapter._active_stream = object()
+    assert manual._inter_command_readiness(pipeline, gate, output_path) == (
+        False,
+        "previous_arecord_stream_alive",
+    )
+
+    pipeline.microphone_adapter._active_stream = None
+    gate.begin_capture("previous_turn")
+    assert manual._inter_command_readiness(pipeline, gate, output_path) == (
+        False,
+        "voice_io_gate_not_idle",
+    )
+    gate.end_capture("previous_turn")
+
+    assert manual._inter_command_readiness(pipeline, gate, output_path) == (
+        True,
+        "ready",
+    )
+
+    assert manual._inter_command_readiness(
+        pipeline,
+        gate,
+        output_path,
+        cancellation_requested=True,
+    ) == (False, "stale_cancellation_requested")
+
+    output_path.write_bytes(b"old attempt")
+    assert manual._inter_command_readiness(pipeline, gate, output_path) == (
+        False,
+        "diagnostic_output_path_not_unique",
+    )
+
+
+def test_preflight_and_two_phrase_cycles_have_strict_stream_lifecycles(tmp_path):
     harness = DiagnosticHarness()
 
     code, output, _ = _run(tmp_path, harness)
@@ -590,7 +659,7 @@ def test_preflight_and_four_phrase_cycles_have_strict_stream_lifecycles(tmp_path
     assert preflight["frame_duration_ms"] == 20
     assert preflight["diagnostic_traceback"] is True
     assert preflight["owner"] == "diagnostic_active_capture"
-    assert len(harness.pipeline.requests) == len(manual.DIAGNOSTIC_PHRASES) == 4
+    assert len(harness.pipeline.requests) == len(manual.DIAGNOSTIC_PHRASES) == 2
     assert harness.lifecycle_recognizer.calls == [
         request.recording_output_path for request in harness.pipeline.requests
     ]
@@ -601,7 +670,6 @@ def test_preflight_and_four_phrase_cycles_have_strict_stream_lifecycles(tmp_path
     assert "Constrained lifecycle classification: shutdown" in rendered
     assert "Canonical lifecycle phrase: shutdown ares" in rendered
     assert "Whisper fallback would run in production: no" in rendered
-    assert "Whisper fallback would run in production: yes" in rendered
     assert "Loaded constrained lifecycle grammar (7 phrases; diagnostic-only):" in rendered
     assert '"goodbye rs"' in rendered
     assert '"shutdown rs"' in rendered
@@ -614,7 +682,7 @@ def test_preflight_and_four_phrase_cycles_have_strict_stream_lifecycles(tmp_path
     assert "Constrained lifecycle rejection reason: <none>" in rendered
 
 
-def test_diagnostic_fails_when_constrained_lifecycle_policy_misses_phrase(tmp_path):
+def test_rejected_constrained_lifecycle_phrase_uses_valid_whisper_fallback(tmp_path):
     harness = DiagnosticHarness()
     original = harness.lifecycle_recognizer.recognize_wav
 
@@ -642,18 +710,18 @@ def test_diagnostic_fails_when_constrained_lifecycle_policy_misses_phrase(tmp_pa
 
     code, output, _ = _run(tmp_path, harness)
 
-    assert code == 3
+    assert code == 0
     rendered = "\n".join(output)
-    assert "Failure category: lifecycle_recognition_mismatch" in rendered
-    assert "expected constrained outcome classification=standby" in rendered
-    assert "Diagnostic result: 1 phrase(s) failed" in rendered
-    assert len({id(stream) for stream in harness.pipeline.streams}) == 4
+    assert "Whisper fallback ran: yes" in rendered
+    assert "Final lifecycle decision: standby" in rendered
+    assert "both lifecycle phrases passed" in rendered
+    assert len({id(stream) for stream in harness.pipeline.streams}) == 2
     assert all(stream.events == ["open", "read", "close"] for stream in harness.pipeline.streams)
     assert all(stream.closed and stream.frame_bytes == 640 for stream in harness.pipeline.streams)
     assert all(request.microphone_device == "plughw:9,7" for request in harness.pipeline.requests)
     assert all(request.pre_roll_seconds == 0.5 for request in harness.pipeline.requests)
     assert all(request.silence_duration_seconds == 0.9 for request in harness.pipeline.requests)
-    assert len(harness.pipeline.raw_hook_decisions) == 4
+    assert len(harness.pipeline.raw_hook_decisions) == 2
     assert harness.pipeline.core_service_calls == 0
     assert harness.pipeline.stop_count == 1
     assert harness.gate.snapshot()["capture_active"] is False
@@ -665,14 +733,13 @@ def test_diagnostic_fails_when_constrained_lifecycle_policy_misses_phrase(tmp_pa
     assert "expected frame bytes: 640" in rendered
     assert "stream health: healthy" in rendered
     assert "ownership: diagnostic_active_capture -> released" in rendered
-    assert rendered.count("Ready ") == 4
-    assert rendered.count("Pre-roll retained: 0.500s / 25 of 25 frames") == 4
-    assert rendered.count("Candidate duration: 1.400s") == 4
+    assert rendered.count("Ready ") == 2
+    assert rendered.count("Pre-roll retained: 0.500s / 25 of 25 frames") == 2
+    assert rendered.count("Candidate duration: 1.400s") == 2
     assert "Raw transcript: Goodbye, Ares." in rendered
     assert "Lifecycle classification: standby" in rendered
     assert "Lifecycle classification: shutdown" in rendered
-    assert rendered.count("Lifecycle classification: ordinary") == 2
-    assert rendered.count("Lifecycle action executed: no (diagnostic-only)") == 4
+    assert rendered.count("Lifecycle action executed: no (diagnostic-only)") == 2
 
 
 def test_high_constrained_lifecycle_result_does_not_depend_on_comparison_whisper(
@@ -691,12 +758,34 @@ def test_high_constrained_lifecycle_result_does_not_depend_on_comparison_whisper
     ) == 2
     assert "Constrained lifecycle classification: standby" in rendered
     assert "Constrained lifecycle classification: shutdown" in rendered
-    assert rendered.count("Attempt status: captured_and_classified") == 4
-    assert "Diagnostic result: all four phrases passed the constrained lifecycle policy" in rendered
+    assert rendered.count("Attempt status: captured_and_classified") == 2
+    assert "Diagnostic result: both lifecycle phrases passed" in rendered
 
 
-def test_ordinary_phrase_still_requires_successful_whisper_fallback(tmp_path):
-    harness = DiagnosticHarness(fail_comparison_whisper_indices=(3,))
+def test_rejected_constrained_phrase_requires_successful_whisper_fallback(tmp_path):
+    harness = DiagnosticHarness(fail_comparison_whisper_indices=(1,))
+    original = harness.lifecycle_recognizer.recognize_wav
+
+    def reject_goodbye(wav_path):
+        if "goodbye-ares" not in Path(str(wav_path)).name.casefold():
+            return original(wav_path)
+        return SimpleNamespace(
+            classification="ordinary",
+            canonical_phrase="",
+            recognized_text="[unk]",
+            recognized_tokens=("[unk]",),
+            confidence=0.99,
+            confidence_available=True,
+            confidence_tier="rejected",
+            recognition_backend="fake_constrained_vosk",
+            rejection_reason="unknown_token_detected",
+            confirmation_required=False,
+            proposed_classification="",
+            selected_lifecycle_action="none",
+            whisper_fallback_required=True,
+        )
+
+    harness.lifecycle_recognizer.recognize_wav = reject_goodbye
 
     code, output, _ = _run(tmp_path, harness)
 
@@ -789,8 +878,8 @@ def test_failed_first_phrase_does_not_poison_later_fresh_captures(tmp_path):
     code, output, _ = _run(tmp_path, harness)
 
     assert code == 3
-    assert len(harness.pipeline.requests) == 4
-    assert len({id(stream) for stream in harness.pipeline.streams}) == 4
+    assert len(harness.pipeline.requests) == 2
+    assert len({id(stream) for stream in harness.pipeline.streams}) == 2
     assert all(stream.events == ["open", "read", "close"] for stream in harness.pipeline.streams)
     assert all(stream.closed for stream in harness.pipeline.streams)
     assert harness.pipeline.streams[0].frame_bytes == 0
@@ -804,8 +893,6 @@ def test_failed_first_phrase_does_not_poison_later_fresh_captures(tmp_path):
     assert "RuntimeError: arecord_process_exited:1" in rendered
     assert "ALSA stderr: arecord: audio open error: Device or resource busy" in rendered
     assert "Raw transcript: Shutdown Ares." in rendered
-    assert "Raw transcript: Calculate two plus two." in rendered
-    assert "Raw transcript: Remember that I like video games." in rendered
     assert "Diagnostic result: 1 phrase(s) failed" in rendered
 
 

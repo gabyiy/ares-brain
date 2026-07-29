@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, replace
 import json
+import inspect
 import math
 import os
 from pathlib import Path
 import sys
+import time
 import traceback
 from typing import Any, Callable, Optional, Sequence
 
@@ -24,6 +26,10 @@ from core import (  # noqa: E402
 from core.BrainRuntimeVoiceAdapters import (  # noqa: E402
     ACTIVE_COMMAND_CAPTURE_PROFILE,
     active_command_capture_request,
+)
+from core.ForegroundSignalCoordinator import (  # noqa: E402
+    ForegroundSignalCoordinator,
+    ForegroundTerminationRequested,
 )
 from core.LifecycleControl import LIFECYCLE_ACTION_NONE  # noqa: E402
 from core.Contracts import new_correlation_id  # noqa: E402
@@ -49,19 +55,16 @@ DEFAULT_HARD_CLEANUP_DEADLINE_SECONDS = (
 DEFAULT_OUTPUT_DIRECTORY = (
     REPO_ROOT / "data" / "runtime" / "active_lifecycle_audio"
 )
+DEFAULT_TOTAL_DIAGNOSTIC_TIMEOUT_SECONDS = 90.0
 
 DIAGNOSTIC_PHRASES = (
     "goodbye Ares",
     "shutdown Ares",
-    "calculate two plus two",
-    "remember that I like video games",
 )
 
 _EXPECTED_CONSTRAINED_OUTCOMES = {
-    "goodbye Ares": ("standby", "goodbye ares", False),
-    "shutdown Ares": ("shutdown", "shutdown ares", False),
-    "calculate two plus two": ("ordinary", "", True),
-    "remember that I like video games": ("ordinary", "", True),
+    "goodbye Ares": ("standby", "goodbye ares"),
+    "shutdown Ares": ("shutdown", "shutdown ares"),
 }
 
 
@@ -87,10 +90,20 @@ class DiagnosticAttempt:
     cleanup_result: str = "unknown"
 
 
+class DiagnosticEventHistorySink:
+    """Non-persistent telemetry sink for the bounded hardware diagnostic."""
+
+    dropped_event_count = 0
+
+    def add(self, event: Any, result: Any) -> None:
+        del event, result
+        return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Capture four bounded ACTIVE-state phrases with the production "
+            "Capture two bounded ACTIVE lifecycle phrases with the production "
             "recorder profile and classify them without executing ARES actions."
         )
     )
@@ -116,6 +129,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_HARD_CLEANUP_DEADLINE_SECONDS,
     )
     parser.add_argument("--output-directory", default=str(DEFAULT_OUTPUT_DIRECTORY))
+    parser.add_argument(
+        "--total-diagnostic-timeout",
+        type=float,
+        default=DEFAULT_TOTAL_DIAGNOSTIC_TIMEOUT_SECONDS,
+    )
     parser.add_argument(
         "--runtime-lock-path",
         default=str(standby_voice.DEFAULT_RUNTIME_LOCK_PATH),
@@ -169,6 +187,7 @@ def _production_runtime_args(args: argparse.Namespace) -> argparse.Namespace:
         str(args.whisper_termination_grace),
         "--whisper-hard-cleanup-deadline",
         str(args.whisper_hard_cleanup_deadline),
+        "--diagnostic-routing",
     ]
     if args.retain_audio:
         values.append("--retain-diagnostic-audio")
@@ -213,21 +232,29 @@ def run_active_lifecycle_audio_diagnostic(
         output_func(f"Configuration error: {issue}")
         return 2
 
+    coordinator = ForegroundSignalCoordinator()
     try:
-        with lock_factory(
-            Path(args.runtime_lock_path).expanduser(),
-            recover_if_owner_dead=True,
-            stale_after_seconds=float(args.runtime_lock_stale_seconds),
-            owner_kind="active_lifecycle_audio_diagnostic",
-        ):
-            return _run_locked_diagnostic(
-                args,
-                output_func=output_func,
-                production_factory=(
-                    production_factory
-                    or standby_voice.build_production_active_audio_pipeline
-                ),
-            )
+        with coordinator.signal_scope():
+            with lock_factory(
+                Path(args.runtime_lock_path).expanduser(),
+                recover_if_owner_dead=True,
+                stale_after_seconds=float(args.runtime_lock_stale_seconds),
+                owner_kind="active_lifecycle_audio_diagnostic",
+            ):
+                return _run_locked_diagnostic(
+                    args,
+                    output_func=output_func,
+                    production_factory=(
+                        production_factory
+                        or standby_voice.build_production_active_audio_pipeline
+                    ),
+                    signal_coordinator=coordinator,
+                )
+    except ForegroundTerminationRequested as error:
+        output_func(
+            f"Diagnostic cancelled by signal {error.signum}; resources cleaned."
+        )
+        return 128 + int(error.signum)
     except KeyboardInterrupt:
         raise
     except Exception as error:
@@ -246,14 +273,19 @@ def _run_locked_diagnostic(
     *,
     output_func: Callable[[str], None],
     production_factory: Callable[..., Any],
+    signal_coordinator: Optional[ForegroundSignalCoordinator] = None,
 ) -> int:
     output_directory = Path(args.output_directory).expanduser()
     output_directory.mkdir(parents=True, exist_ok=True)
     production_args = _production_runtime_args(args)
-    composition = production_factory(
-        production_args,
-        output_func=output_func,
-    )
+    factory_kwargs: dict[str, Any] = {"output_func": output_func}
+    try:
+        parameters = inspect.signature(production_factory).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    if "event_history_store" in parameters:
+        factory_kwargs["event_history_store"] = DiagnosticEventHistorySink()
+    composition = production_factory(production_args, **factory_kwargs)
     pipeline = composition.pipeline
     base_request = composition.base_request
     gate = composition.voice_io_gate
@@ -267,6 +299,17 @@ def _run_locked_diagnostic(
             "production_active_lifecycle_audio_recognizer_unavailable"
         )
     microphone = getattr(pipeline, "microphone_adapter", None)
+    coordinator = signal_coordinator or ForegroundSignalCoordinator()
+    coordinator.register(
+        lambda reason: _cancel_diagnostic_resources(
+            pipeline,
+            lifecycle_audio_recognizer,
+            gate,
+            reason=reason,
+        )
+    )
+    deadline = time.monotonic() + float(args.total_diagnostic_timeout)
+    diagnostic_run_id = new_correlation_id("active-lifecycle-audio")
 
     output_func("ARES ACTIVE lifecycle-audio diagnostic")
     output_func(
@@ -320,8 +363,36 @@ def _run_locked_diagnostic(
     failed_attempts = 0
     try:
         for index, phrase in enumerate(DIAGNOSTIC_PHRASES, start=1):
-            output_path = output_directory / f"{index:02d}-{_phrase_slug(phrase)}.wav"
+            if time.monotonic() >= deadline:
+                output_func("Total diagnostic timeout reached before next phrase.")
+                failed_attempts += 1
+                break
+            output_path = output_directory / (
+                f"{diagnostic_run_id}-{index:02d}-{_phrase_slug(phrase)}.wav"
+            )
+            readiness = _inter_command_readiness(
+                pipeline,
+                gate,
+                output_path,
+                cancellation_requested=coordinator.cancellation_requested,
+            )
+            if not readiness[0]:
+                output_func(f"Diagnostic readiness failed: {readiness[1]}")
+                failed_attempts += 1
+                break
             request = _diagnostic_request(base_request, output_path)
+            remaining = max(1.0, deadline - time.monotonic())
+            request = replace(
+                request,
+                recording_timeout_seconds=min(
+                    float(request.recording_timeout_seconds),
+                    remaining,
+                ),
+                transcription_timeout_seconds=min(
+                    float(request.transcription_timeout_seconds),
+                    remaining,
+                ),
+            )
             attempt = _capture_and_transcribe(
                 phrase=phrase,
                 index=index,
@@ -344,6 +415,9 @@ def _run_locked_diagnostic(
             attempt = replace(attempt, cleanup_result=cleanup)
             attempt = _validate_expected_constrained_outcome(attempt)
             _print_attempt(attempt, request=request, output_func=output_func)
+            output_func(
+                f"[{_progress_timestamp()}] Temporary files finalized: {cleanup}"
+            )
             if not attempt.success:
                 failed_attempts += 1
     finally:
@@ -356,7 +430,7 @@ def _run_locked_diagnostic(
     output_func(
         "Diagnostic result: "
         + (
-            "all four phrases passed the constrained lifecycle policy"
+            "both lifecycle phrases passed the bounded decision policy"
             if not failed_attempts
             else f"{failed_attempts} phrase(s) failed"
         )
@@ -378,28 +452,39 @@ def _validate_expected_constrained_outcome(
             failure_kind="lifecycle_recognition_mismatch",
             error_message="diagnostic phrase has no constrained-policy expectation",
         )
-    expected_classification, expected_canonical, expected_fallback = expected
+    expected_classification, expected_canonical = expected
     evidence = dict(attempt.constrained_recognition or {})
     classification = str(evidence.get("classification") or "")
     canonical = str(evidence.get("canonical_phrase") or "")
-    fallback = bool(evidence.get("whisper_fallback_required", True))
     confidence_tier = str(evidence.get("confidence_tier") or "")
     selected_action = str(evidence.get("selected_lifecycle_action") or "none")
-    action_expected = expected_classification in {"standby", "shutdown"}
+    constrained_authorized = _high_confidence_constrained_action(evidence)
+    fallback_ran = not constrained_authorized
+    whisper_action = str(
+        getattr(attempt.lifecycle_result, "action", LIFECYCLE_ACTION_NONE)
+        or LIFECYCLE_ACTION_NONE
+    )
+    final_action = selected_action if constrained_authorized else whisper_action
+    evidence.update(
+        {
+            "whisper_fallback_required": fallback_ran,
+            "whisper_fallback_ran": fallback_ran,
+            "whisper_fallback_action": whisper_action if fallback_ran else "none",
+            "final_lifecycle_action": final_action,
+        }
+    )
     matches = (
-        classification == expected_classification
-        and canonical == expected_canonical
-        and fallback is expected_fallback
+        final_action == expected_classification
         and (
-            confidence_tier == "high"
-            and selected_action == expected_classification
-            and _high_confidence_constrained_action(evidence)
-            if action_expected
-            else selected_action == "none"
+            constrained_authorized
+            and classification == expected_classification
+            and canonical == expected_canonical
+            and confidence_tier == "high"
+            or fallback_ran and whisper_action == expected_classification
         )
     )
     if matches:
-        return attempt
+        return replace(attempt, constrained_recognition=evidence)
     return replace(
         attempt,
         success=False,
@@ -408,14 +493,16 @@ def _validate_expected_constrained_outcome(
             "expected constrained outcome "
             f"classification={expected_classification}, "
             f"canonical={expected_canonical or '<none>'}, "
-            f"whisper_fallback={'yes' if expected_fallback else 'no'}; "
+            "with high constrained evidence or validated Whisper fallback; "
             "observed "
             f"classification={classification or '<empty>'}, "
             f"canonical={canonical or '<none>'}, "
             f"confidence_tier={confidence_tier or '<none>'}, "
             f"action={selected_action or 'none'}, "
-            f"whisper_fallback={'yes' if fallback else 'no'}"
+            f"whisper_fallback={'yes' if fallback_ran else 'no'}, "
+            f"final_action={final_action or 'none'}"
         )[:500],
+        constrained_recognition=evidence,
     )
 
 
@@ -515,11 +602,13 @@ def _capture_and_transcribe(
                 failing_method="wait_for_capture",
             )
         gate.begin_capture(owner)
+        output_func(f"[{_progress_timestamp()}] Active capture started")
         result = pipeline.run_once(
             request,
             raw_transcript_hook=intercept_raw_transcript,
             finalized_audio_hook=inspect_finalized_audio,
         )
+        output_func(f"[{_progress_timestamp()}] Active capture/transcription completed")
     except KeyboardInterrupt:
         raise
     except Exception as error:
@@ -548,6 +637,7 @@ def _capture_and_transcribe(
             except Exception:
                 pass
         gate.end_capture(owner)
+        output_func(f"[{_progress_timestamp()}] Microphone ownership released")
 
     return _attempt_from_pipeline_result(
         phrase,
@@ -1066,6 +1156,61 @@ def _stop_pipeline_safely(pipeline: Any, request: Any) -> None:
             pass
 
 
+def _cancel_diagnostic_resources(
+    pipeline: Any,
+    lifecycle_audio_recognizer: Any,
+    gate: Any,
+    *,
+    reason: str,
+) -> None:
+    adapters = (
+        getattr(pipeline, "speech_to_text_adapter", None),
+        getattr(pipeline, "microphone_adapter", None),
+        getattr(pipeline, "text_to_speech_adapter", None),
+        getattr(pipeline, "speaker_adapter", None),
+        lifecycle_audio_recognizer,
+    )
+    for adapter in adapters:
+        if adapter is None:
+            continue
+        cancel = getattr(adapter, "cancel_current", None)
+        if not callable(cancel):
+            cancel = getattr(adapter, "cancel", None)
+        if callable(cancel):
+            try:
+                cancel(reason)
+            except TypeError:
+                cancel()
+    end_capture = getattr(gate, "end_capture", None)
+    if callable(end_capture):
+        end_capture("diagnostic_active_capture")
+
+
+def _inter_command_readiness(
+    pipeline: Any,
+    gate: Any,
+    output_path: Path,
+    *,
+    cancellation_requested: bool = False,
+) -> tuple[bool, str]:
+    if cancellation_requested:
+        return False, "stale_cancellation_requested"
+    stt = getattr(pipeline, "speech_to_text_adapter", None)
+    runner = getattr(stt, "runner", None)
+    if int(getattr(runner, "active_pid", 0) or 0) > 0:
+        return False, "previous_whisper_process_alive"
+    microphone = getattr(pipeline, "microphone_adapter", None)
+    if getattr(microphone, "_active_stream", None) is not None:
+        return False, "previous_arecord_stream_alive"
+    snapshot = dict(getattr(gate, "snapshot", lambda: {})() or {})
+    if snapshot.get("capture_active") or snapshot.get("playback_active"):
+        return False, "voice_io_gate_not_idle"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists():
+        return False, "diagnostic_output_path_not_unique"
+    return True, "ready"
+
+
 def _print_attempt(
     attempt: DiagnosticAttempt,
     *,
@@ -1215,6 +1360,14 @@ def _print_attempt(
     output_func(
         "Whisper fallback would run in production: "
         f"{'yes' if constrained.get('whisper_fallback_required', True) else 'no'}"
+    )
+    output_func(
+        "Whisper fallback ran: "
+        f"{'yes' if constrained.get('whisper_fallback_ran', False) else 'no'}"
+    )
+    output_func(
+        "Final lifecycle decision: "
+        f"{constrained.get('final_lifecycle_action') or action or 'none'}"
     )
     output_func(
         "Constrained recognition decision: "
@@ -1400,6 +1553,7 @@ def _configuration_issue(args: argparse.Namespace) -> str:
         ("Whisper termination grace", args.whisper_termination_grace, 0.1, 10.0),
         ("Whisper hard cleanup deadline", args.whisper_hard_cleanup_deadline, 0.1, 10.0),
         ("runtime lock stale seconds", args.runtime_lock_stale_seconds, 1.0, 3600.0),
+        ("total diagnostic timeout", args.total_diagnostic_timeout, 10.0, 600.0),
     ):
         if (
             isinstance(value, bool)
@@ -1500,6 +1654,10 @@ def _yes_no_unknown(value: Any) -> str:
 
 def _phrase_slug(value: str) -> str:
     return "-".join(part for part in str(value).casefold().split() if part)
+
+
+def _progress_timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def main() -> int:

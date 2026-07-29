@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import importlib.util
 import math
 from pathlib import Path
-import signal
 import shutil
 import shlex
 import sys
-from threading import current_thread, main_thread
 from typing import Any, Callable, Optional, Sequence
 
 
@@ -42,6 +39,10 @@ from core import (  # noqa: E402
 from core.ActiveLifecycleAudioRecognizer import (  # noqa: E402
     ActiveLifecycleAudioRecognizer,
 )
+from core.ForegroundSignalCoordinator import (  # noqa: E402
+    ForegroundSignalCoordinator,
+    ForegroundTerminationRequested,
+)
 from core.BrainRuntimeVoiceAdapters import (  # noqa: E402
     ActiveLifecycleAudioTurnController,
 )
@@ -70,10 +71,7 @@ DEFAULT_RUNTIME_LOCK_STALE_SECONDS = 30.0
 ACTIVE_VOICE_COMPOSITION_REVISION = "constrained_active_lifecycle_alias_slot_v2"
 
 
-class RuntimeTerminationRequested(BaseException):
-    def __init__(self, signum: int) -> None:
-        super().__init__(f"termination signal {signum}")
-        self.signum = int(signum)
+RuntimeTerminationRequested = ForegroundTerminationRequested
 
 
 @dataclass(frozen=True)
@@ -209,6 +207,7 @@ def build_production_active_audio_pipeline(
         skill_manager=skill_manager,
         event_history_store=event_history_store,
         whisper_status_callback=output_func,
+        whisper_diagnostic_progress=bool(args.diagnostic_routing),
         whisper_termination_grace_seconds=args.whisper_termination_grace,
         whisper_hard_cleanup_deadline_seconds=(
             args.whisper_hard_cleanup_deadline
@@ -363,7 +362,8 @@ def run_standby_voice(
     runtime_factory: Optional[Callable[..., tuple[BrainRuntime, Any, Any]]] = None,
 ) -> int:
     args = build_parser().parse_args(argv)
-    runtime_holder: dict[str, Any] = {}
+    signal_coordinator = ForegroundSignalCoordinator()
+    runtime_holder: dict[str, Any] = {"signal_coordinator": signal_coordinator}
     try:
         runtime_lock_path = _repo_path(args.runtime_lock_path)
         with StoreWriteLock(
@@ -372,7 +372,7 @@ def run_standby_voice(
             stale_after_seconds=args.runtime_lock_stale_seconds,
             owner_kind="ares_standby_voice_runtime",
         ):
-            with _termination_signal_scope():
+            with signal_coordinator.signal_scope():
                 return _run_standby_voice_locked(
                     args,
                     output_func=output_func,
@@ -468,6 +468,15 @@ def _run_standby_voice_locked(
         runtime, pipeline, request = factory(args, output_func=output_func)
         if runtime_holder is not None:
             runtime_holder["runtime"] = runtime
+            coordinator = runtime_holder.get("signal_coordinator")
+            if isinstance(coordinator, ForegroundSignalCoordinator):
+                coordinator.register(
+                    lambda reason: _cancel_foreground_voice_resources(
+                        runtime,
+                        pipeline,
+                        reason=reason,
+                    )
+                )
     except (OSError, RuntimeError, TypeError, ValueError) as error:
         output_func(f"ARES standby voice setup failed: {error}")
         return 2
@@ -626,23 +635,33 @@ def _qualified_implementation(value: Any) -> str:
     return f"{module}.{name}" if module else name
 
 
-@contextmanager
+def _cancel_foreground_voice_resources(runtime: Any, pipeline: Any, *, reason: str) -> None:
+    """Request bounded cancellation without changing lifecycle in a signal handler."""
+
+    adapters = (
+        getattr(pipeline, "speech_to_text_adapter", None),
+        getattr(pipeline, "microphone_adapter", None),
+        getattr(pipeline, "text_to_speech_adapter", None),
+        getattr(pipeline, "speaker_adapter", None),
+        getattr(runtime, "standby_wake_listener", None),
+    )
+    for adapter in adapters:
+        if adapter is None:
+            continue
+        cancel = getattr(adapter, "cancel_current", None)
+        if not callable(cancel):
+            cancel = getattr(adapter, "cancel", None)
+        if callable(cancel):
+            try:
+                cancel(reason)
+            except TypeError:
+                cancel()
+
+
 def _termination_signal_scope():
-    """Turn SIGTERM into normal exception cleanup on the foreground main thread."""
+    """Compatibility wrapper retained for tests and downstream scripts."""
 
-    if current_thread() is not main_thread() or not hasattr(signal, "SIGTERM"):
-        yield
-        return
-    previous = signal.getsignal(signal.SIGTERM)
-
-    def request_termination(signum, _frame):
-        raise RuntimeTerminationRequested(int(signum))
-
-    signal.signal(signal.SIGTERM, request_termination)
-    try:
-        yield
-    finally:
-        signal.signal(signal.SIGTERM, previous)
+    return ForegroundSignalCoordinator().signal_scope()
 
 
 def _command_pipeline_args(args: argparse.Namespace) -> argparse.Namespace:

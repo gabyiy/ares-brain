@@ -27,6 +27,11 @@ from core.AdapterConfig import (
     load_adapter_configs,
 )
 from core.Confirmation import ConfirmationDecision, ConfirmationManager, ConfirmationRequest
+from core.BoundedSubprocess import BoundedProcessResult, BoundedProcessRunner
+from core.ForegroundSignalCoordinator import (
+    ForegroundSignalCoordinator,
+    ForegroundTerminationRequested,
+)
 from core.BrainSessionManager import (
     BRAIN_ACTIVE,
     BRAIN_BOOTING,

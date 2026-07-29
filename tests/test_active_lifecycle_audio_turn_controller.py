@@ -262,7 +262,7 @@ def test_unreaped_backend_blocks_lifecycle_and_whisper_fallback(tmp_path):
     assert state == {"lifecycle": "ACTIVE", "session": "session-1"}
 
 
-def test_medium_shutdown_requires_next_turn_confirmation(tmp_path):
+def test_medium_shutdown_requires_whisper_fallback_in_same_turn(tmp_path):
     state = {"lifecycle": "ACTIVE", "session": "session-1"}
     clock = FakeClock()
     recognizer = QueuedLifecycleRecognizer(
@@ -275,42 +275,22 @@ def test_medium_shutdown_requires_next_turn_confirmation(tmp_path):
                 proposed_classification=ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
             )
         ],
-        [
-            ActiveLifecycleConfirmationResult(
-                disposition=ACTIVE_LIFECYCLE_CONFIRMATION_CONFIRMED,
-                expected_classification=ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
-                recognized_text="yes",
-                recognized_tokens=("yes",),
-                confidence=0.91,
-                confidence_available=True,
-                recognition_backend="fake_constrained_vosk",
-            )
-        ],
     )
     controller = _controller(recognizer, state, clock)
 
     proposed = controller(_chunk(tmp_path, "proposal.wav"))
-    pending = controller.pending_confirmation()
-    confirmed = controller(_chunk(tmp_path, "confirmation.wav"))
-
-    assert proposed.handled is True
+    assert proposed.handled is False
+    assert proposed.continue_to_whisper is True
     assert proposed.canonical_text == ""
     assert _payload(proposed)["confirmation_required"] is True
     assert _payload(proposed)["lifecycle_authorized"] is False
-    assert pending is not None
-    assert pending.classification == "shutdown"
-    assert pending.session_id == "session-1"
-    assert pending.expires_at == 110.0
-    assert confirmed.handled is True
-    assert confirmed.canonical_text == "shutdown ares"
-    assert _payload(confirmed)["lifecycle_authorized"] is True
+    assert _payload(proposed)["whisper_fallback_required"] is True
+    assert _payload(proposed)["selected_lifecycle_action"] == "none"
     assert controller.pending_confirmation() is None
-    assert recognizer.confirmation_paths == [
-        (str(tmp_path / "confirmation.wav"), "shutdown")
-    ]
+    assert recognizer.confirmation_paths == []
 
 
-def test_negative_confirmation_cancels_without_executable_text(tmp_path):
+def test_medium_standby_does_not_create_pending_confirmation(tmp_path):
     state = {"lifecycle": "ACTIVE", "session": "session-1"}
     recognizer = QueuedLifecycleRecognizer(
         [
@@ -322,30 +302,18 @@ def test_negative_confirmation_cancels_without_executable_text(tmp_path):
                 proposed_classification=ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
             )
         ],
-        [
-            ActiveLifecycleConfirmationResult(
-                disposition=ACTIVE_LIFECYCLE_CONFIRMATION_CANCELLED,
-                expected_classification=ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
-                recognized_text="no",
-                recognized_tokens=("no",),
-                confidence=0.7,
-                confidence_available=True,
-            )
-        ],
     )
     controller = _controller(recognizer, state)
 
-    controller(_chunk(tmp_path, "proposal.wav"))
-    cancelled = controller(_chunk(tmp_path, "cancel.wav"))
+    decision = controller(_chunk(tmp_path, "proposal.wav"))
 
-    assert cancelled.handled is True
-    assert cancelled.canonical_text == ""
-    assert _payload(cancelled)["confirmation_disposition"] == "cancelled"
-    assert _payload(cancelled)["lifecycle_authorized"] is False
+    assert decision.handled is False
+    assert decision.continue_to_whisper is True
+    assert _payload(decision)["whisper_fallback_required"] is True
     assert controller.pending_confirmation() is None
 
 
-def test_unreaped_confirmation_backend_blocks_whisper_and_clears_pending(tmp_path):
+def test_medium_result_never_invokes_confirmation_backend(tmp_path):
     state = {"lifecycle": "ACTIVE", "session": "session-1"}
     recognizer = QueuedLifecycleRecognizer(
         [
@@ -357,32 +325,21 @@ def test_unreaped_confirmation_backend_blocks_whisper_and_clears_pending(tmp_pat
                 proposed_classification=ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
             )
         ],
-        [
-            ActiveLifecycleConfirmationResult(
-                disposition="unmatched",
-                expected_classification=ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
-                rejection_reason="confirmation_backend_cleanup_incomplete",
-                backend_cleanup_complete=False,
-            )
-        ],
     )
     controller = _controller(recognizer, state)
 
-    controller(_chunk(tmp_path, "proposal.wav"))
-    decision = controller(_chunk(tmp_path, "unreaped-confirmation.wav"))
+    decision = controller(_chunk(tmp_path, "proposal.wav"))
 
-    assert decision.handled is True
-    assert decision.continue_to_whisper is False
-    assert decision.status == "active_lifecycle_confirmation_cleanup_incomplete"
-    assert _payload(decision)["routing_blocked"] is True
+    assert decision.handled is False
+    assert decision.continue_to_whisper is True
     assert _payload(decision)["lifecycle_authorized"] is False
-    assert _payload(decision)["whisper_fallback_required"] is False
-    assert _payload(decision)["pending_clear_reason"] == "backend_cleanup_incomplete"
+    assert _payload(decision)["whisper_fallback_required"] is True
+    assert recognizer.confirmation_paths == []
     assert controller.pending_confirmation() is None
     assert state == {"lifecycle": "ACTIVE", "session": "session-1"}
 
 
-def test_weak_or_malformed_confirmation_cannot_authorize_shutdown(tmp_path):
+def test_repeated_medium_results_always_fall_back_without_authorization(tmp_path):
     state = {"lifecycle": "ACTIVE", "session": "session-1"}
     medium = _recognition(
         ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN,
@@ -393,44 +350,23 @@ def test_weak_or_malformed_confirmation_cannot_authorize_shutdown(tmp_path):
     )
     recognizer = QueuedLifecycleRecognizer(
         [medium, medium],
-        [
-            ActiveLifecycleConfirmationResult(
-                disposition=ACTIVE_LIFECYCLE_CONFIRMATION_CONFIRMED,
-                expected_classification=ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
-                recognized_text="yes",
-                recognized_tokens=("yes",),
-                confidence=0.79,
-                confidence_available=True,
-            ),
-            ActiveLifecycleConfirmationResult(
-                disposition=ACTIVE_LIFECYCLE_CONFIRMATION_CONFIRMED,
-                expected_classification=ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
-                recognized_text="yes",
-                recognized_tokens=("yes",),
-                confidence=0.99,
-                confidence_available=True,
-            ),
-        ],
     )
     controller = _controller(recognizer, state)
 
-    controller(_chunk(tmp_path, "weak-proposal.wav"))
-    weak = controller(_chunk(tmp_path, "weak-confirmation.wav"))
-    controller(_chunk(tmp_path, "mismatch-proposal.wav"))
-    mismatched = controller(_chunk(tmp_path, "mismatch-confirmation.wav"))
+    weak = controller(_chunk(tmp_path, "weak-proposal.wav"))
+    repeated = controller(_chunk(tmp_path, "second-proposal.wav"))
 
-    for decision in (weak, mismatched):
+    for decision in (weak, repeated):
         assert decision.handled is False
         assert decision.continue_to_whisper is True
         assert _payload(decision)["lifecycle_authorized"] is False
-        assert _payload(decision)["rejection_reason"] == (
-            "controller_confirmation_authorization_invariant_failed"
-        )
+        assert _payload(decision)["whisper_fallback_required"] is True
+    assert recognizer.confirmation_paths == []
     assert controller.pending_confirmation() is None
     assert state == {"lifecycle": "ACTIVE", "session": "session-1"}
 
 
-def test_confirmation_expiry_and_session_change_clear_pending_safely(tmp_path):
+def test_medium_fallback_is_stateless_across_time_and_session_changes(tmp_path):
     state = {"lifecycle": "ACTIVE", "session": "session-1"}
     clock = FakeClock()
     medium = _recognition(
@@ -447,14 +383,13 @@ def test_confirmation_expiry_and_session_change_clear_pending_safely(tmp_path):
     clock.advance(10.0)
     expired = controller(_chunk(tmp_path, "expired.wav"))
     assert expired.continue_to_whisper is True
-    assert _payload(expired)["pending_clear_reason"] == "expired"
+    assert _payload(expired)["whisper_fallback_required"] is True
     assert recognizer.confirmation_paths == []
-
-    controller(_chunk(tmp_path, "second.wav"))
     state["session"] = "session-2"
+    recognizer.recognitions.append(medium)
     changed = controller(_chunk(tmp_path, "changed.wav"))
     assert changed.continue_to_whisper is True
-    assert _payload(changed)["pending_clear_reason"] == "session_changed"
+    assert _payload(changed)["whisper_fallback_required"] is True
     assert controller.pending_confirmation() is None
 
 
@@ -633,7 +568,7 @@ def test_runtime_adapter_never_starts_whisper_with_unreaped_lifecycle_worker(tmp
     assert state == {"lifecycle": "ACTIVE", "session": "session-1"}
 
 
-def test_runtime_adapter_returns_typed_confirmation_controls_without_text(tmp_path):
+def test_runtime_adapter_runs_whisper_fallback_for_medium_lifecycle_evidence(tmp_path):
     state = {"lifecycle": "ACTIVE", "session": "session-1"}
     recognizer = QueuedLifecycleRecognizer(
         [
@@ -643,16 +578,6 @@ def test_runtime_adapter_returns_typed_confirmation_controls_without_text(tmp_pa
                 confidence=0.55,
                 confirmation_required=True,
                 proposed_classification=ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
-            )
-        ],
-        [
-            ActiveLifecycleConfirmationResult(
-                disposition=ACTIVE_LIFECYCLE_CONFIRMATION_CANCELLED,
-                expected_classification=ACTIVE_LIFECYCLE_CLASSIFICATION_STANDBY,
-                recognized_text="no",
-                recognized_tokens=("no",),
-                confidence=0.7,
-                confidence_available=True,
             )
         ],
     )
@@ -667,19 +592,14 @@ def test_runtime_adapter_returns_typed_confirmation_controls_without_text(tmp_pa
     )
 
     proposed = adapter.wait_for_input(1.0)
-    cancelled = adapter.wait_for_input(1.0)
 
-    assert proposed.status == "input" and proposed.text == ""
-    assert proposed.metadata["active_lifecycle_control"] == "confirmation_required"
-    assert proposed.metadata["active_lifecycle_confirmation_prompt"] == (
-        "Did you say goodbye Ares?"
-    )
-    assert proposed.metadata["active_lifecycle_owner_activity"] is True
-    assert cancelled.status == "input" and cancelled.text == ""
-    assert cancelled.metadata["active_lifecycle_control"] == "confirmation_cancelled"
-    assert cancelled.metadata["active_lifecycle_audio_authorized"] is False
-    assert pipeline.capture_count == 2
-    assert pipeline.whisper_count == 0
+    assert proposed.status == "input"
+    assert proposed.text == "calculate 2 plus 2"
+    assert proposed.metadata["active_lifecycle_whisper_fallback"] is True
+    assert proposed.metadata["active_lifecycle_whisper_fallback_completed"] is True
+    assert pipeline.capture_count == 1
+    assert pipeline.whisper_count == 1
+    assert recognizer.confirmation_paths == []
 
 
 def test_runtime_adapter_resource_release_resets_and_close_releases_recognizer(tmp_path):
@@ -705,7 +625,7 @@ def test_runtime_adapter_resource_release_resets_and_close_releases_recognizer(t
     )
 
     adapter.wait_for_input(1.0)
-    assert controller.pending_confirmation() is not None
+    assert controller.pending_confirmation() is None
     adapter.release_active_resources()
     assert controller.pending_confirmation() is None
     adapter.close()

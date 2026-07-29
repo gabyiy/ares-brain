@@ -282,7 +282,8 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         except KeyboardInterrupt:
             if cancellation_token is not None and cancellation_token.supports_cancellation:
                 cancellation_token.cancel("keyboard_interrupt")
-            result = self._failure(state, "cancellation", "keyboard_interrupt", "cancelled")
+            self._stop_components()
+            raise
         finally:
             stop_result = self.stop(normalized)
             cleanup = self._cleanup_files(normalized, result)
@@ -371,7 +372,8 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
         except KeyboardInterrupt:
             if cancellation_token is not None and cancellation_token.supports_cancellation:
                 cancellation_token.cancel("keyboard_interrupt")
-            result = self._failure(state, "cancellation", "keyboard_interrupt", "cancelled")
+            self._stop_components()
+            raise
         finally:
             stop_result = self.stop(local_request)
             cleanup = self._cleanup_files(local_request, result)
@@ -500,12 +502,7 @@ class SingleTurnVoicePipeline(SingleTurnVoiceStageMixin):
             except KeyboardInterrupt:
                 if cancellation_token is not None and cancellation_token.supports_cancellation:
                     cancellation_token.cancel("keyboard_interrupt")
-                return self._failure(
-                    state,
-                    "cancellation",
-                    "keyboard_interrupt",
-                    "cancelled",
-                )
+                raise
 
         try:
             lifecycle = self.lifecycle_manager.execute(

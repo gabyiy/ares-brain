@@ -32,6 +32,7 @@ DEFAULT_WHISPER_TIMEOUT_SECONDS = 15.0
 MAX_WHISPER_TIMEOUT_SECONDS = 900.0
 DEFAULT_WHISPER_TERMINATION_GRACE_SECONDS = 1.0
 DEFAULT_WHISPER_HARD_CLEANUP_DEADLINE_SECONDS = 3.0
+DEFAULT_WHISPER_WATCHDOG_INTERVAL_SECONDS = 0.10
 MAX_WHISPER_CAPTURE_OUTPUT_BYTES = 4 * 1024 * 1024
 WHISPER_TERMINATE_SIGNAL = int(getattr(signal, "SIGTERM", 15))
 WHISPER_KILL_SIGNAL = int(getattr(signal, "SIGKILL", 9))
@@ -78,6 +79,7 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
         ),
         clock: Clock = time.perf_counter,
         status_callback: Optional[StatusCallback] = None,
+        diagnostic_progress: bool = False,
         process_group_getter: Optional[ProcessGroupGetter] = None,
         process_group_signaler: Optional[ProcessGroupSignaler] = None,
     ) -> None:
@@ -95,8 +97,9 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
         self.hard_cleanup_deadline_seconds = cleanup_deadline
         self.clock = clock
         self.status_callback = status_callback
+        self.diagnostic_progress = bool(diagnostic_progress)
         self._process_groups_enabled = bool(
-            os.name == "posix"
+            (os.name == "posix" and process_factory is subprocess.Popen)
             or (
                 process_group_getter is not None
                 and process_group_signaler is not None
@@ -193,6 +196,7 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
             pgid = self._resolve_pgid(pid)
             self._register_active(process, pid, pgid)
             self._emit(f"Whisper process started: pid={pid}, pgid={pgid}")
+            self._emit_progress("process_started")
             self._emit(f"Whisper timeout: {timeout:g} seconds")
             try:
                 self._wait_process(process, timeout)
@@ -201,6 +205,8 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
                 self._emit(
                     f"Whisper transcription timed out after {timeout:g} seconds"
                 )
+                self._emit("Whisper timeout triggered; terminating process group")
+                self._emit_progress("timeout_triggered")
                 cleanup = self._cleanup_process(
                     process,
                     pgid,
@@ -262,6 +268,9 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
             )
             if process is not None:
                 self._unregister_active(process)
+            if handles_closed:
+                self._emit("Whisper stdout/stderr handles closed")
+                self._emit_progress("output_handles_closed")
 
         elapsed = round(_elapsed(self.clock, started), 6)
         returncode = self._returncode(process)
@@ -305,6 +314,7 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
                     )
                 )
             self._emit(f"Whisper completed: exit={returncode}, elapsed={elapsed:g} seconds")
+            self._emit_progress("process_completed")
         return SafeProcessResult(
             args=safe_args,
             returncode=returncode,
@@ -342,6 +352,7 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
                 return result
 
             self._emit("Terminating Whisper process group")
+            self._emit_progress("sigterm_requested")
             terminated = self._signal_process(
                 process,
                 pgid,
@@ -357,6 +368,8 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
                 require_group_exit=True,
             )
             if self._process_alive(process) or self._group_alive(process, pgid):
+                self._emit("Whisper process group did not exit after SIGTERM; sending SIGKILL")
+                self._emit_progress("sigkill_requested")
                 killed = self._signal_process(
                     process,
                     pgid,
@@ -369,6 +382,9 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
                 require_group_exit=True,
             )
             reaped = self._process_reaped(process)
+            if reaped:
+                self._emit("Whisper process reaped")
+                self._emit_progress("process_reaped")
             cleanup_completed = bool(
                 reaped and not self._process_alive(process)
                 and not self._group_alive(process, pgid)
@@ -407,10 +423,27 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
             time.sleep(min(0.01, self._remaining(deadline)))
 
     def _wait_process(self, process: Any, timeout_seconds: float) -> int:
-        wait = getattr(process, "wait", None)
-        if not callable(wait):
-            raise OSError("process_wait_unavailable")
-        return int(wait(timeout=max(0.0, float(timeout_seconds))))
+        poll = getattr(process, "poll", None)
+        if not callable(poll):
+            raise OSError("process_poll_unavailable")
+        timeout = max(0.0, float(timeout_seconds))
+        deadline = self.clock() + timeout
+        while True:
+            value = poll()
+            if value is not None:
+                return int(value)
+            remaining = self._remaining(deadline)
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(
+                    getattr(process, "args", "whisper-cli"),
+                    timeout,
+                )
+            time.sleep(
+                min(
+                    DEFAULT_WHISPER_WATCHDOG_INTERVAL_SECONDS,
+                    remaining,
+                )
+            )
 
     def _resolve_pgid(self, pid: int) -> int:
         if pid <= 0:
@@ -430,6 +463,11 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
         ):
             try:
                 self._process_group_signaler(pgid, signal_number)
+                self._emit(
+                    "Whisper process-group signal sent: "
+                    f"signal={signal_number}, pid={int(getattr(process, 'pid', 0) or 0)}, "
+                    f"pgid={pgid}"
+                )
                 return True
             except ProcessLookupError:
                 return False
@@ -560,6 +598,15 @@ class WhisperSubprocessRunner(SafeSubprocessRunner):
             self.status_callback(str(message))
         except (OSError, RuntimeError, TypeError, ValueError):
             return
+
+    def _emit_progress(self, event: str) -> None:
+        if not self.diagnostic_progress:
+            return
+        self._emit(
+            "Whisper progress timestamp: "
+            f"{datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')}; "
+            f"event={str(event or 'unknown')[:80]}"
+        )
 
     @staticmethod
     def _empty_cleanup_metadata() -> Dict[str, Any]:

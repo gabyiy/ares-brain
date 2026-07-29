@@ -9,6 +9,7 @@ import subprocess
 import time
 from typing import Any, Dict, Optional, Sequence
 
+from core.BoundedSubprocess import BoundedProcessRunner
 from core.Contracts import TextToSpeechRequestV1, TextToSpeechResultV1
 from core.LinuxAlsaSpeaker import (
     ALSA_SPEAKER_STATUS_DISABLED,
@@ -71,10 +72,13 @@ class SafeTextProcessResult:
 
 
 class SafeTextSubprocessRunner:
-    """Narrow text-input subprocess boundary. Shell execution is never used."""
+    """Bounded process-group boundary for Piper text input."""
+
+    def __init__(self, runner: Optional[BoundedProcessRunner] = None):
+        self._runner = runner or BoundedProcessRunner()
 
     def which(self, executable: str) -> Optional[str]:
-        return shutil.which(executable)
+        return self._runner.which(executable)
 
     def run(
         self,
@@ -83,44 +87,23 @@ class SafeTextSubprocessRunner:
         input_text: str = "",
     ) -> SafeTextProcessResult:
         safe_args = [str(arg) for arg in args]
-        try:
-            completed = subprocess.run(
-                safe_args,
-                input=str(input_text or ""),
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
-                shell=False,
-            )
-        except subprocess.TimeoutExpired as error:
-            return SafeTextProcessResult(
-                args=safe_args,
-                returncode=-1,
-                stdout=str(error.stdout or ""),
-                stderr=str(error.stderr or ""),
-                timed_out=True,
-                error_message="process_timeout",
-            )
-        except FileNotFoundError:
-            return SafeTextProcessResult(
-                args=safe_args,
-                returncode=-1,
-                error_message="process_not_found",
-            )
-        except OSError as error:
-            return SafeTextProcessResult(
-                args=safe_args,
-                returncode=-1,
-                error_message=f"process_os_error:{error.__class__.__name__}",
-                metadata={"errno": getattr(error, "errno", None)},
-            )
+        completed = self._runner.run(
+            safe_args,
+            timeout_seconds=timeout_seconds,
+            input_text=str(input_text or ""),
+        )
         return SafeTextProcessResult(
             args=safe_args,
             returncode=int(completed.returncode),
             stdout=str(completed.stdout or ""),
             stderr=str(completed.stderr or ""),
+            timed_out=bool(completed.timed_out),
+            error_message=str(completed.error_message or ""),
+            metadata=dict(completed.metadata),
         )
+
+    def cancel_current(self, reason: str = "cancelled") -> bool:
+        return self._runner.cancel_current(reason)
 
 
 class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
@@ -190,6 +173,9 @@ class LinuxPiperTextToSpeechAdapter(TextToSpeechAdapter):
         )
 
     def stop(self) -> TextToSpeechResultV1:
+        cancel = getattr(self.runner, "cancel_current", None)
+        if callable(cancel):
+            cancel("piper_adapter_stop")
         self.started = False
         return self._result(True, "stopped", "Linux Piper TTS adapter stopped.")
 

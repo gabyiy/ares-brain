@@ -113,6 +113,9 @@ class LinuxAlsaSpeakerAdapter(SpeakerOutputAdapter):
         )
 
     def stop(self) -> SpeakerPlaybackResult:
+        cancel = getattr(self.runner, "cancel_current", None)
+        if callable(cancel):
+            cancel("speaker_adapter_stop")
         self.started = False
         self.playing = False
         return self._success(

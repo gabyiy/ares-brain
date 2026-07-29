@@ -8,7 +8,6 @@ from threading import RLock
 from typing import Any, Callable, Dict, List, Optional
 
 from memory.schema_migrations import (
-    DEFAULT_STALE_LOCK_SECONDS,
     MigrationError,
     SCHEMA_EVENT_HISTORY,
     load_store_data,
@@ -21,6 +20,7 @@ DATA_DIR = BASE_DIR / "data"
 DEFAULT_EVENT_HISTORY_PATH = DATA_DIR / "event_history.json"
 DEFAULT_MAX_HISTORY = 100
 DEFAULT_EVENT_HISTORY_APPEND_LOCK_TIMEOUT_SECONDS = 0.05
+DEFAULT_EVENT_HISTORY_STALE_LOCK_SECONDS = 5.0
 EVENT_PRIORITIES = {"low", "normal", "high", "critical"}
 
 
@@ -119,7 +119,7 @@ class EventHistoryStore:
         *,
         warning_callback: Optional[Callable[[str], None]] = None,
         recover_dead_owner_lock: bool = True,
-        stale_lock_seconds: float = DEFAULT_STALE_LOCK_SECONDS,
+        stale_lock_seconds: float = DEFAULT_EVENT_HISTORY_STALE_LOCK_SECONDS,
         lock_process_alive: Optional[Callable[[int], Optional[bool]]] = None,
         append_lock_timeout_seconds: float = DEFAULT_EVENT_HISTORY_APPEND_LOCK_TIMEOUT_SECONDS,
     ):
