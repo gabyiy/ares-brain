@@ -10,7 +10,7 @@ The project focuses on building an assistant that can eventually understand natu
 
 Current Version
 
-ARES v2.19 - Bounded Foreground Voice Cancellation
+ARES v2.20 - Independent STT Health and Controlled PCM Stop Semantics
 
 ---
 
@@ -19,6 +19,10 @@ Current Architecture
 The production ACTIVE path enforces activation safety at two independent boundaries. `normalize_active_lifecycle_command()` maps name-only input to silent `attention_only`, while `BrainSessionManager.activate_session()` rejects every activation request outside `STANDBY` without changing state, session ID, or acknowledgement count. Active capture keeps the existing ALSA device, calibrated RMS thresholds, and canonical 16 kHz mono `S16_LE` format. Its synchronous ready signal is emitted only after the one-shot stream is open and the 0.75-second calibration has entered `WAITING`; only then is `ARES is waiting for your command...` printed. The production active profile retains 0.5 seconds of rolling pre-roll, includes the first start-evidence frame without leading trimming, and requires 0.9 seconds of continuous terminal quiet. This fixes the code-level path where speaking on the former pre-calibration prompt could discard the leading `goodbye` or `shutdown` frames and leave only trailing `Ares` for Whisper. It does not retune microphone gain, wake thresholds, Vosk, Whisper confidence, or the persistent standby stream.
 
 The latest Raspberry Pi diagnostic passed capture and began ordinary Whisper, then stopped indefinitely after printing the configured 15-second timeout. Source tracing found that the timeout banner preceded one blocking child wait, while `KeyboardInterrupt` was converted into local cancellation results inside the voice pipeline and runtime adapters instead of reaching the foreground cleanup owner. A medium constrained result also returned `uncertain` with no action and no Whisper fallback. This checkpoint makes the timeout a monotonic parent-owned poll deadline, lets SIGINT/SIGTERM unwind to one cleanup coordinator, and requires same-turn Whisper fallback for every medium or rejected constrained lifecycle result. Physical Raspberry Pi verification is still required.
+
+The follow-up diagnostic exposed a separate health-check defect before speech inference: `WhisperSubprocessRunner` defines its own constructor but did not call `SafeSubprocessRunner.__init__()`. The parent constructor is what creates `_runner`, and the inherited executable resolver calls `self._runner.which(...)`; production STT health therefore raised `AttributeError: 'WhisperSubprocessRunner' object has no attribute '_runner'` before starting Whisper. The runner now initializes its superclass, and STT health independently verifies the resolved executable, execute permission, readable model, writable temporary-output directory, constructible command, child/reap state, and clear cancellation state without opening the microphone or running inference.
+
+An adjacent `arecord` exit code `1` with the single exact line `arecord: pcm_read: ... read error: Interrupted system call` is not that STT defect. When it occurs only after one valid PCM frame, an explicit ARES stop request, and complete process reap/pipe cleanup—with no active read failure before the stop—it is the expected result of interrupting `arecord` while it is blocked in `pcm_read`. The classification is narrowly `controlled_stop` with no health effect. Cleanup-time SIGINT/SIGTERM are also controlled; SIGKILL is accepted only after recorded bounded escalation and is degraded-but-reusable. Other negative signals, mixed/additional stderr, the same exit before valid PCM, active-read failure, unexpected ownership loss, or incomplete reap remain unhealthy transport failures. Microphone and STT health are reported separately; neither process can lend health to the other. Raspberry Pi verification of both real boundaries remains required.
 
 The ACTIVE path gives the already-finalized WAV to one side-effect-free `ActiveLifecycleAudioRecognizer` before ordinary Whisper. Its local `vosk_active_lifecycle_constrained_grammar` backend keeps one spawned worker process and loads the configured Vosk model once per worker. One authoritative lifecycle-slot canonicalizer accepts only `ares`, `aris`, `aries`, `arris`, `rs`, or tokenized `r s`, and only where one complete supported lifecycle template has its assistant-name slot. It rewrites that slot to `ares` before exact classification while preserving the raw Vosk transcript and tokens for diagnostics and confidence alignment. The loaded grammar contains 42 standby expansions, 36 shutdown expansions, 49 bounded non-action competitors, and `[unk]`: 128 alternatives total. It does not perform substring, fuzzy, edit-distance, semantic, or general phonetic replacement. High-confidence exact lifecycle audio bypasses Whisper. Medium, rejected, unmatched, competitor, `[unk]`, missing-confidence, timeout, and backend-error results use ordinary Whisper on the same closed WAV; only a complete valid Whisper lifecycle phrase may then execute an action.
 
@@ -565,7 +569,7 @@ Implemented Features
 - ReminderScheduler foundation for parsing task due text and finding due/upcoming tasks
 - In-memory conversation context for recent skill turns
 - Text REPL with conversation turn storage
-- Pytest automated coverage for 2699 tests across current core modules
+- Pytest automated coverage for 2741 tests across current core modules
 - GitHub Actions CI for pushes and pull requests to `main`
 
 Run Tests
@@ -584,7 +588,7 @@ py -m compileall core interfaces events memory skills scripts
 py scripts\verify_phase2_events_memory.py
 ```
 
-Current pytest collection: `2699 tests`; all 2699 pass. The post-final-code focused subprocess/audio/runtime/event sweep passes all 800 tests. These are deterministic Windows results; Raspberry Pi process cancellation and lifecycle acceptance remain owner-run.
+Phase 118 passes all `2741 tests`; its post-final-code focused ALSA/Whisper/health/diagnostic/pipeline sweep passes 265 tests. Compileall, Phase 2 event/memory verification, non-empty JSON configuration parsing, and `git diff --check` are also green. These deterministic Windows results cannot establish Raspberry Pi STT configuration, ALSA cleanup, or lifecycle acceptance.
 
 Manual Brain Session Manager Verification
 
@@ -749,7 +753,27 @@ The probe captures one active-command WAV through `LinuxAlsaMicrophoneAdapter`, 
 
 The focused ACTIVE lifecycle-audio probe receives the same production active-audio composition and constrained lifecycle recognizer as the foreground launcher instead of rebuilding adapters. It rejects a live runtime/microphone-owner conflict, performs bounded PCM preflight, and captures only `goodbye Ares` and `shutdown Ares`. It uses a nonpersistent event sink, one fresh per-phrase command capture, hard capture/Whisper/total bounds, and one top-level cancellation owner. No calculator or memory command is included until lifecycle timeout and cancellation pass on hardware.
 
-The preflight prints the requested and resolved device, `16000 Hz / mono / S16_LE` format, ownership, open/read state, expected and actual first-frame bytes, nonzero status, process identity, exact `arecord` command, stderr, cleanup, and stream health. The explicitly gated probe also prints the exact loaded constrained grammar. For each nonempty candidate it preserves the raw constrained transcript and JSON token list, then prints the lifecycle-only alias detected, its prefix/suffix position, the alias-canonicalized transcript, confidence, backend, classification, canonical phrase, selected action, rejection reason, and whether production would run Whisper fallback. Comparison Whisper status, reason, and transcript remain visible. The compare-only decision allows Whisper to inspect the same closed WAV even when production would bypass it; it never recaptures. The script constructs no `BrainRuntime`, invokes no CoreService skill or owner memory, and executes no lifecycle action. Audio is deleted unless `--retain-audio` is explicitly supplied:
+The microphone and STT checks are intentionally independent. Microphone health reports configuration/device availability, stream and gate ownership, prior-process reap, and the previous controlled-stop classification. STT health reports the resolved command path, executable bit, model readability, output-directory writability, command construction, live/prior child state, reap/handle cleanup, and cancellation state. A cancelled but fully reaped prior Whisper request is healthy history; a live or unreaped child is a current failure. This lightweight production-composed check opens no microphone and performs no inference:
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+
+python scripts/manual_diagnose_active_lifecycle_audio.py \
+  --microphone-device plughw:2,0 \
+  --speaker-device plughw:CARD=Device,DEV=0 \
+  --diagnostic-active-lifecycle-audio \
+  --stt-preflight-only
+```
+
+A passing lightweight check includes `Microphone opened: no`, `Speech inference requested: no`, STT `executable/model readable/output directory writable/command constructible: yes`, `existing child process: none`, `previous child reaped: yes`, `cancellation state: clear`, `final decision: healthy`, and `STT configuration preflight result: passed`.
+
+The full preflight prints the requested and resolved device, `16000 Hz / mono / S16_LE` format, ownership, open/read state, expected and actual first-frame bytes, nonzero status, process identity, exact `arecord` command, stderr, cleanup, and stream health. Its controlled-stop record includes whether stop was requested, whether valid PCM arrived, exit code/signal, reap and cleanup completion, unexpected-failure status, and final health effect. `controlled_stop` requires a deliberate stop of a still-live child after valid PCM, no pre-stop transport failure, an expected termination result, complete reap, and closed pipes. A bounded SIGKILL escalation that still reaps cleanly is `controlled_stop_degraded`/`degraded_reusable`; a pre-stop failure, unrelated exit-1 stderr, missing valid PCM, dead child, ownership loss, or incomplete cleanup remains `unexpected_failure` or `cleanup_incomplete` and unhealthy. Only the exact cleanup-time `arecord`/`pcm_read`/`read error`/`Interrupted system call` combination may explain exit code 1; it is not a general error whitelist.
+
+The explicitly gated probe also prints the exact loaded constrained grammar. For each nonempty candidate it preserves the raw constrained transcript and JSON token list, then prints the lifecycle-only alias detected, its prefix/suffix position, the alias-canonicalized transcript, confidence, backend, classification, canonical phrase, selected action, rejection reason, and whether production would run Whisper fallback. Typed failures distinguish `microphone_open_error`, `microphone_health_error`, `microphone_cleanup_error`, `pcm_read_error`, `invalid_frame_error`, `no_speech_timeout`, `VAD_error`, `wav_write_error`, `whisper_configuration_error`, `speech_to_text_health_error`, `whisper_error`, `empty_transcript`, `lifecycle_parse_error`, and `lifecycle_recognition_mismatch`. Diagnostic UTC timestamps mark microphone-preflight start, valid PCM receipt, controlled stop, preflight pass, true capture readiness/start, genuine capture/transcription completion, microphone release, and temporary-file finalization; a completion line is never printed for a turn that did not reach a finalized STT decision.
+
+Comparison Whisper status, reason, and transcript remain visible. The compare-only decision allows Whisper to inspect the same closed WAV even when production would bypass it; it never recaptures. The script constructs no `BrainRuntime`, invokes no CoreService skill or owner memory, and executes no lifecycle action. Audio is deleted unless `--retain-audio` is explicitly supplied:
 
 ```bash
 cd ~/ares-brain
@@ -762,7 +786,7 @@ python scripts/manual_diagnose_active_lifecycle_audio.py \
   --diagnostic-active-lifecycle-audio
 ```
 
-The next hardware gate must complete both phrases without hanging. High constrained evidence may select the action directly; medium or rejected evidence must visibly run Whisper fallback, and a valid fallback must select standby or shutdown. Every child must be reaped and microphone ownership released before the next ready prompt. A passing run ends with `both lifecycle phrases passed the bounded decision policy`. Deterministic tests and WAV headers do not establish Raspberry Pi success.
+The next hardware gate must complete both phrases without hanging. Its preflight should show a valid PCM frame followed by `process reaped: yes`, `cleanup completed: yes`, `unexpected failure: no`, and `final health effect: none` (or the explicitly degraded-but-reusable classification after a bounded escalation). If exit code 1 and `Interrupted system call` appear beside those fields, that is controlled microphone cleanup, not an STT failure. Each phrase must then show independent microphone and STT `final decision: healthy`, timestamped capture/release/finalization, and either a high constrained action or a visible same-turn Whisper fallback selecting standby and shutdown respectively. A passing run ends with `both lifecycle phrases passed the bounded decision policy`. Deterministic tests can prove branch classification and cleanup contracts, but not the Pi's executable permissions, ALSA stop behavior, Whisper process behavior, transcript, or owner-accent recognition.
 
 The constrained grammar expands six assistant forms—`ares`, `aris`, `aries`, `arris`, `rs`, and `r s`—only through seven standby templates (`goodbye`, `good bye`, `bye`, `go standby`, `go to standby`, `standby`, and `sleep`, followed by the assistant slot) and six shutdown templates (`shutdown`, `shut down`, `turn off`, or `power off` followed by the slot, plus the slot followed by `shutdown` or `shut down`). Segmentation is canonicalized before exact whole-command classification. `artist`, `paris`, `harris`, assistant-name-only input, `shutdown computer`, `goodbye everyone`, unrelated sentences, and extra words are never rewritten into actions. There is no substring, fuzzy, edit-distance, semantic, learned-alias, or general phonetic fallback.
 
@@ -2686,6 +2710,13 @@ Phase 116
 - The next owner diagnostic produced correct normal Whisper text (`Goodbye, Aris.` and `Shut down Aris.`) but constrained Vosk text `goodbye rs` and `shutdown rs`. Exact constrained policy rejected both even though the existing Whisper lifecycle normalizer classified both correctly.
 - A single constrained-lifecycle slot canonicalizer now maps only `ares`, `aris`, `aries`, `arris`, `rs`, and `r s` to `ares`, and only inside one complete supported lifecycle template. Raw text/tokens remain unchanged for diagnostics and confidence alignment. Ordinary uses of those tokens, extra words, substrings, and bounded competitors remain ordinary.
 - The Vosk grammar is generated from the same templates and contains 42 standby phrases, 36 shutdown phrases, 49 bounded competitors, and `[unk]` (128 total). Production resolves an accepted constrained action first, otherwise an exact valid Whisper lifecycle action, and otherwise routes ordinary input. Raspberry Pi confirmation of this post-fix behavior remains required.
+
+Phase 118
+
+- The production-composed diagnostic's new independent STT health check exposed `AttributeError: 'WhisperSubprocessRunner' object has no attribute '_runner'` before inference. `WhisperSubprocessRunner.__init__()` replaced its parent constructor without calling it, so the inherited `which()` resolver had no `SafeSubprocessRunner` backend. Superclass initialization now restores executable resolution without changing Whisper inference or lifecycle matching.
+- PCM shutdown now records a typed `PcmStreamStopResult`. Exit code 1 plus the exact cleanup-time `arecord` interrupted-read diagnostic is controlled only after valid PCM, an explicit stop of a live child, no earlier transport failure, and complete reap/pipe cleanup. SIGTERM, bounded reaped SIGKILL escalation, active failures, unrelated stderr, dead children, and incomplete cleanup remain distinguishable; the narrow exception cannot hide real ALSA failure.
+- The two-phrase diagnostic prints microphone and STT health independently before capture. STT configuration preflight can run without microphone access or inference, and typed failure categories plus UTC progress timestamps prevent a setup error, capture error, Whisper error, or cleanup event from masquerading as another stage.
+- Deterministic verification covers constructor initialization, health/result classification, exact controlled-stop safety, and diagnostic rendering. Only the Raspberry Pi can prove its real `arecord` cleanup, local Whisper executable/model permissions, two complete owner-audio captures, transcription, and lifecycle decisions.
 
 Future phases retain camera understanding, face/object recognition, ROS2, Jetson Orin migration, and autonomous navigation as unimplemented plans.
 

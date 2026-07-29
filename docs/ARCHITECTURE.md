@@ -193,7 +193,36 @@ Production ACTIVE capture uses one bounded stream per command rather than the pe
 
 The diagnostic preflight is a structural audio-boundary check, not speech classification. It reports requested/resolved ALSA device, the canonical `16000 Hz / mono / signed S16_LE` contract, open/start/read state, the expected and actual 640-byte first frame, nonzero status, process and ALSA child identities, exact capture argv, bounded stderr, ownership, stream health, and cleanup. A complete all-zero or low-energy silent frame is structurally valid. The owner prompt begins only after preflight and per-phrase capture readiness, so preflight does not consume an advertised command.
 
-PCM failures retain a typed stage such as microphone open, PCM read, invalid frame, VAD, WAV write, constrained recognition, or Whisper; the exception class and complete message; failing adapter and method; requested format/device; stream state; process context; ALSA stderr; and cleanup outcome. An explicit diagnostic run may print the full traceback. Normal production output remains bounded and does not expose tracebacks. The earlier implementation reduced low-level exceptions to `pcm_stream_error:<class>`, so the exact RuntimeError and ALSA stderr from the first Raspberry Pi attempt are not recoverable and are not inferred. The owner has since passed full-frame, nonzero-candidate, and ordinary-Whisper hardware acceptance. Deterministic tests still cannot prove the constrained recognizer's real owner-audio result.
+Raw process exit is evidence, not the health decision. `SubprocessPcmFrameSource.close()` emits one immutable `PcmStreamStopResult` containing control intent, valid-frame evidence, exit code/signal, requested termination/escalation, stderr, reap and pipe-cleanup state, pre-stop failure state, ownership loss, final classification, and health effect. `controlled_stop` requires an explicit stop while the child was alive, at least one valid PCM frame, no active transport failure before the stop, complete reap and pipe cleanup, and an expected result. Expected results are exit zero, cleanup-time SIGINT/SIGTERM, bounded-escalation SIGKILL, or exit one only when stderr consists of the single exact `arecord` + `pcm_read` + `read error` + `Interrupted system call` diagnostic. This last case is the controlled interruption of a blocking read after ARES requested shutdown, not an ALSA failure during capture. A reaped SIGKILL escalation is `controlled_stop_degraded` with `degraded_reusable`; other negative signals, mixed/additional stderr, zero PCM, a child already dead at stop, active read/select/EOF failure, unrelated exit-one stderr, ownership loss, or incomplete cleanup is never masked and remains `unexpected_failure`/`cleanup_incomplete` with an unhealthy effect.
+
+Microphone health and speech-to-text health are independent component contracts. Microphone health checks device configuration/availability, idle stream and `VoiceRuntimeGate` ownership, prior process reap, and prior controlled-stop effect. STT health checks executable resolution/permission, model readability, temporary-output writability, command construction, current/prior child and process-group state, reap/handle cleanup, and cancellation state without opening the microphone or invoking Whisper. A cancelled and fully reaped prior request is historical healthy metadata; a live or unreaped child remains unhealthy. The production defect at this boundary was exact: `WhisperSubprocessRunner.__init__()` did not invoke `SafeSubprocessRunner.__init__()`, so `_runner` was absent and inherited `which()` raised `AttributeError: 'WhisperSubprocessRunner' object has no attribute '_runner'` during STT health. Calling the superclass constructor restores the resolver; it does not change the inference grammar, lifecycle parser, microphone, VAD, or confidence policy.
+
+Failures retain typed categories including microphone open/health/cleanup, PCM read, invalid frame, no speech, VAD, WAV write, Whisper configuration/health/inference, empty transcript, lifecycle parse, and lifecycle-recognition mismatch; they also retain the exception class/message, failing adapter/method, requested format/device, stream state, process context, ALSA stderr, and cleanup outcome. Diagnostic-only UTC progress markers distinguish microphone-preflight start, valid PCM receipt, controlled stop, preflight pass, true capture readiness/start, actual finalized STT completion, microphone release, and temporary-file finalization. Completion is not printed merely because a pipeline call returned. An explicit diagnostic run may print a full traceback; normal production remains bounded and traceback-free. Deterministic tests can prove these contracts and branches, but only Raspberry Pi execution can prove the installed command/model permissions, real ALSA stop result, Whisper child behavior, owner transcript, and final lifecycle decisions.
+
+The lightweight Raspberry Pi STT configuration preflight composes the production adapter but deliberately opens no microphone and requests no inference:
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+
+python scripts/manual_diagnose_active_lifecycle_audio.py \
+  --microphone-device plughw:2,0 \
+  --speaker-device plughw:CARD=Device,DEV=0 \
+  --diagnostic-active-lifecycle-audio \
+  --stt-preflight-only
+```
+
+It must end with executable/model/output/command checks passing, no current child, the previous child reaped, cancellation clear, and `STT configuration preflight result: passed`. The bounded two-phrase hardware gate then uses the same composition:
+
+```bash
+python scripts/manual_diagnose_active_lifecycle_audio.py \
+  --microphone-device plughw:2,0 \
+  --speaker-device plughw:CARD=Device,DEV=0 \
+  --diagnostic-active-lifecycle-audio
+```
+
+Its key preflight evidence is a valid PCM frame, an explicit stop, complete reap/cleanup, no unexpected failure, and no final health effect. Exit code 1 plus the exact interrupted-`pcm_read` stderr is acceptable only beside that complete controlled-stop evidence. Phrase one must resolve to standby and phrase two to shutdown through high constrained evidence or exact same-WAV Whisper fallback; the diagnostic executes neither action and must finish with `both lifecycle phrases passed the bounded decision policy`.
 
 Hardware-free verification:
 
