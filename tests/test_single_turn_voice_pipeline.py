@@ -625,6 +625,55 @@ def test_handled_finalized_audio_bypasses_whisper_and_preserves_canonical_text(t
     assert "whisper.transcribe" not in order
 
 
+def test_cancellation_during_finalized_audio_hook_cannot_complete_lifecycle_turn(
+    tmp_path,
+):
+    pipeline, _, microphone, stt, tts, speaker, handled, _ = _pipeline(tmp_path)
+    token = CancellationToken(task_id="cancel-finalized-audio-hook")
+    hook_entered = ThreadEvent()
+    release_hook = ThreadEvent()
+    result_holder = {}
+
+    def blocking_lifecycle_hook(_audio_chunk):
+        hook_entered.set()
+        assert release_hook.wait(5.0)
+        return SingleTurnFinalizedAudioDecision(
+            handled=True,
+            continue_to_whisper=False,
+            status="active_lifecycle_audio_authorized",
+            canonical_text="shutdown ares",
+            data={"lifecycle_authorized": True},
+        )
+
+    worker = Thread(
+        target=lambda: result_holder.setdefault(
+            "result",
+            pipeline.run_once(
+                _request(tmp_path),
+                cancellation_token=token,
+                finalized_audio_hook=blocking_lifecycle_hook,
+            ),
+        )
+    )
+    worker.start()
+    assert hook_entered.wait(5.0)
+    token.cancel("adapter_closed_during_lifecycle_audio")
+    release_hook.set()
+    worker.join(5.0)
+
+    assert worker.is_alive() is False
+    result = result_holder["result"]
+    assert result.status == "cancelled"
+    assert result.error_stage == "cancellation"
+    assert result.data["cancelled_at"] == "after_finalized_audio_hook"
+    assert result.recognized_text == ""
+    assert microphone.record_count == 1
+    assert stt.calls == 0
+    assert handled == []
+    assert tts.requests == []
+    assert speaker.play_count == 0
+
+
 def test_medium_finalized_audio_decision_is_typed_and_non_executable(tmp_path):
     pipeline, _, microphone, stt, tts, speaker, handled, _ = _pipeline(tmp_path)
 

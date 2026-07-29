@@ -172,6 +172,25 @@ class ActiveLifecycleAudioTurnController:
                 ),
             )
         payload = _active_lifecycle_recognition_payload(recognition)
+        backend_cleanup_complete = bool(
+            getattr(recognition, "backend_cleanup_complete", True)
+        )
+        if not backend_cleanup_complete:
+            payload.update(
+                {
+                    "audio_checked": True,
+                    "lifecycle_authorized": False,
+                    "selected_lifecycle_action": "none",
+                    "whisper_fallback_required": False,
+                    "routing_blocked": True,
+                }
+            )
+            return _active_lifecycle_decision(
+                handled=True,
+                status="active_lifecycle_audio_cleanup_incomplete",
+                canonical_text="",
+                payload=payload,
+            )
         classification = str(getattr(recognition, "classification", "") or "")
         canonical_phrase = str(
             getattr(recognition, "canonical_phrase", "") or ""
@@ -348,6 +367,24 @@ class ActiveLifecycleAudioTurnController:
             )
         self.reset("confirmation_turn_consumed")
         payload = _active_lifecycle_confirmation_payload(confirmation)
+        if not bool(getattr(confirmation, "backend_cleanup_complete", True)):
+            payload.update(
+                {
+                    "audio_checked": True,
+                    "lifecycle_authorized": False,
+                    "selected_lifecycle_action": "none",
+                    "whisper_fallback_required": False,
+                    "routing_blocked": True,
+                    "pending_confirmation": False,
+                    "pending_clear_reason": "backend_cleanup_incomplete",
+                }
+            )
+            return _active_lifecycle_decision(
+                handled=True,
+                status="active_lifecycle_confirmation_cleanup_incomplete",
+                canonical_text="",
+                payload=payload,
+            )
         disposition = str(getattr(confirmation, "disposition", "") or "")
         confidence = _finite_lifecycle_confidence(
             getattr(confirmation, "confidence", None)
@@ -596,6 +633,9 @@ def _active_lifecycle_recognition_payload(recognition: Any) -> dict[str, Any]:
         "proposed_classification": str(
             getattr(recognition, "proposed_classification", "") or ""
         ),
+        "backend_cleanup_complete": bool(
+            getattr(recognition, "backend_cleanup_complete", True)
+        ),
     }
 
 
@@ -619,6 +659,9 @@ def _active_lifecycle_confirmation_payload(confirmation: Any) -> dict[str, Any]:
         ),
         "rejection_reason": str(
             getattr(confirmation, "rejection_reason", "") or ""
+        ),
+        "backend_cleanup_complete": bool(
+            getattr(confirmation, "backend_cleanup_complete", True)
         ),
         "confidence_tier": "confirmation",
         "confirmation_required": False,
@@ -1077,13 +1120,45 @@ class SingleTurnPipelineRuntimeInputAdapter:
             session_id_before=session_id_before,
             session_id_after=_provided_text(self.session_id_provider),
         )
+        if self._cancelled_or_closed_after_run(token):
+            self.last_diagnostics = replace(
+                self.last_diagnostics,
+                pipeline_status="cancelled",
+                runtime_terminal=False,
+                runtime_terminal_reason="not_terminal",
+            )
+            self._emit_local_diagnostics()
+            return RuntimeInputResult.cancelled()
         if status == "cancelled" or str(getattr(result, "error_stage", "")) == "cancellation":
             self._emit_local_diagnostics()
             return RuntimeInputResult.cancelled()
         text = captured.get("text") or str(getattr(result, "recognized_text", "") or "").strip()
+        finalized_status = str(finalized_audio_decision.get("status") or "")
+        if finalized_status in {
+            "active_lifecycle_audio_cleanup_incomplete",
+            "active_lifecycle_confirmation_cleanup_incomplete",
+        }:
+            # The isolated lifecycle worker may still exist. This turn is a
+            # typed, retryable transport timeout: it cannot reach Whisper,
+            # CoreService, lifecycle routing, or genuine-activity accounting.
+            self._emit_local_diagnostics()
+            return RuntimeInputResult(
+                status="timeout",
+                metadata={
+                    "safe": True,
+                    "source": "single_turn_voice_pipeline",
+                    "capture_status": finalized_status,
+                    "runtime_terminal": False,
+                    "contains_audio": False,
+                    **lifecycle_audio_metadata,
+                },
+            )
         if finalized_audio_decision.get("handled") and bool(
             getattr(result, "success", False)
         ):
+            if self._cancelled_or_closed_after_run(token):
+                self._emit_local_diagnostics()
+                return RuntimeInputResult.cancelled()
             emit_once("Speech detected")
             emit_once("Command captured")
             if text:
@@ -1109,6 +1184,9 @@ class SingleTurnPipelineRuntimeInputAdapter:
                 },
             )
         if text and bool(getattr(result, "success", False)):
+            if self._cancelled_or_closed_after_run(token):
+                self._emit_local_diagnostics()
+                return RuntimeInputResult.cancelled()
             emit_once("Speech detected")
             emit_once("Command captured")
             emit_once("Transcribing command")
@@ -1225,6 +1303,10 @@ class SingleTurnPipelineRuntimeInputAdapter:
             )[:160],
             metadata=lifecycle_audio_metadata,
         )
+
+    def _cancelled_or_closed_after_run(self, token: CancellationToken) -> bool:
+        with self._lock:
+            return self._closed or bool(token.requested)
 
     def _emit_status(self, message: str) -> None:
         if self.status_callback is None:

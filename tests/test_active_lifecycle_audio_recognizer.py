@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 import json
 from pathlib import Path
+import time
 import wave
 
 import pytest
@@ -15,9 +16,11 @@ from core.ActiveLifecycleAudioRecognizer import (
     ACTIVE_LIFECYCLE_CONFIRMATION_CANCELLED,
     ACTIVE_LIFECYCLE_CONFIRMATION_CONFIRMED,
     ACTIVE_LIFECYCLE_CONFIRMATION_UNMATCHED,
+    ActiveLifecycleBackendCleanupError,
     ActiveLifecycleAudioRecognizer,
     LifecycleBackendRecognition,
     VoskLifecycleGrammarBackend,
+    _VoskLifecycleProcessWorker,
 )
 
 
@@ -58,13 +61,22 @@ def _evidence(text: str, confidence: float | None = 0.95):
     )
 
 
-def _wav(tmp_path: Path, *, rate=16000, channels=1, width=2) -> Path:
-    path = tmp_path / f"candidate-{rate}-{channels}-{width}.wav"
+def _wav(
+    tmp_path: Path,
+    *,
+    rate=16000,
+    channels=1,
+    width=2,
+    sample_value=1,
+    name="",
+) -> Path:
+    path = tmp_path / (name or f"candidate-{rate}-{channels}-{width}.wav")
     with wave.open(str(path), "wb") as target:
         target.setframerate(rate)
         target.setnchannels(channels)
         target.setsampwidth(width)
-        target.writeframes(b"\x01\x00" * 1600 * channels)
+        sample = int(sample_value).to_bytes(width, "little", signed=True)
+        target.writeframes(sample * 1600 * channels)
     return path
 
 
@@ -154,6 +166,29 @@ def test_unrelated_and_name_only_results_never_select_a_lifecycle_action(
     assert result.selected_lifecycle_action == "none"
     assert result.whisper_fallback_required
     assert result.rejection_reason == "bounded_distractor_phrase"
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "please shutdown ares",
+        "shutdown ares tomorrow",
+        "goodbye ares yesterday",
+        "goodbye ares everyone",
+    ],
+)
+def test_extra_words_cannot_turn_a_bounded_phrase_into_a_lifecycle_action(
+    phrase,
+    tmp_path,
+):
+    result = ActiveLifecycleAudioRecognizer(
+        backend=FakeBackend(_evidence(phrase, 0.99))
+    ).recognize_wav(_wav(tmp_path))
+
+    assert result.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_ORDINARY
+    assert result.selected_lifecycle_action == "none"
+    assert result.whisper_fallback_required
+    assert result.rejection_reason == "exact_constrained_lifecycle_phrase_not_matched"
 
 
 @pytest.mark.parametrize(
@@ -303,6 +338,18 @@ def test_explicit_confirmation_confirms_only_the_pending_action(phrase, tmp_path
     assert result.expected_classification == "shutdown"
 
 
+def test_explicit_standby_confirmation_confirms_a_pending_standby_action(tmp_path):
+    result = ActiveLifecycleAudioRecognizer(
+        backend=FakeBackend(_evidence("confirm standby", 0.88))
+    ).recognize_confirmation_wav(
+        _wav(tmp_path),
+        expected_classification="standby",
+    )
+
+    assert result.disposition == ACTIVE_LIFECYCLE_CONFIRMATION_CONFIRMED
+    assert result.expected_classification == "standby"
+
+
 @pytest.mark.parametrize("phrase", ["no", "cancel", "never mind", "continue"])
 def test_negative_confirmation_cancels_without_executing(phrase, tmp_path):
     backend = FakeBackend(_evidence(phrase, 0.80))
@@ -319,6 +366,18 @@ def test_confirmation_for_wrong_action_is_unmatched(tmp_path):
     result = ActiveLifecycleAudioRecognizer(backend=backend).recognize_confirmation_wav(
         _wav(tmp_path),
         expected_classification="shutdown",
+    )
+
+    assert result.disposition == ACTIVE_LIFECYCLE_CONFIRMATION_UNMATCHED
+    assert result.rejection_reason == "confirmation_action_mismatch"
+
+
+def test_shutdown_confirmation_cannot_confirm_a_pending_standby_action(tmp_path):
+    result = ActiveLifecycleAudioRecognizer(
+        backend=FakeBackend(_evidence("confirm shutdown", 0.99))
+    ).recognize_confirmation_wav(
+        _wav(tmp_path),
+        expected_classification="standby",
     )
 
     assert result.disposition == ACTIVE_LIFECYCLE_CONFIRMATION_UNMATCHED
@@ -387,6 +446,61 @@ def test_backend_failure_is_typed_uncertain_and_never_an_action(tmp_path):
     assert result.selected_lifecycle_action == "none"
     assert result.whisper_fallback_required
     assert "RuntimeError:model exploded exactly" in result.rejection_reason
+
+
+def test_unreaped_backend_failure_blocks_whisper_and_every_lifecycle_action(tmp_path):
+    result = ActiveLifecycleAudioRecognizer(
+        backend=FakeBackend(
+            ActiveLifecycleBackendCleanupError(
+                "vosk_lifecycle_timeout_cleanup_incomplete"
+            )
+        )
+    ).recognize_wav(_wav(tmp_path))
+
+    assert result.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN
+    assert result.selected_lifecycle_action == "none"
+    assert result.backend_cleanup_complete is False
+    assert result.whisper_fallback_required is False
+    assert "ActiveLifecycleBackendCleanupError" in result.rejection_reason
+
+
+def test_unreaped_confirmation_backend_failure_blocks_fallback(tmp_path):
+    result = ActiveLifecycleAudioRecognizer(
+        backend=FakeBackend(
+            ActiveLifecycleBackendCleanupError(
+                "vosk_lifecycle_close_cleanup_incomplete"
+            )
+        )
+    ).recognize_confirmation_wav(
+        _wav(tmp_path),
+        expected_classification="shutdown",
+    )
+
+    assert result.disposition == ACTIVE_LIFECYCLE_CONFIRMATION_UNMATCHED
+    assert result.backend_cleanup_complete is False
+    assert "ActiveLifecycleBackendCleanupError" in result.rejection_reason
+
+
+@pytest.mark.parametrize(
+    "backend_result,expected_error",
+    [
+        (TimeoutError("backend exceeded its deadline"), "TimeoutError"),
+        ({"classification": "shutdown"}, "TypeError"),
+    ],
+)
+def test_timeout_and_malformed_backend_results_fail_closed(
+    backend_result,
+    expected_error,
+    tmp_path,
+):
+    result = ActiveLifecycleAudioRecognizer(
+        backend=FakeBackend(backend_result)
+    ).recognize_wav(_wav(tmp_path))
+
+    assert result.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN
+    assert result.selected_lifecycle_action == "none"
+    assert result.whisper_fallback_required
+    assert expected_error in result.rejection_reason
 
 
 @pytest.mark.parametrize(
@@ -506,6 +620,244 @@ def test_default_vosk_backend_loads_model_once_and_uses_only_bounded_grammar(tmp
     assert "[unk]" in grammar
     assert instance.set_words is True
     assert b"".join(instance.accepted) == b"\x01\x00" * 1600
+
+
+def test_production_vosk_worker_timeout_is_killed_reaped_and_retryable(
+    tmp_path,
+    monkeypatch,
+    request,
+):
+    fake_module_directory = tmp_path / "fake-vosk-module"
+    fake_module_directory.mkdir()
+    (fake_module_directory / "vosk.py").write_text(
+        """
+import json
+import time
+
+def SetLogLevel(_level):
+    return None
+
+class Model:
+    def __init__(self, path):
+        self.path = path
+
+class KaldiRecognizer:
+    def __init__(self, _model, _sample_rate, _grammar):
+        self.hang = False
+
+    def SetWords(self, _enabled):
+        return None
+
+    def AcceptWaveform(self, value):
+        if bytes(value).startswith(b'\\x02\\x00'):
+            time.sleep(60)
+        if bytes(value).startswith(b'\\x03\\x00'):
+            raise RuntimeError('backend exploded exactly')
+        return False
+
+    def Result(self):
+        return json.dumps({'text': '', 'result': []})
+
+    def FinalResult(self):
+        return json.dumps({
+            'text': 'shutdown ares',
+            'result': [
+                {'word': 'shutdown', 'conf': 0.91},
+                {'word': 'ares', 'conf': 0.88},
+            ],
+        })
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(fake_module_directory))
+    model = tmp_path / "model"
+    model.mkdir()
+    normal_path = _wav(tmp_path, name="normal.wav", sample_value=1)
+    hanging_path = _wav(tmp_path, name="hanging.wav", sample_value=2)
+    error_path = _wav(tmp_path, name="error.wav", sample_value=3)
+    backend = VoskLifecycleGrammarBackend(model_path=model)
+    recognizer = ActiveLifecycleAudioRecognizer(backend=backend)
+    request.addfinalizer(recognizer.close)
+
+    first = recognizer.recognize_wav(normal_path, timeout_seconds=5.0)
+    first_diagnostics = dict(backend.worker_diagnostics)
+    started = time.monotonic()
+    timed_out = recognizer.recognize_wav(hanging_path, timeout_seconds=0.2)
+    elapsed = time.monotonic() - started
+    timeout_diagnostics = dict(backend.worker_diagnostics)
+    retried = recognizer.recognize_wav(normal_path, timeout_seconds=5.0)
+    retry_diagnostics = dict(backend.worker_diagnostics)
+    backend_error = recognizer.recognize_wav(error_path, timeout_seconds=5.0)
+    error_diagnostics = dict(backend.worker_diagnostics)
+    recovered = recognizer.recognize_wav(normal_path, timeout_seconds=5.0)
+    recovered_diagnostics = dict(backend.worker_diagnostics)
+
+    assert first.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN
+    assert first_diagnostics["worker_alive"] is True
+    assert first_diagnostics["worker_start_count"] == 1
+    assert timed_out.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN
+    assert timed_out.selected_lifecycle_action == "none"
+    assert "TimeoutError:vosk_lifecycle_recognition_timeout" in (
+        timed_out.rejection_reason
+    )
+    assert elapsed < 2.0
+    assert timeout_diagnostics["worker_alive"] is False
+    assert timeout_diagnostics["worker_reaped"] is True
+    assert timeout_diagnostics["worker_timeout_count"] == 1
+    assert retried.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN
+    assert retry_diagnostics["worker_alive"] is True
+    assert retry_diagnostics["worker_start_count"] == 2
+    assert backend_error.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN
+    assert backend_error.backend_cleanup_complete is True
+    assert backend_error.whisper_fallback_required is True
+    assert "RuntimeError:backend exploded exactly" in backend_error.rejection_reason
+    assert error_diagnostics["worker_alive"] is False
+    assert error_diagnostics["worker_reaped"] is True
+    assert recovered.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN
+    assert recovered_diagnostics["worker_alive"] is True
+    assert recovered_diagnostics["worker_start_count"] == 3
+
+    recognizer.close()
+    assert backend.worker_diagnostics["worker_alive"] is False
+
+
+def test_timeout_with_unreaped_worker_is_not_downgraded_to_normal_fallback(
+    tmp_path,
+    monkeypatch,
+):
+    model = tmp_path / "model"
+    model.mkdir()
+    worker = _VoskLifecycleProcessWorker(model_path=model)
+
+    def time_out(_deadline):
+        raise TimeoutError("worker response deadline")
+
+    monkeypatch.setattr(worker, "_ensure_started", time_out)
+    monkeypatch.setattr(worker, "_terminate_worker", lambda: False)
+
+    with pytest.raises(
+        ActiveLifecycleBackendCleanupError,
+        match="timeout_cleanup_incomplete",
+    ):
+        worker.recognize_wav(
+            _wav(tmp_path),
+            grammar=("shutdown ares",),
+            timeout_seconds=1.0,
+        )
+
+
+def test_busy_worker_cannot_start_competing_whisper_fallback(tmp_path):
+    model = tmp_path / "model"
+    model.mkdir()
+    worker = _VoskLifecycleProcessWorker(model_path=model)
+    assert worker._request_lock.acquire(timeout=0.1)
+    try:
+        with pytest.raises(
+            ActiveLifecycleBackendCleanupError,
+            match="worker_busy_fallback_blocked",
+        ):
+            worker.recognize_wav(
+                _wav(tmp_path),
+                grammar=("shutdown ares",),
+                timeout_seconds=0.1,
+            )
+    finally:
+        worker._request_lock.release()
+
+
+def test_unknown_worker_liveness_is_not_mistaken_for_confirmed_reap(tmp_path):
+    class UnknownLivenessProcess:
+        pid = 4321
+        exitcode = None
+
+        def __init__(self):
+            self.terminate_count = 0
+            self.kill_count = 0
+            self.join_count = 0
+            self.close_count = 0
+
+        def is_alive(self):
+            raise OSError("process liveness unavailable")
+
+        def terminate(self):
+            self.terminate_count += 1
+
+        def kill(self):
+            self.kill_count += 1
+
+        def join(self, _timeout):
+            self.join_count += 1
+
+        def close(self):
+            self.close_count += 1
+
+    model = tmp_path / "model"
+    model.mkdir()
+    worker = _VoskLifecycleProcessWorker(model_path=model)
+    process = UnknownLivenessProcess()
+    worker._process = process
+    worker._last_worker_reaped = False
+
+    cleanup_complete = worker._terminate_worker()
+    diagnostics = dict(worker.diagnostics)
+
+    assert cleanup_complete is False
+    assert worker._process is process
+    assert process.terminate_count == 1
+    assert process.kill_count == 1
+    assert process.close_count == 0
+    assert diagnostics["worker_alive"] is True
+    assert diagnostics["worker_liveness_known"] is False
+    assert diagnostics["worker_reaped"] is False
+
+
+def test_backend_close_retains_unreaped_worker_handle_and_is_terminal(tmp_path):
+    class UnreapedWorker:
+        def __init__(self):
+            self.close_count = 0
+            self.allow_cleanup = False
+
+        @property
+        def diagnostics(self):
+            return {
+                "worker_pid": 4321,
+                "worker_alive": not self.allow_cleanup,
+                "worker_exitcode": None if not self.allow_cleanup else -9,
+                "worker_reaped": self.allow_cleanup,
+                "worker_start_count": 1,
+                "worker_timeout_count": 1,
+            }
+
+        def close(self):
+            self.close_count += 1
+            if not self.allow_cleanup:
+                raise ActiveLifecycleBackendCleanupError(
+                    "vosk_lifecycle_close_cleanup_incomplete"
+                )
+
+    model = tmp_path / "model"
+    model.mkdir()
+    backend = VoskLifecycleGrammarBackend(model_path=model)
+    worker = UnreapedWorker()
+    backend._process_worker = worker
+
+    with pytest.raises(ActiveLifecycleBackendCleanupError):
+        backend.close()
+
+    assert backend._process_worker is worker
+    assert backend.worker_diagnostics["worker_alive"] is True
+    with pytest.raises(RuntimeError, match="backend_closed"):
+        backend.recognize_wav(
+            _wav(tmp_path),
+            grammar=("shutdown ares",),
+            timeout_seconds=1.0,
+        )
+
+    worker.allow_cleanup = True
+    backend.close()
+    assert backend._process_worker is None
+    assert backend.worker_diagnostics["worker_reaped"] is True
+    assert worker.close_count == 2
 
 
 def test_unknown_vosk_token_never_selects_lifecycle_action(tmp_path):

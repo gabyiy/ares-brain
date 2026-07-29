@@ -89,6 +89,13 @@ class SingleTurnVoiceStageMixin:
             )
             if isinstance(finalized_audio_decision, SingleTurnVoiceResultV1):
                 return finalized_audio_decision
+            cancelled = self._cancelled(
+                state,
+                cancellation_token,
+                "after_finalized_audio_hook",
+            )
+            if cancelled:
+                return cancelled
             if (
                 finalized_audio_decision is not None
                 and finalized_audio_decision.handled

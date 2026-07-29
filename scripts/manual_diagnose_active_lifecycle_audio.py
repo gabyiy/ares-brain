@@ -14,6 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from core import (  # noqa: E402
+    DEFAULT_SHUTDOWN_HIGH_CONFIDENCE,
+    DEFAULT_STANDBY_HIGH_CONFIDENCE,
     SingleTurnFinalizedAudioDecision,
     SingleTurnPreBrainDecision,
     normalize_active_lifecycle_command,
@@ -382,7 +384,9 @@ def _validate_expected_constrained_outcome(
         and canonical == expected_canonical
         and fallback is expected_fallback
         and (
-            confidence_tier == "high" and selected_action == expected_classification
+            confidence_tier == "high"
+            and selected_action == expected_classification
+            and _high_confidence_constrained_action(evidence)
             if action_expected
             else selected_action == "none"
         )
@@ -827,15 +831,30 @@ def _attempt_from_pipeline_result(
         candidate_duration=candidate_duration,
         raw_transcript=raw,
     )
+    constrained_action_authorized = _high_confidence_constrained_action(
+        constrained_recognition
+    )
+    comparison_whisper_optional_failure = bool(
+        constrained_action_authorized
+        and failure_kind in {"empty_transcript", "whisper_error"}
+    )
+    if comparison_whisper_optional_failure:
+        # Production would have bypassed Whisper for this exact high-confidence
+        # lifecycle result.  Diagnostic compare-only mode still runs Whisper for
+        # side-by-side evidence, but its optional failure cannot invalidate the
+        # already-complete candidate or the production authorization decision.
+        failure_kind = ""
     success = bool(
-        result_success
-        and candidate_duration > 0.0
-        and raw.strip()
+        candidate_duration > 0.0
+        and (
+            (result_success and raw.strip())
+            or comparison_whisper_optional_failure
+        )
         and not failure_kind
     )
     if result_success and candidate_duration <= 0.0:
         error_message = error_message or "zero_length_candidate"
-    elif result_success and not raw.strip():
+    elif result_success and not raw.strip() and not constrained_action_authorized:
         error_message = error_message or "empty_transcript"
 
     lifecycle_result = None
@@ -973,6 +992,36 @@ def _pipeline_failure_kind(
     return "whisper_error" if "transcript" in stage else "VAD_error"
 
 
+def _high_confidence_constrained_action(value: Any) -> bool:
+    evidence = dict(value or {}) if isinstance(value, dict) else {}
+    classification = str(evidence.get("classification") or "").strip().casefold()
+    action = str(
+        evidence.get("selected_lifecycle_action") or ""
+    ).strip().casefold()
+    canonical = str(evidence.get("canonical_phrase") or "").strip().casefold()
+    confidence = evidence.get("confidence")
+    if (
+        classification not in {"standby", "shutdown"}
+        or action != classification
+        or str(evidence.get("confidence_tier") or "") != "high"
+        or bool(evidence.get("whisper_fallback_required", True))
+        or not bool(evidence.get("confidence_available", False))
+        or isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not math.isfinite(float(confidence))
+    ):
+        return False
+    expected_canonical = (
+        "goodbye ares" if classification == "standby" else "shutdown ares"
+    )
+    minimum = (
+        DEFAULT_STANDBY_HIGH_CONFIDENCE
+        if classification == "standby"
+        else DEFAULT_SHUTDOWN_HIGH_CONFIDENCE
+    )
+    return canonical == expected_canonical and float(confidence) >= minimum
+
+
 def _recording_contract(result: Any) -> dict[str, Any]:
     data = dict(getattr(result, "data", {}) or {})
     recording = data.get("recording")
@@ -1022,6 +1071,14 @@ def _print_attempt(
     raw = str(
         getattr(attempt.transcription, "raw_transcript", "")
         or getattr(attempt.transcription, "recognized_text", "")
+        or ""
+    )
+    comparison_whisper_status = str(
+        getattr(attempt.transcription, "status", "") or "not_available"
+    )
+    comparison_whisper_reason = str(
+        getattr(attempt.transcription, "error_reason", "")
+        or getattr(attempt.transcription, "error_message", "")
         or ""
     )
     candidate_duration = _candidate_duration(recording, capture)
@@ -1083,6 +1140,11 @@ def _print_attempt(
     output_func("")
     output_func(f"ACTIVE LIFECYCLE AUDIO RESULT {attempt.expected_phrase!r}")
     output_func(f"Raw Whisper transcript: {raw or '<empty>'}")
+    output_func(f"Comparison Whisper status: {comparison_whisper_status}")
+    output_func(
+        "Comparison Whisper reason: "
+        f"{comparison_whisper_reason or '<none>'}"
+    )
     output_func(f"Raw transcript: {raw or '<empty>'}")
     output_func(
         "Normalized transcript: "

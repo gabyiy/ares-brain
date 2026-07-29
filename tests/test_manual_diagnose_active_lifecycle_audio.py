@@ -239,10 +239,14 @@ class FakePipeline:
         microphone: FakeMicrophone,
         *,
         fail_first_phrase: bool = False,
+        fail_comparison_whisper_indices: tuple[int, ...] = (),
     ) -> None:
         self.microphone_adapter = microphone
         self.speech_to_text_adapter = SimpleNamespace()
         self.fail_first_phrase = fail_first_phrase
+        self.fail_comparison_whisper_indices = set(
+            fail_comparison_whisper_indices
+        )
         self.capture_ready_observers: list = []
         self.requests: list[SingleTurnVoiceRequestV1] = []
         self.streams: list[FakeTurnStream] = []
@@ -318,14 +322,34 @@ class FakePipeline:
         )
         assert finalized_decision.handled is False
         assert finalized_decision.continue_to_whisper is True
-        decision = raw_transcript_hook(transcript)
-        self.raw_hook_decisions.append(decision)
-        assert decision.handled is True
-        assert decision.continue_to_output is False
         recording = _successful_recording(
             request.recording_output_path,
             transcript=transcript,
         )
+        if index in self.fail_comparison_whisper_indices:
+            return SingleTurnVoiceResultV1(
+                success=False,
+                status="transcription_failed",
+                error_stage="transcription",
+                error_reason="comparison whisper failed exactly",
+                recorded_wav_path=request.recording_output_path,
+                recording_duration_seconds=1.4,
+                data={
+                    "recording": recording,
+                    "finalized_audio_decision": {
+                        "handled": finalized_decision.handled,
+                        "continue_to_whisper": finalized_decision.continue_to_whisper,
+                        "status": finalized_decision.status,
+                        "canonical_text": finalized_decision.canonical_text,
+                        "data": finalized_decision.data,
+                    },
+                    "cleanup": {"status": "pipeline_cleanup_completed"},
+                },
+            )
+        decision = raw_transcript_hook(transcript)
+        self.raw_hook_decisions.append(decision)
+        assert decision.handled is True
+        assert decision.continue_to_output is False
         return SingleTurnVoiceResultV1(
             success=True,
             status="diagnostic_transcript_captured",
@@ -425,11 +449,13 @@ class DiagnosticHarness:
         *,
         fail_preflight: bool = False,
         fail_first_phrase: bool = False,
+        fail_comparison_whisper_indices: tuple[int, ...] = (),
     ) -> None:
         self.microphone = FakeMicrophone(preflight_failure=fail_preflight)
         self.pipeline = FakePipeline(
             self.microphone,
             fail_first_phrase=fail_first_phrase,
+            fail_comparison_whisper_indices=fail_comparison_whisper_indices,
         )
         self.gate = VoiceRuntimeGate(settle_delay_seconds=0.0)
         self.lifecycle_recognizer = FakeLifecycleAudioRecognizer()
@@ -616,6 +642,39 @@ def test_diagnostic_fails_when_constrained_lifecycle_policy_misses_phrase(tmp_pa
     assert "Lifecycle classification: shutdown" in rendered
     assert rendered.count("Lifecycle classification: ordinary") == 2
     assert rendered.count("Lifecycle action executed: no (diagnostic-only)") == 4
+
+
+def test_high_constrained_lifecycle_result_does_not_depend_on_comparison_whisper(
+    tmp_path,
+):
+    harness = DiagnosticHarness(fail_comparison_whisper_indices=(1, 2))
+
+    code, output, _ = _run(tmp_path, harness)
+
+    assert code == 0
+    rendered = "\n".join(output)
+    assert rendered.count("Raw Whisper transcript: <empty>") == 2
+    assert rendered.count("Comparison Whisper status: transcription_failed") == 2
+    assert rendered.count(
+        "Comparison Whisper reason: comparison whisper failed exactly"
+    ) == 2
+    assert "Constrained lifecycle classification: standby" in rendered
+    assert "Constrained lifecycle classification: shutdown" in rendered
+    assert rendered.count("Attempt status: captured_and_classified") == 4
+    assert "Diagnostic result: all four phrases passed the constrained lifecycle policy" in rendered
+
+
+def test_ordinary_phrase_still_requires_successful_whisper_fallback(tmp_path):
+    harness = DiagnosticHarness(fail_comparison_whisper_indices=(3,))
+
+    code, output, _ = _run(tmp_path, harness)
+
+    assert code == 3
+    rendered = "\n".join(output)
+    assert "Comparison Whisper status: transcription_failed" in rendered
+    assert "Comparison Whisper reason: comparison whisper failed exactly" in rendered
+    assert "Failure category: whisper_error" in rendered
+    assert "Diagnostic result: 1 phrase(s) failed" in rendered
 
 
 def test_preflight_preserves_exact_runtime_error_traceback_and_alsa_stderr(tmp_path):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 import wave
 
@@ -60,6 +61,31 @@ class QueuedLifecycleRecognizer:
         self.closed = True
 
 
+class BlockingHighLifecycleRecognizer:
+    def __init__(self) -> None:
+        self.entered = Event()
+        self.release = Event()
+        self.closed = False
+
+    def recognize_wav(self, _path):
+        self.entered.set()
+        if not self.release.wait(5.0):
+            raise TimeoutError("test lifecycle recognizer was not released")
+        return _recognition(
+            ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
+            canonical_phrase="shutdown ares",
+        )
+
+    def recognize_confirmation_wav(self, _path, *, expected_classification):
+        raise AssertionError(
+            f"unexpected confirmation for {expected_classification}"
+        )
+
+    def close(self):
+        self.closed = True
+        self.release.set()
+
+
 def _write_wav(path: Path) -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
     pcm = int(1800).to_bytes(2, "little", signed=True) * 1600
@@ -91,6 +117,7 @@ def _recognition(
     confirmation_required: bool = False,
     proposed_classification: str = "",
     rejection_reason: str = "",
+    backend_cleanup_complete: bool = True,
 ) -> ActiveLifecycleAudioRecognitionResult:
     text = canonical_phrase or "calculate two plus two"
     return ActiveLifecycleAudioRecognitionResult(
@@ -105,6 +132,7 @@ def _recognition(
         confidence_tier=("medium" if confirmation_required else "high"),
         confirmation_required=confirmation_required,
         proposed_classification=proposed_classification,
+        backend_cleanup_complete=backend_cleanup_complete,
     )
 
 
@@ -207,6 +235,33 @@ def test_ordinary_and_backend_error_continue_same_wav_to_whisper(tmp_path):
     ]
 
 
+def test_unreaped_backend_blocks_lifecycle_and_whisper_fallback(tmp_path):
+    state = {"lifecycle": "ACTIVE", "session": "session-1"}
+    recognizer = QueuedLifecycleRecognizer(
+        [
+            _recognition(
+                ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN,
+                rejection_reason="lifecycle_backend_cleanup_incomplete",
+                backend_cleanup_complete=False,
+            )
+        ]
+    )
+    controller = _controller(recognizer, state)
+
+    decision = controller(_chunk(tmp_path, "unreaped.wav"))
+
+    assert decision.handled is True
+    assert decision.continue_to_whisper is False
+    assert decision.canonical_text == ""
+    assert decision.status == "active_lifecycle_audio_cleanup_incomplete"
+    assert _payload(decision)["backend_cleanup_complete"] is False
+    assert _payload(decision)["routing_blocked"] is True
+    assert _payload(decision)["lifecycle_authorized"] is False
+    assert _payload(decision)["selected_lifecycle_action"] == "none"
+    assert _payload(decision)["whisper_fallback_required"] is False
+    assert state == {"lifecycle": "ACTIVE", "session": "session-1"}
+
+
 def test_medium_shutdown_requires_next_turn_confirmation(tmp_path):
     state = {"lifecycle": "ACTIVE", "session": "session-1"}
     clock = FakeClock()
@@ -288,6 +343,43 @@ def test_negative_confirmation_cancels_without_executable_text(tmp_path):
     assert _payload(cancelled)["confirmation_disposition"] == "cancelled"
     assert _payload(cancelled)["lifecycle_authorized"] is False
     assert controller.pending_confirmation() is None
+
+
+def test_unreaped_confirmation_backend_blocks_whisper_and_clears_pending(tmp_path):
+    state = {"lifecycle": "ACTIVE", "session": "session-1"}
+    recognizer = QueuedLifecycleRecognizer(
+        [
+            _recognition(
+                ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN,
+                canonical_phrase="shutdown ares",
+                confidence=0.66,
+                confirmation_required=True,
+                proposed_classification=ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
+            )
+        ],
+        [
+            ActiveLifecycleConfirmationResult(
+                disposition="unmatched",
+                expected_classification=ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN,
+                rejection_reason="confirmation_backend_cleanup_incomplete",
+                backend_cleanup_complete=False,
+            )
+        ],
+    )
+    controller = _controller(recognizer, state)
+
+    controller(_chunk(tmp_path, "proposal.wav"))
+    decision = controller(_chunk(tmp_path, "unreaped-confirmation.wav"))
+
+    assert decision.handled is True
+    assert decision.continue_to_whisper is False
+    assert decision.status == "active_lifecycle_confirmation_cleanup_incomplete"
+    assert _payload(decision)["routing_blocked"] is True
+    assert _payload(decision)["lifecycle_authorized"] is False
+    assert _payload(decision)["whisper_fallback_required"] is False
+    assert _payload(decision)["pending_clear_reason"] == "backend_cleanup_incomplete"
+    assert controller.pending_confirmation() is None
+    assert state == {"lifecycle": "ACTIVE", "session": "session-1"}
 
 
 def test_weak_or_malformed_confirmation_cannot_authorize_shutdown(tmp_path):
@@ -497,6 +589,47 @@ def test_runtime_adapter_ordinary_reuses_one_capture_for_whisper(tmp_path):
     assert recognizer.recognition_paths == [adapter.last_result.recorded_wav_path]
 
 
+def test_runtime_adapter_never_starts_whisper_with_unreaped_lifecycle_worker(tmp_path):
+    state = {"lifecycle": "ACTIVE", "session": "session-1"}
+    recognizer = QueuedLifecycleRecognizer(
+        [
+            _recognition(
+                ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN,
+                rejection_reason="lifecycle_backend_cleanup_incomplete",
+                backend_cleanup_complete=False,
+            )
+        ]
+    )
+    controller = _controller(recognizer, state)
+    pipeline = FinalizedAudioPipeline()
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: state["session"],
+        lifecycle_state_provider=lambda: state["lifecycle"],
+        active_lifecycle_audio_controller=controller,
+    )
+
+    result = adapter.wait_for_input(1.0)
+    finalized = adapter.last_result.data["finalized_audio_decision"]
+    payload = finalized["data"]["active_lifecycle_audio"]
+
+    assert result.status == "timeout"
+    assert result.text == ""
+    assert result.metadata["runtime_terminal"] is False
+    assert result.metadata["capture_status"] == (
+        "active_lifecycle_audio_cleanup_incomplete"
+    )
+    assert pipeline.capture_count == 1
+    assert pipeline.whisper_count == 0
+    assert finalized["handled"] is True
+    assert finalized["continue_to_whisper"] is False
+    assert payload["routing_blocked"] is True
+    assert payload["lifecycle_authorized"] is False
+    assert payload["whisper_fallback_required"] is False
+    assert state == {"lifecycle": "ACTIVE", "session": "session-1"}
+
+
 def test_runtime_adapter_returns_typed_confirmation_controls_without_text(tmp_path):
     state = {"lifecycle": "ACTIVE", "session": "session-1"}
     recognizer = QueuedLifecycleRecognizer(
@@ -574,3 +707,40 @@ def test_runtime_adapter_resource_release_resets_and_close_releases_recognizer(t
     assert controller.pending_confirmation() is None
     adapter.close()
     assert recognizer.closed is True
+
+
+def test_adapter_close_during_lifecycle_audio_cannot_export_shutdown_input(tmp_path):
+    state = {"lifecycle": "ACTIVE", "session": "session-1"}
+    recognizer = BlockingHighLifecycleRecognizer()
+    controller = _controller(recognizer, state)
+    pipeline = FinalizedAudioPipeline()
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: state["session"],
+        lifecycle_state_provider=lambda: state["lifecycle"],
+        active_lifecycle_audio_controller=controller,
+    )
+    result_holder = {}
+    worker = Thread(
+        target=lambda: result_holder.setdefault(
+            "result",
+            adapter.wait_for_input(5.0),
+        )
+    )
+    worker.start()
+    assert recognizer.entered.wait(5.0)
+
+    adapter.close()
+    worker.join(5.0)
+
+    assert worker.is_alive() is False
+    result = result_holder["result"]
+    assert result.status == "cancelled"
+    assert result.text == ""
+    assert result.metadata.get("active_lifecycle_audio_authorized") is not True
+    assert pipeline.capture_count == 1
+    assert pipeline.whisper_count == 0
+    assert pipeline.stop_count >= 1
+    assert recognizer.closed is True
+    assert state == {"lifecycle": "ACTIVE", "session": "session-1"}
