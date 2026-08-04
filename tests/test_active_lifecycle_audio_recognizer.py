@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 import json
+import multiprocessing
 from pathlib import Path
 import time
 import wave
@@ -22,8 +23,10 @@ from core.ActiveLifecycleAudioRecognizer import (
     ActiveLifecycleBackendCleanupError,
     ActiveLifecycleAudioRecognizer,
     LifecycleBackendRecognition,
+    VOSK_LIFECYCLE_WORKER_PROTOCOL,
     VoskLifecycleGrammarBackend,
     _VoskLifecycleProcessWorker,
+    _vosk_lifecycle_worker_main,
     canonicalize_active_lifecycle_assistant_alias,
 )
 
@@ -743,6 +746,7 @@ def test_production_vosk_worker_timeout_is_killed_reaped_and_retryable(
         """
 import json
 import time
+import os
 
 def SetLogLevel(_level):
     return None
@@ -763,6 +767,8 @@ class KaldiRecognizer:
             time.sleep(60)
         if bytes(value).startswith(b'\\x03\\x00'):
             raise RuntimeError('backend exploded exactly')
+        if bytes(value).startswith(b'\\x04\\x00'):
+            os._exit(17)
         return False
 
     def Result(self):
@@ -785,12 +791,20 @@ class KaldiRecognizer:
     normal_path = _wav(tmp_path, name="normal.wav", sample_value=1)
     hanging_path = _wav(tmp_path, name="hanging.wav", sample_value=2)
     error_path = _wav(tmp_path, name="error.wav", sample_value=3)
-    backend = VoskLifecycleGrammarBackend(model_path=model)
+    crash_path = _wav(tmp_path, name="crash.wav", sample_value=4)
+    progress = []
+    backend = VoskLifecycleGrammarBackend(
+        model_path=model,
+        progress_callback=lambda event, payload: progress.append(
+            (event, dict(payload))
+        ),
+    )
     recognizer = ActiveLifecycleAudioRecognizer(backend=backend)
     request.addfinalizer(recognizer.close)
 
     first = recognizer.recognize_wav(normal_path, timeout_seconds=5.0)
     first_diagnostics = dict(backend.worker_diagnostics)
+    first_progress = list(progress)
     started = time.monotonic()
     timed_out = recognizer.recognize_wav(hanging_path, timeout_seconds=0.2)
     elapsed = time.monotonic() - started
@@ -799,12 +813,29 @@ class KaldiRecognizer:
     retry_diagnostics = dict(backend.worker_diagnostics)
     backend_error = recognizer.recognize_wav(error_path, timeout_seconds=5.0)
     error_diagnostics = dict(backend.worker_diagnostics)
+    crashed = recognizer.recognize_wav(crash_path, timeout_seconds=5.0)
+    crash_diagnostics = dict(backend.worker_diagnostics)
     recovered = recognizer.recognize_wav(normal_path, timeout_seconds=5.0)
     recovered_diagnostics = dict(backend.worker_diagnostics)
 
     assert first.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN
-    assert first_diagnostics["worker_alive"] is True
+    assert first_diagnostics["worker_alive"] is False
+    assert first_diagnostics["worker_reaped"] is True
+    assert first_diagnostics["worker_stop_acknowledged"] is True
     assert first_diagnostics["worker_start_count"] == 1
+    assert first_diagnostics["worker_protocol"] == VOSK_LIFECYCLE_WORKER_PROTOCOL
+    assert first_diagnostics["worker_request_id"].startswith("lifecycle-request-")
+    assert first_diagnostics["worker_request_sent_at"].endswith("Z")
+    assert first_diagnostics["worker_request_received_at"].endswith("Z")
+    assert first_diagnostics["worker_result_received_at"].endswith("Z")
+    assert first_diagnostics["worker_stop_requested_at"].endswith("Z")
+    assert first_diagnostics["worker_joined_at"].endswith("Z")
+    assert [event for event, _payload in first_progress] == [
+        "lifecycle_recognizer_request_sent",
+        "lifecycle_result_returned",
+        "lifecycle_worker_stop_requested",
+        "lifecycle_worker_reaped",
+    ]
     assert timed_out.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN
     assert timed_out.selected_lifecycle_action == "none"
     assert "TimeoutError:vosk_lifecycle_recognition_timeout" in (
@@ -815,20 +846,152 @@ class KaldiRecognizer:
     assert timeout_diagnostics["worker_reaped"] is True
     assert timeout_diagnostics["worker_timeout_count"] == 1
     assert retried.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN
-    assert retry_diagnostics["worker_alive"] is True
-    assert retry_diagnostics["worker_start_count"] == 2
+    assert retry_diagnostics["worker_alive"] is False
+    assert retry_diagnostics["worker_reaped"] is True
+    assert retry_diagnostics["worker_start_count"] == 3
     assert backend_error.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN
     assert backend_error.backend_cleanup_complete is True
     assert backend_error.whisper_fallback_required is True
     assert "RuntimeError:backend exploded exactly" in backend_error.rejection_reason
     assert error_diagnostics["worker_alive"] is False
     assert error_diagnostics["worker_reaped"] is True
+    assert crashed.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN
+    assert "worker_transport_error:EOFError" in crashed.rejection_reason
+    assert crash_diagnostics["worker_alive"] is False
+    assert crash_diagnostics["worker_reaped"] is True
+    assert crash_diagnostics["worker_exitcode"] == 17
     assert recovered.classification == ACTIVE_LIFECYCLE_CLASSIFICATION_SHUTDOWN
-    assert recovered_diagnostics["worker_alive"] is True
-    assert recovered_diagnostics["worker_start_count"] == 3
+    assert recovered_diagnostics["worker_alive"] is False
+    assert recovered_diagnostics["worker_reaped"] is True
+    assert recovered_diagnostics["worker_start_count"] == 6
 
     recognizer.close()
     assert backend.worker_diagnostics["worker_alive"] is False
+
+
+def _install_minimal_spawn_vosk_module(tmp_path, monkeypatch):
+    module_directory = tmp_path / "spawn-vosk-module"
+    module_directory.mkdir()
+    (module_directory / "vosk.py").write_text(
+        """
+def SetLogLevel(_level):
+    return None
+
+class Model:
+    def __init__(self, path):
+        self.path = path
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(module_directory))
+
+
+def test_worker_explicit_stop_before_request_exits_and_is_reaped(tmp_path, monkeypatch):
+    _install_minimal_spawn_vosk_module(tmp_path, monkeypatch)
+    model = tmp_path / "model"
+    model.mkdir()
+    request_id = "request-stop-before-recognition"
+    context = multiprocessing.get_context("spawn")
+    parent, child = context.Pipe(duplex=True)
+    process = context.Process(
+        target=_vosk_lifecycle_worker_main,
+        args=(child, str(model), request_id),
+        daemon=False,
+    )
+    process.start()
+    child.close()
+    try:
+        assert parent.poll(5.0)
+        ready = parent.recv()
+        assert ready["type"] == "ready"
+        assert ready["request_id"] == request_id
+        parent.send(
+            {
+                "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
+                "type": "stop_request",
+                "request_id": request_id,
+                "reason": "test_stop",
+            }
+        )
+        assert parent.poll(2.0)
+        stopped = parent.recv()
+        assert stopped["type"] == "stopped"
+        assert stopped["request_id"] == request_id
+    finally:
+        parent.close()
+        process.join(3.0)
+        if process.is_alive():
+            process.terminate()
+            process.join(1.0)
+    assert process.is_alive() is False
+    process.close()
+
+
+def test_worker_exits_when_parent_closes_pipe_before_request(tmp_path, monkeypatch):
+    _install_minimal_spawn_vosk_module(tmp_path, monkeypatch)
+    model = tmp_path / "model"
+    model.mkdir()
+    request_id = "request-parent-closed"
+    context = multiprocessing.get_context("spawn")
+    parent, child = context.Pipe(duplex=True)
+    process = context.Process(
+        target=_vosk_lifecycle_worker_main,
+        args=(child, str(model), request_id),
+        daemon=False,
+    )
+    process.start()
+    child.close()
+    assert parent.poll(5.0)
+    assert parent.recv()["type"] == "ready"
+    parent.close()
+    process.join(3.0)
+    if process.is_alive():
+        process.terminate()
+        process.join(1.0)
+    assert process.is_alive() is False
+    process.close()
+
+
+def test_parent_cancellation_during_result_wait_reaps_worker_and_propagates(
+    tmp_path,
+    monkeypatch,
+):
+    class SendOnlyConnection:
+        def __init__(self):
+            self.messages = []
+
+        def send(self, value):
+            self.messages.append(value)
+
+    model = tmp_path / "model"
+    model.mkdir()
+    worker = _VoskLifecycleProcessWorker(model_path=model)
+    connection = SendOnlyConnection()
+    cleanup_calls = []
+    monkeypatch.setattr(worker, "_start_worker", lambda _deadline, **_kwargs: None)
+    monkeypatch.setattr(worker, "_connection_snapshot", lambda: connection)
+    monkeypatch.setattr(
+        worker,
+        "_receive",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    monkeypatch.setattr(
+        worker,
+        "_stop_and_reap_worker",
+        lambda **kwargs: cleanup_calls.append(kwargs) is None or True,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        worker.recognize_wav(
+            _wav(tmp_path),
+            grammar=("shutdown ares",),
+            timeout_seconds=1.0,
+        )
+
+    assert connection.messages[0]["type"] == "recognize_request"
+    assert cleanup_calls[0]["graceful"] is False
+    assert worker._request_lock.acquire(timeout=0.1)
+    worker._request_lock.release()
 
 
 def test_timeout_with_unreaped_worker_is_not_downgraded_to_normal_fallback(
@@ -839,11 +1002,12 @@ def test_timeout_with_unreaped_worker_is_not_downgraded_to_normal_fallback(
     model.mkdir()
     worker = _VoskLifecycleProcessWorker(model_path=model)
 
-    def time_out(_deadline):
+    def time_out(_deadline, *, request_id):
+        del request_id
         raise TimeoutError("worker response deadline")
 
-    monkeypatch.setattr(worker, "_ensure_started", time_out)
-    monkeypatch.setattr(worker, "_terminate_worker", lambda: False)
+    monkeypatch.setattr(worker, "_start_worker", time_out)
+    monkeypatch.setattr(worker, "_stop_and_reap_worker", lambda **_kwargs: False)
 
     with pytest.raises(
         ActiveLifecycleBackendCleanupError,

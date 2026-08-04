@@ -33,6 +33,11 @@ def test_constrained_lifecycle_payload_keeps_raw_and_canonical_alias_evidence_se
         confirmation_required=False,
         proposed_classification="",
         backend_cleanup_complete=True,
+        backend_diagnostics={
+            "worker_pid": 4401,
+            "worker_reaped": True,
+            "worker_request_id": "request-1",
+        },
     )
 
     payload = _active_lifecycle_recognition_payload(recognition)
@@ -42,6 +47,11 @@ def test_constrained_lifecycle_payload_keeps_raw_and_canonical_alias_evidence_se
     assert payload["alias_detected"] == "r s"
     assert payload["alias_position"] == "suffix"
     assert payload["alias_canonicalized_transcript"] == "shutdown ares"
+    assert payload["backend_diagnostics"] == {
+        "worker_pid": 4401,
+        "worker_reaped": True,
+        "worker_request_id": "request-1",
+    }
 
 
 class FakeClock:

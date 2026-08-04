@@ -8,7 +8,7 @@ from pathlib import Path
 import shutil
 import shlex
 import sys
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -216,8 +216,17 @@ def build_production_active_audio_pipeline(
     lifecycle_recognizer_factory = (
         active_lifecycle_recognizer_factory or ActiveLifecycleAudioRecognizer
     )
+    lifecycle_recognizer_arguments: dict[str, Any] = {
+        "model_path": _repo_path(args.vosk_model),
+    }
+    if active_lifecycle_recognizer_factory is None:
+        lifecycle_recognizer_arguments["progress_callback"] = (
+            _active_lifecycle_worker_progress_callback(output_func)
+            if args.diagnostic_routing or args.diagnostic_wake
+            else None
+        )
     active_lifecycle_audio_recognizer = lifecycle_recognizer_factory(
-        model_path=_repo_path(args.vosk_model)
+        **lifecycle_recognizer_arguments
     )
     return ProductionActiveAudioPipeline(
         pipeline_args=pipeline_args,
@@ -875,6 +884,22 @@ def render_active_command_diagnostics(
         "  Temporary audio cleanup: "
         f"{diagnostics.temporary_audio_cleanup_status}",
         f"  Terminal-silence status: {diagnostics.terminal_silence_status}",
+        "  Lifecycle worker PID / request: "
+        f"{diagnostics.lifecycle_worker_pid or 'none'} / "
+        f"{diagnostics.lifecycle_worker_request_id or 'none'}",
+        "  Lifecycle worker request timing: "
+        f"{diagnostics.lifecycle_worker_request_sent_at or 'not_sent'} -> "
+        f"{diagnostics.lifecycle_worker_request_received_at or 'not_received'}",
+        "  Lifecycle worker result / stop / join: "
+        f"{diagnostics.lifecycle_worker_result_received_at or 'not_returned'} / "
+        f"{diagnostics.lifecycle_worker_stop_requested_at or 'not_requested'} / "
+        f"{diagnostics.lifecycle_worker_joined_at or 'not_joined'}",
+        "  Lifecycle worker alive / reaped / stop acknowledged: "
+        f"{'yes' if diagnostics.lifecycle_worker_alive else 'no'} / "
+        f"{'yes' if diagnostics.lifecycle_worker_reaped else 'no'} / "
+        f"{'yes' if diagnostics.lifecycle_worker_stop_acknowledged else 'no'}",
+        "  Lifecycle worker cleanup reason: "
+        f"{diagnostics.lifecycle_worker_cleanup_reason or 'not_applicable'}",
     ]
 
 
@@ -884,6 +909,32 @@ def _active_command_diagnostic_callback(
     def emit(diagnostics: ActiveCommandLocalDiagnostics) -> None:
         for line in render_active_command_diagnostics(diagnostics):
             output_func(line)
+
+    return emit
+
+
+def _active_lifecycle_worker_progress_callback(
+    output_func: Callable[[str], None],
+) -> Callable[[str, Mapping[str, Any]], None]:
+    """Render privacy-safe child-process progress only in diagnostic mode."""
+
+    labels = {
+        "lifecycle_recognizer_request_sent": "Lifecycle recognizer request sent",
+        "lifecycle_result_returned": "Lifecycle result returned",
+        "lifecycle_worker_stop_requested": "Lifecycle worker stop requested",
+        "lifecycle_worker_terminate_sent": "Lifecycle worker SIGTERM sent",
+        "lifecycle_worker_kill_sent": "Lifecycle worker SIGKILL sent",
+        "lifecycle_worker_reaped": "Lifecycle worker joined/reaped",
+    }
+
+    def emit(event: str, details: Mapping[str, Any]) -> None:
+        values = dict(details or {})
+        timestamp = str(values.get("timestamp") or "unknown")
+        label = labels.get(str(event), str(event).replace("_", " ").title())
+        output_func(f"[{timestamp}] {label}")
+        if event == "lifecycle_result_returned":
+            received = str(values.get("worker_request_received_at") or "unknown")
+            output_func(f"[{received}] Lifecycle worker request received")
 
     return emit
 

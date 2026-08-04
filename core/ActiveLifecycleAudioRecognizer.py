@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import importlib
 import json
 from math import isfinite
@@ -8,9 +9,11 @@ import multiprocessing
 import os
 from pathlib import Path
 import re
+import signal
 from threading import Lock, RLock
 import time
-from typing import Any, Mapping, Optional, Protocol, Sequence
+from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
+from uuid import uuid4
 import wave
 
 from core.AresIdentity import clean_spoken_phrase, normalize_spoken_phrase
@@ -27,6 +30,7 @@ ACTIVE_LIFECYCLE_CONFIRMATION_CANCELLED = "cancelled"
 ACTIVE_LIFECYCLE_CONFIRMATION_UNMATCHED = "unmatched"
 
 VOSK_ACTIVE_LIFECYCLE_BACKEND = "vosk_active_lifecycle_constrained_grammar"
+VOSK_LIFECYCLE_WORKER_PROTOCOL = "ares.active_lifecycle_worker v1"
 
 DEFAULT_STANDBY_HIGH_CONFIDENCE = 0.70
 DEFAULT_STANDBY_MEDIUM_CONFIDENCE = 0.50
@@ -284,6 +288,7 @@ class LifecycleBackendRecognition:
     recognized_tokens: tuple[str, ...] = ()
     word_confidences: tuple[float, ...] = ()
     recognition_backend: str = VOSK_ACTIVE_LIFECYCLE_BACKEND
+    backend_diagnostics: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -372,6 +377,7 @@ class ActiveLifecycleAudioRecognitionResult:
     confirmation_required: bool = False
     proposed_classification: str = ""
     backend_cleanup_complete: bool = True
+    backend_diagnostics: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def selected_lifecycle_action(self) -> str:
@@ -401,6 +407,7 @@ class ActiveLifecycleConfirmationResult:
     recognition_backend: str = VOSK_ACTIVE_LIFECYCLE_BACKEND
     rejection_reason: str = ""
     backend_cleanup_complete: bool = True
+    backend_diagnostics: Mapping[str, Any] = field(default_factory=dict)
 
 
 class ActiveLifecycleAudioRecognizer:
@@ -426,6 +433,9 @@ class ActiveLifecycleAudioRecognizer:
         cancellation_minimum_confidence: float = (
             DEFAULT_CANCELLATION_MINIMUM_CONFIDENCE
         ),
+        progress_callback: Optional[
+            Callable[[str, Mapping[str, Any]], None]
+        ] = None,
     ) -> None:
         self.standby_high_confidence = _validated_confidence(
             standby_high_confidence,
@@ -485,7 +495,8 @@ class ActiveLifecycleAudioRecognizer:
                 "shutdown_medium_confidence must be less than shutdown_high_confidence"
             )
         self.backend: ActiveLifecycleRecognitionBackend = backend or VoskLifecycleGrammarBackend(
-            model_path=model_path
+            model_path=model_path,
+            progress_callback=progress_callback,
         )
 
     @property
@@ -527,6 +538,7 @@ class ActiveLifecycleAudioRecognizer:
                     f"lifecycle_backend_error:{error.__class__.__name__}:"
                     f"{str(error)[:240]}"
                 ),
+                backend_diagnostics=self._backend_diagnostics(),
             )
         return self._classify(evidence)
 
@@ -568,6 +580,7 @@ class ActiveLifecycleAudioRecognizer:
                     f"confirmation_backend_error:{error.__class__.__name__}:"
                     f"{str(error)[:240]}"
                 ),
+                backend_diagnostics=self._backend_diagnostics(),
             )
         return self._classify_confirmation(
             evidence,
@@ -578,6 +591,15 @@ class ActiveLifecycleAudioRecognizer:
         close = getattr(self.backend, "close", None)
         if callable(close):
             close()
+
+    def release_active_resources(self, reason: str = "active_session_released") -> None:
+        release = getattr(self.backend, "release_worker", None)
+        if callable(release):
+            release(reason=reason)
+
+    def _backend_diagnostics(self) -> Mapping[str, Any]:
+        value = getattr(self.backend, "worker_diagnostics", {})
+        return dict(value) if isinstance(value, Mapping) else {}
 
     def _classify(
         self,
@@ -600,6 +622,7 @@ class ActiveLifecycleAudioRecognizer:
             "confidence": confidence,
             "confidence_available": confidence is not None,
             "recognition_backend": evidence.recognition_backend,
+            "backend_diagnostics": dict(evidence.backend_diagnostics),
         }
         if not normalized:
             return ActiveLifecycleAudioRecognitionResult(
@@ -680,6 +703,7 @@ class ActiveLifecycleAudioRecognizer:
             "confidence": confidence,
             "confidence_available": confidence is not None,
             "recognition_backend": evidence.recognition_backend,
+            "backend_diagnostics": dict(evidence.backend_diagnostics),
         }
         if normalized in _CANCELLATION_PHRASES:
             if confidence is not None and confidence >= self.cancellation_minimum_confidence:
@@ -725,11 +749,11 @@ class ActiveLifecycleAudioRecognizer:
 class VoskLifecycleGrammarBackend:
     """Local Vosk backend that consumes only finalized canonical WAV files.
 
-    Production inference runs in one reusable spawned worker process.  The
-    worker loads the model once, but every request remains outside the
-    foreground runtime and can be terminated and reaped when its wall-clock
-    deadline expires.  Injected module/factory dependencies retain the small
-    in-process seam used by deterministic unit tests.
+    Production inference runs in an isolated one-request process.  A result is
+    not returned to the foreground runtime until that child has acknowledged a
+    stop request or has been boundedly terminated and reaped. Injected
+    module/factory dependencies retain the in-process seam used by deterministic
+    tests.
     """
 
     recognition_backend = VOSK_ACTIVE_LIFECYCLE_BACKEND
@@ -743,6 +767,9 @@ class VoskLifecycleGrammarBackend:
         recognizer_factory: Any = None,
         clock: Any = time.monotonic,
         process_context: Any = None,
+        progress_callback: Optional[
+            Callable[[str, Mapping[str, Any]], None]
+        ] = None,
     ) -> None:
         self.model_path = Path(model_path).expanduser().resolve()
         self._vosk_module = vosk_module
@@ -756,6 +783,7 @@ class VoskLifecycleGrammarBackend:
             for value in (vosk_module, model_factory, recognizer_factory)
         )
         self._process_context = process_context
+        self._progress_callback = progress_callback
         self._process_worker: Optional[_VoskLifecycleProcessWorker] = None
         self._closed = False
         self._last_worker_diagnostics: Mapping[str, Any] = (
@@ -781,6 +809,7 @@ class VoskLifecycleGrammarBackend:
                     worker = _VoskLifecycleProcessWorker(
                         model_path=self.model_path,
                         process_context=self._process_context,
+                        progress_callback=self._progress_callback,
                     )
                     self._process_worker = worker
             else:
@@ -825,6 +854,15 @@ class VoskLifecycleGrammarBackend:
             if self._process_worker is worker:
                 self._process_worker = None
 
+    def release_worker(self, *, reason: str = "active_session_released") -> None:
+        with self._lock:
+            worker = self._process_worker
+        if worker is None:
+            return
+        worker.release(reason=reason)
+        with self._lock:
+            self._last_worker_diagnostics = dict(worker.diagnostics)
+
     @property
     def worker_diagnostics(self) -> Mapping[str, Any]:
         with self._lock:
@@ -852,11 +890,12 @@ class VoskLifecycleGrammarBackend:
 
 
 class _VoskLifecycleProcessWorker:
-    """Reusable spawned Vosk worker with bounded request and cleanup waits."""
+    """Spawn one bounded Vosk child for one recognition request."""
 
     _TERMINATION_GRACE_SECONDS = 0.25
     _KILL_GRACE_SECONDS = 0.25
     _CLOSE_LOCK_WAIT_SECONDS = 0.5
+    _STOP_ACK_WAIT_SECONDS = 0.25
 
     def __init__(
         self,
@@ -864,10 +903,14 @@ class _VoskLifecycleProcessWorker:
         model_path: str | Path,
         process_context: Any = None,
         clock: Any = time.monotonic,
+        progress_callback: Optional[
+            Callable[[str, Mapping[str, Any]], None]
+        ] = None,
     ) -> None:
         self.model_path = Path(model_path).expanduser().resolve()
         self._context = process_context or multiprocessing.get_context("spawn")
         self._clock = clock
+        self._progress_callback = progress_callback
         self._request_lock = Lock()
         # Only a request owner performs full transport teardown.  A concurrent
         # close may signal the child to unblock that owner, but all
@@ -881,6 +924,16 @@ class _VoskLifecycleProcessWorker:
         self._last_worker_reaped = True
         self._worker_start_count = 0
         self._worker_timeout_count = 0
+        self._worker_terminate_count = 0
+        self._worker_kill_count = 0
+        self._last_request_id = ""
+        self._request_sent_at = ""
+        self._worker_request_received_at = ""
+        self._result_received_at = ""
+        self._stop_requested_at = ""
+        self._worker_joined_at = ""
+        self._stop_acknowledged = False
+        self._last_cleanup_reason = ""
 
     @property
     def diagnostics(self) -> Mapping[str, Any]:
@@ -905,6 +958,17 @@ class _VoskLifecycleProcessWorker:
                 "worker_reaped": self._last_worker_reaped,
                 "worker_start_count": self._worker_start_count,
                 "worker_timeout_count": self._worker_timeout_count,
+                "worker_terminate_count": self._worker_terminate_count,
+                "worker_kill_count": self._worker_kill_count,
+                "worker_protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
+                "worker_request_id": self._last_request_id,
+                "worker_request_sent_at": self._request_sent_at,
+                "worker_request_received_at": self._worker_request_received_at,
+                "worker_result_received_at": self._result_received_at,
+                "worker_stop_requested_at": self._stop_requested_at,
+                "worker_joined_at": self._worker_joined_at,
+                "worker_stop_acknowledged": self._stop_acknowledged,
+                "worker_cleanup_reason": self._last_cleanup_reason,
             }
 
     def recognize_wav(
@@ -916,6 +980,7 @@ class _VoskLifecycleProcessWorker:
     ) -> LifecycleBackendRecognition:
         timeout = _validated_timeout(timeout_seconds)
         deadline = self._clock() + timeout
+        request_id = f"lifecycle-request-{uuid4()}"
         remaining = max(0.0, deadline - self._clock())
         if not self._request_lock.acquire(timeout=remaining):
             # A second caller may not fall through to Whisper while the one
@@ -924,90 +989,115 @@ class _VoskLifecycleProcessWorker:
             raise ActiveLifecycleBackendCleanupError(
                 "vosk_lifecycle_worker_busy_fallback_blocked"
             )
+        response: Optional[Mapping[str, Any]] = None
+        pending_error: Optional[BaseException] = None
+        graceful_cleanup = False
         try:
             if self._closed:
                 raise RuntimeError("vosk_lifecycle_worker_closed")
-            try:
-                self._ensure_started(deadline)
-                if self._closed:
-                    cleanup_complete = self._terminate_worker()
-                    if not cleanup_complete:
-                        raise ActiveLifecycleBackendCleanupError(
-                            "vosk_lifecycle_worker_closed_cleanup_incomplete"
-                        )
-                    raise RuntimeError("vosk_lifecycle_worker_closed")
-                connection = self._connection_snapshot()
-                if connection is None:
-                    raise RuntimeError("vosk_lifecycle_worker_connection_missing")
-                # The request is a small, bounded grammar/path message. Python's
-                # Connection.send itself has no timeout API, so it is kept out
-                # of documentation claims of a hard OS-call deadline; a blocked
-                # send is interruptible by concurrent close terminating the
-                # isolated child.
-                connection.send(
-                    {
-                        "operation": "recognize",
-                        "audio_path": str(Path(audio_path).resolve()),
-                        "grammar": list(grammar),
-                    }
-                )
-                response = self._receive(deadline)
-            except TimeoutError as error:
-                self._worker_timeout_count += 1
-                if not self._terminate_worker():
-                    raise ActiveLifecycleBackendCleanupError(
-                        "vosk_lifecycle_timeout_cleanup_incomplete"
-                    ) from error
-                raise TimeoutError("vosk_lifecycle_recognition_timeout") from error
-            except (BrokenPipeError, EOFError, OSError, ValueError) as error:
-                if not self._terminate_worker():
-                    raise ActiveLifecycleBackendCleanupError(
-                        "vosk_lifecycle_transport_cleanup_incomplete"
-                    ) from error
-                raise RuntimeError(
-                    f"vosk_lifecycle_worker_transport_error:{error.__class__.__name__}:"
-                    f"{str(error)[:160]}"
-                ) from error
-            response_type = str(response.get("type") or "")
-            if response_type == "error":
-                error_class = response.get("error_class") or "RuntimeError"
-                error_message = str(response.get("error_message") or "")[:240]
-                if not self._terminate_worker():
-                    raise ActiveLifecycleBackendCleanupError(
-                        "vosk_lifecycle_backend_error_cleanup_incomplete"
-                    )
-                raise RuntimeError(
+            self._start_worker(deadline, request_id=request_id)
+            if self._closed:
+                raise RuntimeError("vosk_lifecycle_worker_closed")
+            connection = self._connection_snapshot()
+            if connection is None:
+                raise RuntimeError("vosk_lifecycle_worker_connection_missing")
+            self._last_request_id = request_id
+            self._request_sent_at = _lifecycle_worker_timestamp()
+            connection.send(
+                {
+                    "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
+                    "type": "recognize_request",
+                    "request_id": request_id,
+                    "audio_path": str(Path(audio_path).resolve()),
+                    "grammar": list(grammar),
+                }
+            )
+            self._emit_progress(
+                "lifecycle_recognizer_request_sent",
+                request_id=request_id,
+            )
+            response = self._receive(
+                deadline,
+                request_id=request_id,
+                allowed_types={"recognize_result", "error"},
+            )
+            self._worker_request_received_at = str(
+                response.get("worker_request_received_at") or ""
+            )[:64]
+            self._result_received_at = _lifecycle_worker_timestamp()
+            self._emit_progress(
+                "lifecycle_result_returned",
+                request_id=request_id,
+                worker_request_received_at=self._worker_request_received_at,
+            )
+            graceful_cleanup = True
+            if str(response.get("type") or "") == "error":
+                pending_error = RuntimeError(
                     "vosk_lifecycle_worker_error:"
-                    f"{error_class}:{error_message}"
+                    f"{response.get('error_class') or 'RuntimeError'}:"
+                    f"{str(response.get('error_message') or '')[:240]}"
                 )
-            if response_type != "result":
-                if not self._terminate_worker():
-                    raise ActiveLifecycleBackendCleanupError(
-                        "vosk_lifecycle_invalid_response_cleanup_incomplete"
-                    )
-                raise RuntimeError("vosk_lifecycle_worker_invalid_response")
-            return LifecycleBackendRecognition(
-                recognized_text=str(response.get("recognized_text") or ""),
-                recognized_tokens=tuple(response.get("recognized_tokens") or ()),
-                word_confidences=tuple(response.get("word_confidences") or ()),
-                recognition_backend=str(
-                    response.get("recognition_backend")
-                    or VOSK_ACTIVE_LIFECYCLE_BACKEND
+        except TimeoutError as error:
+            self._worker_timeout_count += 1
+            pending_error = TimeoutError("vosk_lifecycle_recognition_timeout")
+            pending_error.__cause__ = error
+        except (BrokenPipeError, EOFError, OSError, ValueError) as error:
+            pending_error = RuntimeError(
+                f"vosk_lifecycle_worker_transport_error:{error.__class__.__name__}:"
+                f"{str(error)[:160]}"
+            )
+            pending_error.__cause__ = error
+        except BaseException as error:
+            # KeyboardInterrupt and system-exit cancellation are cleaned up and
+            # then propagated unchanged to the foreground owner.
+            pending_error = error
+
+        try:
+            cleanup_complete = self._stop_and_reap_worker(
+                request_id=request_id,
+                reason=(
+                    "recognition_completed"
+                    if graceful_cleanup and pending_error is None
+                    else "recognition_failed_or_cancelled"
                 ),
+                graceful=graceful_cleanup,
             )
         finally:
             self._request_lock.release()
+        if not cleanup_complete:
+            cleanup_error = (
+                "vosk_lifecycle_timeout_cleanup_incomplete"
+                if isinstance(pending_error, TimeoutError)
+                else "vosk_lifecycle_worker_cleanup_incomplete"
+            )
+            raise ActiveLifecycleBackendCleanupError(
+                cleanup_error
+            ) from pending_error
+        if pending_error is not None:
+            raise pending_error
+        if response is None or str(response.get("type") or "") != "recognize_result":
+            raise RuntimeError("vosk_lifecycle_worker_invalid_response")
+        return LifecycleBackendRecognition(
+            recognized_text=str(response.get("recognized_text") or ""),
+            recognized_tokens=tuple(response.get("recognized_tokens") or ()),
+            word_confidences=tuple(response.get("word_confidences") or ()),
+            recognition_backend=str(
+                response.get("recognition_backend")
+                or VOSK_ACTIVE_LIFECYCLE_BACKEND
+            ),
+            backend_diagnostics=dict(self.diagnostics),
+        )
 
     def close(self) -> None:
         self._closed = True
+        self.release(reason="backend_closed")
+
+    def release(self, *, reason: str = "active_session_released") -> None:
         acquired = self._request_lock.acquire(
             timeout=self._CLOSE_LOCK_WAIT_SECONDS
         )
         if not acquired:
-            # Do not close a Connection out from under send/poll/recv. Signal
-            # only; the request owner will observe EOF and perform serialized
-            # teardown. Then make one bounded attempt to take ownership.
-            self._signal_worker_stop()
+            self._signal_worker_stop(reason=reason)
             acquired = self._request_lock.acquire(
                 timeout=self._CLOSE_LOCK_WAIT_SECONDS
             )
@@ -1016,33 +1106,23 @@ class _VoskLifecycleProcessWorker:
                 "vosk_lifecycle_close_request_owner_unresponsive"
             )
         try:
-            connection = self._connection_snapshot()
-            process = self._process_snapshot()
-            if connection is not None and process is not None:
-                try:
-                    if _safe_process_alive_state(process) is not False:
-                        connection.send({"operation": "close"})
-                        if connection.poll(self._TERMINATION_GRACE_SECONDS):
-                            connection.recv()
-                except (BrokenPipeError, EOFError, OSError, ValueError):
-                    pass
-            if not self._terminate_worker():
+            if not self._stop_and_reap_worker(
+                request_id=self._last_request_id,
+                reason=reason,
+                graceful=True,
+            ):
                 raise ActiveLifecycleBackendCleanupError(
                     "vosk_lifecycle_close_cleanup_incomplete"
                 )
         finally:
             self._request_lock.release()
 
-    def _ensure_started(self, deadline: float) -> None:
-        process = self._process_snapshot()
-        connection = self._connection_snapshot()
-        if (
-            process is not None
-            and _safe_process_alive_state(process) is True
-            and connection is not None
+    def _start_worker(self, deadline: float, *, request_id: str) -> None:
+        if not self._stop_and_reap_worker(
+            request_id=self._last_request_id,
+            reason="before_worker_start",
+            graceful=True,
         ):
-            return
-        if not self._terminate_worker():
             raise ActiveLifecycleBackendCleanupError(
                 "vosk_lifecycle_worker_cleanup_incomplete"
             )
@@ -1055,9 +1135,9 @@ class _VoskLifecycleProcessWorker:
             parent_connection, child_connection = self._context.Pipe(duplex=True)
             process = self._context.Process(
                 target=_vosk_lifecycle_worker_main,
-                args=(child_connection, str(self.model_path)),
+                args=(child_connection, str(self.model_path), request_id),
                 name="ares-active-lifecycle-vosk",
-                daemon=True,
+                daemon=False,
             )
             # multiprocessing exposes no timeout for Process.start(). The
             # spawned boundary hard-bounds model loading and native inference;
@@ -1084,19 +1164,31 @@ class _VoskLifecycleProcessWorker:
                 with self._process_lock:
                     if self._process is None:
                         self._process = process
-                if not self._terminate_worker():
+                if not self._stop_and_reap_worker(
+                    request_id=request_id,
+                    reason="worker_start_failed",
+                    graceful=False,
+                ):
                     raise ActiveLifecycleBackendCleanupError(
                         "vosk_lifecycle_worker_start_cleanup_incomplete"
                     ) from error
             else:
                 _safe_close_process(process)
             raise
-        response = self._receive(deadline)
+        response = self._receive(
+            deadline,
+            request_id=request_id,
+            allowed_types={"ready", "error"},
+        )
         if str(response.get("type") or "") != "ready":
             if str(response.get("type") or "") == "error":
                 error_class = response.get("error_class") or "RuntimeError"
                 error_message = str(response.get("error_message") or "")[:240]
-                if not self._terminate_worker():
+                if not self._stop_and_reap_worker(
+                    request_id=request_id,
+                    reason="worker_model_start_error",
+                    graceful=False,
+                ):
                     raise ActiveLifecycleBackendCleanupError(
                         "vosk_lifecycle_worker_start_error_cleanup_incomplete"
                     )
@@ -1104,13 +1196,23 @@ class _VoskLifecycleProcessWorker:
                     "vosk_lifecycle_worker_start_error:"
                     f"{error_class}:{error_message}"
                 )
-            if not self._terminate_worker():
+            if not self._stop_and_reap_worker(
+                request_id=request_id,
+                reason="worker_invalid_ready_response",
+                graceful=False,
+            ):
                 raise ActiveLifecycleBackendCleanupError(
                     "vosk_lifecycle_invalid_start_cleanup_incomplete"
                 )
             raise RuntimeError("vosk_lifecycle_worker_invalid_start_response")
 
-    def _receive(self, deadline: float) -> Mapping[str, Any]:
+    def _receive(
+        self,
+        deadline: float,
+        *,
+        request_id: str,
+        allowed_types: set[str],
+    ) -> Mapping[str, Any]:
         connection = self._connection_snapshot()
         if connection is None:
             raise RuntimeError("vosk_lifecycle_worker_connection_missing")
@@ -1123,6 +1225,12 @@ class _VoskLifecycleProcessWorker:
             # request owner, which tears down and reaps this worker before any
             # ordinary Whisper fallback may begin.
             raise ValueError("vosk_lifecycle_worker_response_must_be_mapping")
+        if str(value.get("protocol") or "") != VOSK_LIFECYCLE_WORKER_PROTOCOL:
+            raise ValueError("vosk_lifecycle_worker_protocol_mismatch")
+        if str(value.get("request_id") or "") != request_id:
+            raise ValueError("vosk_lifecycle_worker_request_id_mismatch")
+        if str(value.get("type") or "") not in allowed_types:
+            raise ValueError("vosk_lifecycle_worker_unexpected_message")
         return value
 
     def _connection_snapshot(self) -> Any:
@@ -1133,42 +1241,112 @@ class _VoskLifecycleProcessWorker:
         with self._process_lock:
             return self._process
 
-    def _signal_worker_stop(self) -> None:
-        """Boundedly signal a busy request without mutating its transport."""
+    def _signal_worker_stop(self, *, reason: str) -> None:
+        """Boundedly stop a request owner that did not release its lock."""
 
         with self._process_lock:
             process = self._process
             if process is None or _safe_process_alive_state(process) is False:
                 return
+            connection = self._connection
+            if connection is not None:
+                try:
+                    connection.send(
+                        {
+                            "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
+                            "type": "stop_request",
+                            "request_id": self._last_request_id,
+                            "reason": str(reason or "cancelled")[:80],
+                        }
+                    )
+                except (BrokenPipeError, EOFError, OSError, ValueError):
+                    pass
+            _safe_process_join(process, self._TERMINATION_GRACE_SECONDS)
+            if _safe_process_alive_state(process) is False:
+                return
             try:
                 process.terminate()
+                self._worker_terminate_count += 1
             except (OSError, ValueError):
                 pass
             _safe_process_join(process, self._TERMINATION_GRACE_SECONDS)
             if _safe_process_alive_state(process) is not False:
                 try:
                     process.kill()
+                    self._worker_kill_count += 1
                 except (OSError, ValueError):
                     pass
                 _safe_process_join(process, self._KILL_GRACE_SECONDS)
 
-    def _terminate_worker(self) -> bool:
+    def _stop_and_reap_worker(
+        self,
+        *,
+        request_id: str,
+        reason: str,
+        graceful: bool,
+    ) -> bool:
         with self._process_lock:
-            connection, self._connection = self._connection, None
+            connection = self._connection
             process = self._process
-            _safe_close_connection(connection)
             if process is None:
+                self._connection = None
+                _safe_close_connection(connection)
                 self._last_worker_reaped = True
+                self._last_cleanup_reason = str(reason or "not_running")[:96]
                 return True
+            alive_state = _safe_process_alive_state(process)
+            self._stop_acknowledged = False
+            if graceful and alive_state is not False and connection is not None:
+                self._stop_requested_at = _lifecycle_worker_timestamp()
+                self._emit_progress(
+                    "lifecycle_worker_stop_requested",
+                    request_id=request_id,
+                    reason=reason,
+                )
+                try:
+                    connection.send(
+                        {
+                            "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
+                            "type": "stop_request",
+                            "request_id": request_id,
+                            "reason": str(reason or "completed")[:80],
+                        }
+                    )
+                    if connection.poll(self._STOP_ACK_WAIT_SECONDS):
+                        acknowledgement = connection.recv()
+                        self._stop_acknowledged = bool(
+                            isinstance(acknowledgement, Mapping)
+                            and acknowledgement.get("protocol")
+                            == VOSK_LIFECYCLE_WORKER_PROTOCOL
+                            and acknowledgement.get("type") == "stopped"
+                            and acknowledgement.get("request_id") == request_id
+                        )
+                except (BrokenPipeError, EOFError, OSError, ValueError):
+                    pass
+            self._connection = None
+            _safe_close_connection(connection)
+            _safe_process_join(process, self._TERMINATION_GRACE_SECONDS)
             if _safe_process_alive_state(process) is not False:
                 try:
                     process.terminate()
+                    self._worker_terminate_count += 1
+                    self._emit_progress(
+                        "lifecycle_worker_terminate_sent",
+                        request_id=request_id,
+                        reason=reason,
+                    )
                 except (OSError, ValueError):
                     pass
                 _safe_process_join(process, self._TERMINATION_GRACE_SECONDS)
             if _safe_process_alive_state(process) is not False:
                 try:
                     process.kill()
+                    self._worker_kill_count += 1
+                    self._emit_progress(
+                        "lifecycle_worker_kill_sent",
+                        request_id=request_id,
+                        reason=reason,
+                    )
                 except (OSError, ValueError):
                     pass
                 _safe_process_join(process, self._KILL_GRACE_SECONDS)
@@ -1176,16 +1354,46 @@ class _VoskLifecycleProcessWorker:
             confirmed_dead = alive_state is False
             if confirmed_dead:
                 _safe_process_join(process, 0.0)
+                self._worker_joined_at = _lifecycle_worker_timestamp()
             self._last_worker_exitcode = _safe_process_exitcode(process)
             self._last_worker_reaped = confirmed_dead
+            self._last_cleanup_reason = str(reason or "cleanup")[:96]
             if confirmed_dead:
                 self._process = None
                 _safe_close_process(process)
+                self._emit_progress(
+                    "lifecycle_worker_reaped",
+                    request_id=request_id,
+                    reason=reason,
+                    exitcode=self._last_worker_exitcode,
+                )
             else:
                 # Retain the live handle.  A later call must retry cleanup and
                 # may not start a second Vosk worker alongside it.
                 self._process = process
             return self._last_worker_reaped
+
+    # Backward-compatible private seam retained for focused cleanup tests.
+    def _terminate_worker(self) -> bool:
+        return self._stop_and_reap_worker(
+            request_id=self._last_request_id,
+            reason="forced_cleanup",
+            graceful=False,
+        )
+
+    def _emit_progress(self, event: str, **details: Any) -> None:
+        callback = self._progress_callback
+        if callback is None:
+            return
+        payload = {
+            "timestamp": _lifecycle_worker_timestamp(),
+            "worker_pid": self._last_worker_pid,
+            **details,
+        }
+        try:
+            callback(str(event), payload)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return
 
 
 def _empty_vosk_worker_diagnostics() -> Mapping[str, Any]:
@@ -1197,6 +1405,17 @@ def _empty_vosk_worker_diagnostics() -> Mapping[str, Any]:
         "worker_reaped": True,
         "worker_start_count": 0,
         "worker_timeout_count": 0,
+        "worker_terminate_count": 0,
+        "worker_kill_count": 0,
+        "worker_protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
+        "worker_request_id": "",
+        "worker_request_sent_at": "",
+        "worker_request_received_at": "",
+        "worker_result_received_at": "",
+        "worker_stop_requested_at": "",
+        "worker_joined_at": "",
+        "worker_stop_acknowledged": False,
+        "worker_cleanup_reason": "",
     }
 
 
@@ -1248,9 +1467,15 @@ def _safe_close_connection(connection: Any) -> None:
         pass
 
 
-def _vosk_lifecycle_worker_main(connection: Any, model_path: str) -> None:
-    """Load Vosk once and serve bounded parent-controlled recognition calls."""
+def _vosk_lifecycle_worker_main(
+    connection: Any,
+    model_path: str,
+    request_id: str = "",
+) -> None:
+    """Serve one bounded recognition request and one bounded stop handshake."""
 
+    _ignore_worker_interrupt_signal()
+    expected_request_id = str(request_id or "")
     try:
         module = importlib.import_module("vosk")
         set_log_level = getattr(module, "SetLogLevel", None)
@@ -1260,9 +1485,16 @@ def _vosk_lifecycle_worker_main(connection: Any, model_path: str) -> None:
         if not callable(model_factory):
             raise RuntimeError("vosk_lifecycle_model_factory_unavailable")
         model = model_factory(str(model_path))
-        connection.send({"type": "ready", "pid": os.getpid()})
-    except BaseException as error:
-        _send_worker_error(connection, error)
+        connection.send(
+            {
+                "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
+                "type": "ready",
+                "request_id": expected_request_id,
+                "pid": os.getpid(),
+            }
+        )
+    except Exception as error:
+        _send_worker_error(connection, error, request_id=expected_request_id)
         try:
             connection.close()
         except OSError:
@@ -1270,51 +1502,71 @@ def _vosk_lifecycle_worker_main(connection: Any, model_path: str) -> None:
         return
 
     try:
-        while True:
-            try:
-                request = connection.recv()
-            except EOFError:
-                return
-            if not isinstance(request, Mapping):
-                connection.send(
-                    {
-                        "type": "error",
-                        "error_class": "TypeError",
-                        "error_message": "worker request must be a mapping",
-                    }
-                )
-                continue
-            operation = str(request.get("operation") or "")
-            if operation == "close":
-                connection.send({"type": "closed"})
-                return
-            if operation != "recognize":
-                connection.send(
-                    {
-                        "type": "error",
-                        "error_class": "ValueError",
-                        "error_message": "unsupported worker operation",
-                    }
-                )
-                continue
-            try:
-                evidence = _recognize_vosk_lifecycle_wav(
-                    path=_validate_canonical_wav(request.get("audio_path") or ""),
-                    model=model,
-                    module=module,
-                    grammar=_validated_grammar(request.get("grammar") or ()),
-                )
-                connection.send(
-                    {
-                        "type": "result",
-                        "recognized_text": evidence.recognized_text,
-                        "recognized_tokens": list(evidence.recognized_tokens),
-                        "word_confidences": list(evidence.word_confidences),
-                        "recognition_backend": evidence.recognition_backend,
-                    }
-                )
-            except Exception as error:
-                _send_worker_error(connection, error)
+        request = _receive_worker_message(connection, timeout_seconds=10.0)
+        if request is None:
+            return
+        if not isinstance(request, Mapping):
+            _send_worker_error(
+                connection,
+                TypeError("worker request must be a mapping"),
+                request_id=expected_request_id,
+            )
+            return
+        request_type = str(request.get("type") or "")
+        received_request_id = str(request.get("request_id") or "")
+        if request_type == "stop_request":
+            _send_worker_stopped(connection, request_id=received_request_id)
+            return
+        if (
+            request.get("protocol") != VOSK_LIFECYCLE_WORKER_PROTOCOL
+            or request_type != "recognize_request"
+            or not expected_request_id
+            or received_request_id != expected_request_id
+        ):
+            _send_worker_error(
+                connection,
+                ValueError("invalid lifecycle worker request"),
+                request_id=expected_request_id or received_request_id,
+            )
+            return
+        worker_request_received_at = _lifecycle_worker_timestamp()
+        try:
+            evidence = _recognize_vosk_lifecycle_wav(
+                path=_validate_canonical_wav(request.get("audio_path") or ""),
+                model=model,
+                module=module,
+                grammar=_validated_grammar(request.get("grammar") or ()),
+            )
+            connection.send(
+                {
+                    "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
+                    "type": "recognize_result",
+                    "request_id": expected_request_id,
+                    "worker_request_received_at": worker_request_received_at,
+                    "worker_result_sent_at": _lifecycle_worker_timestamp(),
+                    "recognized_text": evidence.recognized_text,
+                    "recognized_tokens": list(evidence.recognized_tokens),
+                    "word_confidences": list(evidence.word_confidences),
+                    "recognition_backend": evidence.recognition_backend,
+                }
+            )
+        except Exception as error:
+            _send_worker_error(
+                connection,
+                error,
+                request_id=expected_request_id,
+                worker_request_received_at=worker_request_received_at,
+            )
+
+        stop_request = _receive_worker_message(connection, timeout_seconds=1.0)
+        if not isinstance(stop_request, Mapping):
+            return
+        if (
+            stop_request.get("protocol") == VOSK_LIFECYCLE_WORKER_PROTOCOL
+            and stop_request.get("type") == "stop_request"
+            and str(stop_request.get("request_id") or "") == expected_request_id
+        ):
+            _send_worker_stopped(connection, request_id=expected_request_id)
     finally:
         try:
             connection.close()
@@ -1322,17 +1574,72 @@ def _vosk_lifecycle_worker_main(connection: Any, model_path: str) -> None:
             pass
 
 
-def _send_worker_error(connection: Any, error: BaseException) -> None:
+def _receive_worker_message(
+    connection: Any,
+    *,
+    timeout_seconds: float,
+) -> Optional[Mapping[str, Any]]:
+    try:
+        if not connection.poll(max(0.0, float(timeout_seconds))):
+            return None
+        value = connection.recv()
+    except (EOFError, OSError, ValueError):
+        return None
+    return value if isinstance(value, Mapping) else None
+
+
+def _send_worker_stopped(connection: Any, *, request_id: str) -> None:
     try:
         connection.send(
             {
+                "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
+                "type": "stopped",
+                "request_id": str(request_id or ""),
+                "stopped_at": _lifecycle_worker_timestamp(),
+            }
+        )
+    except (BrokenPipeError, EOFError, OSError, ValueError):
+        pass
+
+
+def _send_worker_error(
+    connection: Any,
+    error: BaseException,
+    *,
+    request_id: str,
+    worker_request_received_at: str = "",
+) -> None:
+    try:
+        connection.send(
+            {
+                "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
                 "type": "error",
+                "request_id": str(request_id or ""),
+                "worker_request_received_at": str(worker_request_received_at or ""),
                 "error_class": error.__class__.__name__,
                 "error_message": str(error)[:240],
             }
         )
     except (BrokenPipeError, EOFError, OSError, ValueError):
         pass
+
+
+def _ignore_worker_interrupt_signal() -> None:
+    """Keep foreground Ctrl+C owned by the parent process without child tracebacks."""
+
+    sigint = getattr(signal, "SIGINT", None)
+    if sigint is None:
+        return
+    try:
+        signal.signal(sigint, signal.SIG_IGN)
+    except (OSError, RuntimeError, ValueError):
+        return
+
+
+def _lifecycle_worker_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+        "+00:00", "Z"
+    )
 
 
 def _recognize_vosk_lifecycle_wav(
@@ -1482,6 +1789,7 @@ def _validated_backend_result(
         recognized_tokens=tuple(str(token or "") for token in value.recognized_tokens),
         word_confidences=tuple(value.word_confidences),
         recognition_backend=name,
+        backend_diagnostics=dict(value.backend_diagnostics),
     )
 
 

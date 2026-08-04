@@ -42,6 +42,7 @@ class QueuedLifecycleRecognizer:
         self.recognition_paths: list[str] = []
         self.confirmation_paths: list[tuple[str, str]] = []
         self.closed = False
+        self.release_reasons: list[str] = []
 
     def recognize_wav(self, path):
         self.recognition_paths.append(str(path))
@@ -59,6 +60,9 @@ class QueuedLifecycleRecognizer:
 
     def close(self):
         self.closed = True
+
+    def release_active_resources(self, *, reason):
+        self.release_reasons.append(reason)
 
 
 class BlockingHighLifecycleRecognizer:
@@ -628,6 +632,7 @@ def test_runtime_adapter_resource_release_resets_and_close_releases_recognizer(t
     assert controller.pending_confirmation() is None
     adapter.release_active_resources()
     assert controller.pending_confirmation() is None
+    assert recognizer.release_reasons == ["active_transport_resources_released"]
     adapter.close()
     assert recognizer.closed is True
 

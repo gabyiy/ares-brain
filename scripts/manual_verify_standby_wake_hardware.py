@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import math
 from pathlib import Path
 import sys
@@ -348,6 +349,45 @@ def _run_hardware_verification_locked(
                         )
                         shutdown_once("inconsistent_wake_attempt")
                         return 1
+                if not standby_attempt:
+                    output_func(
+                        f"[{_hardware_timestamp()}] Lifecycle transition completed: "
+                        f"{before.current_lifecycle_state} -> "
+                        f"{snapshot.current_lifecycle_state}"
+                    )
+                    worker = _active_lifecycle_worker_diagnostics(runtime)
+                    output_func(
+                        "  Lifecycle worker cleanup: "
+                        f"pid={worker.get('worker_pid') or 'none'}; "
+                        f"alive={'yes' if worker.get('worker_alive') else 'no'}; "
+                        f"reaped={'yes' if worker.get('worker_reaped') else 'no'}; "
+                        f"stop_ack={'yes' if worker.get('worker_stop_acknowledged') else 'no'}"
+                    )
+                    output_func(
+                        "  Lifecycle worker timing: "
+                        f"sent={worker.get('worker_request_sent_at') or 'not_sent'}; "
+                        f"received={worker.get('worker_request_received_at') or 'not_received'}; "
+                        f"result={worker.get('worker_result_received_at') or 'not_returned'}; "
+                        f"stop={worker.get('worker_stop_requested_at') or 'not_requested'}; "
+                        f"joined={worker.get('worker_joined_at') or 'not_joined'}"
+                    )
+                    if worker.get("worker_alive") or not worker.get(
+                        "worker_reaped", True
+                    ):
+                        output_func(
+                            "  TEST FRAMEWORK FAILURE: constrained lifecycle "
+                            "worker remained alive after the bounded turn."
+                        )
+                        shutdown_once("lifecycle_worker_not_reaped")
+                        return 1
+                    gate = getattr(runtime.input_adapter, "voice_io_gate", None)
+                    gate_snapshot = (
+                        dict(gate.snapshot()) if callable(getattr(gate, "snapshot", None)) else {}
+                    )
+                    output_func(
+                        f"[{_hardware_timestamp()}] Microphone ownership released: "
+                        + ("yes" if not gate_snapshot.get("capture_active") else "no")
+                    )
                 transcript_diagnostics_enabled = bool(
                     args.diagnostic_wake or not standby_attempt
                 )
@@ -525,6 +565,77 @@ def _verification_stages(mode: str) -> tuple[HardwareTestStage, ...]:
         selected = set(LIFECYCLE_STAGE_LABELS)
         return tuple(stage for stage in STAGES if stage.label in selected)
     return STAGES
+
+
+def _active_lifecycle_worker_diagnostics(runtime: Any) -> dict[str, Any]:
+    input_adapter = getattr(runtime, "input_adapter", None)
+    completed = getattr(input_adapter, "last_diagnostics", None)
+    if completed is not None and getattr(
+        completed, "lifecycle_worker_request_id", ""
+    ):
+        return {
+            "worker_pid": int(
+                getattr(completed, "lifecycle_worker_pid", 0) or 0
+            ),
+            "worker_alive": bool(
+                getattr(completed, "lifecycle_worker_alive", False)
+            ),
+            "worker_reaped": bool(
+                getattr(completed, "lifecycle_worker_reaped", False)
+            ),
+            "worker_request_id": str(
+                getattr(completed, "lifecycle_worker_request_id", "") or ""
+            ),
+            "worker_request_sent_at": str(
+                getattr(
+                    completed, "lifecycle_worker_request_sent_at", ""
+                )
+                or ""
+            ),
+            "worker_request_received_at": str(
+                getattr(
+                    completed, "lifecycle_worker_request_received_at", ""
+                )
+                or ""
+            ),
+            "worker_result_received_at": str(
+                getattr(
+                    completed, "lifecycle_worker_result_received_at", ""
+                )
+                or ""
+            ),
+            "worker_stop_requested_at": str(
+                getattr(
+                    completed, "lifecycle_worker_stop_requested_at", ""
+                )
+                or ""
+            ),
+            "worker_joined_at": str(
+                getattr(completed, "lifecycle_worker_joined_at", "") or ""
+            ),
+            "worker_stop_acknowledged": bool(
+                getattr(
+                    completed, "lifecycle_worker_stop_acknowledged", False
+                )
+            ),
+            "worker_cleanup_reason": str(
+                getattr(
+                    completed, "lifecycle_worker_cleanup_reason", ""
+                )
+                or ""
+            ),
+        }
+    controller = getattr(input_adapter, "active_lifecycle_audio_controller", None)
+    recognizer = getattr(controller, "recognizer", None)
+    backend = getattr(recognizer, "backend", None)
+    value = getattr(backend, "worker_diagnostics", {})
+    return dict(value) if isinstance(value, dict) else dict(value or {})
+
+
+def _hardware_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+        "+00:00", "Z"
+    )
 
 
 def _run_wake_reliability(

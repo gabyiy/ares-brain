@@ -1413,6 +1413,16 @@ def test_bounded_hardware_lifecycle_modes_report_exact_shutdown_once(
                     cleaned_transcript="goodbye ares",
                     alias_canonicalized_transcript="goodbye ares",
                     transcription_status="transcribed",
+                    lifecycle_worker_pid=4510,
+                    lifecycle_worker_reaped=True,
+                    lifecycle_worker_request_id="request-goodbye",
+                    lifecycle_worker_request_sent_at="2026-08-04T10:00:00.000Z",
+                    lifecycle_worker_request_received_at="2026-08-04T10:00:00.010Z",
+                    lifecycle_worker_result_received_at="2026-08-04T10:00:00.020Z",
+                    lifecycle_worker_stop_requested_at="2026-08-04T10:00:00.021Z",
+                    lifecycle_worker_joined_at="2026-08-04T10:00:00.022Z",
+                    lifecycle_worker_stop_acknowledged=True,
+                    lifecycle_worker_cleanup_reason="recognition_completed",
                 )
                 self.state = "STANDBY"
                 self.session_id = ""
@@ -1444,6 +1454,16 @@ def test_bounded_hardware_lifecycle_modes_report_exact_shutdown_once(
                 selected_lifecycle_action="shutdown",
                 matched_lifecycle_phrase="ares shutdown",
                 transcription_status="transcribed",
+                lifecycle_worker_pid=4511,
+                lifecycle_worker_reaped=True,
+                lifecycle_worker_request_id="request-shutdown",
+                lifecycle_worker_request_sent_at="2026-08-04T10:00:01.000Z",
+                lifecycle_worker_request_received_at="2026-08-04T10:00:01.010Z",
+                lifecycle_worker_result_received_at="2026-08-04T10:00:01.020Z",
+                lifecycle_worker_stop_requested_at="2026-08-04T10:00:01.021Z",
+                lifecycle_worker_joined_at="2026-08-04T10:00:01.022Z",
+                lifecycle_worker_stop_acknowledged=True,
+                lifecycle_worker_cleanup_reason="recognition_completed",
             )
             self.state = "STOPPED"
             self.session_id = ""
@@ -1519,6 +1539,8 @@ def test_bounded_hardware_lifecycle_modes_report_exact_shutdown_once(
         )
     assert "Raw recognition result: Ares, shut down." in text
     assert "Classification result: shutdown" in text
+    assert "Lifecycle worker cleanup: pid=4511; alive=no; reaped=yes; stop_ack=yes" in text
+    assert "sent=2026-08-04T10:00:01.000Z" in text
     assert "Runtime terminal reason: explicit_shutdown_command" in text
     assert "Explicit shutdown count / reason: 1 / explicit_shutdown_command" in text
     assert "calculate two plus two" not in text
@@ -2218,6 +2240,16 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
         pipeline_status="runtime_transport_captured",
         runtime_terminal=True,
         runtime_terminal_reason="explicit_shutdown_command",
+        lifecycle_worker_pid=4401,
+        lifecycle_worker_reaped=True,
+        lifecycle_worker_request_id="lifecycle-request-1",
+        lifecycle_worker_request_sent_at="2026-07-16T10:00:00.011Z",
+        lifecycle_worker_request_received_at="2026-07-16T10:00:00.012Z",
+        lifecycle_worker_result_received_at="2026-07-16T10:00:00.013Z",
+        lifecycle_worker_stop_requested_at="2026-07-16T10:00:00.014Z",
+        lifecycle_worker_joined_at="2026-07-16T10:00:00.015Z",
+        lifecycle_worker_stop_acknowledged=True,
+        lifecycle_worker_cleanup_reason="recognition_completed",
     )
 
     rendered = "\n".join(
@@ -2255,6 +2287,9 @@ def test_active_command_diagnostics_separate_real_command_capture_from_wake_capt
     assert "Whisper cleanup / output handles closed: completed / yes" in rendered
     assert "Microphone gate released before inference: yes" in rendered
     assert "Temporary audio cleanup: removed" in rendered
+    assert "Lifecycle worker PID / request: 4401 / lifecycle-request-1" in rendered
+    assert "Lifecycle worker alive / reaped / stop acknowledged: no / yes / yes" in rendered
+    assert "Lifecycle worker cleanup reason: recognition_completed" in rendered
 
 
 def test_retention_requires_explicit_wake_diagnostics_before_runtime_creation(tmp_path):

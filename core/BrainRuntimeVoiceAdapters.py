@@ -324,6 +324,15 @@ class ActiveLifecycleAudioTurnController:
         with self._lock:
             self._pending = None
 
+    def release_active_resources(
+        self,
+        reason: str = "active_transport_resources_released",
+    ) -> None:
+        self.reset(reason)
+        release = getattr(self.recognizer, "release_active_resources", None)
+        if callable(release):
+            release(reason=reason)
+
     def close(self) -> None:
         with self._lock:
             if self._closed:
@@ -641,6 +650,9 @@ def _active_lifecycle_recognition_payload(recognition: Any) -> dict[str, Any]:
         "backend_cleanup_complete": bool(
             getattr(recognition, "backend_cleanup_complete", True)
         ),
+        "backend_diagnostics": dict(
+            getattr(recognition, "backend_diagnostics", {}) or {}
+        ),
     }
 
 
@@ -670,6 +682,9 @@ def _active_lifecycle_confirmation_payload(confirmation: Any) -> dict[str, Any]:
         ),
         "backend_cleanup_complete": bool(
             getattr(confirmation, "backend_cleanup_complete", True)
+        ),
+        "backend_diagnostics": dict(
+            getattr(confirmation, "backend_diagnostics", {}) or {}
         ),
         "confidence_tier": "confirmation",
         "confirmation_required": False,
@@ -779,6 +794,17 @@ class ActiveCommandLocalDiagnostics:
     pipeline_status: str = "not_started"
     runtime_terminal: bool = False
     runtime_terminal_reason: str = "not_terminal"
+    lifecycle_worker_pid: int = 0
+    lifecycle_worker_alive: bool = False
+    lifecycle_worker_reaped: bool = True
+    lifecycle_worker_request_id: str = ""
+    lifecycle_worker_request_sent_at: str = ""
+    lifecycle_worker_request_received_at: str = ""
+    lifecycle_worker_result_received_at: str = ""
+    lifecycle_worker_stop_requested_at: str = ""
+    lifecycle_worker_joined_at: str = ""
+    lifecycle_worker_stop_acknowledged: bool = False
+    lifecycle_worker_cleanup_reason: str = ""
 
 
 class VoiceRuntimeGate:
@@ -1456,7 +1482,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
                 pass
         self.voice_io_gate.end_capture()
         if self.active_lifecycle_audio_controller is not None:
-            self.active_lifecycle_audio_controller.reset(
+            self.active_lifecycle_audio_controller.release_active_resources(
                 "active_transport_resources_released"
             )
 
@@ -1697,6 +1723,45 @@ def _active_lifecycle_runtime_metadata(result: Any) -> dict[str, Any]:
             payload.get("pending_clear_reason") or ""
         )[:160],
     }
+    worker = payload.get("backend_diagnostics")
+    if isinstance(worker, dict):
+        metadata.update(
+            {
+                "active_lifecycle_worker_pid": int(
+                    worker.get("worker_pid", 0) or 0
+                ),
+                "active_lifecycle_worker_alive": bool(
+                    worker.get("worker_alive", False)
+                ),
+                "active_lifecycle_worker_reaped": bool(
+                    worker.get("worker_reaped", False)
+                ),
+                "active_lifecycle_worker_request_id": str(
+                    worker.get("worker_request_id") or ""
+                )[:96],
+                "active_lifecycle_worker_request_sent_at": str(
+                    worker.get("worker_request_sent_at") or ""
+                )[:64],
+                "active_lifecycle_worker_request_received_at": str(
+                    worker.get("worker_request_received_at") or ""
+                )[:64],
+                "active_lifecycle_worker_result_received_at": str(
+                    worker.get("worker_result_received_at") or ""
+                )[:64],
+                "active_lifecycle_worker_stop_requested_at": str(
+                    worker.get("worker_stop_requested_at") or ""
+                )[:64],
+                "active_lifecycle_worker_joined_at": str(
+                    worker.get("worker_joined_at") or ""
+                )[:64],
+                "active_lifecycle_worker_stop_acknowledged": bool(
+                    worker.get("worker_stop_acknowledged", False)
+                ),
+                "active_lifecycle_worker_cleanup_reason": str(
+                    worker.get("worker_cleanup_reason") or ""
+                )[:96],
+            }
+        )
     confidence = _finite_lifecycle_confidence(payload.get("confidence"))
     if confidence is not None:
         metadata["active_lifecycle_confidence"] = confidence
@@ -1714,6 +1779,12 @@ def _active_command_diagnostics(result: Any) -> ActiveCommandLocalDiagnostics:
     process_metadata = dict(process.get("metadata") or {})
     transcription_boundary = dict(data.get("transcription_boundary") or {})
     cleanup = dict(data.get("cleanup") or {})
+    lifecycle_decision = _finalized_audio_decision_contract(result)
+    lifecycle_decision_data = dict(lifecycle_decision.get("data") or {})
+    lifecycle_payload = dict(
+        lifecycle_decision_data.get("active_lifecycle_audio") or {}
+    )
+    lifecycle_worker = dict(lifecycle_payload.get("backend_diagnostics") or {})
     stop_reason = _capture_stop_reason(result)
     raw_duration = float(recording.get("raw_duration_seconds", 0.0) or 0.0)
     candidate_duration = float(
@@ -1862,6 +1933,37 @@ def _active_command_diagnostics(result: Any) -> ActiveCommandLocalDiagnostics:
             transcription_boundary.get("microphone_capture_released")
         ),
         pipeline_status=str(getattr(result, "status", "") or "unknown"),
+        lifecycle_worker_pid=int(lifecycle_worker.get("worker_pid", 0) or 0),
+        lifecycle_worker_alive=bool(
+            lifecycle_worker.get("worker_alive", False)
+        ),
+        lifecycle_worker_reaped=bool(
+            lifecycle_worker.get("worker_reaped", True)
+        ),
+        lifecycle_worker_request_id=str(
+            lifecycle_worker.get("worker_request_id") or ""
+        ),
+        lifecycle_worker_request_sent_at=str(
+            lifecycle_worker.get("worker_request_sent_at") or ""
+        ),
+        lifecycle_worker_request_received_at=str(
+            lifecycle_worker.get("worker_request_received_at") or ""
+        ),
+        lifecycle_worker_result_received_at=str(
+            lifecycle_worker.get("worker_result_received_at") or ""
+        ),
+        lifecycle_worker_stop_requested_at=str(
+            lifecycle_worker.get("worker_stop_requested_at") or ""
+        ),
+        lifecycle_worker_joined_at=str(
+            lifecycle_worker.get("worker_joined_at") or ""
+        ),
+        lifecycle_worker_stop_acknowledged=bool(
+            lifecycle_worker.get("worker_stop_acknowledged", False)
+        ),
+        lifecycle_worker_cleanup_reason=str(
+            lifecycle_worker.get("worker_cleanup_reason") or ""
+        ),
     )
 
 
