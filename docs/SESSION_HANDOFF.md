@@ -1,16 +1,18 @@
 ARES Session Handoff
 
-Last Updated: 2026-07-29
+Last Updated: 2026-08-04
 
 Current Version
 
-ARES v2.20 - Independent STT Health and Controlled PCM Stop Semantics
+ARES v2.21 - Request-Scoped Active Lifecycle Worker Cleanup
 
 ---
 
 Current Status
 
-The production-composed ACTIVE diagnostic has passed its Raspberry Pi PCM/candidate gate. The latest real run then reached phrase two, started `whisper-cli`, printed the configured 15-second timeout, and blocked indefinitely; Ctrl+C did not unwind the process. Code tracing found two concrete causes: Whisper deadline progress depended on one blocking child wait, and `KeyboardInterrupt` was converted into typed pipeline/adapter failures before the top-level cleanup owner could run.
+The production Raspberry Pi path now proves wake, active capture, and ordinary Whisper completion. The latest run reached `Processing command` for spoken `goodbye Ares` but did not complete standby. Ctrl+C exposed `ares-active-lifecycle-vosk` blocked in `_vosk_lifecycle_worker_main` at an unconditional `connection.recv()`. That traceback was owner cancellation, not spoken lifecycle success.
+
+Phase 119 fixes that exact boundary. The previous lifecycle child was a reusable daemon: after sending one result it immediately returned to an unbounded receive and active-session release did not reap it. Production now creates one non-daemon lifecycle worker per candidate, correlates a versioned request/result with a unique ID, sends an explicit stop, waits for a bounded acknowledgement, and withholds the recognition result until bounded join/terminate/kill cleanup confirms the process is reaped. EOF, child crash, timeout, malformed transport, and parent cancellation all use the same deterministic cleanup path. The child ignores SIGINT so Ctrl+C remains the foreground parent's distinct `owner_cancellation` path.
 
 Phase 117 gives foreground child work a parent-owned monotonic deadline and one cancellation lifecycle. Linux `arecord`, `whisper-cli`, Piper, and `aplay` run in dedicated process groups. Timeout, SIGINT, SIGTERM, or cancellation sends group `SIGTERM`, waits a bounded grace period, escalates to group `SIGKILL` only if needed, reaps the leader, closes streams, releases audio ownership, and finalizes temporary files. `ForegroundSignalCoordinator` makes this cleanup idempotent for both the production launcher and diagnostic.
 
@@ -24,9 +26,25 @@ The accepted slot occurs only after `goodbye`, `good bye`, `bye`, `go standby`, 
 
 The diagnostic uses the same production factory and recognizer in compare-only mode. It now requests only `goodbye Ares` and `shutdown Ares`, reports constrained and fallback decisions, and uses one finalized WAV per phrase. Before each ready prompt it verifies that the previous Whisper process, active capture stream, voice gate ownership, cancellation state, and unique temporary target are clean. It injects a nonpersistent event sink, constructs no Brain runtime, and executes no lifecycle, CoreService, skill, event-history file, or owner-memory action; retained audio remains explicitly diagnostic-only.
 
-Deterministic verification can prove slot boundaries, exact grammar, confidence handling, same-WAV reuse, constrained bypass, mandatory same-turn fallback, process-group escalation, signal propagation, resource cleanup, false-positive rejection, and lifecycle authority. It cannot prove Raspberry Pi process behavior or owner-audio recognition. The next Raspberry Pi gate is the bounded two-phrase diagnostic, including one Ctrl+C cancellation run if needed.
+Deterministic verification can prove slot boundaries, exact grammar, confidence handling, same-WAV reuse, constrained bypass, mandatory same-turn fallback, the lifecycle worker protocol, bounded IPC, child reap, false-positive rejection, and lifecycle authority. It cannot prove Raspberry Pi process behavior or owner-audio recognition. The next gate is `manual_verify_standby_wake_hardware.py --verification-mode lifecycle --diagnostic-wake`, followed by production only after that bounded sequence passes without Ctrl+C.
 
-Phase 118 passes all 2,741 tests and its post-final-code focused ALSA/Whisper/health/diagnostic/pipeline sweep passes 265 tests. Compileall, Phase 2 event/memory verification, non-empty JSON configuration parsing, and `git diff --check` are green. Deterministic results can prove initialization, branch classification, typed diagnostics, and cleanup contracts; they cannot prove the Raspberry Pi's executable/model permissions, ALSA process behavior, Whisper transcript, or lifecycle outcome.
+Phase 119 passes all 2,747 tests. Its post-final-code focused lifecycle/runtime/audio/event sweep passes 827 tests. Compileall, Phase 2 event/memory verification, BrainSessionManager/BrainRuntime/standby-wake deterministic verifiers, configuration JSON parsing, and `git diff --check` are green. These results prove deterministic request/stop/timeout/cancellation/reap behavior; they do not prove spoken goodbye or shutdown on the Raspberry Pi.
+
+Current Raspberry Pi acceptance commands:
+
+```bash
+cd ~/ares-brain
+source venv/bin/activate
+git pull --ff-only origin main
+
+python scripts/manual_verify_standby_wake_hardware.py \
+  --verification-mode lifecycle \
+  --diagnostic-wake
+
+python scripts/run_ares_standby_voice.py
+```
+
+The bounded verifier must complete `Ares -> goodbye Ares -> Ares -> Ares shut down`, report each lifecycle worker reaped, and exit without Ctrl+C. Production must then complete the same standby/reactivation/shutdown transitions. Windows automation is not hardware proof.
 
 Checkpoint root causes and fixes:
 
@@ -36,6 +54,7 @@ Checkpoint root causes and fixes:
 - Phase 116 records the real `goodbye rs`/`shutdown rs` constrained mismatch, adds the narrow lifecycle-slot canonicalizer and 128-entry generated grammar, restores exact valid Whisper lifecycle fallback after constrained rejection, and leaves wake recognition unchanged.
 - Phase 117 records the real post-timeout hang, replaces blocking child waits with parent-owned monotonic polling and process-group TERM/KILL/reap cleanup, restores Ctrl+C/SIGTERM propagation to one foreground coordinator, requires same-turn Whisper fallback for medium/rejected constrained evidence, isolates the diagnostic from production event history, and adds ARES-specific emergency cleanup.
 - Phase 118 initializes the inherited Whisper executable resolver, separates microphone health from STT health, classifies deliberate ALSA stream shutdown with strict control-plane evidence, adds a no-microphone/no-inference STT preflight, and timestamps typed diagnostic stages without changing wake, VAD, lifecycle grammar, or BrainSessionManager authority.
+- Phase 119 replaces the reusable lifecycle daemon and its unbounded post-result receive with one request-scoped child, a correlated request/result/stop protocol, bounded reap/escalation, explicit active-resource release, and hardware-verifier worker timestamps. Spoken lifecycle commands still route only through `BrainRuntime`/`BrainSessionManager`; audio code never performs transitions.
 
 - ARES previously had strict lifecycle state for removable modules and bounded one-turn voice orchestration, but no Capital-owned lifecycle authority for a future persistent Brain process. `BrainSessionManager` now owns the central state machine and CoreService exposes a read-only snapshot without booting or activating any City.
 - V1 transition/snapshot contracts, injected-clock inactivity checks, unique active-session IDs, bounded failure escalation, explicit safe recovery, lock-protected access, transition history, and privacy-bounded lifecycle events are implemented. The manager contains no microphone, Whisper, Piper, memory-store, skill, GPT, network, listener, or runtime-loop behavior.
@@ -296,7 +315,15 @@ python scripts/manual_diagnose_persistent_pcm.py \
 
 This command remains available for bounded transport diagnosis, but the owner has now proved the repaired persistent production route through calibration, wake recognition, acknowledgement, active capture, speech detection, command finalization, and Whisper start. Do not repeat PCM or threshold tuning to diagnose the current lifecycle failure.
 
-The next Raspberry Pi action is the real production acceptance sequence:
+The next Raspberry Pi action is the bounded production-factory lifecycle verifier, followed by the real production acceptance sequence only if every worker is reaped without Ctrl+C:
+
+```bash
+python scripts/manual_verify_standby_wake_hardware.py \
+  --verification-mode lifecycle \
+  --diagnostic-wake
+```
+
+Then run production:
 
 ```bash
 python scripts/run_ares_standby_voice.py \
@@ -2317,11 +2344,11 @@ Text REPL
 
 Immediate Next Milestone
 
-Pull Phase 118, run `manual_diagnose_active_lifecycle_audio.py --stt-preflight-only`, then run its two-phrase owner-audio mode. Require independent healthy STT configuration, controlled microphone cleanup (or a truthful typed failure), bounded completion or visible TERM/KILL/reap cleanup, one-press Ctrl+C cancellation, same-turn fallback for medium/rejected constrained evidence, and clean readiness before phrase two. Only after those Raspberry Pi gates pass should the complete foreground sequence resume. Do not retune microphone gain, wake/VAD thresholds, or lifecycle confidence.
+Pull Phase 119 and run `manual_verify_standby_wake_hardware.py --verification-mode lifecycle --diagnostic-wake`. Require wake, spoken standby, reactivation with a new session, spoken shutdown, correlated worker request/result/stop timestamps, confirmed child reap, released microphone ownership, and no Ctrl+C. Then run the foreground production sequence. Do not retune microphone gain, wake/VAD thresholds, Whisper, or lifecycle confidence for this worker-lifetime checkpoint.
 
 Next technical choices:
 
-- Pull latest `main`; run the no-microphone/no-inference STT configuration preflight, then the focused two-phrase lifecycle-audio diagnostic. Capture independent microphone/STT health, controlled-stop evidence, typed stage/timestamps, constrained text/tokens, confidence/tier/backend, classification, canonical phrase, rejection, selected action, fallback use/status, and process cleanup. High accepted evidence may bypass fallback; medium or rejected evidence must complete same-turn Whisper fallback. Never infer success from headers or Windows tests.
+- Pull latest `main`; run the bounded production-factory lifecycle mode. Capture constrained/fallback evidence, classification, worker request/result/stop/join timestamps, reap status, state/session transitions, and microphone release. High accepted evidence may bypass fallback; medium or rejected evidence must complete same-turn Whisper fallback. Never infer hardware success from Windows tests.
 - Inspect owner state only through `python scripts/inspect_owner_memory.py --summary --pending` or its focused flags; malformed durable or transient data must fail closed rather than be reset and executed.
 - Keep microphone monitoring disabled with `scripts/configure_linux_alsa_monitoring.py` if the USB sound device loops mic playback to speaker.
 - An exact `ares`, `aris`, or exact-slot `aries` result resolves to canonical `ares`. Confidence `>= 0.55` accepts; `0.40` through less than `0.55` requires two identical exact results within eight seconds; below `0.40`, `[unk]`, unrelated words, and partial words reject. Missing confidence is permitted only for one exact activation backed by validated VAD/canonical audio. Do not add output-driven aliases, substring matching, or fuzzy matching.
@@ -2634,7 +2661,7 @@ Next Planned Step
 - Architecture hardening before real hardware/adapters is complete: lifecycle, contracts, manifests, migrations, health/fallback, and measured resource budgets are implemented.
 - Phase 3 now includes the Capital-owned foreground standby wake runtime with one persistent ALSA stream per standby epoch, one-time/in-place calibration, rolling pre-roll, constrained Vosk grammar, exact `Ares`/`Aris`/`Aries` name slots, owner-local wake diagnostics, bounded confidence tiers, and finalized-WAV duration guards in deterministic verification.
 - Persistent PCM is owner-proven healthy through calibration, Vosk wake, acknowledgement, active capture, speech endpointing, nonempty finalized candidates, and correct ordinary Whisper transcription. Do not restart microphone, VAD, threshold, or Whisper-timeout tuning for the current lifecycle-acoustic acceptance.
-- Pull `main` on Raspberry Pi and run the bounded two-phrase `manual_diagnose_active_lifecycle_audio.py`. Require high constrained evidence to bypass fallback, medium/rejected evidence to complete same-turn Whisper fallback, every child to be reaped before the next ready prompt, and one Ctrl+C to produce bounded cleanup. Then run production: wake, calculator result 4, goodbye to standby without exit, new-session reactivation, memory create/recall, and exactly one shutdown.
+- Pull `main` on Raspberry Pi and run `manual_verify_standby_wake_hardware.py --verification-mode lifecycle --diagnostic-wake`. Require every lifecycle child to be stopped and reaped before the transition completes, goodbye to preserve the process in standby, reactivation to create a new session, shutdown to stop exactly once, and no Ctrl+C. Then run production: wake, calculator result 4, goodbye to standby without exit, new-session reactivation, and exactly one shutdown.
 - Keep CI green before merging or pushing further changes.
 - Prefer feature branch -> local verification -> PR -> CI -> merge for future work.
 - Do not enable default real weather/market API behavior, Google Calendar integration, GPT, embeddings, vision, scheduling, notifications, or background automation yet.
