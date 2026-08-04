@@ -4,6 +4,8 @@ from collections import deque
 import json
 import multiprocessing
 from pathlib import Path
+import socket
+import struct
 import time
 import wave
 
@@ -25,6 +27,8 @@ from core.ActiveLifecycleAudioRecognizer import (
     LifecycleBackendRecognition,
     VOSK_LIFECYCLE_WORKER_PROTOCOL,
     VoskLifecycleGrammarBackend,
+    _BoundedLifecycleSocketTransport,
+    _VOSK_LIFECYCLE_MAX_MESSAGE_BYTES,
     _VoskLifecycleProcessWorker,
     _vosk_lifecycle_worker_main,
     canonicalize_active_lifecycle_assistant_alias,
@@ -830,6 +834,10 @@ class KaldiRecognizer:
     assert first_diagnostics["worker_result_received_at"].endswith("Z")
     assert first_diagnostics["worker_stop_requested_at"].endswith("Z")
     assert first_diagnostics["worker_joined_at"].endswith("Z")
+    assert all(
+        child.pid != first_diagnostics["worker_pid"]
+        for child in multiprocessing.active_children()
+    )
     assert [event for event, _payload in first_progress] == [
         "lifecycle_recognizer_request_sent",
         "lifecycle_result_returned",
@@ -892,29 +900,32 @@ def test_worker_explicit_stop_before_request_exits_and_is_reaped(tmp_path, monke
     model.mkdir()
     request_id = "request-stop-before-recognition"
     context = multiprocessing.get_context("spawn")
-    parent, child = context.Pipe(duplex=True)
+    parent_socket, child_socket = socket.socketpair()
+    parent = _BoundedLifecycleSocketTransport(parent_socket)
     process = context.Process(
         target=_vosk_lifecycle_worker_main,
-        args=(child, str(model), request_id),
+        args=(child_socket, str(model), request_id),
+        name="ares-active-lifecycle-vosk",
         daemon=False,
     )
     process.start()
-    child.close()
+    child_socket.close()
     try:
-        assert parent.poll(5.0)
-        ready = parent.recv()
+        ready = parent.receive_message(deadline=time.monotonic() + 5.0)
         assert ready["type"] == "ready"
         assert ready["request_id"] == request_id
-        parent.send(
+        assert ready["sigint_ignored"] is True
+        worker_pid = ready["pid"]
+        parent.send_message(
             {
                 "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
                 "type": "stop_request",
                 "request_id": request_id,
                 "reason": "test_stop",
-            }
+            },
+            deadline=time.monotonic() + 2.0,
         )
-        assert parent.poll(2.0)
-        stopped = parent.recv()
+        stopped = parent.receive_message(deadline=time.monotonic() + 2.0)
         assert stopped["type"] == "stopped"
         assert stopped["request_id"] == request_id
     finally:
@@ -924,32 +935,121 @@ def test_worker_explicit_stop_before_request_exits_and_is_reaped(tmp_path, monke
             process.terminate()
             process.join(1.0)
     assert process.is_alive() is False
+    assert all(child.pid != worker_pid for child in multiprocessing.active_children())
     process.close()
 
 
-def test_worker_exits_when_parent_closes_pipe_before_request(tmp_path, monkeypatch):
+def test_worker_exits_when_parent_closes_transport_before_request(tmp_path, monkeypatch):
     _install_minimal_spawn_vosk_module(tmp_path, monkeypatch)
     model = tmp_path / "model"
     model.mkdir()
     request_id = "request-parent-closed"
     context = multiprocessing.get_context("spawn")
-    parent, child = context.Pipe(duplex=True)
+    parent_socket, child_socket = socket.socketpair()
+    parent = _BoundedLifecycleSocketTransport(parent_socket)
     process = context.Process(
         target=_vosk_lifecycle_worker_main,
-        args=(child, str(model), request_id),
+        args=(child_socket, str(model), request_id),
+        name="ares-active-lifecycle-vosk",
         daemon=False,
     )
     process.start()
-    child.close()
-    assert parent.poll(5.0)
-    assert parent.recv()["type"] == "ready"
+    child_socket.close()
+    ready = parent.receive_message(deadline=time.monotonic() + 5.0)
+    assert ready["type"] == "ready"
+    assert ready["sigint_ignored"] is True
+    worker_pid = ready["pid"]
     parent.close()
     process.join(3.0)
     if process.is_alive():
         process.terminate()
         process.join(1.0)
     assert process.is_alive() is False
+    assert all(child.pid != worker_pid for child in multiprocessing.active_children())
     process.close()
+
+
+def test_bounded_socket_receive_times_out_after_partial_frame():
+    reader_socket, writer_socket = socket.socketpair()
+    reader = _BoundedLifecycleSocketTransport(reader_socket)
+    try:
+        payload = b'{"type":"ready"}'
+        writer_socket.sendall(struct.pack("!I", len(payload)) + payload[:3])
+        started = time.monotonic()
+
+        with pytest.raises(TimeoutError, match="transport_timeout"):
+            reader.receive_message(deadline=time.monotonic() + 0.05)
+
+        assert time.monotonic() - started < 0.5
+    finally:
+        reader.close()
+        writer_socket.close()
+
+
+def test_bounded_socket_send_times_out_when_peer_never_drains():
+    writer_socket, reader_socket = socket.socketpair()
+    writer_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
+    writer = _BoundedLifecycleSocketTransport(writer_socket)
+    try:
+        while True:
+            try:
+                writer_socket.send(b"x" * 65536)
+            except BlockingIOError:
+                break
+        started = time.monotonic()
+
+        with pytest.raises(TimeoutError, match="transport_timeout"):
+            writer.send_message(
+                {"type": "stop_request", "request_id": "stalled-peer"},
+                deadline=time.monotonic() + 0.05,
+            )
+
+        assert time.monotonic() - started < 0.5
+    finally:
+        writer.close()
+        reader_socket.close()
+
+
+def test_bounded_socket_rejects_oversized_frame_before_payload_read():
+    reader_socket, writer_socket = socket.socketpair()
+    reader = _BoundedLifecycleSocketTransport(reader_socket)
+    try:
+        writer_socket.sendall(
+            struct.pack("!I", _VOSK_LIFECYCLE_MAX_MESSAGE_BYTES + 1)
+        )
+
+        with pytest.raises(ValueError, match="message length is invalid"):
+            reader.receive_message(deadline=time.monotonic() + 0.2)
+    finally:
+        reader.close()
+        writer_socket.close()
+
+
+def test_bounded_socket_rejects_oversized_outgoing_message_before_write():
+    writer_socket, reader_socket = socket.socketpair()
+    writer = _BoundedLifecycleSocketTransport(writer_socket)
+    try:
+        with pytest.raises(ValueError, match="exceeds bounded size"):
+            writer.send_message(
+                {"value": "x" * (_VOSK_LIFECYCLE_MAX_MESSAGE_BYTES + 1)},
+                deadline=time.monotonic() + 0.2,
+            )
+    finally:
+        writer.close()
+        reader_socket.close()
+
+
+def test_bounded_socket_reports_truncated_frame_eof_without_waiting_forever():
+    reader_socket, writer_socket = socket.socketpair()
+    reader = _BoundedLifecycleSocketTransport(reader_socket)
+    payload = b'{"type":"ready"}'
+    writer_socket.sendall(struct.pack("!I", len(payload)) + payload[:2])
+    writer_socket.close()
+    try:
+        with pytest.raises(EOFError, match="partial message"):
+            reader.receive_message(deadline=time.monotonic() + 0.2)
+    finally:
+        reader.close()
 
 
 def test_parent_cancellation_during_result_wait_reaps_worker_and_propagates(
@@ -960,7 +1060,8 @@ def test_parent_cancellation_during_result_wait_reaps_worker_and_propagates(
         def __init__(self):
             self.messages = []
 
-        def send(self, value):
+        def send_message(self, value, *, deadline, clock):
+            del deadline, clock
             self.messages.append(value)
 
     model = tmp_path / "model"
@@ -1083,6 +1184,74 @@ def test_unknown_worker_liveness_is_not_mistaken_for_confirmed_reap(tmp_path):
     assert diagnostics["worker_alive"] is True
     assert diagnostics["worker_liveness_known"] is False
     assert diagnostics["worker_reaped"] is False
+
+
+def test_cleanup_uses_bounded_join_then_terminate_then_kill_and_reaps(tmp_path):
+    class EscalatingProcess:
+        pid = 4322
+
+        def __init__(self):
+            self.alive = True
+            self.exitcode = None
+            self.events = []
+
+        def is_alive(self):
+            return self.alive
+
+        def join(self, timeout):
+            self.events.append(("join", timeout))
+
+        def terminate(self):
+            self.events.append(("terminate", None))
+
+        def kill(self):
+            self.events.append(("kill", None))
+            self.alive = False
+            self.exitcode = -9
+
+        def close(self):
+            self.events.append(("close", None))
+
+    model = tmp_path / "model"
+    model.mkdir()
+    worker = _VoskLifecycleProcessWorker(model_path=model)
+    process = EscalatingProcess()
+    worker._process = process
+    worker._last_worker_reaped = False
+
+    assert worker._terminate_worker() is True
+
+    names = [name for name, _value in process.events]
+    assert names == ["join", "terminate", "join", "kill", "join", "close"]
+    assert worker.diagnostics["worker_alive"] is False
+    assert worker.diagnostics["worker_reaped"] is True
+    assert worker.diagnostics["worker_exitcode"] == -9
+
+
+def test_dead_child_with_failed_join_is_not_reported_as_reaped(tmp_path):
+    class UnjoinableDeadProcess:
+        pid = 4323
+        exitcode = 1
+
+        def is_alive(self):
+            return False
+
+        def join(self, _timeout):
+            raise OSError("waitpid failed")
+
+        def close(self):
+            raise AssertionError("unreaped process handle must remain open")
+
+    model = tmp_path / "model"
+    model.mkdir()
+    worker = _VoskLifecycleProcessWorker(model_path=model)
+    process = UnjoinableDeadProcess()
+    worker._process = process
+    worker._last_worker_reaped = False
+
+    assert worker._terminate_worker() is False
+    assert worker._process is process
+    assert worker.diagnostics["worker_reaped"] is False
 
 
 def test_backend_close_retains_unreaped_worker_handle_and_is_terminal(tmp_path):

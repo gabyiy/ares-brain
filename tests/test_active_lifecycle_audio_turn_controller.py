@@ -6,6 +6,8 @@ from threading import Event, Thread
 from types import SimpleNamespace
 import wave
 
+import pytest
+
 from core import (
     ActiveLifecycleAudioTurnController,
     AudioChunk,
@@ -19,6 +21,7 @@ from core.ActiveLifecycleAudioRecognizer import (
     ACTIVE_LIFECYCLE_CLASSIFICATION_UNCERTAIN,
     ACTIVE_LIFECYCLE_CONFIRMATION_CANCELLED,
     ACTIVE_LIFECYCLE_CONFIRMATION_CONFIRMED,
+    ActiveLifecycleBackendCleanupError,
     ActiveLifecycleAudioRecognitionResult,
     ActiveLifecycleConfirmationResult,
 )
@@ -88,6 +91,48 @@ class BlockingHighLifecycleRecognizer:
     def close(self):
         self.closed = True
         self.release.set()
+
+
+class RetryableCleanupRecognizer(QueuedLifecycleRecognizer):
+    def __init__(self, *, silent_unreaped_result: bool = False) -> None:
+        super().__init__()
+        self.close_count = 0
+        self.silent_unreaped_result = silent_unreaped_result
+        self.worker_diagnostics = {
+            "worker_pid": 4123,
+            "worker_start_count": 1,
+            "worker_alive": True,
+            "worker_reaped": False,
+        }
+
+    def close(self):
+        self.close_count += 1
+        if self.close_count == 1:
+            if self.silent_unreaped_result:
+                return
+            raise ActiveLifecycleBackendCleanupError(
+                "vosk_lifecycle_close_cleanup_incomplete"
+            )
+        self.worker_diagnostics = {
+            **self.worker_diagnostics,
+            "worker_alive": False,
+            "worker_reaped": True,
+        }
+        self.closed = True
+
+
+class ReleaseAndCloseCleanupRecognizer(RetryableCleanupRecognizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release_count = 0
+
+    def release_active_resources(self, *, reason):
+        self.release_count += 1
+        self.release_reasons.append(reason)
+        if self.release_count == 1:
+            raise ActiveLifecycleBackendCleanupError(
+                "vosk_lifecycle_release_cleanup_incomplete"
+            )
 
 
 def _write_wav(path: Path) -> bytes:
@@ -635,6 +680,78 @@ def test_runtime_adapter_resource_release_resets_and_close_releases_recognizer(t
     assert recognizer.release_reasons == ["active_transport_resources_released"]
     adapter.close()
     assert recognizer.closed is True
+
+
+def test_controller_close_propagates_cleanup_error_and_remains_retryable():
+    state = {"lifecycle": "ACTIVE", "session": "session-1"}
+    recognizer = RetryableCleanupRecognizer()
+    controller = _controller(recognizer, state)
+
+    with pytest.raises(
+        ActiveLifecycleBackendCleanupError,
+        match="vosk_lifecycle_close_cleanup_incomplete",
+    ):
+        controller.close()
+
+    controller.close()
+    controller.close()
+
+    assert recognizer.close_count == 2
+    assert recognizer.closed is True
+    assert recognizer.worker_diagnostics["worker_reaped"] is True
+
+
+def test_controller_close_rejects_silent_unreaped_worker_and_can_retry():
+    state = {"lifecycle": "ACTIVE", "session": "session-1"}
+    recognizer = RetryableCleanupRecognizer(silent_unreaped_result=True)
+    controller = _controller(recognizer, state)
+
+    with pytest.raises(
+        ActiveLifecycleBackendCleanupError,
+        match="active_lifecycle_worker_cleanup_incomplete",
+    ):
+        controller.close()
+
+    controller.close()
+
+    assert recognizer.close_count == 2
+    assert recognizer.worker_diagnostics["worker_alive"] is False
+    assert recognizer.worker_diagnostics["worker_reaped"] is True
+
+
+def test_runtime_adapter_close_attempts_release_and_close_then_retries_cleanup(
+    tmp_path,
+):
+    state = {"lifecycle": "ACTIVE", "session": "session-1"}
+    recognizer = ReleaseAndCloseCleanupRecognizer()
+    controller = _controller(recognizer, state)
+    pipeline = FinalizedAudioPipeline()
+    adapter = SingleTurnPipelineRuntimeInputAdapter(
+        pipeline=pipeline,
+        base_request=_request(tmp_path),
+        session_id_provider=lambda: state["session"],
+        lifecycle_state_provider=lambda: state["lifecycle"],
+        active_lifecycle_audio_controller=controller,
+    )
+
+    with pytest.raises(
+        ActiveLifecycleBackendCleanupError,
+        match="vosk_lifecycle_close_cleanup_incomplete",
+    ):
+        adapter.close()
+
+    assert recognizer.release_count == 1
+    assert recognizer.close_count == 1
+    assert adapter.wait_for_input(0.1).status == "end_of_input"
+
+    adapter.close()
+    adapter.close()
+
+    assert recognizer.release_count == 2
+    assert recognizer.close_count == 2
+    assert recognizer.closed is True
+    assert pipeline.stop_count == 2
+    assert adapter.voice_io_gate.snapshot()["capture_active"] is False
 
 
 def test_adapter_close_during_lifecycle_audio_cannot_export_shutdown_input(tmp_path):

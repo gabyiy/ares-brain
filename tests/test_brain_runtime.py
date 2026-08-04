@@ -741,6 +741,50 @@ def test_goodbye_after_ordinary_command_processing_stays_serialized_and_complete
     assert calls == ["ordinary command"]
 
 
+def test_goodbye_waits_for_delayed_response_output_then_completes():
+    entered = ThreadEvent()
+    release = ThreadEvent()
+
+    class DelayedOutput(CollectingRuntimeOutputAdapter):
+        def write(self, message):
+            if message.category == "brain_response":
+                entered.set()
+                assert release.wait(2.0)
+            return super().write(message)
+
+    runtime, _ = _runtime(
+        handler=lambda _text: "ordinary response",
+        output=DelayedOutput(),
+    )
+    _start_active(runtime)
+    results = {}
+    ordinary = Thread(
+        target=lambda: results.setdefault(
+            "ordinary", runtime.handle_text("ordinary command")
+        )
+    )
+    standby = Thread(
+        target=lambda: results.setdefault(
+            "standby", runtime.handle_text("goodbye Ares")
+        )
+    )
+
+    ordinary.start()
+    assert entered.wait(1.0)
+    standby.start()
+    time.sleep(0.05)
+    assert standby.is_alive()
+    release.set()
+    ordinary.join(2.0)
+    standby.join(2.0)
+
+    assert ordinary.is_alive() is False
+    assert standby.is_alive() is False
+    assert results["ordinary"].status == "command_completed"
+    assert results["standby"].status == "standby_entered"
+    assert runtime.session_manager.state == BRAIN_STANDBY
+
+
 def test_event_history_failure_cannot_block_spoken_standby_transition():
     class LockedHistory:
         def add(self, _event, _decision):
@@ -754,6 +798,23 @@ def test_event_history_failure_cannot_block_spoken_standby_transition():
     assert result.status == "standby_entered"
     assert result.data["core_service_bypassed"] is True
     assert runtime.session_manager.state == BRAIN_STANDBY
+    assert runtime.session_manager.session_id == ""
+    assert runtime.event_history_failures()
+
+
+def test_event_history_failure_cannot_block_spoken_shutdown_transition():
+    class LockedHistory:
+        def add(self, _event, _decision):
+            raise OSError("event history store locked")
+
+    runtime, _ = _runtime(event_history_store=LockedHistory())
+    _start_active(runtime)
+
+    result = runtime.handle_text("shutdown Ares")
+
+    assert result.status == "stopped"
+    assert result.data["core_service_bypassed"] is True
+    assert runtime.session_manager.state == BRAIN_STOPPED
     assert runtime.session_manager.session_id == ""
     assert runtime.event_history_failures()
 
@@ -1118,6 +1179,38 @@ def test_active_transcription_timeout_is_nonterminal_and_preserves_retryable_ses
     assert result.status == "input_timeout"
     assert runtime.session_manager.state == BRAIN_ACTIVE
     assert runtime.session_manager.session_id == session_id
+    assert routed == []
+
+
+def test_goodbye_after_failed_transcription_returns_to_standby_without_core_route():
+    inputs = QueuedRuntimeInputAdapter()
+    routed = []
+    runtime, _ = _runtime(
+        inputs=inputs,
+        handler=lambda text: routed.append(text) or "unexpected",
+    )
+    _start_active(runtime)
+    inputs.push(
+        RuntimeInputResult(
+            status="timeout",
+            metadata={
+                "transcription_failure_type": "transcription_timeout",
+                "retryable": True,
+                "runtime_terminal": False,
+            },
+        )
+    )
+    timed_out = runtime.poll_once()
+    inputs.push("goodbye Ares")
+
+    returned = runtime.poll_once()
+
+    assert timed_out.status == "input_timeout"
+    assert returned.status == "standby_entered"
+    assert returned.command_category == "standby"
+    assert returned.data["core_service_bypassed"] is True
+    assert runtime.session_manager.state == BRAIN_STANDBY
+    assert runtime.session_manager.session_id == ""
     assert routed == []
 
 

@@ -5,7 +5,7 @@ from math import isfinite
 from pathlib import Path
 from threading import RLock
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 from uuid import uuid4
 
 from core.ActiveLifecycleAudioRecognizer import (
@@ -23,6 +23,7 @@ from core.ActiveLifecycleAudioRecognizer import (
     DEFAULT_SHUTDOWN_MEDIUM_CONFIDENCE,
     DEFAULT_STANDBY_HIGH_CONFIDENCE,
     DEFAULT_STANDBY_MEDIUM_CONFIDENCE,
+    ActiveLifecycleBackendCleanupError,
     ActiveLifecycleAudioRecognizer,
 )
 from core.BrainRuntimeAdapters import (
@@ -337,16 +338,24 @@ class ActiveLifecycleAudioTurnController:
         with self._lock:
             if self._closed:
                 return
-            self._closed = True
             self._pending = None
-        close = getattr(self.recognizer, "close", None)
-        if not callable(close):
-            close = getattr(getattr(self.recognizer, "backend", None), "close", None)
-        if callable(close):
-            try:
+            close = getattr(self.recognizer, "close", None)
+            if not callable(close):
+                close = getattr(
+                    getattr(self.recognizer, "backend", None),
+                    "close",
+                    None,
+                )
+            if callable(close):
                 close()
-            except (OSError, RuntimeError, TypeError, ValueError):
-                pass
+            if _active_lifecycle_worker_cleanup_incomplete(self.recognizer):
+                # A backend that returns without reaping its child has not
+                # closed. Keep this controller retryable so a later cleanup
+                # pass can use the retained process handle.
+                raise ActiveLifecycleBackendCleanupError(
+                    "active_lifecycle_worker_cleanup_incomplete"
+                )
+            self._closed = True
 
     def _recognize_confirmation(
         self,
@@ -656,6 +665,29 @@ def _active_lifecycle_recognition_payload(recognition: Any) -> dict[str, Any]:
     }
 
 
+def _active_lifecycle_worker_cleanup_incomplete(recognizer: Any) -> bool:
+    """Return true only when a started lifecycle child is not confirmed reaped."""
+
+    diagnostics = getattr(recognizer, "worker_diagnostics", None)
+    if not isinstance(diagnostics, Mapping):
+        diagnostics = getattr(
+            getattr(recognizer, "backend", None),
+            "worker_diagnostics",
+            None,
+        )
+    if not isinstance(diagnostics, Mapping):
+        return False
+    worker_started = bool(
+        diagnostics.get("worker_pid")
+        or int(diagnostics.get("worker_start_count", 0) or 0) > 0
+    )
+    if not worker_started:
+        return False
+    return bool(diagnostics.get("worker_alive", False)) or not bool(
+        diagnostics.get("worker_reaped", False)
+    )
+
+
 def _active_lifecycle_confirmation_payload(confirmation: Any) -> dict[str, Any]:
     return {
         "classification": "uncertain",
@@ -952,6 +984,7 @@ class SingleTurnPipelineRuntimeInputAdapter:
         self._lock = RLock()
         self._current_token: Optional[CancellationToken] = None
         self._closed = False
+        self._close_cleanup_complete = False
         self.last_result: Any = None
         self.last_diagnostics: Optional[ActiveCommandLocalDiagnostics] = None
         self.capture_count = 0
@@ -1496,12 +1529,35 @@ class SingleTurnPipelineRuntimeInputAdapter:
 
     def close(self) -> None:
         with self._lock:
-            if self._closed:
+            if self._closed and self._close_cleanup_complete:
                 return
             self._closed = True
-        self.release_active_resources()
-        if self.active_lifecycle_audio_controller is not None:
-            self.active_lifecycle_audio_controller.close()
+        release_error: Optional[BaseException] = None
+        controller_close_error: Optional[BaseException] = None
+        try:
+            self.release_active_resources()
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            release_error = error
+        controller = self.active_lifecycle_audio_controller
+        if controller is not None:
+            try:
+                controller.close()
+            except (OSError, RuntimeError, TypeError, ValueError) as error:
+                controller_close_error = error
+
+        if controller_close_error is not None:
+            raise controller_close_error
+        if release_error is not None and (
+            controller is None
+            or not isinstance(release_error, ActiveLifecycleBackendCleanupError)
+        ):
+            raise release_error
+
+        # Only a typed release-time worker error may be recovered by the
+        # mandatory successful full controller close above. Unrelated cleanup
+        # exceptions are never reclassified or swallowed.
+        with self._lock:
+            self._close_cleanup_complete = True
 
 
 class SingleTurnPipelineRuntimeOutputAdapter:

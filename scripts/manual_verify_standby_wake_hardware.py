@@ -4,9 +4,12 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import math
+import multiprocessing
 from pathlib import Path
+import signal
 import sys
 from tempfile import TemporaryDirectory
+from threading import Event as ThreadEvent, Thread, current_thread, main_thread
 import time
 from typing import Any, Callable, Optional, Sequence
 
@@ -67,14 +70,36 @@ STAGES = (
     HardwareTestStage("F", "Say 'Ares'.", "ACTIVE with a new session"),
     HardwareTestStage(
         "G",
-        "Say 'Ares, shut down'.",
+        "Say 'shutdown Ares'.",
         "one explicit shutdown transition and clean STOPPED state",
     ),
 )
 
 MAX_ATTEMPTS_PER_TEST = 3
 LIFECYCLE_STAGE_LABELS = ("C", "E", "F", "G")
+ACTIVE_LIFECYCLE_STAGE_LABELS = ("E", "G")
 EXPLICIT_SHUTDOWN_REASON = "explicit_shutdown_command"
+DEFAULT_HARDWARE_STAGE_TIMEOUT_SECONDS = 45.0
+HARDWARE_STAGE_CLEANUP_GRACE_SECONDS = 3.0
+LIFECYCLE_WORKER_PROCESS_NAME = "ares-active-lifecycle-vosk"
+
+
+class HardwareStageTimeout(TimeoutError):
+    """One owner-prompt stage exceeded the verifier's outer deadline."""
+
+
+@dataclass(frozen=True)
+class HardwareStageExecution:
+    value: Any
+    started_at: str
+    completed_at: str
+    elapsed_seconds: float
+
+
+HardwareStageExecutor = Callable[
+    [Callable[[], Any], float, Callable[[], None]],
+    Any,
+]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -104,6 +129,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.6,
         help="Prompt settling delay before each reliability capture (0.1-2.0 seconds).",
     )
+    parser.add_argument(
+        "--hardware-stage-timeout-seconds",
+        type=float,
+        default=DEFAULT_HARDWARE_STAGE_TIMEOUT_SECONDS,
+        help=(
+            "Hard outer wall-clock bound for each owner-prompt stage "
+            "(10-120 seconds)."
+        ),
+    )
     return parser
 
 
@@ -112,6 +146,8 @@ def run_hardware_verification(
     *,
     output_func: Callable[[str], None] = print,
     runtime_factory: Optional[Callable[..., tuple[Any, Any, Any]]] = None,
+    stage_executor: Optional[HardwareStageExecutor] = None,
+    monotonic_clock: Callable[[], float] = time.monotonic,
 ) -> int:
     runtime_holder: dict[str, Any] = {}
     try:
@@ -128,11 +164,14 @@ def run_hardware_verification(
                         runtime_factory=runtime_factory,
                         support_directory=support_directory,
                         runtime_holder=runtime_holder,
+                        stage_executor=stage_executor,
+                        monotonic_clock=monotonic_clock,
                     )
     except standby_voice.RuntimeTerminationRequested as error:
         runtime = runtime_holder.get("runtime")
         if runtime is not None:
-            runtime.shutdown(reason=f"signal_{error.signum}_during_preflight")
+            runtime.shutdown(reason="owner_cancellation")
+        output_func("ARES runtime terminal reason: owner_cancellation.")
         output_func(
             f"Verification terminated by signal {error.signum}; verifier lock released."
         )
@@ -140,8 +179,11 @@ def run_hardware_verification(
     except KeyboardInterrupt:
         runtime = runtime_holder.get("runtime")
         if runtime is not None:
-            runtime.shutdown(reason="keyboard_interrupt_during_preflight")
-        output_func("Verification cancelled during preflight; resources and locks cleaned up.")
+            runtime.shutdown(reason="owner_cancellation")
+        output_func("ARES runtime terminal reason: owner_cancellation.")
+        output_func(
+            "Verification cancelled during preflight; resources and locks cleaned up."
+        )
         return 130
 
 
@@ -152,6 +194,8 @@ def _run_hardware_verification_locked(
     runtime_factory: Optional[Callable[..., tuple[Any, Any, Any]]] = None,
     support_directory: Optional[Path] = None,
     runtime_holder: Optional[dict[str, Any]] = None,
+    stage_executor: Optional[HardwareStageExecutor] = None,
+    monotonic_clock: Callable[[], float] = time.monotonic,
 ) -> int:
     args = build_parser().parse_args(argv)
     if (
@@ -189,6 +233,16 @@ def _run_hardware_verification_locked(
             "Configuration error: --wake-prompt-ready-delay-seconds must be between 0.1 and 2.0."
         )
         return 2
+    if (
+        isinstance(args.hardware_stage_timeout_seconds, bool)
+        or not math.isfinite(args.hardware_stage_timeout_seconds)
+        or not 10.0 <= args.hardware_stage_timeout_seconds <= 120.0
+    ):
+        output_func(
+            "Configuration error: --hardware-stage-timeout-seconds must be "
+            "between 10 and 120."
+        )
+        return 2
     reliability_attempts = args.wake_reliability_attempts
     if args.verification_mode == "reliability" and reliability_attempts == 0:
         reliability_attempts = 10
@@ -219,6 +273,7 @@ def _run_hardware_verification_locked(
             return 3
     try:
         factory = runtime_factory or standby_voice.create_runtime
+        runtime_output_func = _timestamped_runtime_output(output_func)
         if runtime_factory is None:
             support = support_directory or Path(".")
             verifier_history = EventHistoryStore(
@@ -227,11 +282,14 @@ def _run_hardware_verification_locked(
             )
             runtime, pipeline, request = factory(
                 args,
-                output_func=output_func,
+                output_func=runtime_output_func,
                 event_history_store=verifier_history,
             )
         else:
-            runtime, pipeline, request = factory(args, output_func=output_func)
+            runtime, pipeline, request = factory(
+                args,
+                output_func=runtime_output_func,
+            )
         if runtime_holder is not None:
             runtime_holder["runtime"] = runtime
     except (OSError, RuntimeError, TypeError, ValueError) as error:
@@ -288,6 +346,10 @@ def _run_hardware_verification_locked(
 
     output_func("ARES bounded standby-wake hardware verification")
     output_func(f"Attempts per test: {args.attempts_per_test}")
+    output_func(
+        "Hard outer timeout per prompted stage: "
+        f"{args.hardware_stage_timeout_seconds:.1f} seconds."
+    )
     output_func("Owner microphone audio is retained only when explicitly requested and never replayed.")
     started = runtime.start()
     if not started.success:
@@ -299,6 +361,7 @@ def _run_hardware_verification_locked(
     wake_transcripts: list[str] = []
     active_command_transcripts: list[str] = []
     explicit_shutdown_count = 0
+    lifecycle_worker_request_ids: set[str] = set()
     cleanup_done = False
 
     def shutdown_once(reason: str) -> None:
@@ -321,7 +384,35 @@ def _run_hardware_verification_locked(
             passed = False
             for attempt in range(1, args.attempts_per_test + 1):
                 before = runtime.snapshot()
-                result = runtime.poll_once()
+                output_func(
+                    f"[{_hardware_timestamp()}] Bounded stage {stage.label} started: "
+                    f"deadline={args.hardware_stage_timeout_seconds:.1f}s"
+                )
+                try:
+                    execution = _execute_hardware_stage(
+                        runtime.poll_once,
+                        timeout_seconds=args.hardware_stage_timeout_seconds,
+                        on_timeout=lambda: standby_voice._cancel_foreground_voice_resources(
+                            runtime,
+                            pipeline,
+                            reason=f"hardware_stage_{stage.label}_timeout",
+                        ),
+                        executor=stage_executor,
+                        monotonic_clock=monotonic_clock,
+                    )
+                except HardwareStageTimeout:
+                    output_func(
+                        f"[{_hardware_timestamp()}] Bounded stage {stage.label} "
+                        "timed out; spoken lifecycle success was not recorded."
+                    )
+                    shutdown_once(f"hardware_stage_{stage.label}_timeout")
+                    _report_final_lifecycle_worker_state(output_func, runtime)
+                    return 1
+                result = execution.value
+                output_func(
+                    f"[{execution.completed_at}] Bounded stage {stage.label} "
+                    f"completed: elapsed={execution.elapsed_seconds:.3f}s"
+                )
                 snapshot = runtime.snapshot()
                 standby_attempt = before.current_lifecycle_state == BRAIN_STANDBY
                 wake_attempt = (
@@ -454,6 +545,28 @@ def _run_hardware_verification_locked(
                     first_session,
                     explicit_shutdown_count=explicit_shutdown_count,
                 )
+                if passed and stage.label in ACTIVE_LIFECYCLE_STAGE_LABELS:
+                    worker_transaction = _active_lifecycle_worker_diagnostics(runtime)
+                    transaction_error = _lifecycle_worker_transaction_error(
+                        worker_transaction
+                    )
+                    worker_request_id = str(
+                        worker_transaction.get("worker_request_id") or ""
+                    )
+                    if (
+                        not transaction_error
+                        and worker_request_id in lifecycle_worker_request_ids
+                    ):
+                        transaction_error = "worker_request_id_reused"
+                    if transaction_error:
+                        output_func(
+                            "  TEST FRAMEWORK FAILURE: incomplete constrained "
+                            "lifecycle worker transaction: " + transaction_error
+                        )
+                        shutdown_once("lifecycle_worker_transaction_incomplete")
+                        _report_final_lifecycle_worker_state(output_func, runtime)
+                        return 1
+                    lifecycle_worker_request_ids.add(worker_request_id)
                 if passed:
                     if stage.label == "E":
                         output_func(
@@ -489,6 +602,7 @@ def _run_hardware_verification_locked(
                         active_command_transcripts,
                     )
                 shutdown_once(f"hardware_verification_{stage.label}_failed")
+                _report_final_lifecycle_worker_state(output_func, runtime)
                 output_func("Cleanup completed; verification did not pass.")
                 return 1
             if stage.label == "B" and reliability_attempts:
@@ -507,10 +621,13 @@ def _run_hardware_verification_locked(
                 )
                 if not reliable:
                     shutdown_once("wake_reliability_target_not_met")
+                    _report_final_lifecycle_worker_state(output_func, runtime)
                     output_func("Cleanup completed; wake reliability target was not met.")
                     return 1
         if args.verification_mode == "reliability":
             shutdown_once("wake_reliability_verification_complete")
+            if not _report_final_lifecycle_worker_state(output_func, runtime):
+                return 1
             output_func("Wake reliability verification completed; adapters cleaned up.")
             return 0
         if explicit_shutdown_count != 1:
@@ -519,6 +636,7 @@ def _run_hardware_verification_locked(
                 f"shutdown, observed {explicit_shutdown_count}."
             )
             shutdown_once("hardware_verification_shutdown_count_failed")
+            _report_final_lifecycle_worker_state(output_func, runtime)
             return 1
         if args.diagnostic_wake or args.verification_mode == "lifecycle":
             _print_transcript_summary(
@@ -526,20 +644,30 @@ def _run_hardware_verification_locked(
                 wake_transcripts,
                 active_command_transcripts,
             )
+        if not _report_final_lifecycle_worker_state(output_func, runtime):
+            shutdown_once("lifecycle_worker_orphan_detected")
+            return 1
         output_func("All bounded hardware stages passed; adapters cleaned up.")
         return 0
     except KeyboardInterrupt:
-        shutdown_once("keyboard_interrupt")
-        output_func("Verification cancelled; cleanup completed without replaying captured audio.")
+        shutdown_once("owner_cancellation")
+        output_func("ARES runtime terminal reason: owner_cancellation.")
+        _report_final_lifecycle_worker_state(output_func, runtime)
+        output_func(
+            "Verification cancelled; cleanup completed without replaying captured audio."
+        )
         return 130
     except standby_voice.RuntimeTerminationRequested as error:
         shutdown_once(f"signal_{error.signum}")
+        output_func("ARES runtime terminal reason: owner_cancellation.")
+        _report_final_lifecycle_worker_state(output_func, runtime)
         output_func(
             f"Verification received signal {error.signum}; resources and locks cleaned up."
         )
         return 128 + error.signum
     except (OSError, RuntimeError, TimeoutError, TypeError, ValueError) as error:
         shutdown_once("hardware_verifier_error")
+        _report_final_lifecycle_worker_state(output_func, runtime)
         output_func(
             "Verification failed and cleaned up: "
             f"{error.__class__.__name__}:{str(error)[:160]}"
@@ -636,6 +764,181 @@ def _hardware_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
         "+00:00", "Z"
     )
+
+
+def _timestamped_runtime_output(
+    output_func: Callable[[str], None],
+) -> Callable[[str], None]:
+    """Timestamp only live capture/Whisper progress emitted by production adapters."""
+
+    exact_labels = {
+        "Active microphone capture started": "Active microphone capture started",
+        "Command captured": "Active microphone capture completed (Command captured)",
+        "Transcribing command": "Whisper stage started (Transcribing command)",
+    }
+    prefixes = ("Whisper process started:", "Whisper completed:")
+
+    def emit(line: str) -> None:
+        text = str(line or "")
+        if text.startswith("["):
+            output_func(text)
+            return
+        label = exact_labels.get(text)
+        if label is not None:
+            output_func(f"[{_hardware_timestamp()}] {label}")
+            return
+        if text.startswith(prefixes):
+            output_func(f"[{_hardware_timestamp()}] {text}")
+            return
+        output_func(text)
+
+    return emit
+
+
+def _execute_hardware_stage(
+    operation: Callable[[], Any],
+    *,
+    timeout_seconds: float,
+    on_timeout: Callable[[], None],
+    executor: Optional[HardwareStageExecutor],
+    monotonic_clock: Callable[[], float],
+) -> HardwareStageExecution:
+    timeout = float(timeout_seconds)
+    started_at = _hardware_timestamp()
+    started = float(monotonic_clock())
+    runner = executor or _default_hardware_stage_executor
+    value = runner(operation, timeout, on_timeout)
+    elapsed = max(0.0, float(monotonic_clock()) - started)
+    if elapsed > timeout:
+        on_timeout()
+        raise HardwareStageTimeout(
+            f"hardware_stage_timeout:{elapsed:.3f}>{timeout:.3f}"
+        )
+    return HardwareStageExecution(
+        value=value,
+        started_at=started_at,
+        completed_at=_hardware_timestamp(),
+        elapsed_seconds=elapsed,
+    )
+
+
+def _default_hardware_stage_executor(
+    operation: Callable[[], Any],
+    timeout_seconds: float,
+    on_timeout: Callable[[], None],
+) -> Any:
+    """Hard-bound a Pi stage; use a cancellable thread fallback off POSIX."""
+
+    sigalrm = getattr(signal, "SIGALRM", None)
+    setitimer = getattr(signal, "setitimer", None)
+    itimer_real = getattr(signal, "ITIMER_REAL", None)
+    if (
+        sigalrm is not None
+        and callable(setitimer)
+        and itimer_real is not None
+        and current_thread() is main_thread()
+    ):
+        previous_handler = signal.getsignal(sigalrm)
+
+        def deadline_handler(_signum: int, _frame: Any) -> None:
+            on_timeout()
+            raise HardwareStageTimeout(
+                f"hardware_stage_timeout:{float(timeout_seconds):.3f}"
+            )
+
+        signal.signal(sigalrm, deadline_handler)
+        setitimer(itimer_real, max(0.001, float(timeout_seconds)))
+        try:
+            return operation()
+        finally:
+            setitimer(itimer_real, 0.0)
+            signal.signal(sigalrm, previous_handler)
+
+    completed = ThreadEvent()
+    outcome: dict[str, Any] = {}
+
+    def invoke() -> None:
+        try:
+            outcome["value"] = operation()
+        except BaseException as error:  # propagated unchanged to the verifier owner
+            outcome["error"] = error
+        finally:
+            completed.set()
+
+    worker = Thread(
+        target=invoke,
+        name="ares-hardware-verifier-stage",
+        daemon=True,
+    )
+    worker.start()
+    if not completed.wait(max(0.001, float(timeout_seconds))):
+        on_timeout()
+        completed.wait(HARDWARE_STAGE_CLEANUP_GRACE_SECONDS)
+        raise HardwareStageTimeout(
+            f"hardware_stage_timeout:{float(timeout_seconds):.3f}"
+        )
+    error = outcome.get("error")
+    if error is not None:
+        raise error
+    return outcome.get("value")
+
+
+def _lifecycle_worker_transaction_error(worker: dict[str, Any]) -> str:
+    if bool(worker.get("worker_alive")):
+        return "worker_still_alive"
+    if not bool(worker.get("worker_reaped")):
+        return "worker_not_reaped"
+    if not int(worker.get("worker_pid") or 0):
+        return "worker_pid_absent"
+    required = (
+        "worker_request_id",
+        "worker_request_sent_at",
+        "worker_request_received_at",
+        "worker_result_received_at",
+        "worker_stop_requested_at",
+        "worker_joined_at",
+    )
+    for field in required:
+        if not str(worker.get(field) or "").strip():
+            return f"{field}_absent"
+    if not bool(worker.get("worker_stop_acknowledged")):
+        return "worker_stop_not_acknowledged"
+    timestamps = [str(worker.get(field) or "") for field in required[1:]]
+    if timestamps != sorted(timestamps):
+        return "worker_timestamps_out_of_order"
+    return ""
+
+
+def _named_lifecycle_worker_pids() -> tuple[int, ...]:
+    pids: list[int] = []
+    for process in multiprocessing.active_children():
+        try:
+            if process.name == LIFECYCLE_WORKER_PROCESS_NAME and process.is_alive():
+                pids.append(int(process.pid or 0))
+        except (AssertionError, OSError, ValueError):
+            # Unknown liveness is unsafe for a verifier success claim.
+            pids.append(int(getattr(process, "pid", 0) or 0))
+    return tuple(pid for pid in pids if pid)
+
+
+def _report_final_lifecycle_worker_state(
+    output_func: Callable[[str], None],
+    runtime: Any,
+) -> bool:
+    worker = _active_lifecycle_worker_diagnostics(runtime)
+    diagnostic_live = bool(worker.get("worker_alive")) or not bool(
+        worker.get("worker_reaped", True)
+    )
+    named_pids = _named_lifecycle_worker_pids()
+    clean = not diagnostic_live and not named_pids
+    output_func(
+        f"[{_hardware_timestamp()}] Final lifecycle worker check: "
+        f"{'clear' if clean else 'FAILED'}; "
+        f"diagnostic_alive={'yes' if diagnostic_live else 'no'}; "
+        "named_active_pids="
+        + (",".join(str(pid) for pid in named_pids) if named_pids else "none")
+    )
+    return clean
 
 
 def _run_wake_reliability(
@@ -1625,6 +1928,14 @@ def _print_recognition_summary(
             f"elapsed={float(getattr(diagnostics, 'whisper_processing_duration_seconds', 0.0)):.3f}s; "
             f"status={getattr(diagnostics, 'transcription_status', '') or 'unknown'}"
         )
+        if (
+            str(getattr(diagnostics, "transcription_status", "") or "")
+            == "bypassed_by_finalized_audio_decision"
+        ):
+            output_func(
+                f"[{_hardware_timestamp()}] Whisper skipped: constrained "
+                "lifecycle audio authorized the complete command."
+            )
         output_func(
             "  Active routing: "
             f"result={getattr(result, 'status', '') or 'unknown'}; "

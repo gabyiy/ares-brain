@@ -9,7 +9,10 @@ import multiprocessing
 import os
 from pathlib import Path
 import re
+import select
 import signal
+import socket
+import struct
 from threading import Lock, RLock
 import time
 from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
@@ -31,6 +34,13 @@ ACTIVE_LIFECYCLE_CONFIRMATION_UNMATCHED = "unmatched"
 
 VOSK_ACTIVE_LIFECYCLE_BACKEND = "vosk_active_lifecycle_constrained_grammar"
 VOSK_LIFECYCLE_WORKER_PROTOCOL = "ares.active_lifecycle_worker v1"
+
+_VOSK_LIFECYCLE_MESSAGE_HEADER_BYTES = 4
+_VOSK_LIFECYCLE_MAX_MESSAGE_BYTES = 32 * 1024
+_VOSK_LIFECYCLE_WORKER_READY_SEND_SECONDS = 1.0
+_VOSK_LIFECYCLE_WORKER_REQUEST_WAIT_SECONDS = 10.0
+_VOSK_LIFECYCLE_WORKER_RESULT_SEND_SECONDS = 1.0
+_VOSK_LIFECYCLE_WORKER_STOP_WAIT_SECONDS = 1.0
 
 DEFAULT_STANDBY_HIGH_CONFIDENCE = 0.70
 DEFAULT_STANDBY_MEDIUM_CONFIDENCE = 0.50
@@ -889,6 +899,196 @@ class VoskLifecycleGrammarBackend:
             return self._model, module
 
 
+class _BoundedLifecycleSocketTransport:
+    """Deadline-bound, size-capped JSON messages over one private socket.
+
+    ``multiprocessing.Connection.poll()`` only proves that at least part of a
+    framed pickle is readable; the following ``recv()`` can still block if the
+    peer stalls after a partial write.  This transport owns framing directly so
+    every byte read and written is governed by the caller's monotonic deadline.
+    The protocol is private and accepts JSON objects only.
+    """
+
+    def __init__(self, transport_socket: socket.socket) -> None:
+        if not isinstance(transport_socket, socket.socket):
+            raise TypeError("lifecycle worker transport must be a socket")
+        self._socket = transport_socket
+        self._socket.setblocking(False)
+        self._send_lock = Lock()
+        self._receive_lock = Lock()
+        self._receive_buffer = bytearray()
+        self._closed = False
+
+    def send_message(
+        self,
+        message: Mapping[str, Any],
+        *,
+        deadline: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if not isinstance(message, Mapping):
+            raise TypeError("lifecycle worker message must be a mapping")
+        try:
+            payload = json.dumps(
+                dict(message),
+                ensure_ascii=True,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise ValueError("lifecycle worker message is not JSON-safe") from error
+        if not 0 < len(payload) <= _VOSK_LIFECYCLE_MAX_MESSAGE_BYTES:
+            raise ValueError("lifecycle worker message exceeds bounded size")
+        frame = struct.pack("!I", len(payload)) + payload
+        remaining = max(0.0, float(deadline) - float(clock()))
+        if remaining <= 0.0 or not self._send_lock.acquire(timeout=remaining):
+            raise TimeoutError("vosk_lifecycle_worker_send_timeout")
+        try:
+            view = memoryview(frame)
+            sent_total = 0
+            while sent_total < len(frame):
+                self._require_open()
+                remaining = max(0.0, float(deadline) - float(clock()))
+                if remaining <= 0.0:
+                    raise TimeoutError("vosk_lifecycle_worker_send_timeout")
+                try:
+                    sent = self._socket.send(view[sent_total:])
+                except (BlockingIOError, InterruptedError):
+                    sent = -1
+                if sent > 0:
+                    sent_total += sent
+                    continue
+                if sent == 0:
+                    raise BrokenPipeError("lifecycle worker socket closed during send")
+                _wait_for_lifecycle_socket(
+                    self._socket,
+                    readable=False,
+                    deadline=deadline,
+                    clock=clock,
+                )
+        finally:
+            self._send_lock.release()
+
+    def receive_message(
+        self,
+        *,
+        deadline: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> Mapping[str, Any]:
+        remaining = max(0.0, float(deadline) - float(clock()))
+        if remaining <= 0.0 or not self._receive_lock.acquire(timeout=remaining):
+            raise TimeoutError("vosk_lifecycle_worker_receive_timeout")
+        try:
+            while True:
+                message = self._pop_buffered_message()
+                if message is not None:
+                    return message
+                self._require_open()
+                remaining = max(0.0, float(deadline) - float(clock()))
+                if remaining <= 0.0:
+                    raise TimeoutError("vosk_lifecycle_worker_receive_timeout")
+                try:
+                    chunk = self._socket.recv(4096)
+                except (ConnectionAbortedError, ConnectionResetError) as error:
+                    raise EOFError(
+                        "lifecycle worker socket closed unexpectedly"
+                    ) from error
+                except (BlockingIOError, InterruptedError):
+                    chunk = None
+                if chunk:
+                    self._receive_buffer.extend(bytes(chunk))
+                    if len(self._receive_buffer) > (
+                        _VOSK_LIFECYCLE_MAX_MESSAGE_BYTES
+                        + _VOSK_LIFECYCLE_MESSAGE_HEADER_BYTES
+                    ):
+                        raise ValueError("lifecycle worker receive buffer exceeded limit")
+                    continue
+                if chunk == b"":
+                    reason = (
+                        "lifecycle worker socket closed during partial message"
+                        if self._receive_buffer
+                        else "lifecycle worker socket reached EOF"
+                    )
+                    raise EOFError(reason)
+                _wait_for_lifecycle_socket(
+                    self._socket,
+                    readable=True,
+                    deadline=deadline,
+                    clock=clock,
+                )
+        finally:
+            self._receive_lock.release()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self._socket.close()
+        except OSError:
+            pass
+
+    def _pop_buffered_message(self) -> Optional[Mapping[str, Any]]:
+        if len(self._receive_buffer) < _VOSK_LIFECYCLE_MESSAGE_HEADER_BYTES:
+            return None
+        payload_size = struct.unpack(
+            "!I",
+            self._receive_buffer[:_VOSK_LIFECYCLE_MESSAGE_HEADER_BYTES],
+        )[0]
+        if not 0 < payload_size <= _VOSK_LIFECYCLE_MAX_MESSAGE_BYTES:
+            raise ValueError("lifecycle worker message length is invalid")
+        frame_size = _VOSK_LIFECYCLE_MESSAGE_HEADER_BYTES + payload_size
+        if len(self._receive_buffer) < frame_size:
+            return None
+        payload = bytes(
+            self._receive_buffer[
+                _VOSK_LIFECYCLE_MESSAGE_HEADER_BYTES:frame_size
+            ]
+        )
+        del self._receive_buffer[:frame_size]
+        try:
+            value = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("lifecycle worker message JSON is invalid") from error
+        if not isinstance(value, Mapping):
+            raise ValueError("lifecycle worker message must decode to a mapping")
+        return value
+
+    def _require_open(self) -> None:
+        if self._closed or self._socket.fileno() < 0:
+            raise OSError("lifecycle worker transport is closed")
+
+
+def _wait_for_lifecycle_socket(
+    transport_socket: socket.socket,
+    *,
+    readable: bool,
+    deadline: float,
+    clock: Callable[[], float],
+) -> None:
+    remaining = max(0.0, float(deadline) - float(clock()))
+    if remaining <= 0.0:
+        raise TimeoutError("vosk_lifecycle_worker_transport_timeout")
+    try:
+        ready_read, ready_write, exceptional = select.select(
+            [transport_socket] if readable else [],
+            [] if readable else [transport_socket],
+            [transport_socket],
+            remaining,
+        )
+    except (OSError, ValueError) as error:
+        raise OSError("lifecycle worker transport wait failed") from error
+    if exceptional:
+        raise OSError("lifecycle worker transport reported an exceptional state")
+    if not (ready_read if readable else ready_write):
+        raise TimeoutError("vosk_lifecycle_worker_transport_timeout")
+
+
 class _VoskLifecycleProcessWorker:
     """Spawn one bounded Vosk child for one recognition request."""
 
@@ -1003,14 +1203,16 @@ class _VoskLifecycleProcessWorker:
                 raise RuntimeError("vosk_lifecycle_worker_connection_missing")
             self._last_request_id = request_id
             self._request_sent_at = _lifecycle_worker_timestamp()
-            connection.send(
+            connection.send_message(
                 {
                     "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
                     "type": "recognize_request",
                     "request_id": request_id,
                     "audio_path": str(Path(audio_path).resolve()),
                     "grammar": list(grammar),
-                }
+                },
+                deadline=deadline,
+                clock=self._clock,
             )
             self._emit_progress(
                 "lifecycle_recognizer_request_sent",
@@ -1129,13 +1331,16 @@ class _VoskLifecycleProcessWorker:
         if not self.model_path.is_dir():
             raise RuntimeError(f"vosk_lifecycle_model_missing:{self.model_path}")
         parent_connection: Any = None
-        child_connection: Any = None
+        parent_socket: Optional[socket.socket] = None
+        child_socket: Optional[socket.socket] = None
         process = None
         try:
-            parent_connection, child_connection = self._context.Pipe(duplex=True)
+            parent_socket, child_socket = socket.socketpair()
+            parent_connection = _BoundedLifecycleSocketTransport(parent_socket)
+            parent_socket = None
             process = self._context.Process(
                 target=_vosk_lifecycle_worker_main,
-                args=(child_connection, str(self.model_path), request_id),
+                args=(child_socket, str(self.model_path), request_id),
                 name="ares-active-lifecycle-vosk",
                 daemon=False,
             )
@@ -1154,11 +1359,12 @@ class _VoskLifecycleProcessWorker:
                 self._last_worker_reaped = False
                 self._worker_start_count += 1
             parent_connection = None
-            child_connection.close()
-            child_connection = None
+            child_socket.close()
+            child_socket = None
         except BaseException as error:
             _safe_close_connection(parent_connection)
-            _safe_close_connection(child_connection)
+            _safe_close_socket(parent_socket)
+            _safe_close_socket(child_socket)
             started = process is not None and getattr(process, "pid", None) is not None
             if started:
                 with self._process_lock:
@@ -1217,9 +1423,9 @@ class _VoskLifecycleProcessWorker:
         if connection is None:
             raise RuntimeError("vosk_lifecycle_worker_connection_missing")
         remaining = max(0.0, deadline - self._clock())
-        if remaining <= 0.0 or not connection.poll(remaining):
+        if remaining <= 0.0:
             raise TimeoutError("vosk_lifecycle_worker_response_timeout")
-        value = connection.recv()
+        value = connection.receive_message(deadline=deadline, clock=self._clock)
         if not isinstance(value, Mapping):
             # ValueError is handled as a transport/protocol failure by the
             # request owner, which tears down and reaps this worker before any
@@ -1251,15 +1457,17 @@ class _VoskLifecycleProcessWorker:
             connection = self._connection
             if connection is not None:
                 try:
-                    connection.send(
+                    connection.send_message(
                         {
                             "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
                             "type": "stop_request",
                             "request_id": self._last_request_id,
                             "reason": str(reason or "cancelled")[:80],
-                        }
+                        },
+                        deadline=(self._clock() + self._STOP_ACK_WAIT_SECONDS),
+                        clock=self._clock,
                     )
-                except (BrokenPipeError, EOFError, OSError, ValueError):
+                except (BrokenPipeError, EOFError, OSError, TimeoutError, ValueError):
                     pass
             _safe_process_join(process, self._TERMINATION_GRACE_SECONDS)
             if _safe_process_alive_state(process) is False:
@@ -1304,28 +1512,35 @@ class _VoskLifecycleProcessWorker:
                     reason=reason,
                 )
                 try:
-                    connection.send(
+                    stop_deadline = self._clock() + self._STOP_ACK_WAIT_SECONDS
+                    connection.send_message(
                         {
                             "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
                             "type": "stop_request",
                             "request_id": request_id,
                             "reason": str(reason or "completed")[:80],
-                        }
+                        },
+                        deadline=stop_deadline,
+                        clock=self._clock,
                     )
-                    if connection.poll(self._STOP_ACK_WAIT_SECONDS):
-                        acknowledgement = connection.recv()
-                        self._stop_acknowledged = bool(
-                            isinstance(acknowledgement, Mapping)
-                            and acknowledgement.get("protocol")
-                            == VOSK_LIFECYCLE_WORKER_PROTOCOL
-                            and acknowledgement.get("type") == "stopped"
-                            and acknowledgement.get("request_id") == request_id
-                        )
-                except (BrokenPipeError, EOFError, OSError, ValueError):
+                    acknowledgement = connection.receive_message(
+                        deadline=stop_deadline,
+                        clock=self._clock,
+                    )
+                    self._stop_acknowledged = bool(
+                        acknowledgement.get("protocol")
+                        == VOSK_LIFECYCLE_WORKER_PROTOCOL
+                        and acknowledgement.get("type") == "stopped"
+                        and acknowledgement.get("request_id") == request_id
+                    )
+                except (BrokenPipeError, EOFError, OSError, TimeoutError, ValueError):
                     pass
             self._connection = None
             _safe_close_connection(connection)
-            _safe_process_join(process, self._TERMINATION_GRACE_SECONDS)
+            join_confirmed = _safe_process_join(
+                process,
+                self._TERMINATION_GRACE_SECONDS,
+            )
             if _safe_process_alive_state(process) is not False:
                 try:
                     process.terminate()
@@ -1337,7 +1552,10 @@ class _VoskLifecycleProcessWorker:
                     )
                 except (OSError, ValueError):
                     pass
-                _safe_process_join(process, self._TERMINATION_GRACE_SECONDS)
+                join_confirmed = (
+                    _safe_process_join(process, self._TERMINATION_GRACE_SECONDS)
+                    or join_confirmed
+                )
             if _safe_process_alive_state(process) is not False:
                 try:
                     process.kill()
@@ -1349,16 +1567,21 @@ class _VoskLifecycleProcessWorker:
                     )
                 except (OSError, ValueError):
                     pass
-                _safe_process_join(process, self._KILL_GRACE_SECONDS)
+                join_confirmed = (
+                    _safe_process_join(process, self._KILL_GRACE_SECONDS)
+                    or join_confirmed
+                )
             alive_state = _safe_process_alive_state(process)
             confirmed_dead = alive_state is False
-            if confirmed_dead:
-                _safe_process_join(process, 0.0)
+            if confirmed_dead and not join_confirmed:
+                join_confirmed = _safe_process_join(process, 0.0)
+            confirmed_reaped = confirmed_dead and join_confirmed
+            if confirmed_reaped:
                 self._worker_joined_at = _lifecycle_worker_timestamp()
             self._last_worker_exitcode = _safe_process_exitcode(process)
-            self._last_worker_reaped = confirmed_dead
+            self._last_worker_reaped = confirmed_reaped
             self._last_cleanup_reason = str(reason or "cleanup")[:96]
-            if confirmed_dead:
+            if confirmed_reaped:
                 self._process = None
                 _safe_close_process(process)
                 self._emit_progress(
@@ -1438,13 +1661,14 @@ def _safe_process_exitcode(process: Any) -> Optional[int]:
     return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _safe_process_join(process: Any, timeout_seconds: float) -> None:
+def _safe_process_join(process: Any, timeout_seconds: float) -> bool:
     if process is None:
-        return
+        return True
     try:
         process.join(max(0.0, float(timeout_seconds)))
     except (AssertionError, OSError, ValueError):
-        pass
+        return False
+    return _safe_process_alive_state(process) is False
 
 
 def _safe_close_process(process: Any) -> None:
@@ -1467,15 +1691,26 @@ def _safe_close_connection(connection: Any) -> None:
         pass
 
 
+def _safe_close_socket(transport_socket: Optional[socket.socket]) -> None:
+    if transport_socket is None:
+        return
+    try:
+        transport_socket.close()
+    except OSError:
+        pass
+
+
 def _vosk_lifecycle_worker_main(
-    connection: Any,
+    connection: socket.socket,
     model_path: str,
     request_id: str = "",
 ) -> None:
     """Serve one bounded recognition request and one bounded stop handshake."""
 
     _ignore_worker_interrupt_signal()
+    sigint_ignored = _worker_interrupt_signal_is_ignored()
     expected_request_id = str(request_id or "")
+    transport = _BoundedLifecycleSocketTransport(connection)
     try:
         module = importlib.import_module("vosk")
         set_log_level = getattr(module, "SetLogLevel", None)
@@ -1485,29 +1720,31 @@ def _vosk_lifecycle_worker_main(
         if not callable(model_factory):
             raise RuntimeError("vosk_lifecycle_model_factory_unavailable")
         model = model_factory(str(model_path))
-        connection.send(
+        transport.send_message(
             {
                 "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
                 "type": "ready",
                 "request_id": expected_request_id,
                 "pid": os.getpid(),
-            }
+                "sigint_ignored": sigint_ignored,
+            },
+            deadline=(time.monotonic() + _VOSK_LIFECYCLE_WORKER_READY_SEND_SECONDS),
         )
     except Exception as error:
-        _send_worker_error(connection, error, request_id=expected_request_id)
-        try:
-            connection.close()
-        except OSError:
-            pass
+        _send_worker_error(transport, error, request_id=expected_request_id)
+        transport.close()
         return
 
     try:
-        request = _receive_worker_message(connection, timeout_seconds=10.0)
+        request = _receive_worker_message(
+            transport,
+            timeout_seconds=_VOSK_LIFECYCLE_WORKER_REQUEST_WAIT_SECONDS,
+        )
         if request is None:
             return
         if not isinstance(request, Mapping):
             _send_worker_error(
-                connection,
+                transport,
                 TypeError("worker request must be a mapping"),
                 request_id=expected_request_id,
             )
@@ -1515,7 +1752,18 @@ def _vosk_lifecycle_worker_main(
         request_type = str(request.get("type") or "")
         received_request_id = str(request.get("request_id") or "")
         if request_type == "stop_request":
-            _send_worker_stopped(connection, request_id=received_request_id)
+            if (
+                request.get("protocol") == VOSK_LIFECYCLE_WORKER_PROTOCOL
+                and expected_request_id
+                and received_request_id == expected_request_id
+            ):
+                _send_worker_stopped(transport, request_id=received_request_id)
+                return
+            _send_worker_error(
+                transport,
+                ValueError("invalid lifecycle worker stop request"),
+                request_id=expected_request_id or received_request_id,
+            )
             return
         if (
             request.get("protocol") != VOSK_LIFECYCLE_WORKER_PROTOCOL
@@ -1524,7 +1772,7 @@ def _vosk_lifecycle_worker_main(
             or received_request_id != expected_request_id
         ):
             _send_worker_error(
-                connection,
+                transport,
                 ValueError("invalid lifecycle worker request"),
                 request_id=expected_request_id or received_request_id,
             )
@@ -1537,7 +1785,7 @@ def _vosk_lifecycle_worker_main(
                 module=module,
                 grammar=_validated_grammar(request.get("grammar") or ()),
             )
-            connection.send(
+            transport.send_message(
                 {
                     "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
                     "type": "recognize_result",
@@ -1548,17 +1796,24 @@ def _vosk_lifecycle_worker_main(
                     "recognized_tokens": list(evidence.recognized_tokens),
                     "word_confidences": list(evidence.word_confidences),
                     "recognition_backend": evidence.recognition_backend,
-                }
+                },
+                deadline=(
+                    time.monotonic()
+                    + _VOSK_LIFECYCLE_WORKER_RESULT_SEND_SECONDS
+                ),
             )
         except Exception as error:
             _send_worker_error(
-                connection,
+                transport,
                 error,
                 request_id=expected_request_id,
                 worker_request_received_at=worker_request_received_at,
             )
 
-        stop_request = _receive_worker_message(connection, timeout_seconds=1.0)
+        stop_request = _receive_worker_message(
+            transport,
+            timeout_seconds=_VOSK_LIFECYCLE_WORKER_STOP_WAIT_SECONDS,
+        )
         if not isinstance(stop_request, Mapping):
             return
         if (
@@ -1566,51 +1821,53 @@ def _vosk_lifecycle_worker_main(
             and stop_request.get("type") == "stop_request"
             and str(stop_request.get("request_id") or "") == expected_request_id
         ):
-            _send_worker_stopped(connection, request_id=expected_request_id)
+            _send_worker_stopped(transport, request_id=expected_request_id)
     finally:
-        try:
-            connection.close()
-        except OSError:
-            pass
+        transport.close()
 
 
 def _receive_worker_message(
-    connection: Any,
+    connection: _BoundedLifecycleSocketTransport,
     *,
     timeout_seconds: float,
 ) -> Optional[Mapping[str, Any]]:
     try:
-        if not connection.poll(max(0.0, float(timeout_seconds))):
-            return None
-        value = connection.recv()
-    except (EOFError, OSError, ValueError):
+        value = connection.receive_message(
+            deadline=(time.monotonic() + max(0.0, float(timeout_seconds))),
+        )
+    except (EOFError, OSError, TimeoutError, ValueError):
         return None
     return value if isinstance(value, Mapping) else None
 
 
-def _send_worker_stopped(connection: Any, *, request_id: str) -> None:
+def _send_worker_stopped(
+    connection: _BoundedLifecycleSocketTransport,
+    *,
+    request_id: str,
+) -> None:
     try:
-        connection.send(
+        connection.send_message(
             {
                 "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
                 "type": "stopped",
                 "request_id": str(request_id or ""),
                 "stopped_at": _lifecycle_worker_timestamp(),
-            }
+            },
+            deadline=(time.monotonic() + _VOSK_LIFECYCLE_WORKER_RESULT_SEND_SECONDS),
         )
-    except (BrokenPipeError, EOFError, OSError, ValueError):
+    except (BrokenPipeError, EOFError, OSError, TimeoutError, ValueError):
         pass
 
 
 def _send_worker_error(
-    connection: Any,
+    connection: _BoundedLifecycleSocketTransport,
     error: BaseException,
     *,
     request_id: str,
     worker_request_received_at: str = "",
 ) -> None:
     try:
-        connection.send(
+        connection.send_message(
             {
                 "protocol": VOSK_LIFECYCLE_WORKER_PROTOCOL,
                 "type": "error",
@@ -1618,9 +1875,10 @@ def _send_worker_error(
                 "worker_request_received_at": str(worker_request_received_at or ""),
                 "error_class": error.__class__.__name__,
                 "error_message": str(error)[:240],
-            }
+            },
+            deadline=(time.monotonic() + _VOSK_LIFECYCLE_WORKER_RESULT_SEND_SECONDS),
         )
-    except (BrokenPipeError, EOFError, OSError, ValueError):
+    except (BrokenPipeError, EOFError, OSError, TimeoutError, ValueError):
         pass
 
 
@@ -1634,6 +1892,16 @@ def _ignore_worker_interrupt_signal() -> None:
         signal.signal(sigint, signal.SIG_IGN)
     except (OSError, RuntimeError, ValueError):
         return
+
+
+def _worker_interrupt_signal_is_ignored() -> bool:
+    sigint = getattr(signal, "SIGINT", None)
+    if sigint is None:
+        return False
+    try:
+        return signal.getsignal(sigint) == signal.SIG_IGN
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def _lifecycle_worker_timestamp() -> str:

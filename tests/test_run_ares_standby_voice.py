@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import signal
+from threading import Event as ThreadEvent
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -1181,6 +1183,133 @@ def test_hardware_lifecycle_mode_selects_only_bounded_owner_lifecycle_stages():
             "shutdown"
         )
     ] == ["C", "G"]
+    lifecycle = manual_verify_standby_wake_hardware._verification_stages(
+        "lifecycle"
+    )
+    assert [stage.instruction for stage in lifecycle] == [
+        "Say 'Ares'.",
+        "Say 'goodbye Ares' once, then remain silent.",
+        "Say 'Ares'.",
+        "Say 'shutdown Ares'.",
+    ]
+
+
+def test_hardware_lifecycle_worker_transaction_requires_correlated_bounded_evidence():
+    complete = {
+        "worker_pid": 4510,
+        "worker_alive": False,
+        "worker_reaped": True,
+        "worker_request_id": "request-goodbye",
+        "worker_request_sent_at": "2026-08-04T10:00:00.000Z",
+        "worker_request_received_at": "2026-08-04T10:00:00.010Z",
+        "worker_result_received_at": "2026-08-04T10:00:00.020Z",
+        "worker_stop_requested_at": "2026-08-04T10:00:00.021Z",
+        "worker_joined_at": "2026-08-04T10:00:00.022Z",
+        "worker_stop_acknowledged": True,
+    }
+
+    assert (
+        manual_verify_standby_wake_hardware._lifecycle_worker_transaction_error(
+            complete
+        )
+        == ""
+    )
+    assert (
+        manual_verify_standby_wake_hardware._lifecycle_worker_transaction_error(
+            {"worker_reaped": True}
+        )
+        == "worker_pid_absent"
+    )
+    assert (
+        manual_verify_standby_wake_hardware._lifecycle_worker_transaction_error(
+            {**complete, "worker_result_received_at": ""}
+        )
+        == "worker_result_received_at_absent"
+    )
+    assert (
+        manual_verify_standby_wake_hardware._lifecycle_worker_transaction_error(
+            {**complete, "worker_alive": True}
+        )
+        == "worker_still_alive"
+    )
+    assert (
+        manual_verify_standby_wake_hardware._lifecycle_worker_transaction_error(
+            {**complete, "worker_stop_acknowledged": False}
+        )
+        == "worker_stop_not_acknowledged"
+    )
+
+
+def test_hardware_verifier_timestamps_live_capture_and_whisper_progress(monkeypatch):
+    monkeypatch.setattr(
+        manual_verify_standby_wake_hardware,
+        "_hardware_timestamp",
+        lambda: "2026-08-04T12:00:00.000Z",
+    )
+    output = []
+    emit = manual_verify_standby_wake_hardware._timestamped_runtime_output(
+        output.append
+    )
+
+    emit("Active microphone capture started")
+    emit("Command captured")
+    emit("Whisper process started: pid=10, pgid=10")
+    emit("Whisper completed: exit=0, elapsed=2 seconds")
+    emit("ARES: Goodbye Gabi.")
+
+    assert output == [
+        "[2026-08-04T12:00:00.000Z] Active microphone capture started",
+        "[2026-08-04T12:00:00.000Z] Active microphone capture completed (Command captured)",
+        "[2026-08-04T12:00:00.000Z] Whisper process started: pid=10, pgid=10",
+        "[2026-08-04T12:00:00.000Z] Whisper completed: exit=0, elapsed=2 seconds",
+        "ARES: Goodbye Gabi.",
+    ]
+
+
+def test_default_hardware_stage_watchdog_cancels_and_returns_within_cleanup_bound():
+    cancelled = ThreadEvent()
+
+    def blocked_operation():
+        cancelled.wait(5.0)
+        return "late"
+
+    started = time.monotonic()
+    with pytest.raises(
+        manual_verify_standby_wake_hardware.HardwareStageTimeout
+    ):
+        manual_verify_standby_wake_hardware._default_hardware_stage_executor(
+            blocked_operation,
+            0.05,
+            cancelled.set,
+        )
+    elapsed = time.monotonic() - started
+
+    assert cancelled.is_set()
+    assert elapsed < 1.0
+
+
+def test_final_worker_check_rejects_named_active_lifecycle_child(monkeypatch):
+    process = SimpleNamespace(
+        name="ares-active-lifecycle-vosk",
+        pid=4512,
+        is_alive=lambda: True,
+    )
+    monkeypatch.setattr(
+        manual_verify_standby_wake_hardware.multiprocessing,
+        "active_children",
+        lambda: [process],
+    )
+    runtime = SimpleNamespace(input_adapter=SimpleNamespace(last_diagnostics=None))
+    output = []
+
+    clean = manual_verify_standby_wake_hardware._report_final_lifecycle_worker_state(
+        output.append,
+        runtime,
+    )
+
+    assert clean is False
+    assert "FAILED" in output[0]
+    assert "4512" in output[0]
 
 
 def test_hardware_helper_stage_e_requires_bypass_and_does_not_retry_unknown_fallback():
@@ -1225,6 +1354,108 @@ def test_hardware_helper_stage_e_requires_bypass_and_does_not_retry_unknown_fall
     assert not manual_verify_standby_wake_hardware._retry_allowed(
         "E", SimpleNamespace(status="command_completed")
     )
+
+
+@pytest.mark.parametrize(
+    ("interruption_kind", "expected_code", "expected_reason", "output_marker"),
+    [
+        (
+            "deadline",
+            1,
+            "hardware_stage_C_timeout",
+            "spoken lifecycle success was not recorded",
+        ),
+        (
+            "keyboard_interrupt",
+            130,
+            "owner_cancellation",
+            "ARES runtime terminal reason: owner_cancellation.",
+        ),
+    ],
+)
+def test_hardware_verifier_outer_stage_boundary_is_bounded_and_cancellation_is_distinct(
+    monkeypatch,
+    interruption_kind,
+    expected_code,
+    expected_reason,
+    output_marker,
+):
+    class InterruptedStageRuntime:
+        def __init__(self):
+            self.runtime_id = "interrupted-stage-runtime"
+            self.standby_wake_listener = FakeWakeListener()
+            self.standby_wake_listener.config = SimpleNamespace(
+                calibration_duration_seconds=0
+            )
+            self.input_adapter = SimpleNamespace(last_diagnostics=None)
+            self.state = "STANDBY"
+            self.shutdown_reasons = []
+
+        def start(self):
+            return SimpleNamespace(success=True, status="standby", error_code="")
+
+        def snapshot(self):
+            return SimpleNamespace(
+                current_lifecycle_state=self.state,
+                session_id="",
+            )
+
+        def poll_once(self):
+            raise AssertionError("the injected bounded executor owns this call")
+
+        def shutdown(self, reason=""):
+            self.shutdown_reasons.append(reason)
+            self.state = "STOPPED"
+
+    runtime = InterruptedStageRuntime()
+    pipeline = FakePipeline()
+    executor_observations = []
+
+    def factory(args, output_func=print):
+        return runtime, pipeline, SingleTurnVoiceRequestV1()
+
+    def stage_executor(_operation, timeout_seconds, on_timeout):
+        executor_observations.append(timeout_seconds)
+        if interruption_kind == "deadline":
+            on_timeout()
+            raise manual_verify_standby_wake_hardware.HardwareStageTimeout(
+                "injected deadline"
+            )
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(
+        manual_verify_standby_wake_hardware,
+        "inspect_linux_alsa_capture",
+        lambda _device: {
+            "capture_device": "plughw:2,0",
+            "sample_rate_hz": 16000,
+            "channels": 1,
+            "sample_width_bytes": 2,
+            "format_status": "canonical",
+            "status": "available",
+        },
+    )
+    output = []
+
+    code = manual_verify_standby_wake_hardware.run_hardware_verification(
+        [
+            "--verification-mode",
+            "lifecycle",
+            "--attempts-per-test",
+            "1",
+            "--hardware-stage-timeout-seconds",
+            "10",
+        ],
+        output_func=output.append,
+        runtime_factory=factory,
+        stage_executor=stage_executor,
+    )
+
+    assert code == expected_code
+    assert executor_observations == [10.0]
+    assert runtime.shutdown_reasons == [expected_reason]
+    assert output_marker in "\n".join(output)
+    assert "All bounded hardware stages passed" not in "\n".join(output)
 
 
 def test_hardware_lifecycle_stages_require_survival_new_session_and_one_explicit_shutdown():
@@ -1444,15 +1675,15 @@ def test_bounded_hardware_lifecycle_modes_report_exact_shutdown_once(
             if self.poll_count == 3 and not self.direct_shutdown:
                 return self._wake("session-2")
             self.input_adapter.last_diagnostics = ActiveCommandLocalDiagnostics(
-                raw_transcript="Ares, shut down.",
-                cleaned_transcript="Ares, shut down",
-                lifecycle_normalized_transcript="ares shutdown",
-                alias_canonicalized_transcript="ares shutdown",
+                raw_transcript="Shutdown Ares.",
+                cleaned_transcript="shutdown ares",
+                lifecycle_normalized_transcript="shutdown ares",
+                alias_canonicalized_transcript="shutdown ares",
                 matched_assistant_alias="ares",
                 assistant_alias_type="canonical",
                 canonical_name="ares",
                 selected_lifecycle_action="shutdown",
-                matched_lifecycle_phrase="ares shutdown",
+                matched_lifecycle_phrase="shutdown ares",
                 transcription_status="transcribed",
                 lifecycle_worker_pid=4511,
                 lifecycle_worker_reaped=True,
@@ -1522,27 +1753,29 @@ def test_bounded_hardware_lifecycle_modes_report_exact_shutdown_once(
     assert runtime.cleanup_shutdown_count == 0
     if verification_mode == "shutdown":
         assert "Test 1/2 (C): Say 'Ares'." in text
-        assert "Test 2/2 (G): Say 'Ares, shut down'." in text
+        assert "Test 2/2 (G): Say 'shutdown Ares'." in text
         assert "Goodbye, Ares." not in text
     else:
         assert "Test 1/4 (C): Say 'Ares'." in text
         assert "Test 2/4 (E): Say 'goodbye Ares' once" in text
         assert "Test 3/4 (F): Say 'Ares'." in text
-        assert "Test 4/4 (G): Say 'Ares, shut down'." in text
+        assert "Test 4/4 (G): Say 'shutdown Ares'." in text
         assert "Raw recognition result: Goodbye, Ares." in text
         assert "Classification result: standby" in text
         assert "Persistent runtime: alive in STANDBY; active session cleared." in text
         assert "Reactivation: new active session confirmed." in text
         assert (
-            "Active-command transcripts: Goodbye, Ares. | Ares, shut down."
+            "Active-command transcripts: Goodbye, Ares. | Shutdown Ares."
             in text
         )
-    assert "Raw recognition result: Ares, shut down." in text
+    assert "Raw recognition result: Shutdown Ares." in text
     assert "Classification result: shutdown" in text
     assert "Lifecycle worker cleanup: pid=4511; alive=no; reaped=yes; stop_ack=yes" in text
     assert "sent=2026-08-04T10:00:01.000Z" in text
     assert "Runtime terminal reason: explicit_shutdown_command" in text
     assert "Explicit shutdown count / reason: 1 / explicit_shutdown_command" in text
+    assert "Hard outer timeout per prompted stage: 45.0 seconds." in text
+    assert "Final lifecycle worker check: clear" in text
     assert "calculate two plus two" not in text
 
 
